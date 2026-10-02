@@ -1,0 +1,6 @@
+# items kept OFF while seated and re-attached when standing (AttachWatch.cs SeatAttachLoop)
+# format: <item uuid> [attach point number]  # comment
+# 2026-09-29 18:25 (David): the AO is now the Vista Martha HUD at HUD Center (35); AWP is retired and must never be re-attached.
+# Martha's item id line is added below once learned from the worn HUD (ao-item.txt).
+# RETIRED: 01c7b845-1ab3-3a52-b58a-2b65d0c5eeb8 34  # AWP female animation controller v2 (do not re-add)
+fe2c99ba-2abd-370e-a047-1129b8b1db7c 35  # VISTA ANIMATIONS *HUD 6.3*MARTHA STS BENTO AO-V1.7 (the AO, HUD Center); kept off while seated, re-attached when standing

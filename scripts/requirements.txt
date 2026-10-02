@@ -1,0 +1,4 @@
+# Python packages for /workspace/secondlife/.venv (rebuilt by scripts/ensure-venv.sh; the venv itself is NOT backed up).
+# Used by scripts/overhead.py: the text client's `overhead` command and the 10-min wander snapshot
+# (galatay-text RouteNav.cs: GT_PY=/workspace/secondlife/.venv/bin/python, GT_OVERHEAD_PY=scripts/overhead.py).
+pillow==12.3.0

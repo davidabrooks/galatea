@@ -1,0 +1,5 @@
+bin/
+obj/
+*.bak*
+*.log
+webhook-url.txt

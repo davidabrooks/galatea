@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>galatay-mcp</AssemblyName>
+    <RootNamespace>GalatayMcp</RootNamespace>
+    <StartupObject>GalatayMcp.McpProgram</StartupObject>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PredefinedCulturesOnly>false</PredefinedCulturesOnly>
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <NoWarn>$(NoWarn);CS8632;CS0618;CS7022</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../galatay-text/Program.cs" Link="Core/Program.cs" />
+    <Compile Include="../galatay-text/HeightGuard.cs" Link="Core/HeightGuard.cs" />
+    <Compile Include="../galatay-text/AttachWatch.cs" Link="Core/AttachWatch.cs" />
+    <Compile Include="../galatay-text/MuteGuard.cs" Link="Core/MuteGuard.cs" />
+    <Compile Include="../galatay-text/NavWalk.cs" Link="Core/NavWalk.cs" />
+    <Compile Include="../galatay-text/GroupPicks.cs" Link="Core/GroupPicks.cs" />
+    <Compile Include="../galatay-text/RegionRestart.cs" Link="Core/RegionRestart.cs" />
+    <Compile Include="../galatay-text/RouteNav.cs" Link="Core/RouteNav.cs" />
+    <Compile Include="../galatay-text/Wander.cs" Link="Core/Wander.cs" />
+    <Compile Include="../galatay-text/Quiet.cs" Link="Core/Quiet.cs" />
+    <Compile Include="../galatay-text/SeatPose.cs" Link="Core/SeatPose.cs" />
+    <Compile Include="../galatay-text/AoGuard.cs" Link="Core/AoGuard.cs" />
+    <Compile Include="../galatay-text/Watchdog.cs" Link="Core/Watchdog.cs" />
+    <Compile Include="../galatay-text/OfflineIm.cs" Link="Core/OfflineIm.cs" />
+    <Compile Include="../galatay-text/AttachTrack.cs" Link="Core/AttachTrack.cs" />
+    <Compile Include="../galatay-text/WearOps.cs" Link="Core/WearOps.cs" />
+    <Compile Include="../galatay-text/Outfit.cs" Link="Core/Outfit.cs" />
+    <Compile Include="../galatay-text/OutfitSave.cs" Link="Core/OutfitSave.cs" />
+    <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+  </ItemGroup>
+</Project>

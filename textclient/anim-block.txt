@@ -1,0 +1,2 @@
+# animation ids stopped whenever they start while seated (AttachWatch.cs)
+a2ecf6aa-df49-1c6f-907d-149c8ae09e21  # AWP/NUX AO "Sitting" override (played from sim state, source none)

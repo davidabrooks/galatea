@@ -19,6 +19,8 @@ export GT_HOVER_FILE="${GT_HOVER_FILE:-$BASE/hover.txt}"
 export GT_SIT_GUARD="${GT_SIT_GUARD:-1}"
 # wander greetings (2026-09-27 09:29, David): each avatar at most once per 24 h, David and Sophie included; history permanent
 export GT_GREET_REPEAT_HOURS="${GT_GREET_REPEAT_HOURS:-24}"
+# webhook debounce (2026-10-02, Webhook.cs): per conversation, POST after this many quiet seconds, at most MAX_S after the first held line
+export GT_WEBHOOK_QUIET_S="${GT_WEBHOOK_QUIET_S:-20}" GT_WEBHOOK_MAX_S="${GT_WEBHOOK_MAX_S:-60}"
 [[ -f "$BASE/hover.txt" ]] || echo 0 > "$BASE/hover.txt"
 CONSOLE="${GT_CONSOLE:-/workspace/secondlife/textclient.console.log}"
 export DOTNET_ROOT="${DOTNET_ROOT:-/home/box/.dotnet}"

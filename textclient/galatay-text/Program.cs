@@ -398,6 +398,7 @@ public static partial class Program
                     Log("groupim", $"{im.FromAgentName} (session {im.IMSessionID}){offTag}: {im.Message}"); return;
                 case InstantMessageDialog.RequestTeleport:
                     if (!LureMayAutoAccept(im)) { Log("lure", $"stored teleport offer from {im.FromAgentName}{offTag} ('{im.Message}'): IGNORED (old)"); return; }
+                    Notify("teleport_offer", im.FromAgentName, im.FromAgentID, $"teleport offer from {im.FromAgentName}: '{im.Message}' ({(LureAllowed(im.FromAgentName, im.FromAgentID) ? (autoLure ? "allow-listed: auto-accept" : "allow-listed: pending") : "NOT allow-listed: ignored")})", null); // urgent webhook (immediate)
                     if (LureAllowed(im.FromAgentName, im.FromAgentID))
                     {
                         pendingLure = (im.FromAgentID, im.FromAgentName, im.IMSessionID, im.Message);
@@ -414,10 +415,10 @@ public static partial class Program
                     else Log("lure", $"teleport offer from {im.FromAgentName} ('{im.Message}'): IGNORED (not allow-listed)");
                     return;
                 case InstantMessageDialog.FriendshipOffered:
-                    Log("offer", $"friendship offer from {im.FromAgentName}{offTag}: IGNORED"); return;
+                    Log("offer", $"friendship offer from {im.FromAgentName}{offTag}: NOT accepted (pending; see 'offers')"); RecordOffer(im, offline); return;
                 case InstantMessageDialog.InventoryOffered:
                 case InstantMessageDialog.TaskInventoryOffered:
-                    OfferIn(im); return; // WearOps.cs: logs it; accepts ONLY an armed 'offer allow' from her own named object
+                    if (!OfferIn(im)) RecordOffer(im, offline); return; // WearOps.cs: logs it; accepts ONLY an armed 'offer allow' from her own named object; else pending (NewCmds.cs 'offers')
                 case InstantMessageDialog.GroupInvitation:
                     Log("offer", $"group invitation from {im.FromAgentName}{offTag}: IGNORED"); return;
                 default:
@@ -1472,9 +1473,16 @@ public static partial class Program
   pick create <region> <x> <y> <z> | <name> | <description>   new pick (literal \n = line break), read back
   balance | prices | caps            read-only: L$ balance, upload prices, which caps exist (no URLs)
   webhook_test | webhook status      probe the chat webhook (HTTP status) / show config (never the key)
+  webhook debounce [<quiet s> [<max s>]] | webhook debounce selftest   per-conversation debounce (default quiet 20 s, cap 60 s; urgent = immediate)
   restart status | restart test [fast] | restart cancel   region-restart evacuation: state / simulate a warning / abort
                               (warning -> stand, go home [fallbacks, else logout], poll every 60 s, return >= 3 min after the restart, re-sit; 45 min limit)
   sit_home                    Naberrie seat rule: her pillow 10d8a656 if both rock pillows are free, else a quiet free seat in The Buddha Center parcel (not the zendo), else stand
+  offers [all|selftest] | offers accept <n> [confirm] | offers decline <n>   pending inventory offers + friendship requests (never auto-accepted; non-allow-listed sender needs 'confirm' = David's OK)
+  friend list | friend accept|decline <name> [confirm] | friend add <name> [confirm]   friendships (allow-list: David Nightingale, Sophie-Jeanne)
+  landmark create <name> | landmark list | landmark tp <name|item uuid> [pos] [force]   landmarks (pos = teleport to the exact stored position instead of the landmark request)
+  worn links <attachment|ao>  every prim of a worn attachment/HUD: link no., local id, name, description, faces, touch flag
+  touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
+  shape get [filter] | shape set <slider|param id> <0-100>   worn shape sliders; set ONLY on 'Galatea Petite shape - Jani short neck' (backup in shape-backups/, upload + rebake)
   inv find <text>[|text2]     READ-ONLY recursive inventory search (path, type, item id, desc, last attach point)
   inv ls <folder uuid>        READ-ONLY direct contents of one folder
   inv read <notecard item>    READ-ONLY print the text of one of her notecards
@@ -1605,6 +1613,12 @@ public static partial class Program
             case "ao": return a.Length > 0 && a[0] == "selftest" ? AoSelfTest() : AoStatus();
             case "offlineim": return a.Length > 0 && a[0] == "selftest" ? OfflineImSelfTest() : OfflineImStatus();
             case "route": case "routes": case "goto_place": case "overhead": case "snapshot": return await RouteCmds(cmd, rest, a);
+            case "offers": return await OffersCmd(a);
+            case "friend": case "friends": return await FriendCmd(a);
+            case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
+            case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));
+            case "touch-attachment": case "touchatt": return await TouchAttachment(rest);
+            case "shape": return await ShapeCmd(a);
             case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a);
             case "inv" when a.Length >= 2 && a[0] == "ls": return await WearOpsCmd("invls", a[1..]);
             case "inv" when a.Length == 2 && a[0] == "read":
@@ -1810,6 +1824,7 @@ public static partial class Program
             }
             case "webhook":
                 if (a.Length > 0 && a[0].Equals("test", StringComparison.OrdinalIgnoreCase)) return await GalatayMcp.Webhook.Test();
+                if (a.Length > 0 && a[0].Equals("debounce", StringComparison.OrdinalIgnoreCase)) return a.Length > 1 && a[1] == "selftest" ? await GalatayMcp.Webhook.DebounceSelfTest() : GalatayMcp.Webhook.DebounceCmd(a[1..]);
                 return GalatayMcp.Webhook.ConfigSummary();
             case "logout": case "quit": case "exit":
                 _ = Task.Run(async () => { await Task.Delay(200); await Shutdown("logout command"); });

@@ -15,6 +15,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../galatay-text/Program.cs" Link="Core/Program.cs" />
+    <Compile Include="../galatay-text/LandDiag.cs" Link="Core/LandDiag.cs" />
     <Compile Include="../galatay-text/HeightGuard.cs" Link="Core/HeightGuard.cs" />
     <Compile Include="../galatay-text/AttachWatch.cs" Link="Core/AttachWatch.cs" />
     <Compile Include="../galatay-text/MuteGuard.cs" Link="Core/MuteGuard.cs" />

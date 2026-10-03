@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SL Texture Vision: lets headless / text-only Second Life clients and AI agents "see" textures (fetch by UUID,
+       JPEG 2000 -> PNG, prim faces, vendor scans), no GPU. Builds against the same LibreMetaverse source as the text client
+       (textclient/src-libremetaverse), so only one LibreMetaverse assembly is loaded. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SlTextureVision</RootNamespace>
+    <AssemblyName>SlTextureVision</AssemblyName>
+    <Version>0.1.0</Version>
+    <Authors>David Brooks</Authors>
+    <Description>Headless texture vision for Second Life agents: fetch textures by UUID, read prim faces and vendor boards, decode JPEG 2000 to PNG with no GPU.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS0618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
+  </ItemGroup>
+</Project>

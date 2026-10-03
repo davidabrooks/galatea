@@ -1505,7 +1505,7 @@ public static partial class Program
   worn links <attachment|ao>  every prim of a worn attachment/HUD: link no., local id, name, description, faces, touch flag
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
   shape get [filter] | shape set <slider|param id> <0-100>   worn shape sliders; set ONLY on 'Galatea Petite shape - Jani short neck' (backup in shape-backups/, upload + rebake)
-  texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/ (needs the sl-texture-vision add-on)
+  texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG
   vendor look <name filter> [radius]   nearby objects matching name/hover text (default 20 m): face PNGs + index.json in textures/scan-*/
   inv find <text>[|text2]     READ-ONLY recursive inventory search (path, type, item id, desc, last attach point) (max 30 s per call; PARTIAL results resume on the next call)

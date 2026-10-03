@@ -29,11 +29,11 @@ public static partial class Program
     static void NoteHeadsup(string id, DateTimeOffset t) => headsupTo.AddOrUpdate(id, t, (_, old) => t > old ? t : old);
     static DateTimeOffset? LastHeadsup(string id) => headsupTo.TryGetValue(id, out var t) ? t : null;
     // called by Program.SeedMyIms for each log line
-    static void SeedHeadsupLine(string line)
+    static void SeedHeadsupLine(string line, Func<DateTime, DateTimeOffset> ord = null)
     {
         if (!line.Contains("[im-guard] headsup: sent to ")) return;
         var m = HeadsupRx.Match(line);
-        if (m.Success && DateTime.TryParseExact(m.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t)) NoteHeadsup(m.Groups[2].Value, new DateTimeOffset(t));
+        if (m.Success && DateTime.TryParseExact(m.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t)) NoteHeadsup(m.Groups[2].Value, ord != null ? ord(t) : new DateTimeOffset(t));
     }
 
     internal enum ImGuardResult { Send, Window, Answered, HeadsupUsed }

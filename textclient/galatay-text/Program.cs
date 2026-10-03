@@ -92,18 +92,21 @@ public static partial class Program
             if (fs.Length > 4_000_000) fs.Seek(-4_000_000, SeekOrigin.End);
             using var sr = new StreamReader(fs);
             string line; int n = 0;
+            // log times have 1 s resolution: keep the line order inside a second (+1 ms per line) so "my IM, then theirs, same second" stays ordered
+            DateTime lastSec = DateTime.MinValue; int k = 0;
+            DateTimeOffset Ord(DateTime t) { if (t != lastSec) { lastSec = t; k = 0; } else k++; return new DateTimeOffset(t.AddMilliseconds(Math.Min(k, 999))); }
             while ((line = sr.ReadLine()) != null)
             {
                 if (line.Contains(" [im] "))
                 {
                     var mi = InImRx.Match(line);
-                    if (mi.Success && DateTime.TryParseExact(mi.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var ti)) NoteImFrom(mi.Groups[2].Value, new DateTimeOffset(ti));
+                    if (mi.Success && DateTime.TryParseExact(mi.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var ti)) NoteImFrom(mi.Groups[2].Value, Ord(ti));
                     continue;
                 }
-                SeedHeadsupLine(line); // im --headsup (ImGuard.cs)
+                SeedHeadsupLine(line, Ord); // im --headsup (ImGuard.cs)
                 if (!line.Contains("[me-im] to ")) continue;
                 var m = MeImRx.Match(line);
-                if (m.Success && DateTime.TryParseExact(m.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t)) { NoteMyIm(m.Groups[2].Value, new DateTimeOffset(t)); n++; }
+                if (m.Success && DateTime.TryParseExact(m.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t)) { NoteMyIm(m.Groups[2].Value, Ord(t)); n++; }
             }
             Log("webhook", $"dedupe hint / im guard: seeded my last IM time for {myImTo.Count} avatar(s) from {n} [me-im] log line(s), their latest IM for {imFrom.Count}");
         }

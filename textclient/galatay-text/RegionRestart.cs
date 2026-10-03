@@ -184,6 +184,7 @@ public static partial class Program
         }
         Log("restart", $"warning via {source}: '{text}' secs={(secs?.ToString() ?? "?")} region_param={regionName ?? "-"} current={cur ?? "-"}{(test ? " (TEST)" : "")}");
         lastRestartWarning = DateTime.Now;
+        if (!test) Notify("region_restart", "Second Life", UUID.Zero, $"region restart warning via {source}: '{text}' secs={(secs?.ToString() ?? "?")} region={regionName ?? cur ?? "-"}", null); // urgent webhook (immediate)
         if (!string.IsNullOrEmpty(regionName) && cur != null && !string.Equals(regionName, cur, StringComparison.OrdinalIgnoreCase))
         { Log("restart", $"warning is for '{regionName}', not for my region '{cur}': no action"); return; }
         if (!LoggedIn || cur == null) { Log("restart", "not in a region: no action"); return; }

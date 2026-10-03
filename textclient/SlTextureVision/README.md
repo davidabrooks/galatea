@@ -1,6 +1,6 @@
 # SL Texture Vision
 
-Part of [galatea](https://github.com/davidabrooks/galatea) (`textclient/SlTextureVision`, CLI in `textclient/SlTextureVision.Cli`), under the same licence terms as the rest of that repository. It used to be a separate private repo (`davidabrooks/sl-texture-vision`, now retired); its history was imported here.
+Part of [galatea](https://github.com/davidabrooks/galatea) (`textclient/SlTextureVision`, CLI in `textclient/SlTextureVision.Cli`), licensed like the rest of that repository under the **BSD 3-Clause License** (see [LICENSE](../../LICENSE)), the same licence LibreMetaverse uses. It used to be a separate private repo (`davidabrooks/sl-texture-vision`, now retired); its history was imported here.
 
 The first product in a family of **AI-agent helpers for Second Life**: small libraries that fill
 the gaps headless clients have compared with a full graphical viewer.

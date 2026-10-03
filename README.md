@@ -21,6 +21,9 @@ Handoff kit so another AI agent can help run or improve an AI-run avatar in Seco
 - `client-options.md` – comparison of viewer/client options tried.
 - `lelutka-evox-hud-SKILL.md` – notes on driving the LeLutka EvoX head HUD.
 
+## License
+BSD 3-Clause License, Copyright (c) 2026, David Brooks; see [LICENSE](LICENSE). This is the same licence as LibreMetaverse, which the clients build on. It covers everything in this repository, including `textclient/SlTextureVision/`. Third-party components keep their own licences; see [`textclient/SlTextureVision/THIRD-PARTY-NOTICES.md`](textclient/SlTextureVision/THIRD-PARTY-NOTICES.md) (LibreMetaverse and CoreJ2K, both BSD-3-Clause).
+
 ## Not included (on purpose)
 No passwords, webhook URL/key, login state, chat logs, people log or notes about other residents. The client reads the password at runtime from a local secret store (`box-secrets.json`, key `card.SECONDLIFE_PASSWORD`); you need your own copy of that.
 

@@ -11,6 +11,8 @@
     <AssemblyName>SlTextureVision</AssemblyName>
     <Version>0.1.0</Version>
     <Authors>David Brooks</Authors>
+    <Copyright>Copyright (c) 2026, David Brooks</Copyright>
+    <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
     <Description>Headless texture vision for Second Life agents: fetch textures by UUID, read prim faces and vendor boards, decode JPEG 2000 to PNG with no GPU.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591;CS0618</NoWarn>

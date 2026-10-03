@@ -33,6 +33,7 @@
     <Compile Include="../galatay-text/WearOps.cs" Link="Core/WearOps.cs" />
     <Compile Include="../galatay-text/AutoFollow.cs" Link="Core/AutoFollow.cs" />
     <Compile Include="../galatay-text/OfferStore.cs" Link="Core/OfferStore.cs" />
+    <Compile Include="../galatay-text/ImGuard.cs" Link="Core/ImGuard.cs" />
     <Compile Include="../galatay-text/Doors.cs" Link="Core/Doors.cs" />
     <Compile Include="../galatay-text/Outfit.cs" Link="Core/Outfit.cs" />
     <Compile Include="../galatay-text/OutfitSave.cs" Link="Core/OutfitSave.cs" />

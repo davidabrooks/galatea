@@ -50,6 +50,7 @@ public sealed class SlTools
         var txt = await Core.Run(line);
         var ok = !(txt.StartsWith("not logged in") || txt.StartsWith("usage") || txt.StartsWith("error") || txt.StartsWith("rate limit")
                    || txt.StartsWith("could not") || txt.StartsWith("unknown") || txt.StartsWith("FAILED") || txt.StartsWith("REFUSED") || txt.Contains("failed"));
+        if (txt.StartsWith("skipped: ")) return Json(new { ok = true, skipped = true, result = txt.TrimEnd() }); // im guard: a normal skip, not an error
         return Json(new { ok, result = txt.TrimEnd() });
     }
     static string Clean(string s) => (s ?? "").Replace('\n', ' ').Replace('\r', ' ').Trim();

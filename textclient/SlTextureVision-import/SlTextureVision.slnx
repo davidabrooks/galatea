@@ -1,6 +1,0 @@
-<Solution>
-  <Folder Name="/src/">
-    <Project Path="src/SlTextureVision.Cli/SlTextureVision.Cli.csproj" />
-    <Project Path="src/SlTextureVision/SlTextureVision.csproj" />
-  </Folder>
-</Solution>

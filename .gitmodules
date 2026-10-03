@@ -1,0 +1,3 @@
+[submodule "textclient/sl-texture-vision"]
+	path = textclient/sl-texture-vision
+	url = https://github.com/davidabrooks/sl-texture-vision.git

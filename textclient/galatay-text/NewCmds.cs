@@ -3,6 +3,7 @@
 // friend list | friend accept <name> [confirm] | friend decline <name> | friend add <name> [confirm]
 //     allow-list (GT_LURE_ALLOW: David Nightingale, SophieJeanneLaDouce) only; anyone else needs 'confirm' = David's explicit OK
 // landmark create <name> | landmark list | landmark tp <name|item uuid> [pos] [force]
+// sethome                                       set home to the current spot (SetStartLocationRequest); reports the server's AlertMessage reply
 // worn links <attachment>                       every prim of a worn attachment/HUD: link no., local id, name, description, faces
 // touch-attachment <attachment> <link no.|prim name|local:<id>> [face] [st=u,v]   touch one prim/face of a worn attachment/HUD
 // shape get [filter] | shape set <param> <0-100>   read / change one slider of the worn shape (ONLY 'Galatea Petite shape - Jani short neck')
@@ -214,6 +215,19 @@ public static partial class Program
         return res;
     }
 
+    // 2026-10-02: right after a teleport/region change the new sim's seed capabilities are not there yet; LibreMetaverse's
+    // folder fetch then silently returns NOTHING ("Failed to obtain FetchInventoryDescendents2 capability"), so 'landmark list'
+    // showed an empty Landmarks folder. Wait (max 15 s) for the cap; null = ok, else an error text instead of a false "0 landmarks".
+    static async Task<string> WaitInventoryCap(CancellationToken ct)
+    {
+        for (int i = 0; i < 30; i++)
+        {
+            if (client.Network.CurrentSim?.Caps?.CapabilityURI("FetchInventoryDescendents2") != null) return null;
+            await Task.Delay(500, ct);
+        }
+        return $"inventory not reachable yet: region {client.Network.CurrentSim?.Name ?? "?"} has no FetchInventoryDescendents2 capability (still loading after a teleport?); try again in a few seconds";
+    }
+
     static async Task<AssetLandmark> LandmarkAsset(InventoryItem it, CancellationToken ct)
     {
         try
@@ -251,6 +265,7 @@ public static partial class Program
     {
         using var cts = new CancellationTokenSource(120000); var ct = cts.Token;
         string sub = a.Length > 0 ? a[0].ToLowerInvariant() : "list";
+        if (sub is "list" or "tp" or "teleport" && await WaitInventoryCap(ct) is string capErr) return capErr;
         if (sub == "list")
         {
             var items = await LandmarkItems(ct);
@@ -329,6 +344,36 @@ public static partial class Program
             return res;
         }
         return "usage: landmark create <name> | landmark list | landmark raw <name> | landmark tp <name|item uuid> [pos] [force]";
+    }
+
+    // ---------------- sethome ----------------
+    // AgentManager.SetHome() sends SetStartLocationRequest for the current position; the sim answers with an AlertMessage
+    // (success e.g. "Home position set."; refusal e.g. "You can only set your 'Home Location' on your land or at a mainland
+    // Infohub."). The reply text is reported verbatim; no reply within 10 s = unknown.
+    static async Task<string> SetHomeCmd()
+    {
+        if (!LoggedIn) return "not logged in";
+        var region = client.Network.CurrentSim?.Name; var pos = client.Self.SimPosition;
+        var tcs = new TaskCompletionSource<AlertMessageEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void H(object s, AlertMessageEventArgs e) => tcs.TrySetResult(e);
+        client.Self.AlertMessage += H;
+        try
+        {
+            client.Self.SetHome();
+            await Task.WhenAny(tcs.Task, Task.Delay(10000));
+        }
+        finally { client.Self.AlertMessage -= H; }
+        string res;
+        if (!tcs.Task.IsCompleted) res = $"sethome at {region} {P3(pos)}: sent, but no server reply within 10 s (unknown; check in a viewer)";
+        else
+        {
+            var e = tcs.Task.Result; var m = e.Message ?? "";
+            bool refused = System.Text.RegularExpressions.Regex.IsMatch(m, @"\b(can ?not|can't|cannot|only|not allowed|unable|failed)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            bool ok = !refused && m.Contains("home", StringComparison.OrdinalIgnoreCase) && m.Contains("set", StringComparison.OrdinalIgnoreCase);
+            res = $"sethome at {region} {P3(pos)}: {(ok ? "OK" : refused ? "REFUSED" : "reply")} - server says '{m}'{(string.IsNullOrEmpty(e.NotificationId) ? "" : $" [{e.NotificationId}]")}";
+        }
+        Log("sethome", res);
+        return res;
     }
 
     // ---------------- worn links / touch-attachment ----------------

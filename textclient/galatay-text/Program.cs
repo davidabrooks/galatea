@@ -1480,6 +1480,7 @@ public static partial class Program
   offers [all|selftest] | offers accept <n> [confirm] | offers decline <n>   pending inventory offers + friendship requests (never auto-accepted; non-allow-listed sender needs 'confirm' = David's OK)
   friend list | friend accept|decline <name> [confirm] | friend add <name> [confirm]   friendships (allow-list: David Nightingale, Sophie-Jeanne)
   landmark create <name> | landmark list | landmark raw <name> | landmark tp <name|item uuid> [pos] [force]   landmarks (pos = teleport to the exact stored position instead of the landmark request; raw = stored asset text)
+  sethome                     set home to the current spot; prints the server's reply (e.g. refused off your own/group land)
   parcel [x y]                teleport routing, landing point, owner/group and whether Galatay may ignore the landing point
   worn links <attachment|ao>  every prim of a worn attachment/HUD: link no., local id, name, description, faces, touch flag
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
@@ -1617,6 +1618,7 @@ public static partial class Program
             case "offers": return await OffersCmd(a);
             case "friend": case "friends": return await FriendCmd(a);
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
+            case "sethome": return await SetHomeCmd();
             case "parcel": return await ParcelCmd(a);
             case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));
             case "touch-attachment": case "touchatt": return await TouchAttachment(rest);

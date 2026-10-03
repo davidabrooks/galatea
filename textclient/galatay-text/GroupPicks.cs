@@ -1,11 +1,15 @@
 // GroupPicks (added 2026-09-25): group info/join/list and profile picks.
 // - group info <uuid>: GroupProfileRequest -> name, open enrollment, membership fee, member count
 // - group join <uuid>: profile first; refuses unless OpenEnrollment && MembershipFee == 0; JoinGroupRequest -> JoinGroupReply
-// - group list: AgentDataUpdateRequest -> AgentGroupDataUpdate (current groups); falls back to the cached last update
+// - group list: AgentDataUpdateRequest -> AgentGroupDataUpdate (current groups, my title in each, active group + title); falls back to the cached last update
+// - group invites [all|selftest] | group accept <n|group name> [confirm] [force] | group decline <n|group name>   (2026-10-02)
+//   pending group invitations (never auto-accepted; urgent webhook 'group_invite'); see GroupInvite below for the policy
 // - pick list | pick info <id> | pick lookup <region> <x> <y> <z> (dry run) | pick create <region> <x> <y> <z> | <name> | <desc> | pick delete <id>
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using Regex = System.Text.RegularExpressions.Regex;
+using RegexOptions = System.Text.RegularExpressions.RegexOptions;
 using LibreMetaverse;
 
 namespace GalatayText;
@@ -38,6 +42,157 @@ public static partial class Program
         finally { client.Groups.GroupProfile -= H; }
     }
 
+    // ---- group invitations (2026-10-02, David: stop ignoring them) ----------------------------------------
+    // GroupInvitation IM: FromAgentID = the group (what GroupInviteRespond needs), IMSessionID = the invite's transaction id,
+    // BinaryBucket = S32 membership fee (network byte order) + role UUID. The text names the inviter/group; the group profile
+    // is fetched for the authoritative name and fee. Never auto-accepted. Policy: accept only invites from David Nightingale,
+    // SophieJeanneLaDouce, or the Peronaut rental group/agent clearly tied to David's rental; anyone else needs David's OK
+    // ('confirm'). A join fee > L$0 (or an unknown fee) also needs 'force' (L$ only with David's OK).
+    class GroupInvite
+    {
+        public int N; public DateTime At; public UUID GroupId; public string GroupName; public string FromName; public string Inviter;
+        public UUID Session; public UUID RoleId; public int? Fee; public string Message; public bool Offline; public string State = "pending";
+    }
+    static readonly List<GroupInvite> groupInvites = new(); static int groupInviteSeq;
+
+    static readonly Regex InviterRx = new(@"^\s*(?<who>[^\r\n]+?)\s+has invited you to (join|become)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex GroupNameRx = new(@"invited you to (join|become a member of)\s+(the\s+group\s+)?(?<g>[^\r\n.]+?)(\.|\s*$|\r|\n)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // pure parse (selftest-covered): bucket fee/role, inviter and group name from the text
+    static GroupInvite ParseGroupInvite(InstantMessage im, bool offline)
+    {
+        var g = new GroupInvite { At = DateTime.Now, GroupId = im.FromAgentID, FromName = im.FromAgentName, Session = im.IMSessionID, Message = im.Message ?? "", Offline = offline };
+        var b = im.BinaryBucket ?? Array.Empty<byte>();
+        if (b.Length >= 4) g.Fee = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3];
+        if (b.Length >= 20) g.RoleId = new UUID(b, 4);
+        var m = InviterRx.Match(g.Message); if (m.Success) g.Inviter = m.Groups["who"].Value.Trim();
+        var gm = GroupNameRx.Match(g.Message); if (gm.Success) g.GroupName = gm.Groups["g"].Value.Trim().Trim('\'', '"');
+        if (g.Inviter == null && !string.IsNullOrWhiteSpace(im.FromAgentName) && !string.Equals(im.FromAgentName, g.GroupName, StringComparison.OrdinalIgnoreCase)) g.Inviter = im.FromAgentName;
+        if (g.GroupName == null && !string.IsNullOrWhiteSpace(im.FromAgentName) && g.Inviter != im.FromAgentName) g.GroupName = im.FromAgentName;
+        return g;
+    }
+
+    static void RecordGroupInvite(InstantMessage im, bool offline, bool notify = true)
+    {
+        try
+        {
+            var g = ParseGroupInvite(im, offline);
+            lock (groupInvites)
+            {
+                if (groupInvites.Any(x => x.Session == g.Session && x.GroupId == g.GroupId && x.State == "pending")) return; // offline re-delivery
+                g.N = ++groupInviteSeq; groupInvites.Add(g);
+                while (groupInvites.Count > 50) groupInvites.RemoveAt(0);
+            }
+            Log("offer", $"group invitation recorded as invite #{g.N}: {GroupInviteLine(g)}{(offline ? " [offline]" : "")} - pending; never auto-accepted ('group accept {g.N}' / 'group decline {g.N}')");
+            if (notify) Notify("group_invite", g.Inviter ?? g.FromName, im.FromAgentID, $"group invite #{g.N}: {GroupInviteLine(g)} (pending; never auto-accepted). Text: {g.Message}", null); // urgent webhook
+            if (notify) _ = Task.Run(async () =>
+            {   // authoritative name + fee from the group profile
+                var p = await FetchGroupProfile(g.GroupId);
+                if (p == null) return;
+                lock (groupInvites) { g.GroupName = p.Value.Name; if (g.Fee == null || p.Value.MembershipFee > g.Fee) g.Fee = p.Value.MembershipFee; }
+                Log("offer", $"group invite #{g.N}: profile '{p.Value.Name}' fee L${p.Value.MembershipFee} open_enrollment={p.Value.OpenEnrollment}");
+            });
+        }
+        catch (Exception ex) { Log("offer", "group invite record failed: " + ex.GetBaseException().Message); }
+    }
+
+    static bool GroupInviterAllowed(GroupInvite g) => g.Inviter != null && (LureAllowed(g.Inviter) || LureAllowed(g.Inviter + " Resident"));
+
+    static string GroupInviteLine(GroupInvite g) =>
+        $"#{g.N} group '{g.GroupName ?? "?"}' ({g.GroupId}) from {(g.Inviter ?? "?")}" +
+        $" role {(g.RoleId == UUID.Zero ? "Everyone" : g.RoleId.ToString())} fee {(g.Fee == null ? "unknown" : "L$" + g.Fee)} session {g.Session}" +
+        $" at {g.At:HH:mm} PT [{g.State}]{(GroupInviterAllowed(g) ? " (inviter allow-listed)" : " (inviter NOT allow-listed: accept needs 'confirm' = David's OK)")}";
+
+    // pure (selftest-covered): null = may accept, else the refusal text
+    static string GroupAcceptBlock(GroupInvite g, bool confirm, bool force)
+    {
+        if (g.State != "pending") return $"invite #{g.N} is already {g.State}";
+        if (!GroupInviterAllowed(g) && !confirm)
+            return $"refused: inviter '{g.Inviter ?? "unknown"}' is not David Nightingale / SophieJeanneLaDouce. Accept only with David's OK (e.g. the Peronaut rental group): 'group accept {g.N} confirm'";
+        if ((g.Fee ?? -1) != 0 && !force)
+            return $"refused: joining '{g.GroupName ?? g.GroupId.ToString()}' costs {(g.Fee == null ? "an UNKNOWN fee" : "L$" + g.Fee)}; L$ only with David's OK: add 'force'";
+        return null;
+    }
+
+    static GroupInvite FindGroupInvite(string key)
+    {
+        lock (groupInvites)
+        {
+            if (int.TryParse(key, out var n)) return groupInvites.FirstOrDefault(x => x.N == n);
+            var p = groupInvites.Where(x => x.State == "pending").ToList();
+            return p.LastOrDefault(x => string.Equals(x.GroupName, key, StringComparison.OrdinalIgnoreCase))
+                ?? (p.Count(x => x.GroupName?.Contains(key, StringComparison.OrdinalIgnoreCase) == true) == 1 ? p.First(x => x.GroupName?.Contains(key, StringComparison.OrdinalIgnoreCase) == true) : null);
+        }
+    }
+
+    static string GroupInvitesText(bool all = false)
+    {
+        List<GroupInvite> l; lock (groupInvites) l = groupInvites.Where(x => all || x.State == "pending").ToList();
+        var sb = new StringBuilder($"{l.Count} {(all ? "group invites this session" : "pending group invites")}\n");
+        foreach (var g in l) sb.AppendLine("  " + GroupInviteLine(g));
+        return sb.ToString().TrimEnd();
+    }
+
+    static async Task<string> GroupInviteRespondCmd(string[] a, bool accept)
+    {
+        var words = a.Skip(1).ToList();
+        bool confirm = words.RemoveAll(x => x.Equals("confirm", StringComparison.OrdinalIgnoreCase)) > 0;
+        bool force = words.RemoveAll(x => x.Equals("force", StringComparison.OrdinalIgnoreCase)) > 0;
+        var key = string.Join(' ', words).Trim().Trim('"');
+        if (key.Length == 0) return $"usage: group {(accept ? "accept" : "decline")} <n|group name>{(accept ? " [confirm] [force]" : "")}";
+        var g = FindGroupInvite(key);
+        if (g == null) return $"no pending group invite '{key}' (see 'group invites')";
+        if (!accept)
+        {
+            if (g.State != "pending") return $"invite #{g.N} is already {g.State}";
+            client.Self.GroupInviteRespond(g.GroupId, g.Session, false); g.State = "declined";
+            Log("group", $"declined group invite #{g.N} '{g.GroupName}' ({g.GroupId})");
+            return $"declined group invite #{g.N} '{g.GroupName}' ({g.GroupId})";
+        }
+        var block = GroupAcceptBlock(g, confirm, force);
+        if (block != null) { Log("group", $"accept #{g.N} REFUSED: {block}"); return block; }
+        var bal0 = await BalanceAsync();
+        Log("group", $"accepting group invite #{g.N} '{g.GroupName}' ({g.GroupId}) fee L${g.Fee} confirm={confirm} force={force} balance_before={bal0?.ToString() ?? "?"}");
+        client.Self.GroupInviteRespond(g.GroupId, g.Session, true); g.State = "accepted";
+        await Task.Delay(3000);
+        var (after, fresh) = await FetchCurrentGroups();
+        var bal1 = await BalanceAsync();
+        bool member = after.ContainsKey(g.GroupId);
+        var res = $"accepted group invite #{g.N} '{g.GroupName}' ({g.GroupId}); member now: {(member ? "yes" : "not yet")}{(fresh ? "" : " (group list not refreshed)")}" +
+                  (member && after.TryGetValue(g.GroupId, out var gg) ? $", title '{gg.MemberTitle}'" : "") + $"; balance L${bal0?.ToString() ?? "?"} -> L${bal1?.ToString() ?? "?"}";
+        Log("group", res);
+        return res;
+    }
+
+    // offline logic test: synthetic invites are parsed, listed and refused by the policy checks; nothing is sent to SL
+    static string GroupInvitesSelfTest()
+    {
+        var sb = new StringBuilder(); int pass = 0, fail = 0; void C(bool ok, string w) { if (ok) pass++; else fail++; sb.AppendLine($"{(ok ? "PASS" : "FAIL")} {w}"); }
+        byte[] Bucket(int fee, UUID role) { var b = new byte[20]; b[0] = (byte)(fee >> 24); b[1] = (byte)(fee >> 16); b[2] = (byte)(fee >> 8); b[3] = (byte)fee; Buffer.BlockCopy(role.GetBytes(), 0, b, 4, 16); return b; }
+        InstantMessage Im(UUID grp, string name, UUID sess, string msg, byte[] b) => new InstantMessage { Dialog = InstantMessageDialog.GroupInvitation, FromAgentID = grp, FromAgentName = name, IMSessionID = sess, Message = msg, BinaryBucket = b, GroupIM = true };
+        UUID g1 = UUID.Random(), g2 = UUID.Random(), g3 = UUID.Random(), s1 = UUID.Random(), s2 = UUID.Random(), s3 = UUID.Random(), role = UUID.Random();
+        var a = ParseGroupInvite(Im(g1, "David Nightingale", s1, "David Nightingale has invited you to join a group: Peronaut Residents. There is no fee.", Bucket(0, role)), false);
+        C(a.Inviter == "David Nightingale" && a.Fee == 0 && a.RoleId == role && a.GroupId == g1 && a.Session == s1, $"parse: inviter '{a.Inviter}', fee L${a.Fee}, role, group id, session");
+        var b = ParseGroupInvite(Im(g2, "Selftest Stranger", s2, "Selftest Stranger has invited you to join Fancy Club.", Bucket(250, UUID.Zero)), false);
+        C(b.Fee == 250 && b.RoleId == UUID.Zero && b.GroupName == "Fancy Club", $"parse: fee L$250 (big-endian bucket), Everyone role, group name '{b.GroupName}'");
+        var c = ParseGroupInvite(Im(g3, "David Nightingale", s3, "David Nightingale has invited you to join Paid Group.", Array.Empty<byte>()), false);
+        C(c.Fee == null, "parse: no bucket -> fee unknown");
+        a.N = 9001; b.N = 9002; c.N = 9003;
+        C(GroupAcceptBlock(a, false, false) == null, "David's L$0 invite: may accept");
+        C(GroupAcceptBlock(b, false, true)?.StartsWith("refused: inviter") == true, "stranger's invite: refused without 'confirm'");
+        C(GroupAcceptBlock(b, true, false)?.Contains("L$250") == true, "L$250 fee: refused without 'force' even with 'confirm'");
+        C(GroupAcceptBlock(b, true, true) == null, "stranger + fee with 'confirm force': allowed");
+        C(GroupAcceptBlock(c, false, false)?.Contains("UNKNOWN") == true, "unknown fee: refused without 'force'");
+        // record + list + lookup + dedupe (no webhook, no profile fetch)
+        RecordGroupInvite(Im(g2, "Selftest Stranger", s2, "Selftest Stranger has invited you to join Fancy Club.", Bucket(250, UUID.Zero)), false, false);
+        RecordGroupInvite(Im(g2, "Selftest Stranger", s2, "Selftest Stranger has invited you to join Fancy Club.", Bucket(250, UUID.Zero)), true, false); // offline re-delivery
+        int mine; lock (groupInvites) mine = groupInvites.Count(x => x.Session == s2);
+        C(mine == 1, $"duplicate (offline re-delivery) dropped ({mine})");
+        C(GroupInvitesText().Contains("Fancy Club") && FindGroupInvite("fancy club")?.Session == s2, "'group invites' lists it; found by name");
+        lock (groupInvites) groupInvites.RemoveAll(x => x.Session == s2);
+        return $"group invites selftest: {pass} PASS, {fail} FAIL (synthetic invites removed; nothing sent)\n" + sb.ToString().TrimEnd();
+    }
+
     static async Task<(Dictionary<UUID, Group> groups, bool fresh)> FetchCurrentGroups(int timeoutMs = 10000)
     {
         var tcs = new TaskCompletionSource<Dictionary<UUID, Group>>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -65,9 +220,12 @@ public static partial class Program
             var sb = new StringBuilder($"current groups ({groups.Count}; {(fresh ? "fresh server reply" : currentGroupsAt == DateTime.MinValue ? "no reply, no cache" : $"no reply, cached {currentGroupsAt:HH:mm:ss}")}):\n");
             foreach (var g in groups.Values.OrderBy(g => g.Name))
                 sb.AppendLine($"  {g.ID} '{g.Name}' title='{g.MemberTitle}' accept_notices={g.AcceptNotices} list_in_profile={g.ListInProfile} contribution={g.Contribution}");
-            sb.Append($"active group: {(client.Self.ActiveGroup == UUID.Zero ? "none" : client.Self.ActiveGroup.ToString())}");
+            var act = client.Self.ActiveGroup;
+            sb.Append($"active group: {(act == UUID.Zero ? "none" : groups.TryGetValue(act, out var ag) ? $"'{ag.Name}' ({act}), active title '{ag.MemberTitle}'" : act.ToString())}");
             return sb.ToString();
         }
+        if (sub == "invites") return a.Length > 1 && a[1] == "selftest" ? GroupInvitesSelfTest() : GroupInvitesText(a.Length > 1 && a[1] == "all");
+        if (sub == "accept" || sub == "decline") return await GroupInviteRespondCmd(a, sub == "accept");
         if ((sub == "info" || sub == "join") && a.Length >= 2 && UUID.TryParse(a[1], out var id))
         {
             var g = await FetchGroupProfile(id);
@@ -102,7 +260,7 @@ public static partial class Program
             return $"join '{gp.Name}' ({id}): JoinGroupReply={(ok.HasValue ? (ok.Value ? "SUCCESS" : "FAILURE") : "no reply within 20 s")}; " +
                    $"in current groups afterwards: {(member ? "yes" : "no")}{(fresh ? "" : " (group list not refreshed)")}; balance L${bal0?.ToString() ?? "?"} -> L${bal1?.ToString() ?? "?"}";
         }
-        return "usage: group list | group info <group uuid> | group join <group uuid>";
+        return "usage: group list | group info <group uuid> | group join <group uuid> | group invites [all|selftest] | group accept <n|group name> [confirm] [force] | group decline <n|group name>";
     }
 
     // ---- picks ----------------------------------------------------------

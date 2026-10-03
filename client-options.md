@@ -10,10 +10,10 @@ Leak check: /workspace/secondlife/scripts/leak-count.py found the password 0 tim
 
 | | Firestorm 7.2.4 | LibreMetaverse: my galatay-text daemon | LibreMetaverse: galatay-mcp (MCP server) | node-metaverse 0.8.21 | Radegast Veles 3.0.0 | LM TestClient | Corrade |
 |---|---|---|---|---|---|---|---|
-| Real login tested | yes (earlier) | yes, 2x | yes, 3x | yes, 2x | no (GUI password entry left to David) | no (see below) | not installed |
-| Login time | ~17 s to STATE_STARTED | 4.6 s / 3.2 s | 3.5 / 2.7 / 3.5 s | 2.7-2.8 s (sim 3.3 s) | - | - | - |
-| RAM | ~2.1 GB viewer + ~3.6 GB plugins/CEF | 100-170 MB RSS | 115-160 MB RSS | 100-150 MB RSS | 240 MB at login screen | - | - |
-| CPU | 260-280 % (~6-7 fps) | ~1 % idle (0.12 s CPU per 10 s) | 3.3-3.6 s CPU per ~55 s session incl. login | 3.7 s CPU per 50 s session | 6 % at login screen | - | - |
+| Real login tested | yes (earlier) | yes, 2x | yes, 3x | yes, 2x | yes, 2x (2026-10-02) | no (see below) | not installed |
+| Login time | ~17 s to STATE_STARTED | 4.6 s / 3.2 s | 3.5 / 2.7 / 3.5 s | 2.7-2.8 s (sim 3.3 s) | ~2 s after clicking Login | - | - |
+| RAM | ~2.1 GB viewer + ~3.6 GB plugins/CEF | 100-170 MB RSS | 115-160 MB RSS | 100-150 MB RSS | 400-460 MB logged in (5-6 GB with Scene Viewer) | - | - |
+| CPU | 260-280 % (~6-7 fps) | ~1 % idle (0.12 s CPU per 10 s) | 3.3-3.6 s CPU per ~55 s session incl. login | 3.7 s CPU per 50 s session | 14-22 % logged in | - | - |
 | Walk | GUI | yes (autopilot; `walk 3` and moveto OK; stopped once at a cliff) | yes (walk 2 m OK) | only raw control flags: 2.2 m once, 0 m once; no autopilot API | GUI | moveto/follow cmds | yes |
 | Sit by UUID | failing silently via GUI | **yes** (from 23.6 m away) | **yes** | **yes** | GUI | `siton` | yes |
 | IM send | yes | yes | yes | yes | yes | yes | yes |
@@ -53,11 +53,30 @@ Leak check: /workspace/secondlife/scripts/leak-count.py found the password 0 tim
 
 ## 4. Radegast
 - Legacy 2.x (tags up to v2.53) is WinForms and **Windows only**.
-- **Radegast Veles 3.0.0** (Avalonia, net10) is the cross-platform rewrite. Source only; last commit 2026-09-07. It builds here in 19 s at /home/box/viewers/textclient/radegast-src.
-- To run it I had to replace bin/Veles/Release/runtimes/linux-x64/native/libSkiaSharp.so with the fontconfig-enabled SkiaSharp.NativeAssets.Linux 4.151.1 build (copy kept in radegast-src/local-fixes/). Without that it crashed at startup: first "native libSkiaSharp 119 incompatible", then "Default font family name can't be null".
-- After the fix it reached the login window on a throwaway Xvfb (screenshot: clienttests/radegast-veles-start.png). No login was attempted: the password would have to be typed into the GUI, and I found no safe CLI or auto-login path. **David should test the GUI.**
-- Launcher: /home/box/viewers/run-radegast.sh (needs DISPLAY).
-- Good middle ground for a human (2D chat, inventory, and maps UI), but not scriptable from a shell.
+- **Radegast Veles 3.0.0** (Avalonia, net10) is the cross-platform rewrite. Source only. Rebuilt 2026-10-02 PT at upstream d1398eb (PR #201: login and crash fixes) in ~27 s at /home/box/viewers/textclient/radegast-src.
+- SkiaSharp fix: the stock linux-x64 libSkiaSharp.so crashes ("Default font family name can't be null"). The fontconfig-enabled 4.151.1 build in radegast-src/local-fixes/ replaces it. A rebuild overwrites it; `textclient/run-radegast.sh` re-applies it.
+- **Real login tested 2026-10-02 17:36 and 17:48 PT** (GUI, password typed into the masked field, Start Location = Last Location, "Remember credentials" off). Login took ~2 s to region.
+- Resources: ~250 MB at the login screen; 400-460 MB RSS and 14-22 % CPU logged in (2D UI only). Opening the Scene Viewer pushed it to 5-6 GB RSS and ~300 % CPU while still rendering black (llvmpipe). Firestorm was 2.5 GB and ~440 % at the same spot.
+- Works:
+  - chat/IM receive with logs (`~/.config/RadegastVeles/Galatay Resident/*.txt`), toasts, profile view
+  - group list, group chat session with participants, group notice archive
+  - friends list with rights, offer/request teleport buttons (not used)
+  - inventory tree, search, Received Items, rename (context menu > Rename, F2)
+  - Create > New Landmark (made "BC Sky Platform", Naberrie 118,137,253)
+  - landmark Teleport (works; inside the BC parcel SL reroutes to the landing point, 107,150,53)
+  - Objects list with radius and search, Touch / Sit On / Walk To (sit-teleporters work)
+  - Appearance tab: worn list, per-item detach (X); wear by double-click in inventory; hover height; rebake
+  - minimap and status bar (region/pos/parcel/L$)
+- Doesn't work / missing:
+  - HUD Viewer and Scene Viewer need Vulkan GPU interop ("Compositor doesn't support GPU interop"). No HUD button clicks (Objects > Touch only hits a root prim) and no in-world snapshots.
+  - no shape/appearance slider editor (the wearable panel shows only textures)
+  - no sound (fmod not shipped)
+  - inventory search-result right-click menu acts on the previously selected node (use double-click or the tree)
+- Gotchas:
+  - Closing the main window (title X / Alt+F4 / File > Hide Window) hides it to a tray icon. There's no tray host here, so the window can't be restored and the only way out is killing the process (no logout). Always use File > Logout, then Exit.
+  - It logs the Firestorm LSL bridge owner-say, including bridgeAuth, unmasked in chat.txt.
+  - Not scriptable from a shell: everything is clicks on an X display.
+- Launcher: `textclient/run-radegast.sh` (deployed as /home/box/viewers/run-radegast.sh; needs DISPLAY).
 
 ## 5. Corrade (grimore.org, Wizardry and Steamworks)
 - A mature, closed-source freeware bot. It is controlled from LSL/HTTP/MQTT with a group+password scheme and has a Docker image. Its releases are "infrequent" per its page (API pages last modified 2025-10).

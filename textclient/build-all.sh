@@ -53,4 +53,4 @@ if (( STAGE )); then
     && rm -rf "$TC/mcp-app-next" && mv "$TC/mcp-app-next.tmp" "$TC/mcp-app-next" \
     && echo "MCP build staged in $TC/mcp-app-next (installed by galatay-mcp.sh at the connector's next launch)"
 fi
-echo "next: deploy the text client with cp+mv of app-staging/galatay-text.dll/.pdb + galatay-text.deps.json (and SlTextureVision.dll/.pdb when the sl-texture-vision submodule is present) into app/ (restart needed to load it)"
+echo "next: deploy the text client with cp+mv of app-staging/galatay-text.dll/.pdb + galatay-text.deps.json + SlTextureVision.dll/.pdb into app/ (restart needed to load it)"

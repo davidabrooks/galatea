@@ -1,8 +1,8 @@
 # SL Texture Vision
 
-**Proprietary. Copyright (c) 2026 David Brooks. All rights reserved.** (See [LICENSE](LICENSE).)
+Part of [galatea](https://github.com/davidabrooks/galatea) (`textclient/SlTextureVision`, CLI in `textclient/SlTextureVision.Cli`), under the same licence terms as the rest of that repository. It used to be a separate private repo (`davidabrooks/sl-texture-vision`, now retired); its history was imported here.
 
-The first product in a family of **AI-agent helpers for Second Life**: small, separately licensed libraries that fill
+The first product in a family of **AI-agent helpers for Second Life**: small libraries that fill
 the gaps headless clients have compared with a full graphical viewer.
 
 Text-only SL clients (LibreMetaverse bots, MCP connectors, AI agents) cannot *see* anything. Yet most of what matters
@@ -23,8 +23,8 @@ normal texture service. It never buys, pays, touches or edits anything.
 
 ## Requirements
 
-* .NET 8 or 10
-* A logged-in LibreMetaverse `GridClient` (LibreMetaverse 3.1.5+ from NuGet by default)
+* .NET 10
+* A logged-in LibreMetaverse `GridClient`. The project references `../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj`, the same LibreMetaverse source checkout the galatea text client builds against, so a host loads only one LibreMetaverse assembly.
 
 ## Library usage
 
@@ -48,32 +48,12 @@ var (folder, looks) = await tv.ScanAsync("vendor", radius: 20, maxObjects: 12);
 var (png, w, h, comps) = TextureVision.DecodeJ2cToPng(File.ReadAllBytes("x.j2c"));
 ```
 
-### Using it in a client that builds LibreMetaverse from source
+### Using it in a client
 
-To avoid two copies of LibreMetaverse, set `LibreMetaverseProject` to your LibreMetaverse.csproj in a
-`Directory.Build.props` *above* the folder this repo is checked out in (it must be visible to NuGet restore too, so
-`AdditionalProperties` on the ProjectReference is not enough):
+Add a project reference, as the galatea text client does (`textclient/galatay-text/GalatayText.csproj`):
 
 ```xml
-<!-- host/Directory.Build.props, with this repo as a submodule at host/sl-texture-vision -->
-<Project>
-  <PropertyGroup>
-    <LibreMetaverseProject>$(MSBuildThisFileDirectory)src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj</LibreMetaverseProject>
-  </PropertyGroup>
-</Project>
-```
-
-Then reference `sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj` normally. To keep the host buildable for
-people without access to this private repo, make the reference conditional on the file existing and guard the calling
-code with a define, e.g.:
-
-```xml
-<PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj')">
-  <DefineConstants>$(DefineConstants);TEXTURE_VISION</DefineConstants>
-</PropertyGroup>
-<ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj')">
-  <ProjectReference Include="../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj" />
-</ItemGroup>
+<ProjectReference Include="../SlTextureVision/SlTextureVision.csproj" />
 ```
 
 When deploying a host by copying files, ship `SlTextureVision.dll` **and** the host's updated `*.deps.json`.
@@ -94,7 +74,7 @@ account already in-world (e.g. an AI avatar's main client) embed the library in 
 ## Build
 
 ```
-dotnet build -c Release
+dotnet build -c Release ../SlTextureVision.Cli/SlTextureVision.Cli.csproj   # library + CLI
 ```
 
 ## Third-party components

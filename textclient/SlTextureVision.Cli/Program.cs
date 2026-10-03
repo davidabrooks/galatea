@@ -1,4 +1,4 @@
-// Copyright (c) 2026 David Brooks. All rights reserved. Proprietary; see LICENSE.
+// SL Texture Vision - part of galatea (https://github.com/davidabrooks/galatea). Same licence terms as the rest of the galatea repository.
 // sl-texture-vision CLI
 //   decode <in.j2c> <out.png>                         offline JPEG 2000 -> PNG
 //   texture <uuid> [outdir]                           log in, save one texture

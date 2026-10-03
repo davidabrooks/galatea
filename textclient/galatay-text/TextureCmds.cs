@@ -1,7 +1,5 @@
 // TextureCmds.cs (2026-10-02, David: let me "see" vendor boards / product photos without Firestorm)
-// Thin wrapper over the separate, proprietary SL Texture Vision library (private repo davidabrooks/sl-texture-vision,
-// git submodule at textclient/sl-texture-vision). Without the submodule the client still builds; these commands then
-// just report that texture vision is not installed.
+// Thin wrapper over the SL Texture Vision library in textclient/SlTextureVision (project reference; also usable on its own).
 //   texture save <uuid>                         download one texture -> /workspace/secondlife/textures/<uuid>.png
 //   faces <object name|uuid> [face=<n>] [r=<m>] list the linkset's faces + texture UUIDs and save the non-blank ones as PNG
 //   vendor look <name filter> [radius]          scan nearby objects whose name/hover text matches (default 20 m), save their
@@ -10,9 +8,7 @@
 using System.Globalization;
 using System.Text;
 using LibreMetaverse;
-#if TEXTURE_VISION
 using SlTextureVision;
-#endif
 
 namespace GalatayText;
 
@@ -20,11 +16,8 @@ public static partial class Program
 {
     const string TextureDir = "/workspace/secondlife/textures";
 
-#if TEXTURE_VISION
-    // Holder class keeps every SlTextureVision type out of Program's own fields, so a deploy that forgot SlTextureVision.dll
-    // only breaks these commands (on first use), never the client's startup.
-    static class TexVision { internal static TextureVision Instance; }
-    static TextureVision TV => TexVision.Instance ??= new TextureVision(client, new TextureVisionOptions { OutputDirectory = TextureDir });
+    static TextureVision texVision;
+    static TextureVision TV => texVision ??= new TextureVision(client, new TextureVisionOptions { OutputDirectory = TextureDir });
 
     static async Task<string> TextureCmds(string cmd, string[] a, string rest)
     {
@@ -87,8 +80,4 @@ public static partial class Program
         }
         return sb.ToString();
     }
-#else
-    static Task<string> TextureCmds(string cmd, string[] a, string rest) =>
-        Task.FromResult("texture vision not installed: this build has no sl-texture-vision submodule (private, proprietary add-on)");
-#endif
 }

@@ -1,12 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!--
-    SL Texture Vision: lets headless / text-only Second Life clients and AI agents "see" textures.
-    LibreMetaverse comes from NuGet by default. A host that already builds LibreMetaverse from source
-    can pass -p:LibreMetaverseProject=/path/to/LibreMetaverse.csproj (or set the property in its own csproj
-    before the ProjectReference) so only ONE LibreMetaverse assembly ends up in the app.
-  -->
+  <!-- SL Texture Vision: lets headless / text-only Second Life clients and AI agents "see" textures (fetch by UUID,
+       JPEG 2000 -> PNG, prim faces, vendor scans), no GPU. Builds against the same LibreMetaverse source as the text client
+       (textclient/src-libremetaverse), so only one LibreMetaverse assembly is loaded. -->
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -14,19 +11,11 @@
     <AssemblyName>SlTextureVision</AssemblyName>
     <Version>0.1.0</Version>
     <Authors>David Brooks</Authors>
-    <Copyright>Copyright (c) 2026 David Brooks. All rights reserved.</Copyright>
-    <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <Description>Headless texture vision for Second Life agents: fetch textures by UUID, read prim faces and vendor boards, decode JPEG 2000 to PNG with no GPU.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591;CS0618</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <None Include="../../LICENSE" Pack="true" PackagePath="" />
-  </ItemGroup>
-  <ItemGroup Condition="'$(LibreMetaverseProject)' == ''">
-    <PackageReference Include="LibreMetaverse" Version="3.1.5" />
-  </ItemGroup>
-  <ItemGroup Condition="'$(LibreMetaverseProject)' != ''">
-    <ProjectReference Include="$(LibreMetaverseProject)" />
+    <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
   </ItemGroup>
 </Project>

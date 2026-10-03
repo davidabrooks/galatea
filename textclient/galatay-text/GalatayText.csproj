@@ -17,12 +17,7 @@
     <Compile Include="../galatay-mcp/Webhook.cs" Link="Webhook.cs" />
     <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
   </ItemGroup>
-  <!-- Optional proprietary add-on: SL Texture Vision (private repo davidabrooks/sl-texture-vision, git submodule at
-       textclient/sl-texture-vision). Present -> 'texture save', 'faces', 'vendor look' work; absent -> they report "not installed". -->
-  <PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj')">
-    <DefineConstants>$(DefineConstants);TEXTURE_VISION</DefineConstants>
-  </PropertyGroup>
-  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj')">
-    <ProjectReference Include="../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj" /> <!-- LibreMetaverseProject: see ../Directory.Build.props -->
+  <ItemGroup>
+    <ProjectReference Include="../SlTextureVision/SlTextureVision.csproj" /> <!-- texture save / faces / vendor look (TextureCmds.cs) -->
   </ItemGroup>
 </Project>

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 David Brooks. All rights reserved. Proprietary; see LICENSE.
+// SL Texture Vision - part of galatea (https://github.com/davidabrooks/galatea). Same licence terms as the rest of the galatea repository.
 using System.IO.Compression;
 using LibreMetaverse.Imaging;
 

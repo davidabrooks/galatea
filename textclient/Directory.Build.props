@@ -1,8 +1,0 @@
-<Project>
-  <!-- Applies to galatay-text, galatay-mcp and the optional sl-texture-vision submodule (src-libremetaverse has its own
-       Directory.Build.props, so it is not affected). Makes SL Texture Vision build against OUR LibreMetaverse source
-       instead of the NuGet package, so only one LibreMetaverse assembly is loaded. Evaluated by restore too. -->
-  <PropertyGroup>
-    <LibreMetaverseProject>$(MSBuildThisFileDirectory)src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj</LibreMetaverseProject>
-  </PropertyGroup>
-</Project>

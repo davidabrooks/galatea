@@ -352,6 +352,7 @@ public static partial class Program
                 try { if (e.Position != Vector3.Zero) dist = Math.Round(Vector3.Distance(e.Position, client.Self.SimPosition), 1); } catch { }
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist);
                 WanderChatIn(e.SourceID, e.FromName, e.Position, false);
+                AutoFollowFromDavid(e.SourceID, e.Message); // "stop following" / "follow me" (AutoFollow.cs)
             }
         };
         client.Self.IM += (s, e) => HandleIm(e.IM);
@@ -389,6 +390,7 @@ public static partial class Program
                         }
                         catch { }
                         Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist);
+                        if (!offline) AutoFollowFromDavid(im.FromAgentID, im.Message); // AutoFollow.cs
                         if (ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true); // old messages: no wander pause/approach/reply
                     }
                     return;
@@ -481,10 +483,12 @@ public static partial class Program
                 }
             }
             catch { }
+            try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
             try { await Task.Delay(1000, cts.Token); } catch { }
         }
     }
 
+    static readonly TimeSpan CmdReplyCap = TimeSpan.FromSeconds(double.TryParse(Env("GT_CMD_REPLY_CAP_S", "85"), NumberStyles.Float, CultureInfo.InvariantCulture, out var crc) && crc >= 5 ? crc : 85);
     // ---- socket server ------------------------------------------------
     static async Task SocketServer()
     {
@@ -510,8 +514,20 @@ public static partial class Program
                         var line = await rd.ReadLineAsync();
                         if (line == null) return;
                         string resp;
-                        try { resp = await Exec(line.Trim()); }
-                        catch (Exception ex) { resp = "error: " + ex.Message; }
+                        // 2026-10-03: never keep a caller waiting forever (inv find hung for an hour): after CmdReplyCap the caller
+                        // gets a "still running" reply; the command continues and its late result is logged as [cmd-late].
+                        var cmdLine = line.Trim();
+                        var exec = Task.Run(() => Exec(cmdLine));
+                        if (await Task.WhenAny(exec, Task.Delay(CmdReplyCap)) == exec)
+                        {
+                            try { resp = await exec; }
+                            catch (Exception ex) { resp = "error: " + ex.Message; }
+                        }
+                        else
+                        {
+                            resp = $"(no result after {CmdReplyCap.TotalSeconds:F0} s: '{(cmdLine.Length > 60 ? cmdLine[..60] + "…" : cmdLine)}' keeps running in the background; its result will be logged as [cmd-late])";
+                            _ = exec.ContinueWith(t => Log("cmd-late", $"{(cmdLine.Length > 60 ? cmdLine[..60] + "…" : cmdLine)} -> {(t.IsFaulted ? "error: " + t.Exception?.GetBaseException().Message : (t.Result ?? "").Replace("\n", " | ")[..Math.Min(400, (t.Result ?? "").Length)])}"), TaskScheduler.Default);
+                        }
                         await wr.WriteAsync(resp.EndsWith('\n') ? resp : resp + "\n");
                     }
                     catch { }
@@ -1449,6 +1465,8 @@ public static partial class Program
   moveto <x> <y> <z>  (goto is an alias)  | walk <meters> | turn <degrees> | face <x y z | avatar name> | stop
   teleport [force] <region name> <x> <y> <z> | home [force]  (refused outside Naberrie while the robe is worn)
   follow <First Last> | follow off
+  autofollow on|off|status|selftest   follow David automatically when he is within 20 m in the same region (default on, persisted); 'follow off' snoozes it 10 min
+  door [name filter|uuid]     touch the nearest door/gate/entrance prim (incl. house links) within 10 m; reports what moved
   accept | decline            pending teleport offer (allow-list only)
   dialog <button label>       answer the last script dialog (e.g. AVsitter pose menu)
   touch <object uuid>         touch an object (seat/HUD) so it opens its own menu (NOT the AO HUD: a touch toggles it off)
@@ -1490,7 +1508,7 @@ public static partial class Program
   texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/ (needs the sl-texture-vision add-on)
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG
   vendor look <name filter> [radius]   nearby objects matching name/hover text (default 20 m): face PNGs + index.json in textures/scan-*/
-  inv find <text>[|text2]     READ-ONLY recursive inventory search (path, type, item id, desc, last attach point)
+  inv find <text>[|text2]     READ-ONLY recursive inventory search (path, type, item id, desc, last attach point) (max 30 s per call; PARTIAL results resume on the next call)
   inv ls <folder uuid>        READ-ONLY direct contents of one folder
   inv read <notecard item>    READ-ONLY print the text of one of her notecards
   wear add|remove <item> [pt] ADD an object/clothing layer (never replace) + COF link / take it off + remove only its COF link(s); body parts refused
@@ -1521,7 +1539,7 @@ public static partial class Program
                 var sim = client.Network.CurrentSim;
                 using var proc = Process.GetCurrentProcess();
                 return $"connected={client.Network.Connected} region={sim?.Name} pos={Fmt(client.Self.SimPosition)} " +
-                       $"sitting_on={(client.Self.SittingOn == 0 ? "-" : SeatName(client.Self.SittingOn))} follow={(followId == UUID.Zero ? "-" : followName)} " +
+                       $"sitting_on={(client.Self.SittingOn == 0 ? "-" : SeatName(client.Self.SittingOn))} follow={(followId == UUID.Zero ? "-" : followName)}{(afEngaged ? "(auto)" : "")} autofollow={(AutoFollowOn ? (DateTime.Now < afSnoozeUntil ? "snoozed" : "on") : "off")} " +
                        $"autolure={(autoLure ? "on" : "off")} pending_lure={(pendingLure?.name ?? "-")} uptime={(DateTime.Now - started):hh\\:mm\\:ss} " +
                        $"rss_mb={proc.WorkingSet64 / 1048576} objects={sim?.ObjectsPrimitives.Count} avatars={sim?.ObjectsAvatars.Count} quiet={QuietFlag()} ao={AoFlag()}";
             }
@@ -1624,6 +1642,8 @@ public static partial class Program
             case "friend": case "friends": return await FriendCmd(a);
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
             case "sethome": return await SetHomeCmd();
+            case "autofollow": return AutoFollowCmd(a);
+            case "door": case "doors": return await DoorTouch(rest);
             case "parcel": return await ParcelCmd(a);
             case "texture" when a.Length > 0 && a[0] == "save": case "faces": case "vendor" when a.Length > 0 && a[0] == "look": return await TextureCmds(cmd, a, rest);
             case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));
@@ -1734,7 +1754,7 @@ public static partial class Program
             case "follow":
             {
                 if (rest.Length == 0 || rest.Equals("off", StringComparison.OrdinalIgnoreCase))
-                { followId = UUID.Zero; client.Self.AutoPilotCancel(); return "follow off"; }
+                { AutoFollowOnFollowOff("explicit 'follow off'"); followId = UUID.Zero; client.Self.AutoPilotCancel(); return "follow off"; }
                 var av = Avatars().FirstOrDefault(t => t.av.Name.Equals(rest, StringComparison.OrdinalIgnoreCase) ||
                                                         t.av.Name.Equals(rest + " Resident", StringComparison.OrdinalIgnoreCase));
                 if (av.av == null) return $"'{rest}' is not in view (must be in the same region and within draw distance)";

@@ -38,20 +38,28 @@ supervising() { [[ -f "$SUPF" ]] && kill -0 "$(cat "$SUPF")" 2>/dev/null && grep
 running() { [[ -f "$PIDF" ]] && kill -0 "$(cat "$PIDF")" 2>/dev/null && [[ "$(ps -o comm= -p "$(cat "$PIDF")" 2>/dev/null)" == galatay-text* ]]; }
 
 send() {  # send one command line over the unix socket, print the reply
-  python3 - "$GT_SOCK" "$1" <<'PY'
-import socket, sys
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(90)
+  # 2026-10-03: hard OVERALL deadline (GT_CMD_TIMEOUT_S, default 100 s; the client itself answers "still running" after 85 s),
+  # plus coreutils timeout as a last resort, so a stuck command can never freeze the caller's shell.
+  local lim="${GT_CMD_TIMEOUT_S:-100}"
+  timeout -k 5 "$(( lim + 10 ))" python3 - "$GT_SOCK" "$1" "$lim" <<'PY'
+import socket, sys, time
+deadline = time.monotonic() + float(sys.argv[3])
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(10)
 try: s.connect(sys.argv[1])
 except OSError as e: print("client not reachable:", e); sys.exit(3)
 s.sendall(sys.argv[2].replace("\n", " ").encode() + b"\n")
 buf = b""
 while True:
+    left = deadline - time.monotonic()
+    if left <= 0: buf += b"\n(timeout: no complete reply within %d s; the command may still be running in the client)\n" % int(float(sys.argv[3])); break
+    s.settimeout(left)
     try: d = s.recv(65536)
-    except socket.timeout: print("(timeout waiting for reply)"); break
+    except socket.timeout: continue
     if not d: break
     buf += d
 sys.stdout.write(buf.decode("utf-8", "replace"))
 PY
+  local rc=$?; (( rc == 124 || rc == 137 )) && echo "(timeout: reply helper killed after $(( lim + 10 )) s)"; return $rc
 }
 
 case "${1:-}" in

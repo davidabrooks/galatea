@@ -75,6 +75,7 @@ public static partial class Program
             var sb = new StringBuilder($"{l.Count} {(all ? "offers this session" : "pending offers")} (inventory + friendship; recorded since this client started, incl. offline ones fetched at login)\n");
             foreach (var o in l) sb.AppendLine("  " + OfferLine(o));
             if (fr.Count > 0) sb.AppendLine($"  library friend-request table: {string.Join(", ", fr)}");
+            sb.AppendLine(GroupInvitesText(all).Replace("\n  ", "\n    ").Insert(0, "  ")); // group invitations (GroupPicks.cs): 'group accept|decline <n>'
             return sb.ToString().TrimEnd();
         }
         if (a[0] == "selftest") return await OffersSelfTest();

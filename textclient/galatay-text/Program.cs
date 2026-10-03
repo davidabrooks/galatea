@@ -420,7 +420,7 @@ public static partial class Program
                 case InstantMessageDialog.TaskInventoryOffered:
                     if (!OfferIn(im)) RecordOffer(im, offline); return; // WearOps.cs: logs it; accepts ONLY an armed 'offer allow' from her own named object; else pending (NewCmds.cs 'offers')
                 case InstantMessageDialog.GroupInvitation:
-                    Log("offer", $"group invitation from {im.FromAgentName}{offTag}: IGNORED"); return;
+                    RecordGroupInvite(im, offline); return; // GroupPicks.cs: pending, listed in 'offers' / 'group invites', urgent webhook; never auto-accepted
                 default:
                     if (!string.IsNullOrEmpty(im.Message))
                         Log("im-" + im.Dialog, $"{im.FromAgentName}{offTag}: {im.Message}");
@@ -1468,6 +1468,8 @@ public static partial class Program
   displayname get | displayname set <name>
   group list | group info <group uuid>   current groups / group profile (name, open enrollment, fee, members)
   group join <group uuid>     joins ONLY if open enrollment and fee L$0 (profile checked first); reports JoinGroupReply + balance
+  group invites [all|selftest] pending group invitations (group, inviter, role, fee, session); never auto-accepted, urgent webhook
+  group accept <n|group name> [confirm] [force] | group decline <n|group name>   accept only David/Sophie/the Peronaut rental group; others need 'confirm' (David's OK); fee > L$0 or unknown needs 'force'
   pick list | pick info <pick id> | pick delete <pick id>   own profile picks
   pick lookup <region> <x> <y> <z>   dry run: parcel id, parcel name, snapshot id a pick there would use
   pick create <region> <x> <y> <z> | <name> | <description>   new pick (literal \n = line break), read back

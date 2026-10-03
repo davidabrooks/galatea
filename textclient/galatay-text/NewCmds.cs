@@ -27,6 +27,7 @@ public static partial class Program
         public int N; public DateTime At; public string Kind; public UUID From; public string FromName; public UUID Session;
         public AssetType Type; public UUID ObjId; public string ItemName; public bool Offline; public bool FromTask; public Simulator Sim;
         public string State = "pending";
+        public bool Restored, Synthetic; // loaded from the offer store after a restart (OfferStore.cs); selftest entry (never persisted)
     }
     static readonly List<PendingOffer> pendingOffers = new(); static int offerSeq;
 
@@ -48,10 +49,11 @@ public static partial class Program
             lock (pendingOffers)
             {
                 if (pendingOffers.Any(p => p.Session == o.Session && p.Kind == o.Kind && p.State == "pending")) return; // duplicate (offline re-delivery)
-                o.N = ++offerSeq; pendingOffers.Add(o);
+                o.N = ++offerSeq; o.Synthetic = !notify; pendingOffers.Add(o);
                 while (pendingOffers.Count > 100) pendingOffers.RemoveAt(0);
             }
             if (notify && o.Kind == "friendship" && !offline) Notify("friendship_offer", o.FromName, o.From, $"friendship offer #{o.N} from {o.FromName}: '{o.ItemName}' (pending; never auto-accepted)", null); // urgent webhook
+            if (notify) SaveOfferStore(); // survives a restart (OfferStore.cs)
             Log("offer", $"recorded as offer #{o.N}: {o.Kind} from {o.FromName} ({o.From}) '{o.ItemName}' type {o.Type}{(offline ? " [offline]" : "")} - pending; never auto-accepted ('offers accept {o.N}' / 'offers decline {o.N}')");
         }
         catch (Exception ex) { Log("offer", "record failed: " + ex.GetBaseException().Message); }
@@ -61,7 +63,7 @@ public static partial class Program
         LureAllowed(o.FromName, o.From) || (o.FromTask && o.From == client.Self.AgentID);
 
     static string OfferLine(PendingOffer o) =>
-        $"#{o.N} {o.At:MM-dd HH:mm} {o.Kind,-10} from '{o.FromName}' ({o.From}){(o.FromTask ? " [object]" : "")}{(o.Offline ? " [offline]" : "")}: " +
+        $"#{o.N} {o.At:MM-dd HH:mm} {o.Kind,-10} from '{o.FromName}' ({o.From}){(o.FromTask ? " [object]" : "")}{(o.Offline ? " [offline]" : "")}{(o.Restored ? " [restored]" : "")}: " +
         (o.Kind == "friendship" ? $"message '{o.ItemName}'" : $"'{o.ItemName}' type {o.Type}") +
         $" [{o.State}]{(OfferSenderAllowed(o) ? " (allow-listed)" : " (NOT allow-listed: accept needs 'confirm' = David's OK)")}";
 
@@ -72,7 +74,7 @@ public static partial class Program
             bool all = a.Length > 0 && a[0] == "all";
             List<PendingOffer> l; lock (pendingOffers) l = pendingOffers.Where(o => all || o.State == "pending").ToList();
             var fr = client.Friends.FriendRequests?.Keys.ToList() ?? new();
-            var sb = new StringBuilder($"{l.Count} {(all ? "offers this session" : "pending offers")} (inventory + friendship; recorded since this client started, incl. offline ones fetched at login)\n");
+            var sb = new StringBuilder($"{l.Count} {(all ? "offers this session" : "pending offers")} (inventory + friendship; kept across restarts in run/pending-offers.json, incl. offline ones fetched at login)\n");
             foreach (var o in l) sb.AppendLine("  " + OfferLine(o));
             if (fr.Count > 0) sb.AppendLine($"  library friend-request table: {string.Join(", ", fr)}");
             sb.AppendLine(GroupInvitesText(all).Replace("\n  ", "\n    ").Insert(0, "  ")); // group invitations (GroupPicks.cs): 'group accept|decline <n>'
@@ -156,6 +158,7 @@ public static partial class Program
             if (accept && o.ObjId != UUID.Zero) client.Inventory.RequestFetchInventory(o.ObjId, client.Self.AgentID);
         }
         o.State = accept ? "accepted" : "declined";
+        if (!o.Synthetic) SaveOfferStore();
         Log("offer", $"offer #{o.N} {o.State}: {o.Kind} from {o.FromName} '{o.ItemName}'{(confirm ? " (confirm = David's OK)" : "")}");
         return $"{o.State} offer #{o.N}: {o.Kind} from '{o.FromName}' ('{o.ItemName}')";
     }

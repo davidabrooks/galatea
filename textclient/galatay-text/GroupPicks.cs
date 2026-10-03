@@ -3,7 +3,10 @@
 // - group join <uuid>: profile first; refuses unless OpenEnrollment && MembershipFee == 0; JoinGroupRequest -> JoinGroupReply
 // - group list: AgentDataUpdateRequest -> AgentGroupDataUpdate (current groups, my title in each, active group + title); falls back to the cached last update
 // - group invites [all|selftest] | group accept <n|group name> [confirm] [force] | group decline <n|group name>   (2026-10-02)
-//   pending group invitations (never auto-accepted; urgent webhook 'group_invite'); see GroupInvite below for the policy
+//   pending group invitations (urgent webhook 'group_invite'); see GroupInvite below for the policy
+//   2026-10-03: persisted with the other offers (OfferStore.cs) and re-surfaced after a restart; ONE auto-accept rule (David):
+//   group 'Sunrise Suites' (394073e3-...) at L$0 from shadowknight.falconer or andyandroid -> accept, sethome if in Peronaut,
+//   urgent webhook 'group_invite_accepted'
 // - pick list | pick info <id> | pick lookup <region> <x> <y> <z> (dry run) | pick create <region> <x> <y> <z> | <name> | <desc> | pick delete <id>
 using System.Collections.Concurrent;
 using System.Text;
@@ -45,13 +48,16 @@ public static partial class Program
     // ---- group invitations (2026-10-02, David: stop ignoring them) ----------------------------------------
     // GroupInvitation IM: FromAgentID = the group (what GroupInviteRespond needs), IMSessionID = the invite's transaction id,
     // BinaryBucket = S32 membership fee (network byte order) + role UUID. The text names the inviter/group; the group profile
-    // is fetched for the authoritative name and fee. Never auto-accepted. Policy: accept only invites from David Nightingale,
+    // is fetched for the authoritative name and fee. Not auto-accepted, except the Sunrise Suites rule below. Policy: accept only invites from David Nightingale,
     // SophieJeanneLaDouce, or the Peronaut rental group/agent clearly tied to David's rental; anyone else needs David's OK
     // ('confirm'). A join fee > L$0 (or an unknown fee) also needs 'force' (L$ only with David's OK).
     class GroupInvite
     {
         public int N; public DateTime At; public UUID GroupId; public string GroupName; public string FromName; public string Inviter;
         public UUID Session; public UUID RoleId; public int? Fee; public string Message; public bool Offline; public string State = "pending";
+        public int? ProfileFee;                 // group profile's membership fee (authoritative), null = not fetched / no reply
+        public bool Restored, Redelivered;      // loaded from the offer store after a restart; SL re-sent it at login (fresh session)
+        public bool Resurfaced, Synthetic, AutoBusy; // restored invite already handled this process; selftest entry (never persisted); auto-accept running
     }
     static readonly List<GroupInvite> groupInvites = new(); static int groupInviteSeq;
 
@@ -79,29 +85,108 @@ public static partial class Program
             var g = ParseGroupInvite(im, offline);
             lock (groupInvites)
             {
-                if (groupInvites.Any(x => x.Session == g.Session && x.GroupId == g.GroupId && x.State == "pending")) return; // offline re-delivery
-                g.N = ++groupInviteSeq; groupInvites.Add(g);
+                var dup = groupInvites.FirstOrDefault(x => x.Session == g.Session && x.GroupId == g.GroupId && x.State == "pending");
+                if (dup != null)
+                {   // offline re-delivery; for a restored invite this means SL still holds it, so its session is current
+                    if (dup.Restored && !dup.Redelivered) { dup.Redelivered = true; Log("offer", $"group invite #{dup.N} (restored) re-delivered by SL at login: session still current"); }
+                    return;
+                }
+                g.N = ++groupInviteSeq; g.Synthetic = !notify; groupInvites.Add(g);
                 while (groupInvites.Count > 50) groupInvites.RemoveAt(0);
             }
-            Log("offer", $"group invitation recorded as invite #{g.N}: {GroupInviteLine(g)}{(offline ? " [offline]" : "")} - pending; never auto-accepted ('group accept {g.N}' / 'group decline {g.N}')");
-            if (notify) Notify("group_invite", g.Inviter ?? g.FromName, im.FromAgentID, $"group invite #{g.N}: {GroupInviteLine(g)} (pending; never auto-accepted). Text: {g.Message}", null); // urgent webhook
-            if (notify) _ = Task.Run(async () =>
-            {   // authoritative name + fee from the group profile
-                var p = await FetchGroupProfile(g.GroupId);
-                if (p == null) return;
-                lock (groupInvites) { g.GroupName = p.Value.Name; if (g.Fee == null || p.Value.MembershipFee > g.Fee) g.Fee = p.Value.MembershipFee; }
-                Log("offer", $"group invite #{g.N}: profile '{p.Value.Name}' fee L${p.Value.MembershipFee} open_enrollment={p.Value.OpenEnrollment}");
-            });
+            Log("offer", $"group invitation recorded as invite #{g.N}: {GroupInviteLine(g)}{(offline ? " [offline]" : "")} - pending ('group accept {g.N}' / 'group decline {g.N}')");
+            if (!notify) return; // selftest: no webhook, no profile fetch, not persisted
+            SaveOfferStore();
+            _ = Task.Run(() => ProcessGroupInvite(g, false));
         }
         catch (Exception ex) { Log("offer", "group invite record failed: " + ex.GetBaseException().Message); }
     }
+
+    // new or restored invite: Sunrise Suites candidates go through the auto-accept check first (one webhook: accepted or
+    // why not); everything else is notified at once as a pending 'group_invite'. The profile gives the authoritative name/fee.
+    static async Task ProcessGroupInvite(GroupInvite g, bool restored)
+    {
+        try
+        {
+            string note = restored ? RestoredInviteNote(g) : "";
+            bool candidate = SunriseCandidate(g);
+            if (!candidate) Notify("group_invite", g.Inviter ?? g.FromName, g.GroupId, $"group invite #{g.N}: {GroupInviteLine(g)} (pending; needs 'group accept'){note}. Text: {g.Message}", null); // urgent webhook
+            var p = await FetchGroupProfile(g.GroupId);
+            if (p != null)
+            {
+                lock (groupInvites) { g.GroupName = p.Value.Name; g.ProfileFee = p.Value.MembershipFee; if (g.Fee == null || p.Value.MembershipFee > g.Fee) g.Fee = p.Value.MembershipFee; }
+                Log("offer", $"group invite #{g.N}: profile '{p.Value.Name}' fee L${p.Value.MembershipFee} open_enrollment={p.Value.OpenEnrollment}");
+                SaveOfferStore();
+            }
+            if (candidate) await SunriseAutoAccept(g, note);
+        }
+        catch (Exception ex) { Log("offer", $"group invite #{g.N} processing failed: " + ex.GetBaseException().Message); }
+    }
+
+    // ---- Sunrise Suites auto-accept (2026-10-03, David approved) ------------------------------------------
+    static readonly UUID SunriseSuitesId = new("394073e3-c51a-90d3-3d22-f04ffb35a471");
+    static readonly string[] SunriseInviters = { "shadowknight.falconer", "andyandroid" };
+    static readonly string HomeRegion = Env("GT_HOME_REGION", "Peronaut");
+    static string NormAvName(string n)
+    {
+        n = Regex.Replace((n ?? "").Trim().ToLowerInvariant().Replace('.', ' '), @"\s+", " ");
+        return n.EndsWith(" resident") ? n[..^9] : n;
+    }
+    static bool SunriseInviter(string inviter) => !string.IsNullOrWhiteSpace(inviter) && SunriseInviters.Any(x => NormAvName(x) == NormAvName(inviter));
+    static bool SunriseCandidate(GroupInvite g) => g.GroupId == SunriseSuitesId && SunriseInviter(g.Inviter);
+
+    // pure (selftest-covered): null = the client may accept on its own, else why not. Fee must be a known L$0 in the invite
+    // AND in the group profile; anything else stays pending for 'group accept ... force' (David).
+    static string SunriseAutoAcceptBlock(GroupInvite g)
+    {
+        if (g.GroupId != SunriseSuitesId) return "not the Sunrise Suites group";
+        if (!SunriseInviter(g.Inviter)) return $"inviter '{g.Inviter ?? "unknown"}' is not shadowknight.falconer / andyandroid";
+        if (g.State != "pending") return $"already {g.State}";
+        if (g.Fee == null) return "join fee unknown in the invite (needs David: 'force')";
+        if (g.Fee != 0) return $"join fee L${g.Fee} (needs David: 'force')";
+        if (g.ProfileFee == null) return "group profile did not answer, so the L$0 fee is not confirmed (needs 'group accept')";
+        if (g.ProfileFee != 0) return $"group profile says join fee L${g.ProfileFee} (needs David: 'force')";
+        return null;
+    }
+
+    static async Task SunriseAutoAccept(GroupInvite g, string note)
+    {
+        lock (groupInvites) { if (g.AutoBusy) return; g.AutoBusy = true; }
+        try
+        {
+            var block = SunriseAutoAcceptBlock(g);
+            if (block != null)
+            {
+                Log("group", $"Sunrise Suites invite #{g.N}: NOT auto-accepted: {block}");
+                Notify("group_invite", g.Inviter ?? g.FromName, g.GroupId, $"group invite #{g.N}: {GroupInviteLine(g)} - Sunrise Suites auto-accept NOT done: {block}; pending{note}. Text: {g.Message}", null);
+                return;
+            }
+            Log("group", $"Sunrise Suites invite #{g.N} from {g.Inviter}: auto-accepting (David's rule: L$0, shadowknight.falconer / andyandroid)");
+            var (res, member) = await AcceptGroupInviteCore(g, "auto: Sunrise Suites rule");
+            if (!member) { await Task.Delay(5000); var (again, _) = await FetchCurrentGroups(); member = again.ContainsKey(g.GroupId); if (member) res += "; member confirmed on re-check"; }
+            string home;
+            var region = client.Network.CurrentSim?.Name;
+            if (string.Equals(region, HomeRegion, StringComparison.OrdinalIgnoreCase)) home = await SetHomeCmd();
+            else home = $"sethome skipped: in '{region ?? "?"}', not {HomeRegion}";
+            var text = $"AUTO-ACCEPTED Sunrise Suites group invite #{g.N} from {g.Inviter} (David's rule, L$0): {res}. {home}{note}" +
+                       (member ? "" : " WARNING: not a member yet; the invite may have expired (ask the inviter to re-send).");
+            Log("group", text);
+            Notify("group_invite_accepted", g.Inviter ?? g.FromName, g.GroupId, text, null); // urgent webhook: tell David
+        }
+        finally { lock (groupInvites) g.AutoBusy = false; }
+    }
+
+    static string RestoredInviteNote(GroupInvite g) => g.Redelivered
+        ? " [restored after a client restart; SL re-delivered it at login, so the session is current]"
+        : $" [restored after a client restart (received {g.At:MM-dd HH:mm} PT); SL may not accept a pre-relog invite session: if accepting does not make me a member, ask the inviter to re-send]";
 
     static bool GroupInviterAllowed(GroupInvite g) => g.Inviter != null && (LureAllowed(g.Inviter) || LureAllowed(g.Inviter + " Resident"));
 
     static string GroupInviteLine(GroupInvite g) =>
         $"#{g.N} group '{g.GroupName ?? "?"}' ({g.GroupId}) from {(g.Inviter ?? "?")}" +
         $" role {(g.RoleId == UUID.Zero ? "Everyone" : g.RoleId.ToString())} fee {(g.Fee == null ? "unknown" : "L$" + g.Fee)} session {g.Session}" +
-        $" at {g.At:HH:mm} PT [{g.State}]{(GroupInviterAllowed(g) ? " (inviter allow-listed)" : " (inviter NOT allow-listed: accept needs 'confirm' = David's OK)")}";
+        $" at {g.At:MM-dd HH:mm} PT [{g.State}]{(g.Restored ? (g.Redelivered ? " [restored, re-delivered]" : " [restored: session may be stale]") : "")}" +
+        (SunriseCandidate(g) ? " (Sunrise Suites auto-accept rule)" : GroupInviterAllowed(g) ? " (inviter allow-listed)" : " (inviter NOT allow-listed: accept needs 'confirm' = David's OK)");
 
     // pure (selftest-covered): null = may accept, else the refusal text
     static string GroupAcceptBlock(GroupInvite g, bool confirm, bool force)
@@ -145,23 +230,30 @@ public static partial class Program
         if (!accept)
         {
             if (g.State != "pending") return $"invite #{g.N} is already {g.State}";
-            client.Self.GroupInviteRespond(g.GroupId, g.Session, false); g.State = "declined";
+            client.Self.GroupInviteRespond(g.GroupId, g.Session, false); g.State = "declined"; SaveOfferStore();
             Log("group", $"declined group invite #{g.N} '{g.GroupName}' ({g.GroupId})");
             return $"declined group invite #{g.N} '{g.GroupName}' ({g.GroupId})";
         }
         var block = GroupAcceptBlock(g, confirm, force);
         if (block != null) { Log("group", $"accept #{g.N} REFUSED: {block}"); return block; }
+        return (await AcceptGroupInviteCore(g, $"confirm={confirm} force={force}")).res;
+    }
+
+    // sends the accept, waits 3 s, checks membership + balance (shared by 'group accept' and the Sunrise auto-accept)
+    static async Task<(string res, bool member)> AcceptGroupInviteCore(GroupInvite g, string why)
+    {
         var bal0 = await BalanceAsync();
-        Log("group", $"accepting group invite #{g.N} '{g.GroupName}' ({g.GroupId}) fee L${g.Fee} confirm={confirm} force={force} balance_before={bal0?.ToString() ?? "?"}");
-        client.Self.GroupInviteRespond(g.GroupId, g.Session, true); g.State = "accepted";
+        Log("group", $"accepting group invite #{g.N} '{g.GroupName}' ({g.GroupId}) fee L${g.Fee} {why}{(g.Restored && !g.Redelivered ? " [restored invite: session may be stale]" : "")} balance_before={bal0?.ToString() ?? "?"}");
+        client.Self.GroupInviteRespond(g.GroupId, g.Session, true); g.State = "accepted"; SaveOfferStore();
         await Task.Delay(3000);
         var (after, fresh) = await FetchCurrentGroups();
         var bal1 = await BalanceAsync();
         bool member = after.ContainsKey(g.GroupId);
         var res = $"accepted group invite #{g.N} '{g.GroupName}' ({g.GroupId}); member now: {(member ? "yes" : "not yet")}{(fresh ? "" : " (group list not refreshed)")}" +
-                  (member && after.TryGetValue(g.GroupId, out var gg) ? $", title '{gg.MemberTitle}'" : "") + $"; balance L${bal0?.ToString() ?? "?"} -> L${bal1?.ToString() ?? "?"}";
+                  (member && after.TryGetValue(g.GroupId, out var gg) ? $", title '{gg.MemberTitle}'" : "") + $"; balance L${bal0?.ToString() ?? "?"} -> L${bal1?.ToString() ?? "?"}" +
+                  (!member && g.Restored && !g.Redelivered ? "; this invite was restored after a relog and SL may no longer accept its session: ask the inviter to re-send" : "");
         Log("group", res);
-        return res;
+        return (res, member);
     }
 
     // offline logic test: synthetic invites are parsed, listed and refused by the policy checks; nothing is sent to SL
@@ -190,6 +282,23 @@ public static partial class Program
         C(mine == 1, $"duplicate (offline re-delivery) dropped ({mine})");
         C(GroupInvitesText().Contains("Fancy Club") && FindGroupInvite("fancy club")?.Session == s2, "'group invites' lists it; found by name");
         lock (groupInvites) groupInvites.RemoveAll(x => x.Session == s2);
+        // Sunrise Suites auto-accept rule (pure; nothing sent)
+        GroupInvite Sun(string inviter, int? fee, int? pfee, UUID? grp = null) => new GroupInvite { N = 9100, GroupId = grp ?? SunriseSuitesId, GroupName = "Sunrise Suites", Inviter = inviter, Fee = fee, ProfileFee = pfee, Session = UUID.Random() };
+        C(SunriseAutoAcceptBlock(Sun("shadowknight.falconer", 0, 0)) == null, "Sunrise: shadowknight.falconer, L$0 (invite + profile) -> auto-accept");
+        C(SunriseAutoAcceptBlock(Sun("Shadowknight Falconer", 0, 0)) == null, "Sunrise: 'Shadowknight Falconer' (display form) -> auto-accept");
+        C(SunriseAutoAcceptBlock(Sun("andyandroid Resident", 0, 0)) == null && SunriseAutoAcceptBlock(Sun("Andyandroid", 0, 0)) == null, "Sunrise: andyandroid / 'andyandroid Resident' -> auto-accept");
+        C(SunriseAutoAcceptBlock(Sun("andyandroid", 10, 10))?.Contains("L$10") == true, "Sunrise: L$10 fee -> NOT auto-accepted (force/David)");
+        C(SunriseAutoAcceptBlock(Sun("andyandroid", 0, 25))?.Contains("profile says join fee L$25") == true, "Sunrise: invite L$0 but profile L$25 -> NOT auto-accepted");
+        C(SunriseAutoAcceptBlock(Sun("andyandroid", null, 0))?.Contains("unknown") == true, "Sunrise: unknown invite fee -> NOT auto-accepted");
+        C(SunriseAutoAcceptBlock(Sun("andyandroid", 0, null))?.Contains("profile did not answer") == true, "Sunrise: no profile reply -> NOT auto-accepted");
+        C(SunriseAutoAcceptBlock(Sun("Selftest Stranger", 0, 0))?.Contains("not shadowknight") == true, "Sunrise: other inviter -> NOT auto-accepted");
+        C(SunriseAutoAcceptBlock(Sun("andyandroid", 0, 0, UUID.Random()))?.Contains("not the Sunrise") == true && !SunriseCandidate(Sun("andyandroid", 0, 0, UUID.Random())), "andyandroid inviting to another group -> NOT auto-accepted");
+        var done = Sun("andyandroid", 0, 0); done.State = "declined";
+        C(SunriseAutoAcceptBlock(done)?.StartsWith("already") == true, "Sunrise: already answered -> nothing");
+        C(SunriseCandidate(Sun("andyandroid", 0, 0)) && GroupAcceptBlock(Sun("andyandroid", 0, 0), false, false)?.StartsWith("refused: inviter") == true, "manual 'group accept' rules unchanged for Sunrise inviters (David/Sophie list only)");
+        C(GroupAcceptBlock(a, false, false) == null && GroupAcceptBlock(new GroupInvite { N = 9101, Inviter = "SophieJeanneLaDouce", Fee = 0 }, false, false) == null, "David / Sophie L$0 invites: still accept without confirm");
+        C(GalatayMcp.Webhook.UrgentKinds.Contains("group_invite_accepted") && GalatayMcp.Webhook.UrgentKinds.Contains("group_invite"), "webhook: group_invite + group_invite_accepted are urgent");
+        sb.AppendLine(OfferStoreSelfTest(ref pass, ref fail));
         return $"group invites selftest: {pass} PASS, {fail} FAIL (synthetic invites removed; nothing sent)\n" + sb.ToString().TrimEnd();
     }
 

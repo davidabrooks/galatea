@@ -175,6 +175,7 @@ public static partial class Program
         }
         if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
+        LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
         LoadLocalMutes(); // muted avatars are dropped from the first packet on (MuteGuard.cs)
         GalatayMcp.Webhook.Init(); // chat/IM wake-up push (silent no-op until URL + key exist)
         using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, c => { c.Cancel = true; _ = Task.Run(() => Shutdown("SIGTERM")); });
@@ -250,6 +251,7 @@ public static partial class Program
         animLogUntil = DateTime.Now.AddMinutes(10);
         _ = Task.Run(() => RefreshMutes(20000));
         _ = Task.Run(FetchOfflineIms); // IMs stored while logged out / session dead (OfflineIm.cs)
+        _ = Task.Run(ResurfaceRestoredOffers); // restored group invites: re-check + urgent webhook again ~45 s after login (OfferStore.cs)
         if (attachBlockTask == null) attachBlockTask = Task.Run(SeatAttachLoop); // seat-off attachments (AttachWatch.cs)
         GC.Collect();
         return msg;
@@ -422,7 +424,7 @@ public static partial class Program
                 case InstantMessageDialog.TaskInventoryOffered:
                     if (!OfferIn(im)) RecordOffer(im, offline); return; // WearOps.cs: logs it; accepts ONLY an armed 'offer allow' from her own named object; else pending (NewCmds.cs 'offers')
                 case InstantMessageDialog.GroupInvitation:
-                    RecordGroupInvite(im, offline); return; // GroupPicks.cs: pending, listed in 'offers' / 'group invites', urgent webhook; never auto-accepted
+                    RecordGroupInvite(im, offline); return; // GroupPicks.cs: pending, listed in 'offers' / 'group invites', persisted, urgent webhook; only the Sunrise Suites rule auto-accepts
                 default:
                     if (!string.IsNullOrEmpty(im.Message))
                         Log("im-" + im.Dialog, $"{im.FromAgentName}{offTag}: {im.Message}");
@@ -1486,7 +1488,7 @@ public static partial class Program
   displayname get | displayname set <name>
   group list | group info <group uuid>   current groups / group profile (name, open enrollment, fee, members)
   group join <group uuid>     joins ONLY if open enrollment and fee L$0 (profile checked first); reports JoinGroupReply + balance
-  group invites [all|selftest] pending group invitations (group, inviter, role, fee, session); never auto-accepted, urgent webhook
+  group invites [all|selftest] pending group invitations (group, inviter, role, fee, session); kept across restarts, urgent webhook; auto-accept ONLY 'Sunrise Suites' at L$0 from shadowknight.falconer/andyandroid (then sethome if in Peronaut)
   group accept <n|group name> [confirm] [force] | group decline <n|group name>   accept only David/Sophie/the Peronaut rental group; others need 'confirm' (David's OK); fee > L$0 or unknown needs 'force'
   pick list | pick info <pick id> | pick delete <pick id>   own profile picks
   pick lookup <region> <x> <y> <z>   dry run: parcel id, parcel name, snapshot id a pick there would use

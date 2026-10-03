@@ -143,7 +143,10 @@ case "${1:-}" in
   cmd|c)
     shift; [[ $# -ge 1 ]] || { echo "usage: $0 cmd \"<command>\""; exit 2; }
     running || { echo "not running"; exit 1; }
-    send "$*" ;;
+    # 2026-10-03: a reply starting "skipped: " (im guard, ImGuard.cs) is a normal skip -> distinct exit code 10, not an error
+    out=$(send "$*"); rc=$?; printf '%s\n' "$out"
+    (( rc == 0 )) && [[ "$out" == skipped:* ]] && exit 10
+    exit $rc ;;
   log)
     tail -n "${2:-40}" "$GT_LOG" ;;
   check)

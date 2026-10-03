@@ -65,6 +65,15 @@ public static partial class Program
     // my last outgoing IM per avatar (webhook dedupe hint). Seeded once from the [me-im] lines in the last 4 MB of the log,
     // so it survives a restart; then updated by the 'im' command.
     static readonly ConcurrentDictionary<string, DateTimeOffset> myImTo = new(StringComparer.OrdinalIgnoreCase);
+    static readonly ConcurrentDictionary<string, DateTimeOffset> imFrom = new(StringComparer.OrdinalIgnoreCase); // their latest IM to me
+    static readonly Regex InImRx = new(@"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \[im\] .*?\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)( \[offline[^\]]*\])?: ", RegexOptions.Compiled);
+    public static void NoteImFrom(string id, DateTimeOffset t) => imFrom.AddOrUpdate(id, t, (_, old) => t > old ? t : old);
+    public static void ForgetImFrom(string id) => imFrom.TryRemove(id, out _);
+    public static DateTimeOffset? LastImFrom(string id)
+    {
+        if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms();
+        return imFrom.TryGetValue(id, out var t) ? t : null;
+    }
     static int myImSeeded;
     static readonly Regex MeImRx = new(@"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \[me-im\] to .*?\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\):", RegexOptions.Compiled);
     public static void NoteMyIm(string id, DateTimeOffset t) => myImTo.AddOrUpdate(id, t, (_, old) => t > old ? t : old);
@@ -85,11 +94,17 @@ public static partial class Program
             string line; int n = 0;
             while ((line = sr.ReadLine()) != null)
             {
+                if (line.Contains(" [im] "))
+                {
+                    var mi = InImRx.Match(line);
+                    if (mi.Success && DateTime.TryParseExact(mi.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var ti)) NoteImFrom(mi.Groups[2].Value, new DateTimeOffset(ti));
+                    continue;
+                }
                 if (!line.Contains("[me-im] to ")) continue;
                 var m = MeImRx.Match(line);
                 if (m.Success && DateTime.TryParseExact(m.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t)) { NoteMyIm(m.Groups[2].Value, new DateTimeOffset(t)); n++; }
             }
-            Log("webhook", $"dedupe hint: seeded my last IM time for {myImTo.Count} avatar(s) from {n} [me-im] log line(s)");
+            Log("webhook", $"dedupe hint / im guard: seeded my last IM time for {myImTo.Count} avatar(s) from {n} [me-im] log line(s), their latest IM for {imFrom.Count}");
         }
         catch (Exception ex) { Log("webhook", "dedupe hint seed failed: " + ex.GetType().Name); }
     }
@@ -207,6 +222,7 @@ public static partial class Program
         }
         if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
+        if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
         LoadLocalMutes(); // muted avatars are dropped from the first packet on (MuteGuard.cs)
         GalatayMcp.Webhook.Init(); // chat/IM wake-up push (silent no-op until URL + key exist)
@@ -412,6 +428,7 @@ public static partial class Program
                     if (string.IsNullOrEmpty(im.Message)) return;
                     if (SystemImNotice(im)) { Log("im-system", $"{im.FromAgentName} ({im.FromAgentID}): {im.Message}"); return; } // logged only, never to the webhook
                     Log("im", $"{im.FromAgentName} ({im.FromAgentID}){offTag}: {im.Message}");
+                    if (!im.GroupIM && im.FromAgentID != UUID.Zero) NoteImFrom(im.FromAgentID.ToString(), DateTimeOffset.Now); // im guard (ImGuard.cs)
                     if (im.FromAgentID != UUID.Zero && im.FromAgentID != client.Self.AgentID && !im.GroupIM && !string.IsNullOrWhiteSpace(im.Message))
                     {
                         double? dist = null;
@@ -1473,7 +1490,8 @@ public static partial class Program
     const string Help = @"commands (one per line):
   help | status | where
   say <text> | shout <text> | whisper <text> | chan <n> <text>
-  im <First Last|username|uuid|""Name""> <text>
+  im [--force] <First Last|username|uuid|""Name""> <text>   per-recipient guard: 'skipped: ...' if I IMed them < 5 s ago or already answered their latest IM (David: only the 5 s window); --force = manual/David-directed only
+  imguard [check <name>|selftest]   duplicate-IM guard status / dry run / offline test (ImGuard.cs)
   nearby [radius=20]          avatars + objects (uuid, distance, owner, occupancy)
   avatars | objects [radius=20] [name filter] | find <name filter> (64 m)
   objinfo <uuid>
@@ -1596,12 +1614,15 @@ public static partial class Program
             }
             case "im":
             {
+                bool force = false;
+                if (rest.StartsWith("--force ", StringComparison.OrdinalIgnoreCase)) { force = true; rest = rest[8..].TrimStart(); }
                 var (target, text) = SplitTarget(rest);
-                if (target.Length == 0 || text.Length == 0) return "usage: im <name|uuid> <text>";
+                if (target.Length == 0 || text.Length == 0) return "usage: im [--force] <name|uuid> <text>";
                 var id = await ResolveAvatar(target);
                 if (id == UUID.Zero) return $"could not resolve avatar '{target}'";
-                client.Self.InstantMessage(id, text);
-                NoteMyIm(id.ToString(), DateTimeOffset.Now); // webhook dedupe hint (Webhook.cs my_last_im_to_sender)
+                // per-recipient duplicate guard (ImGuard.cs); also feeds the webhook dedupe hint (my_last_im_to_sender)
+                var (sent, skip) = ImGuardedSend(id.ToString(), NameOf(id), id == DavidId, force, () => client.Self.InstantMessage(id, text));
+                if (!sent) return skip;
                 Log("me-im", $"to {NameOf(id)} ({id}): {text}");
                 return $"sent to {NameOf(id)} ({id})";
             }
@@ -1672,6 +1693,7 @@ public static partial class Program
             case "pose": return await PoseCmd(a);
             case "watchdog": return a.Length > 0 && a[0] == "selftest" ? WatchdogSelfTest() : WatchdogStatus();
             case "ao": return a.Length > 0 && a[0] == "selftest" ? AoSelfTest() : AoStatus();
+            case "imguard": return await ImGuardCmd(a);
             case "offlineim": return a.Length > 0 && a[0] == "selftest" ? OfflineImSelfTest() : OfflineImStatus();
             case "route": case "routes": case "goto_place": case "overhead": case "snapshot": return await RouteCmds(cmd, rest, a);
             case "offers": return await OffersCmd(a);

@@ -1,4 +1,5 @@
-// SL Texture Vision - part of galatea (https://github.com/davidabrooks/galatea). Same licence terms as the rest of the galatea repository.
+// SL Texture Vision - part of galatea (https://github.com/davidabrooks/galatea).
+// Copyright (c) 2026, David Brooks. SPDX-License-Identifier: BSD-3-Clause (see LICENSE at the galatea repository root).
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;

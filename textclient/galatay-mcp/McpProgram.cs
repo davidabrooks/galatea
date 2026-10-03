@@ -70,8 +70,10 @@ public sealed class SlTools
     [McpServerTool(Name = "say"), Description("Say text in local chat (20 m). Speak deliberately; rate-limited to 8/min.")]
     public static Task<string> Say(string text) => R("say " + Clean(text));
 
-    [McpServerTool(Name = "im"), Description("Send an instant message to an avatar by legacy name ('First Last'), username, or UUID. Rate-limited.")]
-    public static Task<string> Im([Description("Avatar name or UUID")] string to, string text) => R($"im \"{Clean(to).Replace("\"", "")}\" {Clean(text)}");
+    [McpServerTool(Name = "im"), Description("Send an instant message to an avatar by legacy name ('First Last'), username, or UUID. Rate-limited. Duplicate guard: returns ok=true, skipped=true if I IMed them < 5 s ago or already answered their latest IM. headsup=true: ONE short 'give me a bit, I need to check with David' note per their latest IM (still the 5 s window).")]
+    public static Task<string> Im([Description("Avatar name or UUID")] string to, string text,
+                                  [Description("true = one heads-up note allowed after an answered IM, at most once until they write again")] bool headsup = false)
+        => R($"im {(headsup ? "--headsup " : "")}\"{Clean(to).Replace("\"", "")}\" {Clean(text)}");
 
     [McpServerTool(Name = "nearby"), Description("List avatars in view and nearby objects (name, uuid, distance, position, owner, who is sitting on it) as JSON.")]
     public static async Task<string> Nearby([Description("Object search radius in metres (default 20)")] float radius = 20,

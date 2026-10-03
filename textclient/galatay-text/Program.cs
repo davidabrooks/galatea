@@ -100,6 +100,7 @@ public static partial class Program
                     if (mi.Success && DateTime.TryParseExact(mi.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var ti)) NoteImFrom(mi.Groups[2].Value, new DateTimeOffset(ti));
                     continue;
                 }
+                SeedHeadsupLine(line); // im --headsup (ImGuard.cs)
                 if (!line.Contains("[me-im] to ")) continue;
                 var m = MeImRx.Match(line);
                 if (m.Success && DateTime.TryParseExact(m.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t)) { NoteMyIm(m.Groups[2].Value, new DateTimeOffset(t)); n++; }
@@ -1490,7 +1491,7 @@ public static partial class Program
     const string Help = @"commands (one per line):
   help | status | where
   say <text> | shout <text> | whisper <text> | chan <n> <text>
-  im [--force] <First Last|username|uuid|""Name""> <text>   per-recipient guard: 'skipped: ...' if I IMed them < 5 s ago or already answered their latest IM (David: only the 5 s window); --force = manual/David-directed only
+  im [--headsup|--force] <First Last|username|uuid|""Name""> <text>   per-recipient guard: 'skipped: ...' if I IMed them < 5 s ago or already answered their latest IM (David: only the 5 s window); --headsup = ONE short 'please wait' note per their latest IM (still 5 s window); --force = manual/David-directed only
   imguard [check <name>|selftest]   duplicate-IM guard status / dry run / offline test (ImGuard.cs)
   nearby [radius=20]          avatars + objects (uuid, distance, owner, occupancy)
   avatars | objects [radius=20] [name filter] | find <name filter> (64 m)
@@ -1614,14 +1615,19 @@ public static partial class Program
             }
             case "im":
             {
-                bool force = false;
-                if (rest.StartsWith("--force ", StringComparison.OrdinalIgnoreCase)) { force = true; rest = rest[8..].TrimStart(); }
+                bool force = false, headsup = false;
+                while (true)
+                {
+                    if (rest.StartsWith("--force ", StringComparison.OrdinalIgnoreCase)) { force = true; rest = rest[8..].TrimStart(); continue; }
+                    if (rest.StartsWith("--headsup ", StringComparison.OrdinalIgnoreCase)) { headsup = true; rest = rest[10..].TrimStart(); continue; }
+                    break;
+                }
                 var (target, text) = SplitTarget(rest);
-                if (target.Length == 0 || text.Length == 0) return "usage: im [--force] <name|uuid> <text>";
+                if (target.Length == 0 || text.Length == 0) return "usage: im [--headsup|--force] <name|uuid> <text>";
                 var id = await ResolveAvatar(target);
                 if (id == UUID.Zero) return $"could not resolve avatar '{target}'";
                 // per-recipient duplicate guard (ImGuard.cs); also feeds the webhook dedupe hint (my_last_im_to_sender)
-                var (sent, skip) = ImGuardedSend(id.ToString(), NameOf(id), id == DavidId, force, () => client.Self.InstantMessage(id, text));
+                var (sent, skip) = ImGuardedSend(id.ToString(), NameOf(id), id == DavidId, force, () => client.Self.InstantMessage(id, text), null, headsup);
                 if (!sent) return skip;
                 Log("me-im", $"to {NameOf(id)} ({id}): {text}");
                 return $"sent to {NameOf(id)} ({id})";

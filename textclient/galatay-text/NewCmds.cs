@@ -281,6 +281,11 @@ public static partial class Program
             Log("landmark", $"created '{name}' item {made.UUID} at {region} {P3(pos)}; stored {(lm == null ? "?" : P3(lm.Position))}");
             return $"landmark '{name}' created (item {made.UUID}) at {region} {P3(pos)}; stored position {(lm == null ? "(asset not readable yet)" : P3(lm.Position))}";
         }
+        if (sub == "raw")
+        {
+            var key = string.Join(' ', a.Skip(1)).Trim().Trim('"');
+            return key.Length == 0 ? "usage: landmark raw <name>" : await LandmarkRaw(key, ct);
+        }
         if (sub == "tp" || sub == "teleport")
         {
             var parts = a.Skip(1).ToList();
@@ -316,10 +321,14 @@ public static partial class Program
             float miss = string.Equals(nowR, rname, StringComparison.OrdinalIgnoreCase) ? Vector3.Distance(now, lm.Position) : float.NaN;
             var res = $"landmark tp ({(byPos ? "exact position" : "landmark")}) '{it.Name}' -> {rname} {P3(lm.Position)}: {(ok ? "ok" : "FAILED " + client.Self.TeleportMessage)}; from {from}; now {nowR} {P3(now)}" +
                       (float.IsNaN(miss) ? "" : $" ({miss:F1} m from the landmark{(miss > 10 ? " - landing point / teleport routing redirected" : "")})");
+            if (!float.IsNaN(miss) && miss > 10 && client.Network.CurrentSim is { } dsim)
+            {   // 2026-10-02: say WHY (parcel routing + the parcel group's 'Ignore landing point' ability)
+                try { var d = await LandingDiag(dsim, lm.Position); if (d != null) res += $"\n  why: {d}"; } catch (Exception ex) { res += $"\n  why: parcel check failed {ex.GetBaseException().Message}"; }
+            }
             Log("landmark", res);
             return res;
         }
-        return "usage: landmark create <name> | landmark list | landmark tp <name|item uuid> [pos] [force]";
+        return "usage: landmark create <name> | landmark list | landmark raw <name> | landmark tp <name|item uuid> [pos] [force]";
     }
 
     // ---------------- worn links / touch-attachment ----------------

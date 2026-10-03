@@ -1473,7 +1473,7 @@ public static partial class Program
   pick create <region> <x> <y> <z> | <name> | <description>   new pick (literal \n = line break), read back
   balance | prices | caps            read-only: L$ balance, upload prices, which caps exist (no URLs)
   webhook_test | webhook status      probe the chat webhook (HTTP status) / show config (never the key)
-  webhook debounce [<quiet s> [<max s>]] | webhook debounce selftest   per-conversation debounce (default quiet 20 s, cap 60 s; urgent = immediate)
+  webhook debounce [<quiet s> [<max s> [<detect s>]]] | webhook debounce detect <s> | webhook debounce selftest   per-conversation debounce: single line after 4 s detect window; burst (2nd line inside it) after 20 s quiet, cap 60 s; urgent = immediate
   restart status | restart test [fast] | restart cancel   region-restart evacuation: state / simulate a warning / abort
                               (warning -> stand, go home [fallbacks, else logout], poll every 60 s, return >= 3 min after the restart, re-sit; 45 min limit)
   sit_home                    Naberrie seat rule: her pillow 10d8a656 if both rock pillows are free, else a quiet free seat in The Buddha Center parcel (not the zendo), else stand

@@ -3,8 +3,8 @@
 // - Config is re-read at runtime: URL from a one-line file, key from the box secrets JSON
 //   (card.GALATAY_WEBHOOK_KEY, else any key named GALATAY_WEBHOOK_KEY). Missing either -> silent no-op.
 // - Debouncing (2026-10-02, David: Ryan got two near-identical IMs): events are held PER CONVERSATION (an IM sender's id, or
-//   local chat as one conversation) until that conversation has been quiet for GT_WEBHOOK_QUIET_S (default 20 s), capped at
-//   GT_WEBHOOK_MAX_S (default 60 s) after its first held line; then ONE POST carries all its lines (other conversations that are
+//   local chat as one conversation) until that conversation has been quiet for GT_WEBHOOK_QUIET_S (default 45 s), capped at
+//   GT_WEBHOOK_MAX_S (default 120 s) after its first held line; then ONE POST carries all its lines (other conversations that are
 //   due at the same moment ride along). Min GT_WEBHOOK_MIN_INTERVAL_S (default 15 s) between POSTs; max 120 POSTs/day.
 //   Urgent kinds (teleport_offer, friendship_offer, region_restart) are POSTed at once, bypassing debounce and min interval.
 //   Runtime: 'webhook debounce [<quiet s> [<max s>]]'.
@@ -24,8 +24,8 @@ public static class Webhook
     static readonly string FailedLog = Env("GT_WEBHOOK_FAILED_LOG", "/workspace/secondlife/webhook-failed.log");
     const string KeyName = "GALATAY_WEBHOOK_KEY";
     static double EnvS(string k, double d) => double.TryParse(Environment.GetEnvironmentVariable(k), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 0 ? v : d;
-    public static TimeSpan Quiet = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_QUIET_S", 20));
-    public static TimeSpan MaxHold = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MAX_S", 60));
+    public static TimeSpan Quiet = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_QUIET_S", 45));
+    public static TimeSpan MaxHold = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MAX_S", 120));
     public static TimeSpan MinInterval = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MIN_INTERVAL_S", 15));
     public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "region_restart" };
     public const int DailyCap = 120;

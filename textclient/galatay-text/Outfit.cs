@@ -14,14 +14,35 @@ public static partial class Program
     static bool IsHudPoint(AttachmentPoint p) => (int)p >= 31 && (int)p <= 38;
     static bool IsBodyPartType(WearableType t) => t is WearableType.Shape or WearableType.Skin or WearableType.Hair or WearableType.Eyes;
 
-    static async Task<List<InventoryBase>> ReadFolderRO(UUID folder, CancellationToken ct)
+    // 2026-10-03: hard per-call timeout (default 20 s). The library call did not always honour its token ('inv find' hung for an
+    // hour on 2026-10-02 23:13 PT), so we stop WAITING after the timeout even if the request itself never finishes.
+    static async Task<List<InventoryBase>> ReadFolderRO(UUID folder, CancellationToken ct, int timeoutMs = 20000) => (await ReadFolderTimed(folder, ct, timeoutMs)).kids;
+    static async Task<(List<InventoryBase> kids, bool ok)> ReadFolderTimed(UUID folder, CancellationToken ct, int timeoutMs = 20000)
     {
-        try { return await client.Inventory.RequestFolderContentsAsync(folder, client.Self.AgentID, true, true, InventorySortOrder.ByName, ct) ?? new(); }
-        catch (Exception ex) { Log("outfit", $"folder read {folder} failed: {ex.GetBaseException().Message}"); return new(); }
+        using var t = CancellationTokenSource.CreateLinkedTokenSource(ct); t.CancelAfter(Math.Max(500, timeoutMs));
+        Task<List<InventoryBase>> task;
+        try { task = client.Inventory.RequestFolderContentsAsync(folder, client.Self.AgentID, true, true, InventorySortOrder.ByName, t.Token); }
+        catch (Exception ex) { Log("outfit", $"folder read {folder} failed: {ex.GetBaseException().Message}"); return (new(), false); }
+        var gate = Task.Delay(Timeout.Infinite, t.Token).ContinueWith(_ => { }, TaskScheduler.Default);
+        if (await Task.WhenAny(task, gate) != task)
+        {
+            _ = task.ContinueWith(x => _ = x.Exception, TaskContinuationOptions.OnlyOnFaulted); // observe a late failure
+            Log("outfit", $"folder read {folder} timed out after {timeoutMs / 1000.0:F0} s{(ct.IsCancellationRequested ? " (caller deadline)" : "")}");
+            return (new(), false);
+        }
+        try { return (await task ?? new(), true); }
+        catch (Exception ex) { Log("outfit", $"folder read {folder} failed: {ex.GetBaseException().Message}"); return (new(), false); }
     }
     static async Task<InventoryItem> FetchItemRO(UUID id, CancellationToken ct)
     {
-        try { using var t = CancellationTokenSource.CreateLinkedTokenSource(ct); t.CancelAfter(15000); return await client.Inventory.FetchItemAsync(id, client.Self.AgentID, t.Token); }
+        try
+        {
+            using var t = CancellationTokenSource.CreateLinkedTokenSource(ct); t.CancelAfter(15000);
+            var task = client.Inventory.FetchItemAsync(id, client.Self.AgentID, t.Token);
+            var gate = Task.Delay(Timeout.Infinite, t.Token).ContinueWith(_ => { }, TaskScheduler.Default);
+            if (await Task.WhenAny(task, gate) != task) { _ = task.ContinueWith(x => _ = x.Exception, TaskContinuationOptions.OnlyOnFaulted); return null; }
+            return await task;
+        }
         catch { return null; }
     }
 

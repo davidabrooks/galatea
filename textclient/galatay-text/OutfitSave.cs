@@ -1,5 +1,6 @@
 // OutfitSave.cs (2026-09-26 13:20, David: save the current look as outfit "Original"; find clothing HUDs).
-// inv find <text>          READ-ONLY recursive inventory search (path, name, type, item id, desc, last attach point)
+// inv find <text>          READ-ONLY recursive inventory search (path, name, type, item id, desc, last attach point);
+//                          time-boxed to 30 s per call, partial results resume on the next call (2026-10-03)
 // outfit plan <name> [id,id,...]    dry run: links that 'outfit create' would make
 // outfit create <name> [id,id,...]  new folder (type Outfit) under My Outfits + links to the ORIGINAL items of every COF link
 //                                    (minus the Firestorm LSL Bridge and the COF folder link) plus the extra item ids (not worn).
@@ -12,38 +13,68 @@ namespace GalatayText;
 public static partial class Program
 {
     static readonly List<(string path, InventoryBase node)> invIndex = new(); static DateTime invIndexTime = DateTime.MinValue;
+    // 2026-10-03 (inv find hung for an hour): the index is built in time-boxed, RESUMABLE steps. Each 'inv find' reads folders
+    // (4 at a time, each read capped by ReadFolderTimed) for at most InvFindBudget, then answers with what it has (marked
+    // PARTIAL); the next 'inv find' continues where it stopped. A complete index is reused for 10 min.
+    static readonly TimeSpan InvFindBudget = TimeSpan.FromSeconds(30);
+    static readonly SemaphoreSlim invGate = new(1, 1);
+    static Queue<(UUID id, string path, int tries)> invPending; static List<(string, InventoryBase)> invPartial; static int invFoldersRead, invFoldersSkipped;
+    static bool invIndexComplete;
 
-    static async Task<int> BuildInvIndex(CancellationToken ct)
+    static async Task<(int read, bool complete)> BuildInvIndex(TimeSpan budget, CancellationToken ct)
     {
-        var root = client.Inventory.Store?.RootFolder; if (root == null) return 0;
-        var list = new List<(string, InventoryBase)>();
-        var queue = new Queue<(UUID id, string path)>(); queue.Enqueue((root.UUID, ""));
-        int folders = 0;
-        while (queue.Count > 0 && !ct.IsCancellationRequested && folders < 3000)
+        var root = client.Inventory.Store?.RootFolder; if (root == null) return (0, false);
+        if (invPending == null || invPending.Count == 0)
         {
-            var (id, path) = queue.Dequeue(); folders++;
-            var kids = await ReadFolderRO(id, ct);
-            foreach (var k in kids)
+            invPending = new(); invPending.Enqueue((root.UUID, "", 0)); invPartial = new(); invFoldersRead = 0; invFoldersSkipped = 0;
+        }
+        var deadline = DateTime.UtcNow + budget; int read = 0;
+        while (invPending.Count > 0 && !ct.IsCancellationRequested && invFoldersRead < 5000)
+        {
+            var left = deadline - DateTime.UtcNow; if (left <= TimeSpan.FromMilliseconds(500)) break;
+            var wave = new List<(UUID id, string path, int tries)>();
+            while (wave.Count < 4 && invPending.Count > 0) wave.Add(invPending.Dequeue());
+            int ms = (int)Math.Min(20000, left.TotalMilliseconds);
+            var res = await Task.WhenAll(wave.Select(async w => (w, r: await ReadFolderTimed(w.id, ct, ms))));
+            foreach (var (w, r) in res)
             {
-                if (k.ParentUUID != id) continue; // FetchInventoryDescendents2 may include link targets from elsewhere
-                if (k is InventoryFolder f) { list.Add((path, f)); queue.Enqueue((f.UUID, path + "/" + f.Name)); }
-                else list.Add((path, k));
+                if (!r.ok)
+                {
+                    if (w.tries < 1) invPending.Enqueue((w.id, w.path, w.tries + 1)); // one retry later
+                    else { invFoldersSkipped++; Log("outfit", $"inv index: skipping folder {w.id} ({(w.path.Length == 0 ? "/" : w.path)}) after 2 failed reads"); }
+                    continue;
+                }
+                read++; invFoldersRead++;
+                foreach (var k in r.kids)
+                {
+                    if (k.ParentUUID != w.id) continue; // FetchInventoryDescendents2 may include link targets from elsewhere
+                    if (k is InventoryFolder f) { invPartial.Add((w.path, f)); invPending.Enqueue((f.UUID, w.path + "/" + f.Name, 0)); }
+                    else invPartial.Add((w.path, k));
+                }
             }
         }
-        lock (invIndex) { invIndex.Clear(); invIndex.AddRange(list); invIndexTime = DateTime.Now; }
-        return folders;
+        bool complete = invPending.Count == 0;
+        lock (invIndex) { invIndex.Clear(); invIndex.AddRange(invPartial); invIndexTime = DateTime.Now; invIndexComplete = complete; }
+        return (read, complete);
     }
 
     static async Task<string> InvFind(string text)
     {
         if (!LoggedIn) return "not logged in";
-        using var cts = new CancellationTokenSource(240000);
-        int folders = 0;
-        if ((DateTime.Now - invIndexTime).TotalMinutes > 10) folders = await BuildInvIndex(cts.Token);
-        List<(string path, InventoryBase node)> snap; lock (invIndex) snap = invIndex.ToList();
+        if (!await invGate.WaitAsync(TimeSpan.FromSeconds(5))) return "another 'inv find' is still reading the inventory; try again in ~30 s";
+        int read = 0; bool building = false;
+        try
+        {
+            using var cts = new CancellationTokenSource(InvFindBudget + TimeSpan.FromSeconds(5));
+            if (!invIndexComplete || (DateTime.Now - invIndexTime).TotalMinutes > 10) { building = true; (read, _) = await BuildInvIndex(InvFindBudget, cts.Token); }
+        }
+        finally { invGate.Release(); }
+        List<(string path, InventoryBase node)> snap; bool complete; lock (invIndex) { snap = invIndex.ToList(); complete = invIndexComplete; }
         var terms = text.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var hits = snap.Where(x => terms.Any(t => x.node.Name.Contains(t, StringComparison.OrdinalIgnoreCase) || x.path.Contains(t, StringComparison.OrdinalIgnoreCase))).ToList();
-        var sb = new StringBuilder($"inventory index: {snap.Count} entries{(folders > 0 ? $" ({folders} folders read now)" : $" (cached {invIndexTime:HH:mm:ss})")}; {hits.Count} match '{text}':\n");
+        var state = complete ? (building ? $"complete ({read} folders read now{(invFoldersSkipped > 0 ? $", {invFoldersSkipped} unreadable skipped" : "")})" : $"cached {invIndexTime:HH:mm:ss}")
+                             : $"PARTIAL after {InvFindBudget.TotalSeconds:F0} s ({invFoldersRead} folders read, {invPending?.Count ?? 0} still to read; run 'inv find' again to continue)";
+        var sb = new StringBuilder($"inventory index: {snap.Count} entries, {state}; {hits.Count} match '{text}':\n");
         foreach (var (path, n) in hits.Take(150))
         {
             if (n is InventoryFolder f) sb.AppendLine($"  [folder] {path}/{f.Name}  {f.UUID} type {f.PreferredType}");

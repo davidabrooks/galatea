@@ -21,8 +21,10 @@ public static partial class Program
     const string TextureDir = "/workspace/secondlife/textures";
 
 #if TEXTURE_VISION
-    static TextureVision textureVision;
-    static TextureVision TV => textureVision ??= new TextureVision(client, new TextureVisionOptions { OutputDirectory = TextureDir });
+    // Holder class keeps every SlTextureVision type out of Program's own fields, so a deploy that forgot SlTextureVision.dll
+    // only breaks these commands (on first use), never the client's startup.
+    static class TexVision { internal static TextureVision Instance; }
+    static TextureVision TV => TexVision.Instance ??= new TextureVision(client, new TextureVisionOptions { OutputDirectory = TextureDir });
 
     static async Task<string> TextureCmds(string cmd, string[] a, string rest)
     {

@@ -10,7 +10,7 @@
 //       quiet for GT_WEBHOOK_QUIET_S (default 20 s), capped at GT_WEBHOOK_MAX_S (default 60 s) after its first held line;
 //       then ONE POST carries all its lines.
 //   Other conversations that are due at the same moment ride along. Min GT_WEBHOOK_MIN_INTERVAL_S (default 15 s) between POSTs;
-//   max 120 POSTs/day. Urgent kinds (teleport_offer, friendship_offer, group_invite, region_restart) are POSTed at once, bypassing debounce
+//   max 120 POSTs/day. Urgent kinds (teleport_offer, friendship_offer, group_invite, group_invite_accepted, region_restart) are POSTed at once, bypassing debounce
 //   and min interval. Runtime: 'webhook debounce [<quiet s> [<max s> [<detect s>]]]', 'webhook debounce detect <s>'.
 // - One try, 8 s timeout, no retry. Failures append the JSON body to the failed log. The key is never logged.
 using System.Net.Http.Headers;
@@ -32,7 +32,7 @@ public static class Webhook
     public static TimeSpan Quiet = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_QUIET_S", 20));        // burst: quiet gap before the POST
     public static TimeSpan MaxHold = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MAX_S", 60));        // burst: cap from the first held line
     public static TimeSpan MinInterval = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MIN_INTERVAL_S", 15));
-    public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "group_invite", "region_restart" };
+    public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "group_invite", "group_invite_accepted", "region_restart" };
     public const int DailyCap = 120;
     const int MaxEventsPerBatch = 50;
     const int MaxTextChars = 1000;

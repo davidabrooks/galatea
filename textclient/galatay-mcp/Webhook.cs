@@ -10,7 +10,11 @@
 //       quiet for GT_WEBHOOK_QUIET_S (default 20 s), capped at GT_WEBHOOK_MAX_S (default 60 s) after its first held line;
 //       then ONE POST carries all its lines.
 //   Other conversations that are due at the same moment ride along. Min GT_WEBHOOK_MIN_INTERVAL_S (default 15 s) between POSTs;
-//   max 120 POSTs/day. Urgent kinds (teleport_offer, friendship_offer, group_invite, group_invite_accepted, region_restart) are POSTed at once, bypassing debounce
+//   max GT_WEBHOOK_DAILY_CAP POSTs/day (default 600; was 120 until 2026-10-03, hit at 11:18 PT that day). Cap-exempt (counted
+//   separately, never dropped): urgent kinds and anything from David Nightingale (IM or local chat). 'webhook cap [<n>]',
+//   'webhook reset-cap', 'webhook cap selftest'. Every IM event carries my_last_im_to_sender (my last outgoing IM to that
+//   avatar, from the [me-im] log) and answered_after (that IM is newer than the event) so the routine can skip answered ones.
+//   Urgent kinds (teleport_offer, friendship_offer, group_invite, group_invite_accepted, region_restart) are POSTed at once, bypassing debounce
 //   and min interval. Runtime: 'webhook debounce [<quiet s> [<max s> [<detect s>]]]', 'webhook debounce detect <s>'.
 // - One try, 8 s timeout, no retry. Failures append the JSON body to the failed log. The key is never logged.
 using System.Net.Http.Headers;
@@ -33,7 +37,10 @@ public static class Webhook
     public static TimeSpan MaxHold = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MAX_S", 60));        // burst: cap from the first held line
     public static TimeSpan MinInterval = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MIN_INTERVAL_S", 15));
     public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "group_invite", "group_invite_accepted", "region_restart" };
-    public const int DailyCap = 120;
+    public static int DailyCap = (int)Math.Clamp(EnvS("GT_WEBHOOK_DAILY_CAP", 600), 1, 100000);
+    const string DavidId = "44ce5a36-c1c7-4a68-ac9a-635ddfff6233";
+    static int exemptToday, capDroppedToday;
+    static DateTime capHitAt = DateTime.MinValue;
     const int MaxEventsPerBatch = 50;
     const int MaxTextChars = 1000;
     static readonly TimeSpan ConfigRecheck = TimeSpan.FromSeconds(60);
@@ -54,7 +61,78 @@ public static class Webhook
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(8) };
     static readonly JsonSerializerOptions J = new() { WriteIndented = false };
 
-    public sealed record Ev(string type, string from, string from_id, string text, string time, double? distance);
+    public sealed record Ev(string type, string from, string from_id, string text, string time, double? distance)
+    {
+        public string my_last_im_to_sender { get; init; } // dedupe hint: my last outgoing IM to this avatar (ISO time), null = none known
+        public bool? answered_after { get; init; }         // true = that IM was sent after this event arrived
+    }
+
+    // pure (selftest-covered): bypasses the daily cap?
+    public static bool CapExempt(Ev e) => UrgentKinds.Contains(e.type) || (e.from_id == DavidId && e.type is "im" or "local_chat");
+    // pure: may a batch be POSTed? exempt batches always; others while under the cap
+    public static bool CapAllows(bool exempt, int postsToday, int cap) => exempt || postsToday < cap;
+
+    // adds the [me-im] dedupe hint to IM events (time of POST)
+    static Ev WithImHint(Ev e)
+    {
+        if (e.type != "im" || string.IsNullOrEmpty(e.from_id)) return e;
+        var last = Core.LastMyImTo(e.from_id);
+        if (last == null) return e;
+        bool? after = DateTimeOffset.TryParse(e.time, out var et) ? last.Value > et : null;
+        return e with { my_last_im_to_sender = last.Value.ToString("yyyy-MM-ddTHH:mm:sszzz", System.Globalization.CultureInfo.InvariantCulture), answered_after = after };
+    }
+
+    static void DayRoll() { if (DateTime.Today != day) { day = DateTime.Today; postsToday = 0; exemptToday = 0; capDroppedToday = 0; capHitAt = DateTime.MinValue; } }
+
+    public static string ResetCap()
+    {
+        int was; lock (gate) { DayRoll(); was = postsToday; postsToday = 0; capDroppedToday = 0; capHitAt = DateTime.MinValue; }
+        LogLocal($"daily cap counter reset by command (was {was}/{DailyCap})");
+        return $"webhook daily counter reset: {was} -> 0 (cap {DailyCap}/day; exempt today {exemptToday})";
+    }
+
+    public static string CapCmd(string[] a)
+    {
+        if (a.Length > 0 && a[0] == "selftest") return CapSelfTest();
+        if (a.Length > 0)
+        {
+            if (!int.TryParse(a[0], out var n) || n < 1 || n > 100000) return "usage: webhook cap [<1-100000>] | webhook cap selftest | webhook reset-cap";
+            lock (gate) DailyCap = n;
+            LogLocal($"daily cap set to {n} (runtime; GT_WEBHOOK_DAILY_CAP for restarts)");
+        }
+        lock (gate)
+        {
+            DayRoll();
+            return $"webhook daily cap {DailyCap}: {postsToday} counted POST(s) today, {exemptToday} exempt (urgent / David), {capDroppedToday} batch(es) dropped at the cap" +
+                   (capHitAt == DateTime.MinValue ? "" : $" (cap hit {capHitAt:HH:mm} PT)");
+        }
+    }
+
+    static string CapSelfTest()
+    {
+        var sb = new StringBuilder(); int pass = 0, fail = 0; void C(bool ok, string w) { if (ok) pass++; else fail++; sb.AppendLine($"{(ok ? "PASS" : "FAIL")} {w}"); }
+        Ev E(string type, string id, string time = null) => new(type, "X", id, "t", time ?? DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"), null);
+        var other = "11111111-1111-1111-1111-111111111111";
+        C(CapExempt(E("group_invite", other)) && CapExempt(E("teleport_offer", other)) && CapExempt(E("group_invite_accepted", other)), "urgent kinds (group_invite, teleport_offer, ...) are cap-exempt");
+        C(CapExempt(E("im", DavidId)) && CapExempt(E("local_chat", DavidId)), "IM / local chat from David Nightingale is cap-exempt");
+        C(!CapExempt(E("im", other)) && !CapExempt(E("local_chat", other)), "IM / local chat from anyone else counts against the cap");
+        C(CapAllows(false, 599, 600) && !CapAllows(false, 600, 600) && CapAllows(true, 600, 600) && CapAllows(true, 5000, 600), "cap: normal batch stops at 600, exempt batch always passes");
+        C(DailyCap >= 600 || Environment.GetEnvironmentVariable("GT_WEBHOOK_DAILY_CAP") != null, $"daily cap is {DailyCap} (default 600, GT_WEBHOOK_DAILY_CAP)");
+        // dedupe hint with a synthetic [me-im] time for a synthetic avatar
+        var av = "99999999-9999-9999-9999-" + Random.Shared.Next(100000000, 999999999).ToString("D12");
+        var t1 = DateTimeOffset.Now.AddMinutes(-10);
+        C(WithImHint(E("im", av, t1.ToString("yyyy-MM-ddTHH:mm:sszzz"))).my_last_im_to_sender == null, "no IM sent to this avatar -> no hint");
+        Core.NoteMyIm(av, DateTimeOffset.Now.AddMinutes(-5));
+        var h = WithImHint(E("im", av, t1.ToString("yyyy-MM-ddTHH:mm:sszzz")));
+        C(h.my_last_im_to_sender != null && h.answered_after == true, $"my IM 5 min ago, their line 10 min ago -> answered_after=true ({h.my_last_im_to_sender})");
+        var h2 = WithImHint(E("im", av, DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz")));
+        C(h2.my_last_im_to_sender != null && h2.answered_after == false, "their line newer than my IM -> answered_after=false");
+        C(WithImHint(E("local_chat", av)).my_last_im_to_sender == null, "local chat gets no IM hint");
+        var js = JsonSerializer.Serialize(h, J);
+        C(js.Contains("\"my_last_im_to_sender\"") && js.Contains("\"answered_after\":true"), "hint fields are in the JSON payload");
+        Core.ForgetMyIm(av);
+        return $"webhook cap selftest: {pass} PASS, {fail} FAIL (pure checks; nothing POSTed)\n" + sb.ToString().TrimEnd();
+    }
 
     public static void Init() => Core.OnIncoming = c => Enqueue(c.type, c.from, c.from_id, c.text, c.time, c.distance);
 
@@ -120,8 +198,8 @@ public static class Webhook
         string host = null; if (u != null) try { host = new Uri(u).Host; } catch { }
         lock (gate)
         {
-            if (DateTime.Today != day) { day = DateTime.Today; postsToday = 0; }
-            return JsonSerializer.Serialize(new { url_configured = u != null, url_host = host, key_configured = k != null, posts_today = postsToday, daily_cap = DailyCap, pending = convs.Values.Sum(c => c.Evs.Count), conversations_held = convs.Count, burst_detect_s = Detect.TotalSeconds, quiet_s = Quiet.TotalSeconds, max_hold_s = MaxHold.TotalSeconds, min_interval_s = MinInterval.TotalSeconds }, J);
+            DayRoll();
+            return JsonSerializer.Serialize(new { url_configured = u != null, url_host = host, key_configured = k != null, posts_today = postsToday, daily_cap = DailyCap, exempt_today = exemptToday, cap_dropped_today = capDroppedToday, cap_hit_at = capHitAt == DateTime.MinValue ? null : capHitAt.ToString("HH:mm:ss"), pending = convs.Values.Sum(c => c.Evs.Count), conversations_held = convs.Count, burst_detect_s = Detect.TotalSeconds, quiet_s = Quiet.TotalSeconds, max_hold_s = MaxHold.TotalSeconds, min_interval_s = MinInterval.TotalSeconds }, J);
         }
     }
 
@@ -186,12 +264,19 @@ public static class Webhook
     static async Task PostBatch(List<Ev> batch, int overflow, bool urgent, int nconv = 1)
     {
         if (batch.Count == 0) return;
+        bool exempt = batch.Any(CapExempt);
         if (PostOverride == null) lock (gate)
         {
-            if (DateTime.Today != day) { day = DateTime.Today; postsToday = 0; }
-            if (postsToday >= DailyCap) { LogLocal($"daily cap ({DailyCap} POSTs) reached; dropped batch of {batch.Count} event(s) (still in poll_events)"); return; }
-            postsToday++; lastPost = DateTime.UtcNow;
+            DayRoll();
+            if (!CapAllows(exempt, postsToday, DailyCap))
+            {
+                capDroppedToday++; if (capHitAt == DateTime.MinValue) capHitAt = DateTime.Now;
+                LogLocal($"daily cap ({DailyCap} POSTs) reached; dropped batch of {batch.Count} event(s) (still in poll_events; 'webhook reset-cap' / 'webhook cap <n>')"); return;
+            }
+            if (exempt) exemptToday++; else postsToday++;
+            lastPost = DateTime.UtcNow;
         }
+        batch = batch.Select(WithImHint).ToList();
         var kinds = batch.Select(e => e.type).Distinct().ToList();
         var body = JsonSerializer.Serialize(new { kind = kinds.Count == 1 ? kinds[0] : "mixed", urgent, region = Core.RegionName, conversations = nconv, batched = batch.Count, events = batch }, J);
         if (overflow > 0) LogLocal($"batch overflow: {overflow} extra event(s) not included in webhook body (still in poll_events)");
@@ -327,11 +412,10 @@ public static class Webhook
         if (url == null || key == null) return JsonSerializer.Serialize(new { ok = false, status = "not configured", url_configured = ReadUrl() != null, key_configured = ReadKey() != null }, J);
         lock (gate)
         {
-            if (DateTime.Today != day) { day = DateTime.Today; postsToday = 0; }
+            DayRoll();
             var since = DateTime.UtcNow - lastPost;
             if (since < MinInterval) return JsonSerializer.Serialize(new { ok = false, status = $"rate limited: retry in {(MinInterval - since).TotalSeconds:F0} s" }, J);
-            if (postsToday >= DailyCap) return JsonSerializer.Serialize(new { ok = false, status = $"daily cap ({DailyCap}) reached" }, J);
-            postsToday++; lastPost = DateTime.UtcNow;
+            exemptToday++; lastPost = DateTime.UtcNow; // a manual test never counts against (or is blocked by) the daily cap
         }
         var body = JsonSerializer.Serialize(new { kind = "test", region = Core.RegionName, events = Array.Empty<object>() }, J);
         var (status, err) = await Post(body, true);

@@ -61,6 +61,38 @@ public static partial class Program
         catch (Exception ex) { Log("webhook", "notify error: " + ex.GetType().Name); }
     }
     public static string RegionName => client?.Network?.CurrentSim?.Name;
+
+    // my last outgoing IM per avatar (webhook dedupe hint). Seeded once from the [me-im] lines in the last 4 MB of the log,
+    // so it survives a restart; then updated by the 'im' command.
+    static readonly ConcurrentDictionary<string, DateTimeOffset> myImTo = new(StringComparer.OrdinalIgnoreCase);
+    static int myImSeeded;
+    static readonly Regex MeImRx = new(@"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \[me-im\] to .*?\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\):", RegexOptions.Compiled);
+    public static void NoteMyIm(string id, DateTimeOffset t) => myImTo.AddOrUpdate(id, t, (_, old) => t > old ? t : old);
+    public static void ForgetMyIm(string id) => myImTo.TryRemove(id, out _);
+    public static DateTimeOffset? LastMyImTo(string id)
+    {
+        if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms();
+        return myImTo.TryGetValue(id, out var t) ? t : null;
+    }
+    static void SeedMyIms()
+    {
+        try
+        {
+            if (!File.Exists(LogPath)) return;
+            using var fs = new FileStream(LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (fs.Length > 4_000_000) fs.Seek(-4_000_000, SeekOrigin.End);
+            using var sr = new StreamReader(fs);
+            string line; int n = 0;
+            while ((line = sr.ReadLine()) != null)
+            {
+                if (!line.Contains("[me-im] to ")) continue;
+                var m = MeImRx.Match(line);
+                if (m.Success && DateTime.TryParseExact(m.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t)) { NoteMyIm(m.Groups[2].Value, new DateTimeOffset(t)); n++; }
+            }
+            Log("webhook", $"dedupe hint: seeded my last IM time for {myImTo.Count} avatar(s) from {n} [me-im] log line(s)");
+        }
+        catch (Exception ex) { Log("webhook", "dedupe hint seed failed: " + ex.GetType().Name); }
+    }
     static readonly Regex BridgeAuth = new("<bridgeAuth>[^<]*</bridgeAuth>", RegexOptions.Compiled);
     static readonly string LockPath = Path.Combine(Path.GetDirectoryName(SockPath)!, "sl-session.pid");
 
@@ -1495,6 +1527,7 @@ public static partial class Program
   pick create <region> <x> <y> <z> | <name> | <description>   new pick (literal \n = line break), read back
   balance | prices | caps            read-only: L$ balance, upload prices, which caps exist (no URLs)
   webhook_test | webhook status      probe the chat webhook (HTTP status) / show config (never the key)
+  webhook cap [<n>|selftest] | webhook reset-cap   daily POST cap (default 600, GT_WEBHOOK_DAILY_CAP); urgent kinds + David's IMs/chat are exempt
   webhook debounce [<quiet s> [<max s> [<detect s>]]] | webhook debounce detect <s> | webhook debounce selftest   per-conversation debounce: single line after 4 s detect window; burst (2nd line inside it) after 20 s quiet, cap 60 s; urgent = immediate
   restart status | restart test [fast] | restart cancel   region-restart evacuation: state / simulate a warning / abort
                               (warning -> stand, go home [fallbacks, else logout], poll every 60 s, return >= 3 min after the restart, re-sit; 45 min limit)
@@ -1568,6 +1601,7 @@ public static partial class Program
                 var id = await ResolveAvatar(target);
                 if (id == UUID.Zero) return $"could not resolve avatar '{target}'";
                 client.Self.InstantMessage(id, text);
+                NoteMyIm(id.ToString(), DateTimeOffset.Now); // webhook dedupe hint (Webhook.cs my_last_im_to_sender)
                 Log("me-im", $"to {NameOf(id)} ({id}): {text}");
                 return $"sent to {NameOf(id)} ({id})";
             }
@@ -1856,6 +1890,8 @@ public static partial class Program
             }
             case "webhook":
                 if (a.Length > 0 && a[0].Equals("test", StringComparison.OrdinalIgnoreCase)) return await GalatayMcp.Webhook.Test();
+                if (a.Length > 0 && a[0].Equals("reset-cap", StringComparison.OrdinalIgnoreCase)) return GalatayMcp.Webhook.ResetCap();
+                if (a.Length > 0 && a[0].Equals("cap", StringComparison.OrdinalIgnoreCase)) return GalatayMcp.Webhook.CapCmd(a[1..]);
                 if (a.Length > 0 && a[0].Equals("debounce", StringComparison.OrdinalIgnoreCase)) return a.Length > 1 && a[1] == "selftest" ? await GalatayMcp.Webhook.DebounceSelfTest() : GalatayMcp.Webhook.DebounceCmd(a[1..]);
                 return GalatayMcp.Webhook.ConfigSummary();
             case "logout": case "quit": case "exit":

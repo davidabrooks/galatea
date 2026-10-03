@@ -50,12 +50,33 @@ var (png, w, h, comps) = TextureVision.DecodeJ2cToPng(File.ReadAllBytes("x.j2c")
 
 ### Using it in a client that builds LibreMetaverse from source
 
-To avoid two copies of LibreMetaverse, point the library at your project:
+To avoid two copies of LibreMetaverse, set `LibreMetaverseProject` to your LibreMetaverse.csproj in a
+`Directory.Build.props` *above* the folder this repo is checked out in (it must be visible to NuGet restore too, so
+`AdditionalProperties` on the ProjectReference is not enough):
 
 ```xml
-<ProjectReference Include="path/to/sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj"
-                  AdditionalProperties="LibreMetaverseProject=$(MSBuildThisFileDirectory)path/to/LibreMetaverse.csproj" />
+<!-- host/Directory.Build.props, with this repo as a submodule at host/sl-texture-vision -->
+<Project>
+  <PropertyGroup>
+    <LibreMetaverseProject>$(MSBuildThisFileDirectory)src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj</LibreMetaverseProject>
+  </PropertyGroup>
+</Project>
 ```
+
+Then reference `sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj` normally. To keep the host buildable for
+people without access to this private repo, make the reference conditional on the file existing and guard the calling
+code with a define, e.g.:
+
+```xml
+<PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj')">
+  <DefineConstants>$(DefineConstants);TEXTURE_VISION</DefineConstants>
+</PropertyGroup>
+<ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj')">
+  <ProjectReference Include="../sl-texture-vision/src/SlTextureVision/SlTextureVision.csproj" />
+</ItemGroup>
+```
+
+When deploying a host by copying files, ship `SlTextureVision.dll` **and** the host's updated `*.deps.json`.
 
 ## CLI
 

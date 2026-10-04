@@ -49,6 +49,12 @@ static class Mesher
     // ponytail: thresholds tuned by eye (0.24 / 0.06 / 0.03 of radius*2/distance), one LOD per linkset where SL picks per prim
     static DetailLevel FarLod(float r, float d) => (r * 2f / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
 
+    // drop the rigged-mesh position overrides of joints whose position an animation drives (the SL pose blend wins)
+    static void PoseOverrides(Dictionary<string, Vector3> overrides, IEnumerable<string> positionAnimated)
+    {
+        foreach (var j in positionAnimated) overrides.Remove(j);
+    }
+
     static readonly UUID Transparent = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
 
     sealed class Batch { public string Group, Tex; public float[] Rgba; public bool Fullbright; public Dictionary<string, object> Mat; public List<float> P = new(), N = new(), T = new(); public List<uint> I = new(); }
@@ -73,6 +79,12 @@ static class Mesher
             OSDMap P(uint id, uint par, float x) => new OSDMap { ["localid"] = OSD.FromUInteger(id), ["parentid"] = OSD.FromUInteger(par), ["world_pos"] = OSD.FromVector3(new Vector3(x, 0, 0)), ["scale"] = OSD.FromVector3(Vector3.One) };
             var ls = new Dictionary<uint, OSDMap> { [1] = P(1, 0, 10), [2] = P(2, 1, 14) }; var sp = LinksetSpheres(ls.Values, ls);
             ok &= sp.Count == 1 && MathF.Abs(sp[1].c.X - 12) < 1e-3f && sp[1].r > 2.5f && RootOf(ls[2], ls) == 1;
+            // boots regression (2026-10-04): an mPelvis override at 10x scale must not move a pelvis an animation drives,
+            // while an un-animated joint keeps its override
+            var ovr = new Dictionary<string, Vector3> { ["mPelvis"] = new(0, 0, 10.67f), ["mKneeLeft"] = new(-0.001f, -0.046f, -0.491f) };
+            PoseOverrides(ovr, new[] { "mPelvis" });
+            var wb = Skeleton.World(ovr, null, null, new Vector3(0, 0.1f, 0.01f));
+            ok &= !ovr.ContainsKey("mPelvis") && ovr.ContainsKey("mKneeLeft") && MathF.Abs(wb["mPelvis"][14] - 1.077f) < 0.01f && wb["mHead"][14] < 2f;
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             Console.WriteLine(ok ? "selftest ok" : $"selftest FAILED pelvis={Z("mPelvis")} head={Z("mHead")} wristY={w["mWristLeft"][13]} look={lookGot}");
             return ok ? 0 : 1;
@@ -310,6 +322,11 @@ static class Mesher
                 }
                 Console.WriteLine($"pose: {anim.Count} rotated joints, {animPos.Count} moved, pelvis offset {pelvisOff}");
             }
+            // a position override on a joint the animations move is overwritten every frame by the SL viewer's pose blend
+            // (LLPose: the blended animation position replaces the joint's position), so it never shows. For the pelvis that
+            // matters: David's boots carry an mPelvis override of (0,0,10.67), the 1.067 m default written at the boots' 10x
+            // authoring scale; applied, it lifted his whole skeleton 9.6 m in mesh space (agent_off -10.48 hid it)
+            PoseOverrides(overrides, prio.Where(kv => kv.Value.p >= 0).Select(kv => kv.Key));
             // LL places the pelvis from the agent position: pelvis = agent z - (bodysize.z / 2 - pelvis-to-foot) (+ hover), with
             // bodysize from the unanimated skeleton (reimplemented from LLVOAvatar::computeBodySize / updateCharacter). In this
             // mesh frame that is: mesh z 0 at agent z - bodysize/2 - rest foot z. ponytail: hover (AppearanceHover) not exported = 0

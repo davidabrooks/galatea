@@ -161,6 +161,10 @@ def build(group, bones=None):
         tn = next((n for n in me.materials[0].node_tree.nodes if n.type == "TEX_IMAGE" and n.image), None)
         if group.startswith("avatar") and (b.get("mat") or {}).get("alpha", "auto") in ("auto", "blend") and not b["tex"].startswith("bake:") and tn and has_alpha(tn.image):
             ob.visible_shadow = False
+        # the backdrop is seen and casts sun shadow, but takes no part in the near scene's bounce light or reflections:
+        # the near scene lights exactly as before the backdrop (ponytail: no bounce light off far walls; ceiling = a sunlit
+        # building across the water doesn't brighten her side of the deck)
+        if group == "far": ob.visible_diffuse = False; ob.visible_glossy = False
         p3 = P.reshape(-1, 3); lo = np.minimum(lo, p3.min(0)); hi = np.maximum(hi, p3.max(0)); n += nt
     log(group, "triangles", n, "bbox", lo.round(2).tolist(), hi.round(2).tolist())
     return lo, hi, obs
@@ -228,12 +232,13 @@ def eep(env):
 
 def sky_backdrop(w, env, night):
     """What the camera (and water reflections) see of the sky: the EEP horizon colour at the horizon fading to the sky's
-    blue_density colour overhead, scaled to the horizon's brightness (SL's legacy sky model, much simplified). Diffuse
+    blue_density colour overhead, scaled to the horizon's full brightness (SL's legacy sky model, much simplified; at
+    0.85 of it the upper sky read as a darker picture). Diffuse
     lighting still comes from the flat horizon colour it always used, so nothing in the scene changes brightness.
     ponytail: no clouds, sun disc, haze glow or neighbouring regions; ceiling = a clean but plain gradient"""
     if "zenith" not in env: return
     nt = w.node_tree; L = nt.links.new; bg = nt.nodes["Background"]
-    h = env["horizon"]; z = env["zenith"]; k = max(sum(h), 1e-3) / max(sum(z), 1e-3) * 0.85
+    h = env["horizon"]; z = env["zenith"]; k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
     co = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); L(co.outputs["Generated"], sp.inputs[0])
     mr = nt.nodes.new("ShaderNodeMapRange"); mr.interpolation_type = "SMOOTHSTEP"; mr.inputs["From Min"].default_value = 0.0; mr.inputs["From Max"].default_value = 0.45
     L(sp.outputs["Z"], mr.inputs["Value"])
@@ -256,7 +261,7 @@ def water():
     m = bpy.data.materials.new("water"); m.use_nodes = True; nt = m.node_tree; L = nt.links.new
     for n in list(nt.nodes):
         if n.type != "OUTPUT_MATERIAL": nt.nodes.remove(n)
-    h = env.get("horizon", [0.5, 0.5, 0.6]); z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3) * 0.85
+    h = env.get("horizon", [0.5, 0.5, 0.6]); z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
     night = (env.get("sun_dir") or [0, 0, 1])[2] < 0; s = 0.35 if night else 1.0
     co = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); L(co.outputs["Reflection"], sp.inputs[0])
     mr = nt.nodes.new("ShaderNodeMapRange"); mr.interpolation_type = "SMOOTHSTEP"; mr.inputs["From Max"].default_value = 0.45; L(sp.outputs["Z"], mr.inputs["Value"])
@@ -264,7 +269,9 @@ def water():
     sky.inputs["A"].default_value = (*h, 1); sky.inputs["B"].default_value = (*[min(1.0, c * k) for c in z], 1)
     lw = nt.nodes.new("ShaderNodeLayerWeight"); lw.inputs["Blend"].default_value = 0.35
     mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; L(lw.outputs["Fresnel"], mx.inputs["Factor"])
-    mx.inputs["A"].default_value = (0.02, 0.05, 0.07, 1); L(sky.outputs["Result"], mx.inputs["B"])
+    # sea body = the horizon colour at ~80%, a little bluer (was a near-black (0.02, 0.05, 0.07): the sea fills a third of
+    # most frames where the pre-backdrop render showed the flat horizon colour, so the picture read as darker, David 2026-10-04)
+    mx.inputs["A"].default_value = (h[0] * 0.72, h[1] * 0.8, h[2] * 0.9, 1); L(sky.outputs["Result"], mx.inputs["B"])
     em = nt.nodes.new("ShaderNodeEmission"); L(mx.outputs["Result"], em.inputs["Color"]); em.inputs["Strength"].default_value = s
     L(em.outputs[0], nt.nodes["Material Output"].inputs["Surface"])
     ob.data.materials.append(m); ob.visible_shadow = False; ob.visible_diffuse = False; ob.visible_glossy = False
@@ -277,6 +284,7 @@ def terrain():
     verts = [(t.get("x0", 0) + i * st, t.get("y0", 0) + j * st, t["heights"][j][i] if t["heights"][j][i] is not None else 20.0) for j in range(ny) for i in range(nx)]
     faces = [(j * nx + i, j * nx + i + 1, (j + 1) * nx + i + 1, (j + 1) * nx + i) for j in range(ny - 1) for i in range(nx - 1)]
     me = bpy.data.meshes.new("terrain"); me.from_pydata(verts, [], faces); ob = bpy.data.objects.new("terrain", me); sc.collection.objects.link(ob)
+    ob.visible_diffuse = False; ob.visible_glossy = False   # backdrop only, like the far prims (see build)
     m = bpy.data.materials.new("ground"); m.use_nodes = True; m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.24, 0.30, 0.14, 1); me.materials.append(m)
 
 gpu_setup(); views = []
@@ -356,6 +364,9 @@ sc.view_settings.exposure = float(os.environ.get("GT_EXPOSURE", "0"))
 sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90
 log("build seconds", round(time.time() - T0, 1))
 views = views or [None]
+# keep the synced scene (BVH, ~1 GB of images with the backdrop) between the views of one job: each view re-synced it,
+# 2-3 s a view with the backdrop's textures (David 2026-10-04: keep `look around` near its pre-backdrop time)
+sc.render.use_persistent_data = len(views) > 1
 for i, v in enumerate(views):
     if i: set_view(v)
     sc.render.filepath = out if len(views) == 1 else out.replace(".jpg", f"-{i}.jpg")

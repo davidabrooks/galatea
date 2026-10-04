@@ -1,5 +1,5 @@
 // Look.cs (2026-10-04, David: let her see) - `look [self|around|at <avatar|object>] [fast]`
-//   READ-ONLY in-world: a `scene export` (radius 32; 8 for self), then the box script vision/look.py meshes it and renders
+//   READ-ONLY in-world: a `scene export` (radius 96, backdrop beyond 30 m; 8 for self), then the box script vision/look.py meshes it and renders
 //   on the CPU (Cycles, nice 10) and prints the image path(s). Waits up to GT_LOOK_WAIT_S (75 s, under the 85 s command
 //   reply cap); a longer render keeps going and its paths land in the log as [look]. One look at a time (shared work dir).
 using System.Diagnostics;
@@ -11,7 +11,7 @@ namespace GalatayText;
 public static partial class Program
 {
     static readonly SemaphoreSlim lookGate = new(1, 1);
-    static readonly string LookPy = Env("GT_LOOK_PY", "/workspace/galatea-vr/vision/look.py");
+    static readonly string LookPy = Env("GT_LOOK_PY", "/workspace/galatea-sl-repo/vision/look.py");   // the main worktree (galatea-vr is a feature-branch clone)
     static readonly string LookPython = Env("GT_LOOK_PYTHON", "/home/box/tools/imgvenv/bin/python");
 
     static async Task<string> LookCmd(string[] a)
@@ -36,7 +36,7 @@ public static partial class Program
                     && Vector3.Distance(p.Position, client.Self.SimPosition) <= 32) : null;
                 if (av != null) HeadTurnTo(av.ID, "look at"); else if (ob != null) HeadTurnToPoint(ob.Position, "look at");
             }
-            var ex = await SceneExport(new[] { "export", mode == "self" ? "8" : "32" });
+            var ex = await SceneExport(new[] { "export", mode == "self" ? "8" : "96" });   // 96 m: backdrop beyond 30 m (look.py)
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }
             var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };

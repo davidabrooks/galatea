@@ -56,6 +56,10 @@ static class Mesher
         // --look=x,y,z (region coordinates): turn her head toward that point (look at)
         var lookArg = args.FirstOrDefault(a => a.StartsWith("--look="))?[7..].Split(',').Select(x => float.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
         args = args.Where(a => !a.StartsWith("--look=")).ToArray();
+        // --far=M: scene prims beyond M m of the focus are backdrop (group "far"): lowest LOD, no normal/spec maps, and
+        // prims under 1 m skipped (David 2026-10-04: more background without slowing the render much) ponytail: far prims < 1 m vanish; ceiling = no small far detail (railings, signs)
+        float farR = float.Parse(args.FirstOrDefault(a => a.StartsWith("--far="))?[6..] ?? "1e9", System.Globalization.CultureInfo.InvariantCulture);
+        args = args.Where(a => !a.StartsWith("--far=")).ToArray();
         if (args.Length < 1 || !File.Exists(Path.Combine(args[0], "scene.json"))) { Console.Error.WriteLine("usage: scene-mesher <export dir> [near_m]"); return 2; }
         string dir = args[0]; float near = args.Length > 1 ? float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 20;
         var doc = (OSDMap)OSDParser.DeserializeJson(File.ReadAllText(Path.Combine(dir, "scene.json")));
@@ -76,7 +80,8 @@ static class Mesher
         void Count(string k) => stats.AddOrUpdate(k, 1, (_, v) => v + 1);
 
         var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => Owner(o) != null
-            ? only != "scene" : only != "avatar" && Vector3.Distance(o["world_pos"].AsVector3(), focus) <= focusR).ToList();
+            ? only != "scene" : only != "avatar" && Vector3.Distance(o["world_pos"].AsVector3(), focus) is var d && d <= focusR
+              && (d <= farR || o["scale"].AsVector3() is var sc && MathF.Max(sc.X, MathF.Max(sc.Y, sc.Z)) >= 1f)).ToList();
         var lights = new List<object>();
         var byLocal = ((OSDArray)doc["prims"]).Cast<OSDMap>().ToDictionary(o => o["localid"].AsUInteger());
         // the export's TextureEntry JSON drops "face_number" for face 0, so LibreMetaverse would read face 0 as the default
@@ -105,13 +110,14 @@ static class Mesher
             // child prims: world rotation = root * local, recomputed (exports before 2026-10-03 22:30 PT stored local * root)
             if (!mine && byLocal.TryGetValue(p.ParentID, out var par) && !par.ContainsKey("attached_to_me")) rot = par["rotation"].AsQuaternion() * p.Rotation;
             bool close = mine || Vector3.Distance(pos, focusR < 1e9f ? focus : me) < near;   // full LOD near the focus (or her)
+            bool far = !mine && Vector3.Distance(pos, focusR < 1e9f ? focus : me) > farR;
             FacetedMesh fm = null; float[] bind = null;
             try
             {
                 if (p.Sculpt?.Type == SculptType.Mesh)
                 {
                     if (assets.TryGetValue(("mesh", p.Sculpt.SculptTexture), out var data) && data != null)
-                        fm = mf.GenerateFacetedMeshMesh(p, data, close ? DetailLevel.Highest : DetailLevel.High);
+                        fm = mf.GenerateFacetedMeshMesh(p, data, far ? DetailLevel.Low : close ? DetailLevel.Highest : DetailLevel.High);
                     if (fm?.SkinData != null) bind = fm.SkinData.BindShapeMatrix;
                     Count(fm == null ? "mesh_failed" : bind != null ? "mesh_rigged" : "mesh");
                 }
@@ -120,11 +126,11 @@ static class Mesher
                     if (assets.TryGetValue(("texture", p.Sculpt.SculptTexture), out var data) && data != null)
                     {
                         var tex = new AssetTexture(UUID.Zero, data);
-                        if (tex.Decode()) fm = mf.GenerateFacetedSculptMesh(p, tex.Image, DetailLevel.High);
+                        if (tex.Decode()) fm = mf.GenerateFacetedSculptMesh(p, tex.Image, far ? DetailLevel.Low : DetailLevel.High);
                     }
                     Count(fm == null ? "sculpt_failed" : "sculpt");
                 }
-                else { fm = mf.GenerateFacetedMesh(p, close ? DetailLevel.Highest : DetailLevel.High); Count(fm == null ? "prim_failed" : "prim"); }
+                else { fm = mf.GenerateFacetedMesh(p, far ? DetailLevel.Low : close ? DetailLevel.Highest : DetailLevel.High); Count(fm == null ? "prim_failed" : "prim"); }
             }
             catch { Count("exception"); }
             if (fm == null) return;
@@ -132,7 +138,7 @@ static class Mesher
                 lock (lights) lights.Add(new { pos = new[] { pos.X, pos.Y, pos.Z }, color = new[] { li.Color.R, li.Color.G, li.Color.B }, intensity = li.Intensity, radius = li.Radius, falloff = li.Falloff });
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
             if (mine) { (bind != null ? rigged : unrigged).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
-            Emit(p, fm, "scene", null, null, pos, rot, o);
+            Emit(p, fm, far ? "far" : "scene", null, null, pos, rot, o);
         });
 
 
@@ -176,6 +182,7 @@ static class Mesher
                 string tex = BakeOf.TryGetValue(te.TextureID, out var bake) ? "bake:" + bakePrefix + bake : te.TextureID.ToString();
                 var rgba = new[] { te.RGBA.R, te.RGBA.G, te.RGBA.B, te.RGBA.A };
                 var mat = Mat(te, f.ID, o, ref tex, ref rgba);
+                if (group == "far") foreach (var k in new[] { "normal", "spec", "mr", "emissive_tex" }) mat?.Remove(k);
                 string key = $"{group}|{tex}|{string.Join(",", rgba.Select(x => x.ToString("F2")))}|{te.Fullbright}|{JsonSerializer.Serialize(mat)}";
                 var b = batches.GetOrAdd(key, _ => new Batch { Group = group, Tex = tex, Rgba = rgba, Fullbright = te.Fullbright, Mat = mat });
                 lock (b)

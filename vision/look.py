@@ -24,8 +24,9 @@ def main(a):
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
-    # her surroundings within 24 m at full detail near her; `self` meshes her alone
-    args = [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me), "24"]
+    # her surroundings: full detail within 24 m (Highest LOD within 12), beyond 30 m backdrop at the lowest LOD (exports
+    # from 2026-10-04 reach 96 m); `self` meshes her alone
+    args = [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me), "96", "--far=30"]
     if mode == "at":  # she turns her head toward the target (scene-mesher --look); an avatar's head ~0.7 m above its agent position
         av = next((v for v in doc.get("avatars", []) if target in str(v.get("name", "")).lower() and "pos" in v), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
@@ -34,9 +35,9 @@ def main(a):
     r = subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + args, capture_output=True, text=True)
     if r.returncode: sys.exit("scene-mesher failed: " + (r.stderr or r.stdout)[-400:])
     times["mesh"] = round(time.time() - t0, 1)
-    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc)
+    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
-    json.dump({"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # ponytail: no SL terrain mesh; ceiling = open ground renders as the sky colour
+    json.dump(doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)
     for k, im in make_job.decode_bakes(d).items():
         if handler.BAKE_KEY.fullmatch(k): im.convert("RGBA").save(f"{WORK}/tex/bake-{k}.png")
     json.dump(meta, open(f"{WORK}/mesh.json", "w"))

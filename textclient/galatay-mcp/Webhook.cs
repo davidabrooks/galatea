@@ -14,7 +14,7 @@
 //   separately, never dropped): urgent kinds and anything from David Nightingale (IM or local chat). 'webhook cap [<n>]',
 //   'webhook reset-cap', 'webhook cap selftest'. Every IM event carries my_last_im_to_sender (my last outgoing IM to that
 //   avatar, from the [me-im] log) and answered_after (that IM is newer than the event) so the routine can skip answered ones.
-//   Urgent kinds (teleport_offer, friendship_offer, group_invite, group_invite_accepted, region_restart) are POSTed at once, bypassing debounce
+//   Urgent kinds (teleport_offer, friendship_offer, group_invite, group_invite_accepted, region_restart, david_login[_test]) are POSTed at once, bypassing debounce
 //   and min interval. Runtime: 'webhook debounce [<quiet s> [<max s> [<detect s>]]]', 'webhook debounce detect <s>'.
 // - One try, 8 s timeout, no retry. Failures append the JSON body to the failed log. The key is never logged.
 using System.Net.Http.Headers;
@@ -36,7 +36,7 @@ public static class Webhook
     public static TimeSpan Quiet = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_QUIET_S", 20));        // burst: quiet gap before the POST
     public static TimeSpan MaxHold = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MAX_S", 60));        // burst: cap from the first held line
     public static TimeSpan MinInterval = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MIN_INTERVAL_S", 15));
-    public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "group_invite", "group_invite_accepted", "region_restart" };
+    public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "group_invite", "group_invite_accepted", "region_restart", "david_login", "david_login_test" };
     public static int DailyCap = (int)Math.Clamp(EnvS("GT_WEBHOOK_DAILY_CAP", 600), 1, 100000);
     const string DavidId = "44ce5a36-c1c7-4a68-ac9a-635ddfff6233";
     static int exemptToday, capDroppedToday;

@@ -300,6 +300,7 @@ public static partial class Program
         var msg = $"OK in {sw.Elapsed.TotalSeconds:F1}s: region {client.Network.CurrentSim?.Name} pos {Fmt(client.Self.SimPosition)} agent {client.Self.AgentID}";
         Log("login", msg);
         if (tickerTask == null) tickerTask = Task.Run(Ticker);
+        FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);
         _ = Task.Run(() => RefreshMutes(20000));
@@ -1557,6 +1558,8 @@ public static partial class Program
   sit_home                    Naberrie seat rule: her pillow 10d8a656 if both rock pillows are free, else a quiet free seat in The Buddha Center parcel (not the zendo), else stand
   offers [all|selftest] | offers accept <n> [confirm] | offers decline <n>   pending inventory offers + friendship requests (never auto-accepted; non-allow-listed sender needs 'confirm' = David's OK)
   friend list | friend accept|decline <name> [confirm] | friend add <name> [confirm]   friendships (allow-list: David Nightingale, Sophie-Jeanne)
+  friendwatch [status|selftest|simulate]   David Nightingale online -> urgent 'david_login' webhook ~10 s later (10 min debounce); simulate = 'david_login_test'
+  remind add <text> | remind list | remind done <n>   in-world reminders for David (/workspace/secondlife/inworld-reminders.md; pending ones ride on david_login)
   landmark create <name> | landmark list | landmark raw <name> | landmark tp <name|item uuid> [pos] [force]   landmarks (pos = teleport to the exact stored position instead of the landmark request; raw = stored asset text)
   sethome                     set home to the current spot; prints the server's reply (e.g. refused off your own/group land)
   parcel [x y]                teleport routing, landing point, owner/group and whether Galatay may ignore the landing point
@@ -1587,6 +1590,7 @@ public static partial class Program
         var a = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (cmd != "status" && cmd != "where" && cmd != "help" && line != "anim list") Log("cmd", line);
         if (cmd == "login") return await LoginAsync();
+        if (cmd == "remind") return RemindCmd(a); // works logged out (FriendWatch.cs)
         if (!LoggedIn && cmd != "help" && cmd != "restart") return "not logged in" + (cmd is "status" or "where" ? "" : " (use login)");
         if (cmd is "say" or "shout" or "whisper" || (cmd == "chan" && a.Length > 0 && a[0] == "0")) { var qg = QuietChatGuard(); if (qg != null) { Log("quiet", $"manual {cmd} {qg}"); return qg; } }
         if (cmd is "say" or "shout" or "whisper" or "chan" or "im") { var rg = RateGuard(); if (rg != null) return rg; WanderOwnChat(); }
@@ -1710,6 +1714,7 @@ public static partial class Program
             case "route": case "routes": case "goto_place": case "overhead": case "snapshot": return await RouteCmds(cmd, rest, a);
             case "offers": return await OffersCmd(a);
             case "friend": case "friends": return await FriendCmd(a);
+            case "friendwatch": return FriendWatchCmd(a);
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
             case "sethome": return await SetHomeCmd();
             case "autofollow": return AutoFollowCmd(a);

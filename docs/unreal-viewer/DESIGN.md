@@ -4,20 +4,22 @@ Status: **draft for David's review**, Oct 3, 2026. Nothing here is built yet. Th
 
 ## Decisions log
 
-Every decision David makes goes here, newest last, and the sections below are kept consistent with it.
+Every decision David makes goes here, and the sections below are kept consistent with it. All decisions so far are from Oct 3, 2026. They are listed in priority order (build order first, then Galatea/agent decisions, then hardware, then the human clients), not in the order they were made.
 
 | Date | Decision | Where it shows up |
 |---|---|---|
+| Oct 3, 2026 | **Build order: Galatea's needs first, then full high-end on David's own hardware.** That means the agent API, chat-first operation and Galatea's migration (T1) first, then the Unreal high-end client on David's RTX 4090 / RTX 5090 machines (T2). The web client, the mobile website and common mid-range PCs (T4) and the weakest devices (T3) come later, with broad-target testing as a gate before public release. | §1.1, §9 (M0–M2 T1, M3–M6 T2, M7–M10 T4, M12 gate) |
+| Oct 3, 2026 | **Four hardware targets, the first two prioritized:** **T1 (priority)** the AI-agent target, Galatea: headless and GPU-less on the Linux box, no rendering, judged by chat latency, reliability and API completeness (images only on request). **T2 (priority)** David's hardware: full Unreal high-end on the RTX 4090 desktop and RTX 5090 Laptop GPU (Razer), Windows 11. **T3 (later, pre-public)** the lowest scenario: the weakest supported devices (weak laptop, Chromebook or phone on the web client; the weakest GPU high-end supports). **T4 (later, pre-public)** the most common scenario: the web client in Chrome, the mobile website, and common mid-range PCs, sized from cited survey data. Each target has a test profile and budgets. This expands David's approval of the min-spec testing proposal. Buying or borrowing test hardware needs David's OK. | §1.1, §9 (all exits, M12) |
+| Oct 3, 2026 | **Galatea will eventually use this system for all her SL needs.** She migrates off today's text client onto the shared bridge, keeping every feature she relies on, with a rollback path. Until that cut-over, development never uses her account. (Resolves open question 7.) | §1, §6, §8, §9 (M2) |
+| Oct 3, 2026 | **Design principle: open to any AI agent and first-class for humans.** The bridge has a stable, versioned, documented agent API (command/event protocol plus an MCP server), with per-agent auth and permissions. The web UI and the high-end UI are first-class clients of the same bridge, not afterthoughts. | §1, §2, §6, §9 (M0, M1) |
+| Oct 3, 2026 | **David creates a separate SL test avatar himself for viewer development.** Its credentials are stored as a secret on the box, never in the repo, logs or docs. (Resolves open question 3.) | §8, §9, §10 |
+| Oct 3, 2026 | **High-end targets Windows 11 first,** developed and tested on David's RTX 4090 desktop and RTX 5090 Laptop GPU (Razer). The min-spec target stays lower (RTX 2000 / RX 6000 class) and is covered by T3. (Resolves open question 4.) | §1.1, §8, §9 (M3–M6, M12), §10 |
 | Oct 3, 2026 | **Low-end mode has no 3D at all.** It is a chat-first client; pictures are 2D only and made in the background at lower priority than chat. | §1, §4.1–4.3, §9 |
 | Oct 3, 2026 | **The low-end client is web-based:** a local web UI served by the bridge, usable from any browser, including a phone. (Resolves open question 2.) | §2, §4.1, §5, §9 |
-| Oct 3, 2026 | **The web client targets Chrome first:** desktop Chrome is primary. Chrome on Android/phones and other browsers (Edge, Firefox, Safari/iOS) come in a later milestone. | §4.1, §9 |
+| Oct 3, 2026 | **The web client targets Chrome first:** desktop Chrome is primary. Chrome on Android/phones and other browsers (Edge, Firefox, Safari/iOS) come in a later milestone. | §4.1, §9 (M10) |
+| Oct 3, 2026 | **Tailscale is fine for remote access.** It is the supported way in from outside the PC; no port is opened to the internet. (Resolves open question 9.) | §4.1, §4.6, §9 (M10) |
+| Oct 3, 2026 | **Mobile, near term = a mobile website that works anywhere:** the same web client, responsive, reached from the phone over Tailscale from any network (not just the home LAN). **Later = dedicated apps in the iOS App Store and Google Play**, a future milestone. **How they're built is deliberately left open** (a wrapper around the web app, native apps, or a cross-platform toolkit; open question 15). The bridge API stays platform-neutral so any client type works. | §4.1, §4.6, §5, §9 (M10, M14) |
 | Oct 3, 2026 | **Voice chat is needed at some point.** It goes in a later milestone, through SL's WebRTC voice. (Resolves open question 8.) | §1, §4.5, §9 (M11) |
-| Oct 3, 2026 | **Galatea will eventually use this system for all her SL needs.** She migrates off today's text client onto the shared bridge, keeping every feature she relies on, with a rollback path. Until that cut-over, development never uses her account. (Resolves open question 7.) | §1, §6, §8, §9 (M6) |
-| Oct 3, 2026 | **Design principle: open to any AI agent and first-class for humans.** The bridge has a stable, versioned, documented agent API (command/event protocol plus an MCP server), with per-agent auth and permissions. The web UI and the high-end UI are first-class clients of the same bridge, not afterthoughts. | §1, §2, §6, §9 (M0, M5) |
-| Oct 3, 2026 | **Tailscale is fine for remote access.** It is the supported way in from outside the PC; no port is opened to the internet. (Resolves open question 9.) | §4.1, §4.6, §9 (M4) |
-| Oct 3, 2026 | **Mobile, near term = a mobile website that works anywhere:** the same web client, responsive, reached from the phone over Tailscale from any network (not just the home LAN). **Later = dedicated apps in the iOS App Store and Google Play**, a future milestone. **How they're built is deliberately left open** (a wrapper around the web app, native apps, or a cross-platform toolkit; open question 15). The bridge API stays platform-neutral so any client type works. | §4.1, §4.6, §5, §9 (M4, M13) |
-| Oct 3, 2026 | **David creates a separate SL test avatar himself for viewer development.** Its credentials are stored as a secret on the box, never in the repo, logs or docs. (Resolves open question 3.) | §8, §9, §10 |
-| Oct 3, 2026 | **High-end targets Windows 11 first.** David's dev/test machines are a desktop with an NVIDIA RTX 4090 and a Razer laptop with an RTX 5090 Laptop GPU, both on Windows 11. The min-spec target stays lower (RTX 2000 / RX 6000 class), so testing on these top-end cards must include scaled-down settings so the min spec isn't neglected. (Resolves open question 4.) | §1, §8, §9 (M7–M10), §10 |
 
 ## 1. Goals, non-goals, target hardware
 
@@ -28,8 +30,8 @@ Every decision David makes goes here, newest last, and the sections below are ke
 - Reuse what already works: the C# LibreMetaverse core behind Galatea's text client, and `SlTextureVision` for texture decoding.
 - Stay inside Linden Lab's [Third-Party Viewer Policy](https://secondlife.com/corporate/third-party-viewers) from day one.
 - **Open to any AI agent, and good for humans** (decided Oct 3). One bridge, one documented protocol: the web UI, the Unreal UI, Galatea and any other agent (via MCP or the raw protocol) are all clients of it, with per-client permissions (§6).
-- **Galatea moves onto it** (decided Oct 3): the bridge eventually replaces today's text client for all her SL needs (M6).
-- **Mobile anywhere:** the web client works on a phone from any network via Tailscale (M4). Store apps come later (M13).
+- **Galatea moves onto it** (decided Oct 3): the bridge eventually replaces today's text client for all her SL needs (M2).
+- **Mobile anywhere:** the web client works on a phone from any network via Tailscale (M10). Store apps come later (M14).
 
 **Non-goals for now**
 - Build tools, mesh upload, the scripting editor, the marketplace, VR.
@@ -41,10 +43,34 @@ Every decision David makes goes here, newest last, and the sections below are ke
 - UE5's documented development requirements are a quad-core 2.5 GHz CPU, 32 GB RAM and a DirectX 11/12 GPU with 8 GB+ VRAM. Lumen and Nanite need DirectX 12 with Shader Model 6 hardware: NVIDIA RTX 2000 series, AMD RX 6000 series, Intel Arc A-series or newer ([Epic: hardware and software specifications](https://dev.epicgames.com/documentation/en-us/unreal-engine/hardware-and-software-specifications-for-unreal-engine)). Those are requirements for the editor; a shipped game can run lower, but Lumen/Nanite set the floor for the high-end look.
 - For comparison, the official SL viewer's minimum is a GPU with 4 GB VRAM and OpenGL 3.2, recommended 8 GB+ ([SL system requirements](https://secondlife.com/system-requirements)). So SL is already not a "weak computer" app in 3D.
 - Epic's own Fortnite runs down to an Intel HD 4000 or Radeon Vega 8 with 8 GB RAM in its low-fidelity "Performance" mode ([Fortnite PC requirements](https://www.epicgames.com/help/en-US/c-Category_Fortnite/c-Fortnite_TechnicalSupport/what-are-the-system-requirements-for-fortnite-on-pc-a000084912)). But that is years of tuning by Epic on hand-authored content. SL content is user-made, unoptimized and streamed live, so we should not expect that.
-- **So:**
-  - **High-end** = RTX 2000 / RX 6000 class or better, 16 GB+ RAM. We will state that plainly. This min spec stays the target even though development happens on far stronger cards (below).
-  - **Dev/test hardware (decided Oct 3):** David's desktop with an NVIDIA RTX 4090 and his Razer laptop with an RTX 5090 Laptop GPU, both Windows 11. Because these are top-end cards, every high-end test pass also runs with scaled-down settings: a "min-spec" profile with Unreal's lower scalability presets, a reduced resolution scale, a frame-rate check against a budget, and the laptop on battery or in a quiet power mode. Frame time and VRAM use are logged against the min-spec budget, so the RTX 2000 / RX 6000 class isn't neglected. A real min-spec GPU should be borrowed or bought before public release (M12).
-  - **Low-end** = any machine that runs desktop Chrome comfortably, integrated graphics included, plus a phone browser (M4). That is only realistic *because* low-end mode does no 3D rendering (David's call, Oct 3). The bridge itself (a .NET process) runs on a PC; the browser can be on the same PC or another device.
+- **So:** high-end means RTX 2000 / RX 6000 class or better with 16 GB+ RAM (stated plainly). Low-end means anything that runs Chrome comfortably, which is only realistic *because* low-end mode does no 3D (David's call, Oct 3). The bridge itself (a .NET process) runs on a PC or the Linux box; the browser can be on the same machine or another device.
+
+### 1.1 Hardware targets (decided Oct 3: four targets, T1 and T2 first)
+
+The budgets below are **proposed targets**. They get checked against real measurements in M0 (T1), M3 (T2) and M7 (T4 web), and changed if they're unrealistic. Anything marked "from survey" is cited; everything else is our own design choice, not data.
+
+**T1 (priority): AI agent, Galatea, headless on the box.** Linux, no GPU, no display; the bridge runs as a service with agents connected over MCP or the protocol. No rendering at all. Images (texture vision, map tiles) are made only when an agent asks.
+- *Test profile:* the bridge on the box with the test avatar (later Galatea), a scripted agent client sending and receiving chat/IM, plus a soak test (24 h, then 1 week at M2) that includes forced disconnects and region crossings.
+- *Budgets:* incoming chat/IM to agent event under 100 ms bridge-side (p99), and agent command to "sent" under 100 ms; zero lost or duplicated IMs/offers across restarts (persisted, as today); automatic re-login within 2 minutes of a drop; no texture, mesh or image traffic unless requested; steady-state RAM and CPU no worse than today's text client on the same box (measured in M0 as the baseline). API completeness means every feature the text client offers today has a documented command/event and an MCP tool (parity checklist).
+
+**T2 (priority): David's hardware, full high-end.** Desktop with an NVIDIA RTX 4090 and a Razer laptop with an RTX 5090 Laptop GPU, both Windows 11, running the full Unreal high-end client. (The web and mobile clients belong to T4, not here.)
+- *Test profile:* Unreal's top scalability presets with Lumen on, at the monitor's native resolution, in a busy region; the laptop also on battery.
+- *Budgets:* 16.7 ms per frame (60 fps) or better; VRAM under 16 GB and Unreal process RAM under 16 GB, which leaves headroom on these cards and keeps us honest for smaller ones; chat in the Unreal UI under the 100 ms bridge-side bar while assets stream; SL bandwidth is whatever the viewer's bandwidth setting allows (no extra budget).
+- A scaled-down run (lower presets, reduced resolution scale) is logged on these machines from M6 onward for information, so the min spec doesn't drift too far before T3/T4 testing. It doesn't gate a milestone.
+
+**T3 (later, gate before public release): lowest human scenario.**
+- *Web client:* a weak laptop or Chromebook with integrated graphics, or a budget phone, on a slow mobile connection reaching the bridge over Tailscale. Test profile: Chrome DevTools CPU and network throttling on David's machines first, then at least one real low-end device.
+- *High-end floor:* the weakest GPU we support, RTX 2060 (the lowest desktop card of the RTX 2000 series that Lumen needs, §1; 6 GB VRAM) or an RX 6000-series equivalent, at Unreal's low/medium presets with a reduced resolution scale at 1080p.
+- *Budgets:* web client receive-to-screen under 200 ms on the throttled or real device (100 ms stays the bridge-side bar); browser tab memory under 300 MB; bridge-to-phone traffic under 1 Mbit/s while chatting, with images off or on-demand on mobile data. High-end floor at 33.3 ms per frame (30 fps), VRAM under 5 GB, Unreal process RAM under 8 GB.
+
+**T4 (later, gate before public release): most common scenario: the web client in Chrome, the mobile website, and common mid-range PCs.** Linden Lab doesn't publish aggregate hardware statistics for SL users. The viewer does send GPU, CPU and RAM info to LL ([ViewerStats message](https://wiki.secondlife.com/wiki/ViewerStats)), but no public summary exists that we could find. So we use the [Steam Hardware & Software Survey, September 2026](https://store.steampowered.com/hwsurvey/Steam-Hardware-Software-Survey-Welcome-to-Steam) as the best public proxy:
+- *From survey:* most common GPU **NVIDIA GeForce RTX 5070** (5.86%); system RAM **32 GB** (42.22%, then 16 GB at 37.82%); VRAM 16 GB (27.21%) and 8 GB (26.71%) nearly tied; **8 physical CPU cores** (30.06%, then 6 cores at 27.23%); primary display **1920×1080** (47.91%); **Windows 11 64-bit** (71.34%).
+- Steam measures gamers, who likely skew higher than typical SL users; SL's own recommended spec is 16 GB RAM and an 8 GB+ GPU ([SL system requirements](https://secondlife.com/system-requirements)). So the T4 budgets use the more conservative runner-up values.
+- *Test profile, web and mobile (the main T4 clients):* the web client in desktop Chrome on a mid-range PC at 1920×1080, and the mobile website in Chrome on Android and Safari on iOS over Tailscale on mobile data. Until real devices are approved, desktop Chrome on any machine and David's own phone stand in.
+- *Test profile, high-end on a common PC:* an RTX 5070-class GPU at 1920×1080 with Unreal's medium/high presets and Lumen on, capped to 8 GB VRAM use and 16 GB system RAM.
+- *Budgets:* web client and mobile website receive-to-screen under 100 ms with image work saturated (bridge-side and in the browser); browser tab memory under 500 MB on desktop; reconnect-and-catch-up within 5 s after a network switch on the phone. High-end on a common PC: 16.7 ms per frame (60 fps) in a typical region and 33.3 ms (30 fps) worst case in a busy one; VRAM under 7 GB; Unreal process RAM under 10 GB.
+
+**Test hardware:** T1 and T2 need nothing new (the box and David's machines). T3 and T4 need real devices eventually (e.g. a low-end Chromebook or budget phone, a mid-range Android phone and an iPhone, an RTX 2060-class card, an RTX 5070-class card). **Buying or borrowing any test hardware needs David's OK.** Until then, throttling and scaled-down presets on David's machines stand in.
 
 ## 2. Architecture
 
@@ -121,7 +147,7 @@ flowchart LR
 **Decided (Oct 3): a local web UI served by the bridge, Chrome first.**
 - No Unreal in low-end mode. Unreal (even with only Slate/UMG 2D) would bring a large install, a GPU-backed window, Unreal's startup time and the EULA, all to draw text boxes and images. The web client ships without any Epic code and stays BSD and royalty-free.
 - The bridge serves plain HTML/CSS/JavaScript plus one WebSocket (§2.3). No build-heavy front-end framework is required at first; a small one can be added if the UI grows.
-- **Desktop Chrome is the target and the test browser.** We develop and measure against it (Chrome DevTools for the latency checks). Responsive layout is designed in from the start so a phone works later, but the phone (the mobile website, §4.6) and other browsers are tested and fixed in their own milestone (M4).
+- **Desktop Chrome is the target and the test browser.** We develop and measure against it (Chrome DevTools for the latency checks). Responsive layout is designed in from the start so a phone works later, but the phone (the mobile website, §4.6) and other browsers are tested and fixed in their own milestone (M10).
 - The page keeps working if the WebSocket drops: it reconnects and asks the bridge for everything missed since its last message ID, so a sleeping laptop or a phone switching networks doesn't lose chat.
 
 **Access and security (implications of a web UI):**
@@ -132,7 +158,7 @@ flowchart LR
 - Agents get their own tokens with limited scopes, separate from the human UI's token (§6).
 - The SL password is entered once at the bridge, never stored in the browser, and never sent anywhere except Linden Lab's login server.
 
-**Responsiveness rules** (testable, see M1):
+**Responsiveness rules** (testable, see M7):
 - Chat/IM input-to-send and receive-to-display under 100 ms on the bridge's side, whatever image work is running.
 - Image work runs on a separate low-priority worker pool and is *preemptible*: it checks a cancel flag between steps and yields when chat traffic arrives.
 - The UI never waits on an image. Placeholders appear first, and images replace them when ready.
@@ -194,16 +220,16 @@ How it's built:
 
 - **Near term: a mobile website.** It is the same web client the bridge serves, with a responsive phone layout. No separate code base.
 - **Works anywhere:** the phone reaches the bridge over Tailscale (decided Oct 3) from any network. The bridge keeps running on an always-on machine (David's PC or the box), and the phone is just a browser tab, so closing it doesn't log the avatar out. When the tab reopens, it catches up from the last message ID (§4.1).
-- **Add to home screen:** with a web app manifest, served over HTTPS (which Tailscale Serve provides), Chrome can install the site like an app ([MDN: making PWAs installable](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable)). That's cheap, so it's in M4.
+- **Add to home screen:** with a web app manifest, served over HTTPS (which Tailscale Serve provides), Chrome can install the site like an app ([MDN: making PWAs installable](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable)). That's cheap, so it's in M10.
 - **Notifications while the phone is locked** are the main weak spot of a website:
   - Web Push needs a service worker ([MDN: Push API](https://developer.mozilla.org/en-US/docs/Web/API/Push_API)). It works in Chrome on Android.
   - On iOS, web push works only for web apps added to the home screen, on iOS 16.4 or later ([OneSignal: web push for iOS](https://documentation.onesignal.com/docs/en/web-push-for-ios)).
   - Push messages travel through the browser vendor's push service, i.e. Google's or Apple's ([MDN: offline and background operation](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Offline_and_background_operation)). Send only "new IM" with no message text, and let the page fetch the content over Tailscale.
-  - The bridge would need to reach the push service from the PC. That's fine (outbound only), but it's an extra moving part, so push is optional in M4 and properly done in M13.
-- **Later: dedicated store apps (iOS App Store, Google Play), M13.** **Not decided whether they reuse the web app** (open question 15). The options are: a wrapper around the web app (e.g. [Capacitor](https://capacitorjs.com/docs) or PWA store packaging); fully native apps (Swift/Kotlin); or a cross-platform toolkit ([React Native](https://reactnative.dev/), [Flutter](https://flutter.dev/), [.NET MAUI](https://learn.microsoft.com/dotnet/maui/)). Any store app gives more reliable notifications and background behaviour, a normal app icon and store discovery. The cost is store accounts and review, and listing it publicly counts as distributing a viewer, so the TPV obligations (privacy policy, disclosures, §7) apply first. It also has to answer "how does the app reach the bridge" for users without Tailscale (see the relay tradeoff below).
+  - The bridge would need to reach the push service from the PC. That's fine (outbound only), but it's an extra moving part, so push is optional in M10 and properly done in M14.
+- **Later: dedicated store apps (iOS App Store, Google Play), M14.** **Not decided whether they reuse the web app** (open question 15). The options are: a wrapper around the web app (e.g. [Capacitor](https://capacitorjs.com/docs) or PWA store packaging); fully native apps (Swift/Kotlin); or a cross-platform toolkit ([React Native](https://reactnative.dev/), [Flutter](https://flutter.dev/), [.NET MAUI](https://learn.microsoft.com/dotnet/maui/)). Any store app gives more reliable notifications and background behaviour, a normal app icon and store discovery. The cost is store accounts and review, and listing it publicly counts as distributing a viewer, so the TPV obligations (privacy policy, disclosures, §7) apply first. It also has to answer "how does the app reach the bridge" for users without Tailscale (see the relay tradeoff below).
 - **Tailscale vs. a relay (tradeoff):**
   - **Tailscale (chosen):** no server for us to run, end-to-end encrypted, no port opened, free for personal use. The downside: every phone needs the Tailscale app and has to join the tailnet, which is fine for David and awkward for strangers.
-  - **Our own hosted relay** (bridge and phone both connect out to a server we run): no extra app on the phone, so it's friendlier for a public store app. The downsides: it costs money, it's a security target that sees everyone's session traffic unless we add end-to-end encryption, and it brings privacy-policy and data-handling duties under the TPV policy. **Not planned**; it's only revisited if the store apps (M13) need it.
+  - **Our own hosted relay** (bridge and phone both connect out to a server we run): no extra app on the phone, so it's friendlier for a public store app. The downsides: it costs money, it's a security target that sees everyone's session traffic unless we add end-to-end encryption, and it brings privacy-policy and data-handling duties under the TPV policy. **Not planned**; it's only revisited if the store apps (M14) need it.
 
 ## 5. UI
 
@@ -283,61 +309,72 @@ How it's built:
 ## 8. Galatea stays unaffected (until the planned cut-over)
 
 - **Separate everything:** new code under a new folder (e.g. `viewer/`) on its own branches. The bridge is a *new* process built from the shared core; it never touches the live text client's run directory, socket, app folder or deploy scripts.
-- **Never Galatea's account for development, until the planned cut-over (M6).** SL allows one session per account, so logging in the viewer as Galatea would kick her live session. Use the separate test avatar David is creating himself (decided Oct 3), on the Aditi beta grid where possible. Its credentials live only as a secret on the box (outside the repo, never committed, logged or printed); the bridge reads them at login.
-- **Builds and GPU testing on David's Windows 11 machines (RTX 4090 desktop, RTX 5090 laptop).** The box has no GPU. The box can build and test the bridge and the web UI (including headless Chrome tests), but Unreal builds, shader compiles and any 3D testing happen on David's machines, always including a scaled-down min-spec pass (§1).
+- **Never Galatea's account for development, until the planned cut-over (M2).** SL allows one session per account, so logging in the viewer as Galatea would kick her live session. Use the separate test avatar David is creating himself (decided Oct 3), on the Aditi beta grid where possible. Its credentials live only as a secret on the box (outside the repo, never committed, logged or printed); the bridge reads them at login.
+- **Builds and GPU testing on David's Windows 11 machines (RTX 4090 desktop, RTX 5090 laptop).** The box has no GPU. The box can build and test the bridge and the web UI (including headless Chrome tests), but Unreal builds, shader compiles and any 3D testing happen on David's machines (T2), with scaled-down runs logged for information; T3/T4 testing on other hardware is the M12 gate (§1.1).
 - **Agent rules:** no deploy or restart of the live client or MCP connector as part of viewer work. Viewer PRs never modify `textclient/`; shared code is copied or factored out only in a separate, explicitly approved PR.
-- **The cut-over itself (M6)** is the one planned exception: an explicitly approved, scheduled switch with the old text client kept ready to roll back.
+- **The cut-over itself (M2)** is the one planned exception: an explicitly approved, scheduled switch with the old text client kept ready to roll back.
 
 ## 9. Milestones (each ends in a demo)
 
-- **M0: bridge spike + protocol v0.** A new bridge process logs the *test avatar* in (credentials from the box secret) and exposes the control channel. The command/event schema (§6.1) is written down from day one, and a throwaway CLI uses only that schema to show chat/IM flowing.
-  *Exit: send and receive IM/chat through the bridge; Galatea's live session untouched.*
-- **M1: low-end web prototype (chat first, desktop Chrome).** The bridge serves the web UI on `127.0.0.1` with a per-install token. Local chat, IM tabs, people nearby, offers inbox over the WebSocket push, reconnect-and-catch-up, and the P0/P3 scheduler. The web UI uses only the public protocol.
-  *Exit: a 30-minute live chat in desktop Chrome on a weak laptop, with the P3 load generator saturating image work, shows chat latency under 100 ms throughout, bridge-side and receive-to-screen (measured and logged).*
-- **M2: low-end pictures.** Map tiles + avatar dots, profile pictures, texture previews via SlTextureVision (served over HTTP from the cache), then the composited scene card.
-  *Exit: in desktop Chrome, walking into a busy region shows a scene card within ~30 s without any chat slowdown (same latency log).*
-- **M3: low-end daily-driver (desktop Chrome).** Inventory (wear/detach), teleport by map/landmark, group chat, profiles, HUD button lists, desktop notifications.
-  *Exit: David spends an evening in SL using only low-end mode in desktop Chrome.*
-- **M4: mobile website, works anywhere + other browsers.** Phone layout polished. Remote access through Tailscale Serve (HTTPS, tailnet only) from any network. Web app manifest so it can be added to the home screen; optional Web Push with no message text (§4.6). Testing and fixes on Chrome for Android, then Edge, Firefox and Safari on iOS.
-  *Exit: David chats for 30 minutes from his phone on mobile data (away from home) over Tailscale, with no port open to the internet; a checklist of the core flows passes in each listed browser.*
-- **M5: agent API v1 + MCP server.** Protocol v1 frozen and documented with a reference client; MCP server over stdio and Streamable HTTP (Origin check, bearer tokens, 401); per-agent tokens and scopes; the IM duplicate guard, heads-up rule, rate limits, money rule, offers policy and webhook cap moved into the bridge as policies for all clients; audit log and the agents panel in the web UI.
-  *Exit: on the test account, a generic MCP client (not our code) and the web UI are connected at the same time; the agent can chat but is refused `teleport` and `money` without those scopes; every action shows up in the audit log.*
-- **M6: Galatea migration.** Galatea moves from the text client onto the bridge. Before the switch: feature parity checked against a list of everything she uses today (webhook wake-ups and cap, IM guard and heads-up, persisted offers and auto-accept rules, autofollow, wander, sit/stand, worn/touch-attachment, texture vision, inventory, group invites, logs), with her agent connected through the M5 API. Then a scheduled cut-over approved by David, with the old text client kept installed and runnable for rollback, and a 1-week parallel watch period.
-  *Exit: Galatea runs a full week on the bridge with no lost IMs/offers and no duplicate sends; rollback tested once in a dry run; the text client is retired only after David signs off.*
-- **M7: high-end spike.** Unreal project on David's Windows 11 desktop (RTX 4090) connected to the bridge via the control + shared-memory channels. It renders region terrain and plain prims (PrimMesher geometry, flat colors) with free-fly camera.
-  *Exit: a recognizable region layout in Unreal, live, with objects appearing as they stream in.*
-- **M8: textures, mesh, materials.** SlTextureVision textures through shared memory, mesh LODs, legacy + glTF PBR materials, EEP sky/water.
-  *Exit: side-by-side screenshots with Firestorm of the same spot look clearly "the same place".*
-- **M9: avatars.** SL skeleton in Unreal, rigged mesh bodies/heads, bakes on mesh, alpha masks, animation playback, our own avatar walking.
-  *Exit: Galatea's look (on the test account, with a copy of the outfit) renders correctly, standing, walking and sitting.*
-- **M10: high-end UI + polish.** Shared panels from low-end in UMG, Lumen on, scalability presets, impostors, cache.
-  *Exit: a 1-hour session in a busy region at a stable frame rate without crashes, on the RTX 4090 desktop at high settings and also in the scaled-down min-spec profile (§1) within its frame-time and VRAM budget; the Razer laptop passes the same checks.*
-- **M11: voice (WebRTC).** Spike approach (A), browser audio via the bridge's signaling, and fall back to (B), the bridge's LibreMetaverse WebRTC client, if needed. Push-to-talk in the web client (desktop Chrome first, then the mobile website); later in the Unreal client.
-  *Exit: David holds a 10-minute voice conversation with another avatar (local/spatial voice and one IM call) from desktop Chrome, while text chat stays under the M1 latency bar.*
-- **M12: public-readiness.** TPV policy checklist, disclosures, privacy policy, unique viewer ID, installer/uninstaller, name chosen, public agent-API docs including the Scripted Agent Policy note (§6.4).
-  *Exit: ready to apply for the TPV directory.*
-- **M13 (future): store apps for iOS and Android.** Apps for the iOS App Store and Google Play with reliable notifications. The technology is chosen at the start of the milestone (open question 15); every option talks to the bridge through the same public API (§6.1). It needs M12 first (privacy policy, name) and a decision on how users without Tailscale reach their bridge (§4.6).
-  *Exit: the app passes App Store and Google Play review, and David uses it for a week in place of the mobile website.*
+Order (decided Oct 3): **Galatea's needs first (T1), then full high-end on David's hardware (T2), then the web client and mobile website for the most common setups (T4), with the lowest (T3) and most common (T4) targets tested as a gate before anything goes public.** Each exit names the target(s) it is measured on (§1.1).
 
-Low-end comes first because it is cheap and useful right away, and it builds the bridge the 3D mode needs anyway. The agent API (M5) and Galatea's migration (M6) come before 3D because they only need the bridge, and they turn Galatea into the bridge's heaviest daily tester. Voice (M11) only depends on M1–M3, and the store apps (M13) only on M4 and M12, so either can move earlier if David wants.
+**Phase 1: Galatea (T1)**
+- **M0: bridge spike + protocol v0 (T1).** A new headless bridge process runs on the box and logs the *test avatar* in (credentials from the box secret). The command/event schema (§6.1) is written down from day one; a throwaway CLI uses only that schema to show chat/IM flowing. Includes the P0 chat-first scheduler. Baseline RAM/CPU of today's text client measured.
+  *Exit (T1): send and receive IM/chat through the bridge within the T1 latency budget; Galatea's live session untouched.*
+- **M1: agent API v1 + MCP server (T1).** Protocol v1 documented with a reference client; MCP server over stdio and Streamable HTTP (Origin check, bearer tokens, 401); per-agent tokens and scopes; the IM duplicate guard, heads-up rule, rate limits, money rule, offers policy and webhook wake-ups/cap moved into the bridge as policies for all clients; audit log; images (texture vision, map tiles) on request only.
+  *Exit (T1): on the test avatar, a generic MCP client (not our code) is connected; the agent can chat but is refused `teleport` and `money` without those scopes; every action is in the audit log; a 24 h soak with forced disconnects meets the T1 budgets with zero lost or duplicated IMs/offers; the parity checklist against the text client is complete.*
+- **M2: Galatea migration (T1).** Galatea moves from the text client onto the bridge. Before the switch: parity checked against everything she uses today (webhook wake-ups and cap, IM guard and heads-up, persisted offers and auto-accept rules, autofollow, wander, sit/stand, worn/touch-attachment, texture vision, inventory, group invites, logs), with her agent connected through the M1 API. Then a scheduled cut-over approved by David, with the old text client kept installed and runnable for rollback, and a 1-week parallel watch period.
+  *Exit (T1): Galatea runs a full week on the bridge within the T1 budgets, with no lost IMs/offers and no duplicate sends; rollback tested once in a dry run; the text client is retired only after David signs off.*
+
+**Phase 2: full high-end on David's hardware (T2)**
+- **M3: high-end spike (T2).** Unreal project on David's Windows 11 desktop (RTX 4090) connected to the bridge via the control + shared-memory channels. It renders region terrain and plain prims (PrimMesher geometry, flat colors) with free-fly camera, plus a minimal chat panel. First measurements of the T2 budgets.
+  *Exit (T2): a recognizable region layout in Unreal, live, with objects appearing as they stream in, and chat working alongside.*
+- **M4: textures, mesh, materials (T2).** SlTextureVision textures through shared memory, mesh LODs, legacy + glTF PBR materials, EEP sky/water.
+  *Exit (T2): side-by-side screenshots with Firestorm of the same spot look clearly "the same place".*
+- **M5: avatars (T2).** SL skeleton in Unreal, rigged mesh bodies/heads, bakes on mesh, alpha masks, animation playback, our own avatar walking.
+  *Exit (T2): Galatea's look (on the test avatar, with a copy of the outfit) renders correctly, standing, walking and sitting.*
+- **M6: high-end UI + polish (T2).** UMG panels for chat, IM, people, inventory, map, offers and the agents panel (§5), all over the public protocol; Lumen on, scalability presets, impostors, cache. Scaled-down runs logged for information (§1.1).
+  *Exit (T2): David spends a 1-hour session in a busy region using only the Unreal client, without crashes and within the T2 budgets, on the RTX 4090 desktop and again on the Razer laptop.*
+
+**Phase 3: web client and mobile website for the most common setups (T4)**
+- **M7: web prototype (chat first, desktop Chrome) (T4).** The bridge serves the web UI on `127.0.0.1` with a per-install token. Local chat, IM tabs, people nearby, offers inbox over the WebSocket push, reconnect-and-catch-up, the P3 image scheduler, and the agents panel. The web UI uses only the public protocol.
+  *Exit (T4 web profile): a 30-minute live chat in desktop Chrome, with the P3 load generator saturating image work, stays within the T4 web budgets, bridge-side and receive-to-screen (measured and logged).*
+- **M8: web pictures (T4).** Map tiles + avatar dots, profile pictures, texture previews via SlTextureVision (served over HTTP from the cache), then the composited scene card.
+  *Exit (T4): in desktop Chrome, walking into a busy region shows a scene card within ~30 s without any chat slowdown (same latency log).*
+- **M9: web daily-driver (desktop Chrome) (T4).** Inventory (wear/detach), teleport by map/landmark, group chat, profiles, HUD button lists, desktop notifications.
+  *Exit (T4): David spends an evening in SL using only the web client in desktop Chrome.*
+- **M10: mobile website, works anywhere + other browsers (T4).** Phone layout polished. Remote access through Tailscale Serve (HTTPS, tailnet only) from any network. Web app manifest so it can be added to the home screen; optional Web Push with no message text (§4.6). Testing and fixes on Chrome for Android, then Edge, Firefox and Safari on iOS.
+  *Exit (T4 mobile profile, on David's own phone until test devices are approved): David chats for 30 minutes on mobile data (away from home) over Tailscale, with no port open to the internet, within the T4 budgets; a checklist of the core flows passes in each listed browser.*
+- **M11: voice (WebRTC) (T4, then T2).** Spike approach (A), browser audio via the bridge's signaling, and fall back to (B), the bridge's LibreMetaverse WebRTC client, if needed. Push-to-talk in the web client (desktop Chrome first, then the mobile website); then in the Unreal client (likely via B).
+  *Exit (T4): David holds a 10-minute voice conversation with another avatar (local/spatial voice and one IM call) from desktop Chrome, while text chat stays under the M7 latency bar.*
+
+**Phase 4: before public release**
+- **M12: broad-target gate (T3, T4).** Run the T3 and T4 test profiles on real devices: at least one weak laptop/Chromebook and a budget phone (T3), a mid-range PC, a mid-range Android phone and an iPhone (T4) for the web client and mobile website; the high-end floor GPU (RTX 2060 class, T3) and an RTX 5070-class GPU (T4) for high-end. Fix what misses the budgets, or adjust the published min spec. Real test hardware only with David's OK (§1.1).
+  *Exit (T3, T4): every T3 and T4 budget in §1.1 is met (or the published min spec is honestly changed and David approves), and the core flows checklist passes on each device.*
+- **M13: public-readiness.** TPV policy checklist, disclosures, privacy policy, unique viewer ID, installer/uninstaller, name chosen, public agent-API docs including the Scripted Agent Policy note (§6.4). Requires M12.
+  *Exit: ready to apply for the TPV directory.*
+- **M14 (future): store apps for iOS and Android.** Apps for the iOS App Store and Google Play with reliable notifications. The technology is chosen at the start of the milestone (open question 15); every option talks to the bridge through the same public API (§6.1). It needs M12 and M13 first (broad-device testing, privacy policy, name) and a decision on how users without Tailscale reach their bridge (§4.6).
+  *Exit (T3 and T4 phones): the app passes App Store and Google Play review, and David uses it for a week in place of the mobile website.*
+
+Galatea comes first because she's the daily user today. The agent API and her migration need only the headless bridge (no UI, no GPU), and running her on it makes her the bridge's heaviest tester before any human UI exists. Full high-end on David's hardware comes next because that's the human client David wants first. The web client and mobile website are cheaper and can move earlier if David wants: they only depend on M0–M2, and voice (M11) only on M7–M9. The lowest and most-common targets gate the public release (M12) rather than slowing early work.
 
 ## 10. Open questions for David
 
 1. **Image generation approach for low-end mode:** are map tiles + profile pictures + composited scene cards (local, accurate, free) enough at first? Do you also want an opt-in software snapshot, a remote render from your PC, or AI-made "mood pictures" clearly labeled as illustrations?
 2. ~~Low-end UI technology: web or native?~~ **Resolved Oct 3, 2026: web-based (local web UI served by the bridge), desktop Chrome first.** See Decisions.
 3. ~~Test account for viewer development?~~ **Resolved Oct 3, 2026: David creates a separate test avatar himself; its credentials are stored as a secret on the box, never in the repo.** See Decisions.
-4. ~~Windows-only for high-end in year one? Which GPU?~~ **Resolved Oct 3, 2026: Windows 11 first; dev/test on an RTX 4090 desktop and an RTX 5090 Laptop GPU (Razer), with min-spec testing via scaled-down settings.** See Decisions.
+4. ~~Windows-only for high-end in year one? Which GPU?~~ **Resolved Oct 3, 2026: Windows 11 first; dev/test on an RTX 4090 desktop and an RTX 5090 Laptop GPU (Razer), with T3/T4 (lowest and most common) testing as a pre-public gate, M12.** See Decisions.
 5. Product intent: open-source hobby viewer, or a product you may sell (affects the name, TPV directory listing and the Unreal royalty planning above $1M)?
 6. Viewer name: the TPV policy forbids "Second", "Life", "SL" or "Linden" in it. Any ideas?
-7. ~~Should Galatea herself eventually use the bridge?~~ **Resolved Oct 3, 2026: yes, for all her SL needs; migration milestone M6.** See Decisions.
+7. ~~Should Galatea herself eventually use the bridge?~~ **Resolved Oct 3, 2026: yes, for all her SL needs; migration milestone M2.** See Decisions.
 8. ~~Voice: needed at some point, or permanently out of scope?~~ **Resolved Oct 3, 2026: needed, as a later milestone (M11), via SL's WebRTC voice.** See Decisions.
 9. ~~Remote access for the phone: Tailscale or LAN-only?~~ **Resolved Oct 3, 2026: Tailscale is fine** (§4.1, §4.6). See Decisions.
 10. **Agent access:** which agents besides Galatea should get access at first, and is the draft default scope set (§6.3: read + chat/IM, no teleport/inventory changes, never `money`) right?
 11. **Scripted agent flag:** once Galatea runs on the bridge, should her account be marked as a scripted agent under LL's Scripted Agent Policy (§6.4)? It's arguably required if she's primarily AI-operated, but it means estates with `deny_bots` will refuse her.
-12. **Migration timing:** do the cut-over (M6) as soon as M5 is done, or wait until the bridge has proven itself for a while with your own use first?
+12. **Migration timing:** do the cut-over (M2) as soon as the agent API (M1) is done, or wait until the bridge has proven itself for a while with your own use first?
 13. **Where the always-on bridge runs** for mobile-anywhere: your PC (must stay awake) or the box, and is it one bridge per SL account (yours and Galatea's separately)?
-14. **Store apps (M13):** Tailscale-only (simple, but every user installs Tailscale) or eventually a hosted relay (friendlier, but cost, security and privacy duties; §4.6)?
-15. **Store apps (M13): how to build them?** Left open on purpose:
+14. **Store apps (M14):** Tailscale-only (simple, but every user installs Tailscale) or eventually a hosted relay (friendlier, but cost, security and privacy duties; §4.6)?
+15. **Store apps (M14): how to build them?** Left open on purpose:
     - **Wrapper around the web app** (e.g. Capacitor, PWA packaging): one UI code base and the fastest route; but it feels less native, and Apple may reject apps that are little more than a website.
     - **Native apps (Swift for iOS, Kotlin for Android):** the best feel, notifications and background behaviour, and voice/audio integration; but two more code bases to build and maintain.
     - **Cross-platform toolkit** (React Native, Flutter, .NET MAUI): one mobile code base with near-native UI. .NET MAUI can share C# with the bridge, and React Native can share skills and some code with the web UI. It's still a second UI code base next to the web client.

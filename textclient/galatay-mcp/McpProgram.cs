@@ -87,7 +87,7 @@ public sealed class SlTools
     [McpServerTool(Name = "object_info"), Description("Details for one object UUID: name, description, owner, position, distance, occupancy.")]
     public static Task<string> ObjectInfo(string uuid) => R("objinfo " + Clean(uuid));
 
-    [McpServerTool(Name = "walk_to"), Description("Walk (server autopilot) to region-local coordinates. Straight line; may stop at obstacles. Check status afterwards.")]
+    [McpServerTool(Name = "walk_to"), Description("Walk (server autopilot) to region-local coordinates. Straight line; may stop at obstacles. Where a nav grid covers both ends (e.g. home in Peronaut) and the straight line is blocked, she walks the planned route around walls and through doors instead (never flies). Check status afterwards.")]
     public static Task<string> WalkTo(float x, float y, float z) => R(FormattableString.Invariant($"moveto {x} {y} {z}"));
 
     [McpServerTool(Name = "walk"), Description("Walk forward the given number of metres in the current facing direction.")]

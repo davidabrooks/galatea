@@ -4,7 +4,8 @@
 // - sit_near <avatar>           goto_avatar if needed, then sit on the nearest UNOCCUPIED pillow/cushion/seat within 3 m of them
 // - walk_status | walk_stop     progress / cancel;  map [radius] [x y] | terrain <x> <y>   planning data
 // Position is checked every 0.5 s; < 0.25 m progress in 3 s = stuck -> back off 1.5 m, then side offsets +-2 m / +-4 m;
-// a short logged fly hop only as a last resort. Every leg is logged as [walk] with local (PT) timestamps.
+// a short logged fly hop only as a last resort, and only with 'nofly off' or '--fly' for that walk (2026-10-04, David: no
+// flying on the walking test; NavPlan.cs). Every leg is logged as [walk] with local (PT) timestamps.
 using System.Globalization;
 using System.Text;
 using LibreMetaverse;
@@ -14,6 +15,7 @@ namespace GalatayText;
 public static partial class Program
 {
     static CancellationTokenSource walkCts;
+    static int trackTick;
     static Task walkTask;
     static string walkState = "idle";
 
@@ -48,7 +50,8 @@ public static partial class Program
     }
 
     // one leg with stuck recovery; true = arrived within tol (horizontal)
-    static async Task<bool> WalkLeg(Vector3 target, float tol, string label, CancellationToken ct)
+    // navMode (NavPlan.cs): give up after 2 recoveries so the planner re-plans instead of side-stepping into walls
+    static async Task<bool> WalkLeg(Vector3 target, float tol, string label, CancellationToken ct, bool navMode = false)
     {
         var start = client.Self.SimPosition;
         Log("walk", $"leg {label}: {V(start)} -> {V(target)} ({HDist(start, target):F1} m)");
@@ -61,6 +64,8 @@ public static partial class Program
         {
             await Task.Delay(500, ct);
             var p = client.Self.SimPosition;
+            KeepGrounded();
+            if (navTrack && (++trackTick % 3) == 0) Log("navpos", V(p));
             walkState = $"leg {label}: at {V(p)}, {HDist(p, target):F1} m to go";
             if (!AoStateNow().active) { await Task.Delay(1000, ct); if (!AoStateNow().active) { client.Self.AutoPilotCancel(); AoLog($"walk leg {label}: AO DROPPED mid-walk at {V(p)} ({AoStateNow().why}): stopped"); if (!await AoRestore("dropped mid-walk (walk_path)", ct)) { Log("walk", $"leg {label}: stopped, AO not active; staying put"); return false; } AutoPilotTo(goal); hist.Clear(); legStart = legStart.AddSeconds(30); continue; } }
             if (HDist(p, target) <= tol)
@@ -80,6 +85,7 @@ public static partial class Program
             recoveries++;
             var dir = new Vector3(target.X - p.X, target.Y - p.Y, 0); if (dir.Length() < 0.01f) dir = Vector3.UnitX; dir = Vector3.Normalize(dir);
             var side = new Vector3(-dir.Y, dir.X, 0);
+            if (navMode && recoveries > 2) { client.Self.AutoPilotCancel(); Log("walk", $"leg {label}: STUCK at {V(p)} after 2 recoveries (nav: re-plan)"); return false; }
             if (recoveries <= 4)
             {
                 float off = (recoveries <= 2 ? 2f : 4f) * (recoveries % 2 == 1 ? 1 : -1);
@@ -91,6 +97,7 @@ public static partial class Program
                 AutoPilotTo(goal);
                 continue;
             }
+            if (recoveries == 5 && !flew && !FlyAllowed) { client.Self.AutoPilotCancel(); Log("walk", $"leg {label}: giving up at {V(p)} after {recoveries - 1} recoveries (nofly on: no fly hop)"); return false; }
             if (recoveries == 5 && !flew)
             {
                 flew = true;
@@ -138,7 +145,7 @@ public static partial class Program
             || (a.Name ?? "").StartsWith(who + " ", StringComparison.OrdinalIgnoreCase)));
     }
 
-    static string StartWalk(string what, Func<CancellationToken, Task<string>> job)
+    static string StartWalk(string what, Func<CancellationToken, Task<string>> job, bool? fly = null)
     {
         if (walkTask != null && !walkTask.IsCompleted) return "a walk is already running (walk_stop first)";
         walkCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
@@ -146,9 +153,11 @@ public static partial class Program
         walkState = what + ": starting";
         walkTask = Task.Run(async () =>
         {
+            walkFlyOverride = fly;
             try { var r = await job(ct); walkState = $"done: {r}"; Log("walk", $"{what} finished: {r}"); }
             catch (OperationCanceledException) { client.Self.AutoPilotCancel(); walkState = "cancelled"; Log("walk", $"{what} cancelled"); }
             catch (Exception ex) { client.Self.AutoPilotCancel(); walkState = "error: " + ex.GetBaseException().Message; Log("walk", $"{what} error: {ex.GetBaseException().Message}"); }
+            finally { walkFlyOverride = null; }
         });
         return $"{what} started (watch [walk] lines; 'walk_status' / 'walk_stop')";
     }
@@ -167,6 +176,8 @@ public static partial class Program
 
     static async Task<string> NavCmds(string cmd, string rest, string[] a)
     {
+        bool? flyFlag = null;
+        if (cmd is "walk_path" or "goto_avatar" or "sit_near") { rest = TakeFlyFlag(rest, out flyFlag); a = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries); }
         switch (cmd)
         {
             case "walk_status": return walkState;
@@ -201,7 +212,7 @@ public static partial class Program
                     pts.Add(new Vector3(x, y, z));
                 }
                 if (pts.Count == 0) return "usage: walk_path x,y,z;x,y,z;...";
-                return StartWalk($"walk_path ({pts.Count} waypoints)", async ct => await WalkPath(pts, ct) ? $"arrived at {V(client.Self.SimPosition)}" : $"stopped at {V(client.Self.SimPosition)}");
+                return StartWalk($"walk_path ({pts.Count} waypoints)", async ct => await WalkPath(pts, ct) ? $"arrived at {V(client.Self.SimPosition)}" : $"stopped at {V(client.Self.SimPosition)}", flyFlag);
             }
             case "goto_avatar":
             case "sit_near":
@@ -226,7 +237,9 @@ public static partial class Program
                         var me = client.Self.SimPosition;
                         var dir = new Vector3(dest.X - me.X, dest.Y - me.Y, 0); dir = dir.Length() > 0.01f ? Vector3.Normalize(dir) : Vector3.UnitX;
                         var sp0 = dest - dir * 1.2f; var stop = new Vector3(sp0.X, sp0.Y, dest.Z);
-                        if (!await WalkPath(new() { stop }, ct, 1.2f)) return $"could not walk to {av.Name} (stopped at {V(client.Self.SimPosition)})";
+                        var ng = NavGridFor(sim.Name, me, dest);   // NavPlan.cs: around walls / through doors when a grid covers both
+                        if (ng != null && !await NavWalkTo(ng, V2(dest), 1.4f, ct)) return $"could not walk to {av.Name} on nav grid '{ng.Name}' (stopped at {V(client.Self.SimPosition)})";
+                        if (ng == null && !await WalkPath(new() { stop }, ct, 1.2f)) return $"could not walk to {av.Name} (stopped at {V(client.Self.SimPosition)})";
                     }
                     if (cmd == "goto_avatar") return $"next to {av.Name}: {HDist(client.Self.SimPosition, apos):F1} m";
                     var sit = Sitters(sim);
@@ -235,7 +248,7 @@ public static partial class Program
                     await Task.Delay(1500);
                     var aoWorn = SeatOffItems().Keys.Any(k => WornByItem().ContainsKey(k));
                     return $"{r}; seat {seat.Value.p.ID}; distance to {av.Name} {Vector3.Distance(client.Self.SimPosition, PositionHelper.GetAvatarPosition(sim, FindAvatar(rest) ?? av)):F1} m; seat-off AO worn now: {(aoWorn ? "yes (loop will detach)" : "no")}";
-                });
+                }, flyFlag);
             }
         }
         return "?";

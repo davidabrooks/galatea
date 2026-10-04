@@ -1,5 +1,5 @@
 // scene-mesher: `scene export` dump -> geometry batches for the Blender worker (no SL login; assets from the public CDN).
-//   dotnet run -- --selftest | <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r] [--anim=<uuid>]
+//   dotnet run -- --selftest | <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r] [--anim=<uuid>] [--nav]
 //   (scene prims only within r of c; --anim=a,b,.. poses her with the held frame of SL animations (priority-blended), e.g. the default sit)
 //   Without --anim she is posed from the export's me.anims (the client's animation clock). Other avatars (export "avatars"
 //   with agent_id, 2026-10-04+) get their own shape, bakes and animations, one group "avatar:<id8>" each (mesh.json "others").
@@ -97,6 +97,10 @@ static class Mesher
         // prims under 1 m skipped (David 2026-10-04: more background without slowing the render much) ponytail: far prims < 1 m vanish; ceiling = no small far detail (railings, signs)
         float farR = float.Parse(args.FirstOrDefault(a => a.StartsWith("--far="))?[6..] ?? "1e9", System.Globalization.CultureInfo.InvariantCulture);
         args = args.Where(a => !a.StartsWith("--far=")).ToArray();
+        // --nav (2026-10-04, walking planner scripts/nav_map.py): one group "nav:<localid>" per scene prim and invisible faces
+        // kept (an invisible face still collides). ponytail: visual mesh as the collision shape; ceiling = mesh whose physics
+        // shape differs from what it shows (a hull over a doorway, a phantom-looking curtain that is solid)
+        bool nav = args.Contains("--nav"); args = args.Where(a => a != "--nav").ToArray();
         if (args.Length < 1 || !File.Exists(Path.Combine(args[0], "scene.json"))) { Console.Error.WriteLine("usage: scene-mesher <export dir> [near_m]"); return 2; }
         string dir = args[0]; float near = args.Length > 1 ? float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 20;
         var doc = (OSDMap)OSDParser.DeserializeJson(File.ReadAllText(Path.Combine(dir, "scene.json")));
@@ -187,7 +191,7 @@ static class Mesher
                 lock (lights) lights.Add(new { pos = new[] { pos.X, pos.Y, pos.Z }, color = new[] { li.Color.R, li.Color.G, li.Color.B }, intensity = li.Intensity, radius = li.Radius, falloff = li.Falloff });
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
             if (mine) { (bind != null ? rigged : unrigged).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
-            Emit(p, fm, far ? "far" : "scene", null, null, pos, rot, o);
+            Emit(p, fm, nav ? $"nav:{p.LocalID}" : far ? "far" : "scene", null, null, pos, rot, o);
         });
 
 
@@ -225,7 +229,7 @@ static class Mesher
             foreach (var f in fm.Faces)
             {
                 var te = f.TextureFace ?? p.Textures?.DefaultTexture;
-                if (te == null || te.RGBA.A < 0.01f || te.TextureID == Transparent || f.Indices.Count == 0) continue;
+                if (te == null || f.Indices.Count == 0 || (!nav && (te.RGBA.A < 0.01f || te.TextureID == Transparent))) continue;
                 var verts = f.Vertices.ToList(); var wts = f.Weights;
                 mf.TransformTexCoords(verts, Vector3.Zero, te, p.Scale);
                 string tex = BakeOf.TryGetValue(te.TextureID, out var bake) ? "bake:" + bakePrefix + bake : te.TextureID.ToString();

@@ -548,7 +548,8 @@ public static partial class Program
                         if (d > 3f)
                         {
                             Utils.LongToUInts(sim.Handle, out var rx, out var ry);
-                            client.Self.AutoPilot(p.X + (double)rx, p.Y + (double)ry, p.Z);
+                            var step = NavFollowStep(client.Self.SimPosition, p) ?? p;   // NavPlan.cs: around walls / via doors on a nav grid
+                            client.Self.AutoPilot(step.X + (double)rx, step.Y + (double)ry, step.Z);
                         }
                         else client.Self.AutoPilotCancel();
                     }
@@ -1524,7 +1525,9 @@ public static partial class Program
   worn [scripts]              attachments incl. HUDs: item id, scripted, animations each plays (scripts = list contents)
   worn all                    READ-ONLY: body parts + clothing (wearables/COF), attachments + HUDs (points, COF links), My Outfits (Outfit.cs)
   detach <item> | attach <item> [point]   reversible; logged; attach-block.txt items are off while seated, re-worn on stand
-  walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | walk_status | walk_stop   walking navigation (never teleports)
+  walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | walk_status | walk_stop   walking navigation (never teleports; add --fly to allow the stuck fly hop once)
+  nav [status|doors|places|reload|selftest] | nav door <name> [touch] | nav plan|to <x,y|place|door|avatar>[;...]   grid planner (routes/_nav-*.json)
+  nofly [on|off]   walking never flies (default on)
   map [radius] [x y] | terrain <x> <y>   planning data: objects with size/rotation, ground height
   route list | route show <name> | route status | route steer [smooth|legacy]   named routes (textclient/routes/*.json) + places of this region's path graph
   route walk <name> [reverse] [allow_zendo] [allow_outside]   follow a route (joins at the nearest point; carrot steering 2.5 m ahead)
@@ -1741,6 +1744,8 @@ public static partial class Program
             case "sethome": return await SetHomeCmd();
             case "autofollow": return AutoFollowCmd(a);
             case "door": case "doors": return await DoorTouch(rest);
+            case "nav": return await NavCmd(a, rest);       // NavPlan.cs
+            case "nofly": return NoFlyCmd(a);
             case "parcel": return await ParcelCmd(a);
             case "scene" when a.Length > 0 && a[0] == "export": return await SceneExport(a);
             case "look": return await LookCmd(a);
@@ -1783,6 +1788,11 @@ public static partial class Program
                 if (client.Self.SittingOn == 0 && !AoStateNow().active) { AoLog($"moveto REFUSED: {AoStateNow().why}"); return "refused: AO not active (" + AoStateNow().why + "); not walking"; }
                 if (a.Length != 3 || !F(a[0], out var x) || !F(a[1], out var y) || !F(a[2], out var z)) return "usage: moveto <x> <y> <z>  (region-local)";
                 followId = UUID.Zero;
+                {   // NavPlan.cs: on a nav grid with the straight line blocked, walk the planned route (walls, doors) instead
+                    var me0 = client.Self.SimPosition; var ng = NavGridFor(Sim.Name, me0, new Vector3(x, y, z));
+                    if (ng != null && client.Self.SittingOn == 0 && !NavStraightClear(ng, me0, new Vector3(x, y, z)) && !WanderBlocksManualWalk)
+                        return StartWalk($"moveto {x:F1},{y:F1} via nav grid '{ng.Name}'", async ct => await NavWalkTo(ng, new Vector2(x, y), 0.8f, ct) ? $"arrived at {V(client.Self.SimPosition)}" : $"stopped at {V(client.Self.SimPosition)}");
+                }
                 Utils.LongToUInts(Sim.Handle, out var rx, out var ry);
                 client.Self.AutoPilot(x + (double)rx, y + (double)ry, z);
                 return $"autopilot to {Fmt(new Vector3(x, y, z))} (from {Fmt(client.Self.SimPosition)})";

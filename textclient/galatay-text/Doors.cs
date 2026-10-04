@@ -44,7 +44,8 @@ public static partial class Program
         if (byId && cands.Count == 0) return $"object {wantId} is not within 64 m (or is worn by an avatar)";
         cands = cands.OrderBy(c => c.d).Take(400).ToList();
         await EnsureProperties(sim, cands.Select(c => c.p).Concat(cands.Select(c => c.root)).Distinct().ToList());
-        var doors = byId ? cands : cands.Where(c => LooksLikeDoor(c.p.Properties?.Name, c.p.Properties?.Description)
+        var navDoors = NavDoorIds();   // NavPlan.cs: door panels found on a nav grid (house links are often just 'Object')
+        var doors = byId ? cands : cands.Where(c => (LooksLikeDoor(c.p.Properties?.Name, c.p.Properties?.Description) || navDoors.Contains(c.p.ID))
                                    && (arg.Length == 0 || (c.p.Properties?.Name ?? "").Contains(arg, StringComparison.OrdinalIgnoreCase)
                                        || (c.p.Properties?.Description ?? "").Contains(arg, StringComparison.OrdinalIgnoreCase)
                                        || (c.root.Properties?.Name ?? "").Contains(arg, StringComparison.OrdinalIgnoreCase))).ToList();

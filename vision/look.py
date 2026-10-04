@@ -24,6 +24,11 @@ def main(a):
     doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
     # her surroundings within 24 m at full detail near her; `self` meshes her alone
     args = [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me), "24"]
+    if mode == "at":  # she turns her head toward the target (scene-mesher --look); an avatar's head ~0.7 m above its agent position
+        av = next((v for v in doc.get("avatars", []) if target in str(v.get("name", "")).lower() and "pos" in v), None)
+        obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
+        pt = [av["pos"][0], av["pos"][1], av["pos"][2] + 0.7] if av else obj["world_pos"] if obj else None
+        if pt: args.append("--look=" + ",".join(str(v) for v in pt))
     r = subprocess.run(["nice", "-n", "10", "dotnet", MESHER] + args, capture_output=True, text=True)
     if r.returncode: sys.exit("scene-mesher failed: " + (r.stderr or r.stdout)[-400:])
     times["mesh"] = round(time.time() - t0, 1)

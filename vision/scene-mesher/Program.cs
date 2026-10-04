@@ -47,14 +47,23 @@ static class Mesher
             float Z(string j) => w[j][14];
             bool ok = Math.Abs(Z("mPelvis") - 1.067f) < 0.01f && Z("mHead") > 1.6f && Z("mHead") < 1.9f && Math.Abs(w["mWristLeft"][13]) > 0.5f
                       && Xform(Skeleton.Mul(new float[] { 1,0,0,0, 0,1,0,0, 0,0,1,0, 1,2,3,1 }, new float[] { 2,0,0,0, 0,2,0,0, 0,0,2,0, 0,0,0,1 }), new Vector3(1, 1, 1), 1) == new Vector3(4, 6, 8);
-            Console.WriteLine(ok ? "selftest ok" : $"selftest FAILED pelvis={Z("mPelvis")} head={Z("mHead")} wristY={w["mWristLeft"][13]}");
+            var lookD = Vector3.Normalize(new Vector3(1, 0.5f, 0.3f)); var lookGot = new Vector3(1, 0, 0) * LookRot(lookD).Value;
+            ok &= Vector3.Distance(lookGot, lookD) < 0.01f;   // look-at: forward turned onto the target direction
+            Console.WriteLine(ok ? "selftest ok" : $"selftest FAILED pelvis={Z("mPelvis")} head={Z("mHead")} wristY={w["mWristLeft"][13]} look={lookGot}");
             return ok ? 0 : 1;
         }
         string animId = args.FirstOrDefault(a => a.StartsWith("--anim="))?[7..]; args = args.Where(a => !a.StartsWith("--anim=")).ToArray();
+        // --look=x,y,z (region coordinates): turn her head toward that point (look at)
+        var lookArg = args.FirstOrDefault(a => a.StartsWith("--look="))?[7..].Split(',').Select(x => float.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        args = args.Where(a => !a.StartsWith("--look=")).ToArray();
         if (args.Length < 1 || !File.Exists(Path.Combine(args[0], "scene.json"))) { Console.Error.WriteLine("usage: scene-mesher <export dir> [near_m]"); return 2; }
         string dir = args[0]; float near = args.Length > 1 ? float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 20;
         var doc = (OSDMap)OSDParser.DeserializeJson(File.ReadAllText(Path.Combine(dir, "scene.json")));
         var me = ((OSDMap)doc["me"])["pos"].AsVector3();
+        // avatar-local: undo her rotation around her agent position (z moves into the mesh frame with agentOff in PoseAvatar)
+        Vector3? lookAt = null; var agentOff = new Dictionary<string, float>();  // per avatar owner: mesh z 0 relative to agent z
+        if (lookArg is { Length: 3 })
+            lookAt = (new Vector3(lookArg[0], lookArg[1], lookArg[2]) - me) * Quaternion.Conjugate(((OSDMap)doc["me"])["rot"].AsQuaternion());
         string only = args.Length > 2 ? args[2] : "all";
         Vector3 focus = me; float focusR = 1e9f;
         if (args.Length > 4) { var c = args[3].Split(',').Select(x => float.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray(); focus = new Vector3(c[0], c[1], c[2]); focusR = float.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture); }
@@ -214,9 +223,10 @@ static class Mesher
             var shape = vp.Count > 0 ? lad.ComputeBoneTransforms(vp) : null;
             // animations (her playing set, e.g. AO stand + head expression): per joint the highest priority wins, ties -> later
             Dictionary<string, Quaternion> anim = null; Dictionary<string, Vector3> animPos = null; Vector3 pelvisOff = Vector3.Zero;
+            var prio = new Dictionary<string, (int r, int p)>();
             if (!string.IsNullOrEmpty(animId))
             {
-                anim = new(); animPos = new(); var prio = new Dictionary<string, (int r, int p)>();
+                anim = new(); animPos = new();
                 foreach (var spec in animId.Split(','))
                 {
                     // "uuid@seconds" = that far into playback (anims_at.py reads it off the client log); bare uuid = old hold frame
@@ -256,8 +266,32 @@ static class Mesher
                 }
                 Console.WriteLine($"pose: {anim.Count} rotated joints, {animPos.Count} moved, pelvis offset {pelvisOff}");
             }
+            // LL places the pelvis from the agent position: pelvis = agent z - (bodysize.z / 2 - pelvis-to-foot) (+ hover), with
+            // bodysize from the unanimated skeleton (reimplemented from LLVOAvatar::computeBodySize / updateCharacter). In this
+            // mesh frame that is: mesh z 0 at agent z - bodysize/2 - rest foot z. ponytail: hover (AppearanceHover) not exported = 0
+            var rest = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>(); Skeleton.World(overrides, shape, null, default, rest, null, lockScale);
+            float Rz(string j) => rest[j].Pos.Z;
+            agentOff[owner] = -0.5f * (Rz("mHead") - Rz("mFootLeft") + MathF.Sqrt(2) * (Rz("mSkull") - Rz("mHead"))) - Rz("mFootLeft");
             frames = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>();
             var world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos, lockScale);
+            if (owner == "me" && lookAt is Vector3 lt0 && lt0 - new Vector3(0, 0, agentOff[owner]) is var lt && LookRot(lt - frames["mHead"].Pos) is Quaternion q)
+            {
+                // head look-at, reimplemented from the LL viewer's LLHeadRotMotion: the turn toward the target relative to the
+                // body, limited to 72 deg; the torso takes 35 % of it and neck and head share the rest. LL runs it at
+                // MEDIUM priority (1), under most AOs (hers animate torso/neck/head at 3-4), which would leave her staring
+                // ahead; so above priority 1 the turn is added on top of the animated rotation instead of replacing it.
+                // ponytail: shares split as powers of one rotation (exact for a pure turn); ceiling = slight error when
+                // she also looks up/down a lot
+                float Off() => MathF.Acos(Math.Clamp(Vector3.Dot(Vector3.Normalize(new Vector3(1, 0, 0) * frames["mHead"].Rot), Vector3.Normalize(lt - frames["mHead"].Pos)), -1, 1)) * 180 / MathF.PI;
+                float before = Off(); anim ??= new();
+                foreach (var (j, share) in new[] { ("mTorso", 0.35f), ("mNeck", 0.325f), ("mHead", 0.325f) })
+                {
+                    var t = Quaternion.Slerp(Quaternion.Identity, q, share);
+                    anim[j] = prio.TryGetValue(j, out var pr) && pr.r > 1 && anim.TryGetValue(j, out var ar) ? ar * t : t;
+                }
+                frames = new(); world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos, lockScale);
+                Console.WriteLine($"look-at: turn {2 * MathF.Acos(Math.Min(1, Math.Abs(q.W))) * 180 / MathF.PI:F0} deg; head off target {before:F0} -> {Off():F0} deg");
+            }
             // non-rigged attachments: root prim sits at its attach point (avatar_lad.xml offset/rotation) on that point's joint
             var points = lad.AttachmentPoints.ToDictionary(ap => ap.Id);
             foreach (var (_, p, fm) in unrigged.Where(x => x.Item1 == owner))
@@ -290,6 +324,16 @@ static class Mesher
             }
             return frames;
         }
+        // rotation taking the avatar's forward (+X) to `d` (yaw, then pitch), capped at LL's HEAD_ROTATION_CONSTRAINT (72 deg);
+        // null when the target is within LL's MIN_HEAD_LOOKAT_DISTANCE (0.3 m)
+        static Quaternion? LookRot(Vector3 d)
+        {
+            if (d.Length() < 0.3f) return null;
+            d = Vector3.Normalize(d);
+            var q = Quaternion.CreateFromAxisAngle(0, 0, 1, MathF.Atan2(d.Y, d.X)) * Quaternion.CreateFromAxisAngle(0, 1, 0, -MathF.Asin(Math.Clamp(d.Z, -1, 1)));
+            float ang = 2 * MathF.Acos(Math.Min(1, Math.Abs(q.W))), max = MathF.PI / 2 * 0.8f;
+            return ang > max ? Quaternion.Slerp(Quaternion.Identity, q, max / ang) : q;
+        }
         static float Yaw(Quaternion q) => MathF.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.Y * q.Y + q.Z * q.Z)) * 180 / MathF.PI;
         var meMap = (OSDMap)doc["me"];
         animId ??= meMap.ContainsKey("anims") ? meMap["anims"].AsString() : null;   // the client's own animation clock (2026-10-04+)
@@ -302,7 +346,7 @@ static class Mesher
                 string g = "avatar:" + id[..8];
                 var f = await PoseAvatar(id, g, id[..8] + "-", av.ContainsKey("visual_params") ? (OSDMap)av["visual_params"] : null, av.ContainsKey("anims") ? av["anims"].AsString() : null);
                 var ap = av["pos"].AsVector3();
-                others.Add(new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z } });
+                others.Add(new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z } });
                 Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}");
             }
         var outMeta = new List<object>(); long off = 0;
@@ -313,7 +357,7 @@ static class Mesher
                 outMeta.Add(new { group = b.Group, tex = b.Tex, rgba = b.Rgba, fullbright = b.Fullbright, mat = b.Mat, nv = b.P.Count / 3, ni = b.I.Count, offset = off });
                 off += (b.P.Count + b.N.Count + b.T.Count + b.I.Count) * 4L;
             }
-        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), others }));
+        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, others }));
         Console.WriteLine($"{batches.Count} batches, {outMeta.Sum(m => ((dynamic)m).nv)} vertices, {off / 1048576.0:F1} MB; " + string.Join(", ", stats.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}")));
         return 0;
     }

@@ -14,6 +14,7 @@ Every decision David makes goes here, and the sections below are kept consistent
 | Oct 3, 2026 | **Paid vision options are approved in principle.** A paid cloud GPU render (c), preferably a serverless container we deploy and pay per second, joins the vision layers for high-quality requests. All spending stays under a monthly budget cap that David sets, with a per-render cost log; when the cap is reached, vision falls back to the free layers. Opening provider accounts and setting or raising the cap still need David's explicit OK. | §6.5, §9 (M1, M2) |
 | Oct 3, 2026 | **Galatea's vision never uses David's computers.** The RTX 4090 / RTX 5090 machines may be off or busy rendering David's own avatar, so option (b) is removed from the vision layers. The high-fidelity layer is paid cloud serverless (Runpod Serverless first, Modal second), and the fallback chain is **cloud → box CPU render → scene card**. David's PCs stay for his own high-end client development and testing (T2). | §6.5, §9 (M1–M3) |
 | Oct 3, 2026 | **No third-party AI or vision models in agent vision, for now.** No hosted APIs and no open-weight models (not even self-hosted ones on Runpod or the box). Galatea herself does all the understanding of images and scene data. The bridge only delivers pixels and structured facts. Runpod is used only for plain GPU rendering. This replaces the short-lived idea of a "free AI option first" and its model comparison, which was never added. | §4.2, §6.5 |
+| Oct 3, 2026 | **Agent vision renders on the box CPU by default; Runpod is an optional extra** (David, 22:13–22:14 PT). Goal: get close to Firestorm Ultra (shadows, materials/PBR, EEP) with Blender Cycles on the box's 8 cores under `nice`. Use Runpod only if a CPU result is clearly inadequate, and report before spending. The prebuilt Runpod image is shelved. Measured: about 10–40 s per image at near-Ultra settings. | §6.5, §6.5.1 |
 | Oct 3, 2026 | **First paid cloud test render done (Runpod Serverless, $0.03).** Graphics drivers (EGL/OpenGL, OptiX, Vulkan ICD) work in Runpod containers when `NVIDIA_DRIVER_CAPABILITIES=all` is set. Code in [PR #18](https://github.com/davidabrooks/galatea/pull/18). | §6.5.1 |
 | Oct 3, 2026 | **Firestorm is the reference for how SL rendering behaves** (avatar mesh and bakes, BOM, alpha modes, materials, lighting, camera): when unsure, read [phoenix-firestorm](https://github.com/FirestormViewer/phoenix-firestorm) (`indra/newview`, `indra/llrender`). It is LGPL-2.1, so we read it to understand the behavior and write our own implementation; nothing is copied verbatim into the BSD-3 repo. | §6.5, §7 |
 | Oct 3, 2026 | **Coding style: [Ponytail](https://github.com/DietrichGebert/ponytail)'s "lazy senior dev" rules (MIT, attributed),** adopted in the repo's `AGENTS.md`. That means YAGNI, reusing what exists, stdlib and installed dependencies first, and the shortest correct diff, but never cutting corners on validation at trust boundaries, data-loss handling or security. Non-trivial logic gets one small runnable check, and every deliberate corner-cut gets a `ponytail:` comment naming its ceiling. | all code; `AGENTS.md` |
@@ -330,6 +331,35 @@ How it's built:
 - Bakes are 5-channel JPEG 2000 (RGB plus two extra channels). LibreMetaverse's CoreJ2K decoder garbles their colours, and Pillow can't open them, so the box decodes them with `imagecodecs` (OpenJPEG). The same bug affects SlTextureVision for bakes.
 - Still wrong (fidelity work for the bridge, not GPU): no SL alpha modes or materials (normal/specular/PBR) are exported, so blend vs. mask vs. none is guessed. Shape sliders aren't applied (default proportions). There's no animation pose, eyelid/expression state, or non-rigged attachments (they need attach-point placement). Lighting is a generic sky, not her windlight/EEP environment.
 - Payload limit: Runpod's `/run` body is capped at about 10 MB, so a scene job is limited to a radius of about 8–15 m around the subject. Bigger scenes need the renderer to fetch geometry itself (or an object store).
+
+**Third test, Oct 3, 2026: SL materials, shape, pose and EEP, rendered on the box CPU ([PR #18](https://github.com/davidabrooks/galatea/pull/18)).** `scene export` now also records the legacy materials of every face from the `RenderMaterials` cap (alpha mode none/blend/mask/emissive plus cutoff, normal and specular maps, gloss), the PBR material ids from the RenderMaterial extra param, her decoded visual params, the region's EEP day cycle and the sun direction. The scene mesher now does the following:
+- Applies her shape. The visual params go through LibreMetaverse's port of `LLPolySkeletalDistortion` to bone and collision-volume scale and offsets.
+- Poses her with the held frame of SL animations, blended by priority. Her playing set (AO stand, LeLutka expression, hand poses) comes from the client log, and the library sit-on-ground animation is used for the fireplace shot.
+- Places non-rigged attachments at their attach points.
+- Exports the scene's point lights.
+
+Blender applies the alpha modes, normal and specular maps, PBR metallic/roughness, the sun or moon colour from the day cycle at export time, and the SL point lights.
+- **Root-cause fixes found on the way.**
+  - The export's JSON dropped `face_number` 0, so every prim's face 0 took the default face's texture. That was the "see-through top": the shirt front got the transparent print texture.
+  - Child-prim and joint rotations were composed in the wrong order.
+  - LibreMetaverse posted material ids as LLSD UUIDs instead of 16-byte binaries, so the cap returned nothing.
+  - LibreMetaverse also decoded animation key times over the in/out span instead of 0 to duration.
+  - The last three have small patches in `textclient/libremetaverse-render.patch`.
+- **Box CPU times** (8 vCPUs, Blender 4.2 under `nice -n 10`, measured).
+  - Cycles with denoising: face 768×768 is 6.7 s at 16 samples, 22 s at 64 and 40 s at 128. The fireplace scene at 960×540 is 8.8 s at 16, 30 s at 64 and 38 s at 128. Full body 640×1024 is 10 s at 128.
+  - EEVEE through llvmpipe software GL (after installing `libegl1`/`libegl-mesa0`) is slower than Cycles on the CPU: 64 s for the face and 111 s for the scene at 16 samples.
+  - Workbench gives a flat textured preview in 3 s.
+  - Peak memory per Blender render is a few hundred MB. That is fine next to the text client within about 7 GB free.
+  - For comparison, Runpod (RTX A4500) took 2–8 s per Cycles render, plus a 127 s cold start and about $0.016–0.03 a job. On the CPU the image is the same and only the time differs, so **the box CPU is the default** and Runpod only helps when many images are needed quickly.
+  - **Firestorm snapshots via llvmpipe** (option e) also cost nothing, and they are real SL rendering, but at the box's low settings, about 5 fps. They need Galatea's session, so she has to log out of the text client.
+- **Still wrong.**
+  - There is a notch and seam at the front of the neck where the EvoX head meets the body.
+  - The upper eyelids look puffy.
+  - Her AO stand frame tilts her head back.
+  - Animation is a single held frame, not blended over time.
+  - There is no SL shadow-map look, reflection probes or environment maps.
+  - The moon is approximated as opposite the sun.
+  - Per-map UV repeats and GLTF overrides aren't applied.
 
 **Options and prices** (list prices as published on the cited pages, Oct 3, 2026; per-snapshot costs are **our estimates** from those prices):
 

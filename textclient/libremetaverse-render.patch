@@ -1,0 +1,64 @@
+diff --git a/LibreMetaverse/BVHDecoder.cs b/LibreMetaverse/BVHDecoder.cs
+index c013988..8efc7d2 100644
+--- a/LibreMetaverse/BVHDecoder.cs
++++ b/LibreMetaverse/BVHDecoder.cs
+@@ -337,14 +337,14 @@ namespace LibreMetaverse
+                 binBVHJointKey pJKey = new binBVHJointKey();
+                 if (!BitConverter.IsLittleEndian)
+                 {
+-                    pJKey.time = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, InPoint, OutPoint); i += 2;
++                    pJKey.time = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, 0, Length); i += 2; // galatay: key times span 0..duration
+                     x = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, min, max); i += 2;
+                     y = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, min, max); i += 2;
+                     z = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, min, max); i += 2;
+                 }
+                 else
+                 {
+-                    pJKey.time = Utils.UInt16ToFloat(data, i, InPoint, OutPoint); i += 2;
++                    pJKey.time = Utils.UInt16ToFloat(data, i, 0, Length); i += 2; // galatay: key times span 0..duration
+                     x = Utils.UInt16ToFloat(data, i, min, max); i += 2;
+                     y = Utils.UInt16ToFloat(data, i, min, max); i += 2;
+                     z = Utils.UInt16ToFloat(data, i, min, max); i += 2;
+diff --git a/LibreMetaverse/ObjectManager.cs b/LibreMetaverse/ObjectManager.cs
+index fab0adc..da8027c 100644
+--- a/LibreMetaverse/ObjectManager.cs
++++ b/LibreMetaverse/ObjectManager.cs
+@@ -2369,7 +2369,7 @@ namespace LibreMetaverse
+ 
+             foreach (var material in materials)
+             {
+-                array.Add(material);
++                array.Add(OSD.FromBinary(material.GetBytes())); // galatay 2026-10-03: the cap wants 16-byte binary ids (LLMaterialID::asLLSD), not LLSD uuids
+             }
+ 
+             OSDMap request = new OSDMap(new Dictionary<string, OSD>
+diff --git a/LibreMetaverse/Primitives/Primitive.cs b/LibreMetaverse/Primitives/Primitive.cs
+index 2eb4328..49c9464 100644
+--- a/LibreMetaverse/Primitives/Primitive.cs
++++ b/LibreMetaverse/Primitives/Primitive.cs
+@@ -1310,6 +1310,9 @@ namespace LibreMetaverse
+             if (!string.IsNullOrEmpty(desc)) prim.Properties.Description = desc;
+         }
+ 
++        /// <summary>galatay: face index -> PBR material asset id, from the RenderMaterial extra param</summary>
++        public Dictionary<int, UUID>? RenderMaterials;
++
+         public int SetExtraParamsFromBytes(byte[] data, int pos)
+         {
+             int i = pos;
+@@ -1340,6 +1343,15 @@ namespace LibreMetaverse
+                 {
+                     ExtendedMeshFlags = Utils.BytesToUInt(data, i);
+                 }
++                else if (type == ExtraParamType.RenderMaterial && paramLength >= 1)
++                {
++                    // galatay 2026-10-03: per-face PBR material asset ids (U8 count, then count x {U8 face, UUID})
++                    var rm = new Dictionary<int, UUID>();
++                    int n = data[i];
++                    for (int e = 0; e < n && 1 + e * 17 + 17 <= paramLength; e++)
++                        rm[data[i + 1 + e * 17]] = new UUID(data, i + 2 + e * 17);
++                    RenderMaterials = rm;
++                }
+ 
+                 i += (int)paramLength;
+                 totalLength += (int)paramLength + 6;

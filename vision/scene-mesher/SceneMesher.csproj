@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Offline (no login): turns a `scene export` dump into render-ready geometry with LibreMetaverse's own meshers. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <NoWarn>$(NoWarn);CS0618</NoWarn>
+    <!-- ponytail: same LibreMetaverse checkout the text client builds against; ceiling = box-only build -->
+    <LMV Condition="'$(LMV)' == ''">/home/box/viewers/textclient/src-libremetaverse</LMV>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(LMV)/LibreMetaverse/LibreMetaverse.csproj" />
+    <ProjectReference Include="$(LMV)/LibreMetaverse.Rendering.MeshFoundry/LibreMetaverse.Rendering.MeshFoundry.csproj" />
+  </ItemGroup>
+</Project>

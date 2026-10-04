@@ -10,7 +10,7 @@
 //     is sent and viewers show their own idle gaze.
 //   private: send no LookAt at all (like Firestorm's private look-at with local display off).
 // LibreMetaverse itself only sends effects when asked (Self.LookAtEffect/PointAtEffect/BeamEffect; GiveItem's beam, which
-// this client never calls). An audit on every outgoing packet logs each ViewerEffect as [effects] and flags any not sent
+// this client never calls). An audit counts outgoing ViewerEffect packets ([effects] log) and flags any not sent
 // through here as UNEXPECTED. 'lookat audit on|off' also logs them to the console (test).
 // Reimplemented from the documented behaviour of LL/Firestorm's LLHUDEffectLookAt; no viewer code copied.
 using LibreMetaverse;
@@ -41,28 +41,31 @@ public static partial class Program
         return len <= max || len < 1e-4f ? target : head + d * (max / len);
     }
 
+    // LibreMetaverse never raises Network.PacketSent (UDPBase doesn't call it), so the audit counts outgoing ViewerEffect
+    // packets in its per-type send stats once a second and compares with the sends made here (each logged at the call).
+    // ponytail: a count, not the packet contents; an unexpected send shows up as UNEXPECTED with no type/target details.
     static void EffectsAuditStart()
     {
         if (Interlocked.Exchange(ref effectsAuditHooked, 1) != 0) return;
-        client.Network.PacketSent += (s, e) =>
+        client.Settings.Packets.TrackUtilization = true;
+        _ = Task.Run(async () =>
         {
-            try
+            long seen = 0;
+            while (true)
             {
-                if (e.Data == null || e.SentBytes < 7) return;
-                int end = e.SentBytes - 1; var buf = new byte[8192];
-                if (Packet.BuildPacket(e.Data, ref end, buf) is not ViewerEffectPacket vp) return;
-                bool ours = Interlocked.Exchange(ref ourEffectSends, 0) > 0;
-                foreach (var b in vp.Effect)
+                await Task.Delay(1000);
+                try
                 {
-                    var t = (EffectType)b.Type; string what = t.ToString();
-                    if (t == EffectType.LookAt && b.TypeData?.Length >= 57)
-                        what += $" {(LookAtType)b.TypeData[56]} target {new UUID(b.TypeData, 16)} offset {new Vector3d(b.TypeData, 32)}";
-                    var line = $"{(ours ? "sent" : "UNEXPECTED (not from LookAt.cs)")}: ViewerEffect {what}, {b.Duration:F0} s";
+                    long tx = client.Stats.GetStatistics().TryGetValue("ViewerEffect", out var st) ? st.TxCount : 0;
+                    if (tx < seen) seen = 0;   // stats reset at relog
+                    long n = tx - seen; seen = tx; if (n <= 0) continue;
+                    long ours = Math.Min(n, Interlocked.Exchange(ref ourEffectSends, 0)), other = n - ours;
+                    var line = $"ViewerEffect packets sent in the last second: {n} ({ours} from LookAt.cs{(other > 0 ? $", {other} UNEXPECTED (not from LookAt.cs)" : "")})";
                     Log("effects", line); if (effectsAuditVerbose) Console.WriteLine("[effects] " + line);
                 }
+                catch (Exception ex) { Log("effects", "audit error: " + ex.Message); }
             }
-            catch { }
-        };
+        });
     }
 
     static void NoteChatPartner(UUID id) => chatPartner = (id, DateTime.Now);

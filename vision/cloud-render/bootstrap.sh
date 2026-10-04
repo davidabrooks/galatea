@@ -2,6 +2,8 @@
 # Runpod Serverless worker bootstrap (container start command): installs a minimal runtime on the stock
 # nvidia/cuda base image, downloads Blender, then starts the Runpod handler. Kept in the repo so the
 # endpoint can use a public base image without a custom registry push (first test only).
+# ponytail: installs on every cold start (~70 s billed). Ceiling: fine for a handful of renders; bake a custom image
+# (or FlashBoot) before vision is used daily.
 set -euo pipefail
 T0=$(date +%s)
 export DEBIAN_FRONTEND=noninteractive

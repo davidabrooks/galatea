@@ -67,6 +67,9 @@ def look_at(cam, target):
     from mathutils import Vector
     d = Vector(target) - cam.location; cam.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
 
+# ponytail: objects are boxes with one box-projected texture each, trees are blobs, Galatea is a cylinder.
+# Ceiling: shows layout, colors and signage; not mesh shapes, alpha cut-outs or avatars. The real path is the
+# bridge exporting glTF (mesh LODs, all faces) per DESIGN.md §6.5.1.
 def build_scene():
     tr = S["terrain"]; nx, ny, st = tr["nx"], tr["ny"], tr["step"]
     verts, faces = [], []
@@ -107,6 +110,8 @@ def build_scene():
     cam.data.lens = 24; cam.location = (g[0] - 1.5, g[1] - 7.5, g[2] + 2.2); look_at(cam, (g[0] + 0.5, g[1] + 3.5, g[2] + 0.3))
     sc.render.resolution_x, sc.render.resolution_y = (960, 540) if engine == "CYCLES" else (640, 360)
 
+# ponytail: procedural stand-in head; only the hair texture is real. Ceiling: the LeLutka EvoX mesh and the
+# server-side skin/eye bakes are not exposed by the text client, so this is not her face.
 def build_face():
     hair_tex = os.path.join(texdir, "8d5ad85f-453b-ed86-31b3-c7356150164f.png")
     skin = mat("skin", (0.80, 0.58, 0.47, 1), rough=0.5, sss=0.12)

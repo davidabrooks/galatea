@@ -34,10 +34,7 @@ elif cmd == "create":
     t = gql('mutation { saveTemplate(input: {name: "gt-vision-blender-test", imageName: "nvidia/cuda:12.4.1-base-ubuntu22.04", '
             f'dockerArgs: {json.dumps(START)}, containerDiskInGb: 15, volumeInGb: 0, isServerless: true, '
             'env: [{key: "NVIDIA_DRIVER_CAPABILITIES", value: "all"}, {key: "GT_REPO_REF", value: "' + REF + '"}]}) { id } }')["saveTemplate"]
-    e = gql('mutation { saveEndpoint(input: {name: "gt-vision-test", templateId: "' + t["id"] + '", gpuIds: "AMPERE_16", '
-            'workersMin: 0, workersMax: 1, idleTimeout: 5, scalerType: "QUEUE_DELAY", scalerValue: 4, '
-            'executionTimeoutMs: 300000, flashboot: false}) { id gpuIds workersMin workersMax idleTimeout executionTimeoutMs } }')["saveEndpoint"]
-    print(json.dumps({"template": t["id"], "endpoint": e}))
+    print(json.dumps({"template": t["id"]}), "-> now: runpod_api.py endpoint", t["id"])
 elif cmd == "run":
     ep, inp, out = sys.argv[2:5]
     j = req(f"https://api.runpod.ai/v2/{ep}/run", {"input": json.load(open(inp))})

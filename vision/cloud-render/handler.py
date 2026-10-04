@@ -4,13 +4,16 @@ Input: {"scene": {...gather_scene.py JSON...}, "renders": ["scene", "face"], "ee
 Output: diagnostics, per-render timings and JPEG images (base64). Textures are fetched by UUID from SL's
 public asset CDN and decoded with Pillow (JPEG 2000) at reduced resolution.
 """
-import base64, concurrent.futures as cf, glob, io, json, os, subprocess, time, urllib.request
+import base64, concurrent.futures as cf, glob, io, json, os, re, subprocess, time, urllib.request
 import runpod
 from PIL import Image
 
 CDN = "http://asset-cdn.glb.agni.lindenlab.com/?texture_id="
 BLENDER = os.environ.get("BLENDER", "blender")
 WORKER_T0 = time.time()
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")  # trust boundary: ids become paths and URLs
+KINDS = {"scene", "face"}
+MAX_TEXTURES = 200
 
 def sh(c, timeout=60):
     try:
@@ -55,7 +58,12 @@ def handler(job):
     out = {"worker_age_s": round(t_start - WORKER_T0, 1), "diag": diagnostics()}
     work = "/tmp/job"; os.makedirs(work + "/tex", exist_ok=True)
     scene = inp["scene"]
-    uuids = sorted({o["texture"] for o in scene.get("objects", []) if o.get("texture")} | set(inp.get("extra_textures", [])))
+    renders = inp.get("renders", ["scene"])
+    if not set(renders) <= KINDS: return {"error": f"renders must be a subset of {sorted(KINDS)}"}
+    for o in scene.get("objects", []):
+        if o.get("texture") and not UUID.match(o["texture"]): o["texture"] = None
+    uuids = sorted({o["texture"] for o in scene.get("objects", []) if o.get("texture")} | {u for u in inp.get("extra_textures", []) if UUID.match(u)})
+    if len(uuids) > MAX_TEXTURES: return {"error": f"{len(uuids)} textures > {MAX_TEXTURES}"}
     t = time.time()
     with cf.ThreadPoolExecutor(8) as ex:
         res = list(ex.map(lambda u: fetch_tex(u, work + "/tex"), uuids))
@@ -63,7 +71,7 @@ def handler(job):
                        "seconds": round(time.time() - t, 1)}
     json.dump(scene, open(work + "/scene.json", "w"))
     out["renders"] = {}
-    for name in inp.get("renders", ["scene"]):
+    for name in renders:
         for engine in ["CYCLES"] + (["EEVEE"] if inp.get("eevee_test") and name == "scene" else []):
             img = f"{work}/{name}-{engine.lower()}.jpg"
             secs, rc, log = blender([work + "/scene.json", work + "/tex", name, engine, img], timeout=150 if engine == "CYCLES" else 90)

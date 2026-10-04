@@ -1559,6 +1559,7 @@ public static partial class Program
   offers [all|selftest] | offers accept <n> [confirm] | offers decline <n>   pending inventory offers + friendship requests (never auto-accepted; non-allow-listed sender needs 'confirm' = David's OK)
   friend list | friend accept|decline <name> [confirm] | friend add <name> [confirm]   friendships (allow-list: David Nightingale, Sophie-Jeanne)
   friendwatch [status|selftest|simulate]   David Nightingale online -> urgent 'david_login' webhook ~10 s later (10 min debounce); simulate = 'david_login_test'
+  payprice <object uuid> | pay object <uuid> <L$> confirm | pay selftest   quick-pay buttons (read-only) / pay an object (needs confirm = David's OK; never over the balance)
   remind add <text> | remind list | remind done <n>   in-world reminders for David (/workspace/secondlife/inworld-reminders.md; pending ones ride on david_login)
   landmark create <name> | landmark list | landmark raw <name> | landmark tp <name|item uuid> [pos] [force]   landmarks (pos = teleport to the exact stored position instead of the landmark request; raw = stored asset text)
   sethome                     set home to the current spot; prints the server's reply (e.g. refused off your own/group land)
@@ -1715,6 +1716,8 @@ public static partial class Program
             case "offers": return await OffersCmd(a);
             case "friend": case "friends": return await FriendCmd(a);
             case "friendwatch": return FriendWatchCmd(a);
+            case "payprice": return await PayPriceCmd(a);
+            case "pay": return await PayCmd(a);
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
             case "sethome": return await SetHomeCmd();
             case "autofollow": return AutoFollowCmd(a);

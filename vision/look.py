@@ -24,7 +24,8 @@ def main(a):
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
-    # her surroundings: full detail within 24 m (Highest LOD within 12), beyond 30 m backdrop at the lowest LOD (exports
+    # her surroundings: full detail within 30 m (Highest LOD within 12), whole objects centred beyond 30 m as backdrop at a
+    # screen-size LOD (exports
     # from 2026-10-04 reach 96 m); `self` meshes her alone
     args = [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me), "96", "--far=30"]
     if mode == "at":  # she turns her head toward the target (scene-mesher --look); an avatar's head ~0.7 m above its agent position

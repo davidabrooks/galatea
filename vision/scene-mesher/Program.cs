@@ -29,6 +29,26 @@ static class Mesher
         [new UUID("9742065b-19b5-297c-858a-29711d539043")] = "aux1", [new UUID("03642e83-2bd1-4eb9-34b4-4c47ed586d2d")] = "aux2",
         [new UUID("edd51b77-fc10-ce7a-4b3d-011dfc349e4f")] = "aux3",
     };
+    // a scene prim's linkset root: its parent when that parent is in the export, else itself
+    static uint RootOf(OSDMap o, Dictionary<uint, OSDMap> byLocal) => byLocal.ContainsKey(o["parentid"].AsUInteger()) ? o["parentid"].AsUInteger() : o["localid"].AsUInteger();
+    // per linkset root: bounding sphere (centre, radius) of its members' boxes, each taken as world_pos +- half its largest scale
+    // ponytail: rotation ignored (a cube's extent bounds any rotated prim of that size only up to sqrt 3); ceiling = the
+    // sphere can be a little loose, so an object can count as in range a few cm early
+    static Dictionary<uint, (Vector3 c, float r)> LinksetSpheres(IEnumerable<OSDMap> scene, Dictionary<uint, OSDMap> byLocal)
+    {
+        var box = new Dictionary<uint, (Vector3 lo, Vector3 hi)>();
+        foreach (var o in scene)
+        {
+            var p = o["world_pos"].AsVector3(); var sc = o["scale"].AsVector3(); var h = new Vector3(MathF.Max(sc.X, MathF.Max(sc.Y, sc.Z)) / 2);
+            var k = RootOf(o, byLocal);
+            box[k] = box.TryGetValue(k, out var b) ? (Vector3.Min(b.lo, p - h), Vector3.Max(b.hi, p + h)) : (p - h, p + h);
+        }
+        return box.ToDictionary(kv => kv.Key, kv => ((kv.Value.lo + kv.Value.hi) / 2, Vector3.Distance(kv.Value.lo, kv.Value.hi) / 2));
+    }
+
+    // ponytail: thresholds tuned by eye (0.24 / 0.06 / 0.03 of radius*2/distance), one LOD per linkset where SL picks per prim
+    static DetailLevel FarLod(float r, float d) => (r * 2f / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
+
     static readonly UUID Transparent = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
 
     sealed class Batch { public string Group, Tex; public float[] Rgba; public bool Fullbright; public Dictionary<string, object> Mat; public List<float> P = new(), N = new(), T = new(); public List<uint> I = new(); }
@@ -49,6 +69,11 @@ static class Mesher
                       && Xform(Skeleton.Mul(new float[] { 1,0,0,0, 0,1,0,0, 0,0,1,0, 1,2,3,1 }, new float[] { 2,0,0,0, 0,2,0,0, 0,0,2,0, 0,0,0,1 }), new Vector3(1, 1, 1), 1) == new Vector3(4, 6, 8);
             var lookD = Vector3.Normalize(new Vector3(1, 0.5f, 0.3f)); var lookGot = new Vector3(1, 0, 0) * LookRot(lookD).Value;
             ok &= Vector3.Distance(lookGot, lookD) < 0.01f;   // look-at: forward turned onto the target direction
+            // linkset sphere: a root at x=10 and a child at x=14 (1 m prims) -> one sphere covering both, centre x=12
+            OSDMap P(uint id, uint par, float x) => new OSDMap { ["localid"] = OSD.FromUInteger(id), ["parentid"] = OSD.FromUInteger(par), ["world_pos"] = OSD.FromVector3(new Vector3(x, 0, 0)), ["scale"] = OSD.FromVector3(Vector3.One) };
+            var ls = new Dictionary<uint, OSDMap> { [1] = P(1, 0, 10), [2] = P(2, 1, 14) }; var sp = LinksetSpheres(ls.Values, ls);
+            ok &= sp.Count == 1 && MathF.Abs(sp[1].c.X - 12) < 1e-3f && sp[1].r > 2.5f && RootOf(ls[2], ls) == 1;
+            ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             Console.WriteLine(ok ? "selftest ok" : $"selftest FAILED pelvis={Z("mPelvis")} head={Z("mHead")} wristY={w["mWristLeft"][13]} look={lookGot}");
             return ok ? 0 : 1;
         }
@@ -79,11 +104,17 @@ static class Mesher
         static string Owner(OSDMap o) => o.ContainsKey("attached_to_me") ? "me" : o.ContainsKey("attached_to") ? o["attached_to"].AsString() : null;
         void Count(string k) => stats.AddOrUpdate(k, 1, (_, v) => v + 1);
 
-        var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => Owner(o) != null
-            ? only != "scene" : only != "avatar" && Vector3.Distance(o["world_pos"].AsVector3(), focus) is var d && d <= focusR
-              && (d <= farR || o["scale"].AsVector3() is var sc && MathF.Max(sc.X, MathF.Max(sc.Y, sc.Z)) >= 1f)).ToList();
-        var lights = new List<object>();
         var byLocal = ((OSDArray)doc["prims"]).Cast<OSDMap>().ToDictionary(o => o["localid"].AsUInteger());
+        // range culling per whole linkset (David 2026-10-04: per-prim culling left floating tree fragments): a linkset's
+        // bounding sphere (member positions +- half their largest scale) is in if its nearest point is within focusR, and
+        // "far" (screen-size LOD, see FarLod; skipped when the whole object is under ~1 m across) when its centre is beyond farR (by the
+        // nearest point, big objects reaching inside 30 m pulled 800+ full-LOD textures)
+        var sphere = LinksetSpheres(byLocal.Values.Where(o => Owner(o) == null), byLocal);
+        float Nearest(OSDMap o) { var (c, r) = sphere[RootOf(o, byLocal)]; return MathF.Max(0, Vector3.Distance(c, focus) - r); }
+        bool Far(OSDMap o) => Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus) > farR;
+        var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => Owner(o) != null
+            ? only != "scene" : only != "avatar" && Nearest(o) <= focusR && (!Far(o) || sphere[RootOf(o, byLocal)].r >= 0.85f)).ToList();
+        var lights = new List<object>();
         // the export's TextureEntry JSON drops "face_number" for face 0, so LibreMetaverse would read face 0 as the default
         // face: restore it (the only per-face entry that can lack the key)
         foreach (var o in prims)
@@ -110,14 +141,17 @@ static class Mesher
             // child prims: world rotation = root * local, recomputed (exports before 2026-10-03 22:30 PT stored local * root)
             if (!mine && byLocal.TryGetValue(p.ParentID, out var par) && !par.ContainsKey("attached_to_me")) rot = par["rotation"].AsQuaternion() * p.Rotation;
             bool close = mine || Vector3.Distance(pos, focusR < 1e9f ? focus : me) < near;   // full LOD near the focus (or her)
-            bool far = !mine && Vector3.Distance(pos, focusR < 1e9f ? focus : me) > farR;
+            bool far = !mine && Far(o);
+            // backdrop LOD from the whole object's on-screen size (radius x LOD factor 2 / distance), like an SL viewer at its
+            // default LOD factor; the lowest LOD of many mesh trees is a handful of loose leaf triangles (floating fragments)
+            var farLod = far ? FarLod(sphere[RootOf(o, byLocal)].r, Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus)) : DetailLevel.Low;
             FacetedMesh fm = null; float[] bind = null;
             try
             {
                 if (p.Sculpt?.Type == SculptType.Mesh)
                 {
                     if (assets.TryGetValue(("mesh", p.Sculpt.SculptTexture), out var data) && data != null)
-                        fm = mf.GenerateFacetedMeshMesh(p, data, far ? DetailLevel.Low : close ? DetailLevel.Highest : DetailLevel.High);
+                        fm = mf.GenerateFacetedMeshMesh(p, data, far ? farLod : close ? DetailLevel.Highest : DetailLevel.High);
                     if (fm?.SkinData != null) bind = fm.SkinData.BindShapeMatrix;
                     Count(fm == null ? "mesh_failed" : bind != null ? "mesh_rigged" : "mesh");
                 }
@@ -126,15 +160,18 @@ static class Mesher
                     if (assets.TryGetValue(("texture", p.Sculpt.SculptTexture), out var data) && data != null)
                     {
                         var tex = new AssetTexture(UUID.Zero, data);
-                        if (tex.Decode()) fm = mf.GenerateFacetedSculptMesh(p, tex.Image, far ? DetailLevel.Low : DetailLevel.High);
+                        if (tex.Decode()) fm = mf.GenerateFacetedSculptMesh(p, tex.Image, far ? farLod : DetailLevel.High);
                     }
                     Count(fm == null ? "sculpt_failed" : "sculpt");
                 }
-                else { fm = mf.GenerateFacetedMesh(p, far ? DetailLevel.Low : close ? DetailLevel.Highest : DetailLevel.High); Count(fm == null ? "prim_failed" : "prim"); }
+                else { fm = mf.GenerateFacetedMesh(p, far ? farLod : close ? DetailLevel.Highest : DetailLevel.High); Count(fm == null ? "prim_failed" : "prim"); }
             }
             catch { Count("exception"); }
             if (fm == null) return;
-            if (!mine && p.Light is { Intensity: > 0 } li)   // SL point lights (projector textures ignored)
+            // SL point lights (projector textures ignored). A backdrop light whose radius can't reach within farR of the focus
+            // is dropped: it only lights far scenery, and 48 such lamps cost ~5 s a view (David 2026-10-04: keep the render
+            // near its old time). ponytail: far lamps don't light the backdrop; ceiling = distant buildings unlit at night
+            if (!mine && p.Light is { Intensity: > 0 } li && (!far || Vector3.Distance(pos, focus) - li.Radius <= farR))
                 lock (lights) lights.Add(new { pos = new[] { pos.X, pos.Y, pos.Z }, color = new[] { li.Color.R, li.Color.G, li.Color.B }, intensity = li.Intensity, radius = li.Radius, falloff = li.Falloff });
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
             if (mine) { (bind != null ? rigged : unrigged).Add((owner, p, fm)); return; }  // posed after all joint overrides are known

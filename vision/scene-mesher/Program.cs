@@ -174,7 +174,10 @@ static class Mesher
                         var v = verts[vi];
                         var (wp, wn) = pose != null ? pose(v, wts != null && vi < wts.Count ? wts[vi] : null) : (v.Position * p.Scale * rot + pos, Vector3.Normalize(v.Normal * rot));
                         b.P.Add(wp.X); b.P.Add(wp.Y); b.P.Add(wp.Z); b.N.Add(wn.X); b.N.Add(wn.Y); b.N.Add(wn.Z);
-                        b.T.Add(v.TexCoord.X); b.T.Add(1f - v.TexCoord.Y);
+                        // mesh-asset UVs are GL-style (v up from the image's bottom row; the SL viewer decodes J2C bottom row
+                        // first) and Blender samples the same way, so they pass through. Flipping them turned every mesh texture upside
+                        // down (head bake rows on the wrong features, the jeans' pocket art on her hip). Generated prim/sculpt UVs keep it.
+                        b.T.Add(v.TexCoord.X); b.T.Add(p.Sculpt?.Type == SculptType.Mesh ? v.TexCoord.Y : 1f - v.TexCoord.Y);
                     }
                     foreach (var i in f.Indices) b.I.Add(baseIdx + i);
                 }
@@ -184,12 +187,18 @@ static class Mesher
         // Rigged attachments: bind pose = SL's default (T-)pose. Per vertex: sum_k w_k * v * BindShape * InvBind_jk * JointWorld_jk
         // (row vectors), JointWorld from LibreMetaverse's copy of avatar_skeleton.xml, with joint position overrides
         // from alt_inverse_bind_matrix translations, as the SL viewer does. Reimplemented from the documented behaviour.
-        var overrides = new Dictionary<string, Vector3>();
+        // A mesh with lock_scale_if_joint_position also pins the scale of each joint it moves to the skeleton default,
+        // undoing the shape sliders' bone scales there.
+        var overrides = new Dictionary<string, Vector3>(); var lockScale = new HashSet<string>();
         foreach (var (_, fm) in rigged)
         {
             var sk = fm.SkinData;
-            for (int j = 0; j < sk.JointNames.Length && sk.AltInverseBindMatrices.Length >= (j + 1) * 16; j++)
+            if (sk.AltInverseBindMatrices.Length != sk.JointNames.Length * 16) continue;   // SL ignores a mismatched list
+            for (int j = 0; j < sk.JointNames.Length; j++)
+            {
                 overrides[sk.JointNames[j]] = new Vector3(sk.AltInverseBindMatrices[j * 16 + 12], sk.AltInverseBindMatrices[j * 16 + 13], sk.AltInverseBindMatrices[j * 16 + 14]);
+                if (sk.LockScaleIfJointPosition) lockScale.Add(sk.JointNames[j]);
+            }
         }
         // her shape: visual params -> bone/collision-volume position+scale (LibreMetaverse's port of LLPolySkeletalDistortion)
         var lad = LindenAvatarDefinition.Load(Path.Combine(AppContext.BaseDirectory, "linden", "character", "avatar_lad.xml"));
@@ -200,33 +209,47 @@ static class Mesher
         if (animId != null)
         {
             anim = new(); animPos = new(); var prio = new Dictionary<string, (int r, int p)>();
-            foreach (var id in animId.Split(','))
+            foreach (var spec in animId.Split(','))
             {
+                // "uuid@seconds" = that far into playback (anims_at.py reads it off the client log); bare uuid = old hold frame
+                var id = spec.Split('@')[0]; float? played = spec.Contains('@') ? float.Parse(spec.Split('@')[1], System.Globalization.CultureInfo.InvariantCulture) : null;
                 var data = await Get("animatn", new UUID(id));
                 if (data == null) { Console.Error.WriteLine($"animation {id}: fetch failed, skipped"); continue; }
                 var a = new BinBVHAnimationReader(data);
-                // one held frame: mid-loop for looping animations (sits: in = out = end, so the end pose; blinks and AO stands
-                // loop from 0, mid-loop dodges a blink at t=0), else the last frame. ponytail: no blending over time
-                float tHold = a.Loop ? (a.InPoint + a.OutPoint) / 2 : a.Length;
-                Vector3 At(binBVHJointKey[] k) => k.OrderBy(x => Math.Abs(x.time - tHold)).First().key_element;
+                // the frame SL shows `played` s in: a loop wraps between its in and out points after the first pass, else it
+                // holds the last frame; keys interpolate (positions lerp, rotations slerp). Without a time: mid-loop for loops
+                // (sits: in = out = end, so the end pose), else the last frame. ponytail: no ease-in/out weights
+                float tHold = played is float pt
+                    ? (a.Loop && a.OutPoint > a.InPoint && pt > a.OutPoint ? a.InPoint + (pt - a.InPoint) % (a.OutPoint - a.InPoint) : Math.Min(pt, a.Length))
+                    : a.Loop ? (a.InPoint + a.OutPoint) / 2 : a.Length;
+                Vector3 At(binBVHJointKey[] k, bool rot)
+                {
+                    int i = Array.FindIndex(k, x => x.time >= tHold);
+                    if (i <= 0) return k[i < 0 ? k.Length - 1 : 0].key_element;
+                    var (k0, k1) = (k[i - 1], k[i]); float u = k1.time > k0.time ? (tHold - k0.time) / (k1.time - k0.time) : 1;
+                    if (!rot) return Vector3.Lerp(k0.key_element, k1.key_element, u);
+                    var q = Quaternion.Slerp(Q(k0.key_element), Q(k1.key_element), u); if (q.W < 0) q = -q;
+                    return new Vector3(q.X, q.Y, q.Z);
+                }
+                static Quaternion Q(Vector3 e) => new(e.X, e.Y, e.Z, MathF.Sqrt(Math.Max(0, 1 - e.LengthSquared())));
                 // LibreMetaverse decodes positions over -0.5..1.5; the SL format range is -5..5 (LL_MAX_PELVIS_OFFSET)
-                Vector3 Pos(binBVHJointKey[] k) => (At(k) + new Vector3(0.5f, 0.5f, 0.5f)) * 5f - new Vector3(5, 5, 5);
+                Vector3 Pos(binBVHJointKey[] k) => (At(k, false) + new Vector3(0.5f, 0.5f, 0.5f)) * 5f - new Vector3(5, 5, 5);
                 foreach (var j in a.joints)
                 {
                     int jp = j.Priority >= 0 ? j.Priority : a.Priority;
                     var cur = prio.TryGetValue(j.Name, out var c) ? c : (r: -1, p: -1);
                     if (j.rotationkeys.Length > 0 && jp >= cur.r)
-                    { var e = At(j.rotationkeys); anim[j.Name] = new Quaternion(e.X, e.Y, e.Z, MathF.Sqrt(Math.Max(0, 1 - e.LengthSquared()))); cur.r = jp; }
+                    { anim[j.Name] = Q(At(j.rotationkeys, true)); cur.r = jp; }
                     if (j.positionkeys.Length > 0 && jp >= cur.p)
                     { if (j.Name == "mPelvis") pelvisOff = Pos(j.positionkeys); else animPos[j.Name] = Pos(j.positionkeys); cur.p = jp; }
                     prio[j.Name] = cur;
                 }
-                Console.WriteLine($"animation {id}: priority {a.Priority}, {a.joints.Length} joints");
+                Console.WriteLine($"animation {id}: priority {a.Priority}, {a.joints.Length} joints, frame {tHold:F2}/{a.Length:F2} s");
             }
             Console.WriteLine($"pose: {anim.Count} rotated joints, {animPos.Count} moved, pelvis offset {pelvisOff}");
         }
         var frames = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>();
-        var world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos);
+        var world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos, lockScale);
         // non-rigged attachments: root prim sits at its attach point (avatar_lad.xml offset/rotation) on that point's joint
         var points = lad.AttachmentPoints.ToDictionary(ap => ap.Id);
         foreach (var (p, fm) in unrigged)
@@ -296,16 +319,19 @@ static class Mesher
         // shape = visual-param bone transforms, anim = local joint rotations, overrides = rigged-mesh joint positions.
         public static Dictionary<string, float[]> World(Dictionary<string, Vector3> overrides, Dictionary<string, BoneTransform> shape = null,
             Dictionary<string, Quaternion> anim = null, Vector3 pelvisOffset = default, Dictionary<string, (Vector3, Quaternion)> frames = null,
-            Dictionary<string, Vector3> animPos = null)
+            Dictionary<string, Vector3> animPos = null, HashSet<string> lockScale = null)
         {
             var d = new Dictionary<string, float[]>();
             void Walk(JointBase j, Vector3 pPos, Quaternion pRot, Vector3 pScale)
             {
                 BoneTransform? bt = shape != null && shape.TryGetValue(j.name, out var t) ? t : null;
-                var pos = overrides.TryGetValue(j.name, out var o) ? o : bt?.Position ?? V(j.pos, 0);
+                // as the SL viewer: an override within 0.1 mm of the skeleton default is ignored, so the shape's own
+                // (slider-moved) position stays; a real override replaces it and, with lock_scale, the shape's scale too
+                bool ov = overrides.TryGetValue(j.name, out var o) && (o - V(j.pos, 0)).LengthSquared() > 1e-8f;
+                var pos = ov ? o : bt?.Position ?? V(j.pos, 0);
                 if (j.name == "mPelvis") pos += pelvisOffset;
                 else if (animPos != null && animPos.TryGetValue(j.name, out var ap)) pos = ap;   // animated joint translation (Bento face)
-                var scale = bt?.Scale ?? V(j.scale, 1);
+                var scale = ov && lockScale?.Contains(j.name) == true ? V(j.scale, 1) : bt?.Scale ?? V(j.scale, 1);
                 var r = j.rot ?? new float[3];
                 var local = Quaternion.CreateFromEulers(r[0] * MathF.PI / 180, r[1] * MathF.PI / 180, r[2] * MathF.PI / 180);
                 if (anim != null && anim.TryGetValue(j.name, out var ar)) local = ar * local;

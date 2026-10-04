@@ -34,7 +34,7 @@ def eep(doc):
     amb = lambda f: f.get("ambient") or f.get("legacy_haze", {}).get("ambient") or [0.25, 0.25, 0.25]  # LL's default when unset
     return {"frac": frac, "sun_dir": z(doc.get("sun_dir", [0, 0, 1])), "sunlight": mix(lambda f: f["sunlight_color"])[:3],
             "ambient": mix(amb)[:3], "cloud_shadow": mix(lambda f: [f.get("cloud_shadow") or 0.0])[0],
-            "horizon": mix(hz)[:3], "moon": (a.get("moon_brightness") or 0.0) * (1 - w) + (b.get("moon_brightness") or 0.0) * w}
+            "horizon": mix(hz)[:3], "zenith": mix(lambda f: f.get("legacy_haze", {}).get("blue_density", [0.25, 0.45, 0.76]))[:3], "moon": (a.get("moon_brightness") or 0.0) * (1 - w) + (b.get("moon_brightness") or 0.0) * w}
 if __name__ == "__main__":
     d, terrain, renders, out = sys.argv[1:5]
     meta = json.load(open(f"{d}/mesh.json"))

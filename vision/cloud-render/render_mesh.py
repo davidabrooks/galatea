@@ -205,6 +205,7 @@ def eep(env):
     L.data.color = [x / peak for x in c]; L.data.energy = (0.25 * env["moon"] if night else 1.2 * peak)
     w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True; bg = w.node_tree.nodes["Background"]
     bg.inputs["Color"].default_value = (*env["horizon"], 1); bg.inputs["Strength"].default_value = 0.35 if night else 1.0
+    sky_backdrop(w, env, night)
     for l in M.get("lights", []):
         # SL point light, reimplemented from the LL viewer's deferred light shader: radiance = albedo x linear colour x
         # intensity x atten x N.L x 3.25/pi, atten = 2 (1 - clamp((d/radius + falloff) / (1 + falloff)))^2, zero past the
@@ -225,17 +226,62 @@ def eep(env):
         o = bpy.data.objects.new("sl", d); o.location = l["pos"]; sc.collection.objects.link(o)
     log("eep", "night" if night else "day", "ambient", round(AMB, 4), "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
 
+def sky_backdrop(w, env, night):
+    """What the camera (and water reflections) see of the sky: the EEP horizon colour at the horizon fading to the sky's
+    blue_density colour overhead, scaled to the horizon's brightness (SL's legacy sky model, much simplified). Diffuse
+    lighting still comes from the flat horizon colour it always used, so nothing in the scene changes brightness.
+    ponytail: no clouds, sun disc, haze glow or neighbouring regions; ceiling = a clean but plain gradient"""
+    if "zenith" not in env: return
+    nt = w.node_tree; L = nt.links.new; bg = nt.nodes["Background"]
+    h = env["horizon"]; z = env["zenith"]; k = max(sum(h), 1e-3) / max(sum(z), 1e-3) * 0.85
+    co = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); L(co.outputs["Generated"], sp.inputs[0])
+    mr = nt.nodes.new("ShaderNodeMapRange"); mr.interpolation_type = "SMOOTHSTEP"; mr.inputs["From Min"].default_value = 0.0; mr.inputs["From Max"].default_value = 0.45
+    L(sp.outputs["Z"], mr.inputs["Value"])
+    mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; L(mr.outputs["Result"], mx.inputs["Factor"])
+    mx.inputs["A"].default_value = (*h, 1); mx.inputs["B"].default_value = (*[min(1.0, c * k) for c in z], 1)
+    seen = nt.nodes.new("ShaderNodeBackground"); L(mx.outputs["Result"], seen.inputs["Color"]); seen.inputs["Strength"].default_value = bg.inputs["Strength"].default_value
+    lp = nt.nodes.new("ShaderNodeLightPath"); mm = nt.nodes.new("ShaderNodeMath"); mm.operation = "MAXIMUM"
+    L(lp.outputs["Is Camera Ray"], mm.inputs[0]); L(lp.outputs["Is Glossy Ray"], mm.inputs[1])
+    ms = nt.nodes.new("ShaderNodeMixShader"); L(mm.outputs[0], ms.inputs["Fac"]); L(bg.outputs[0], ms.inputs[1]); L(seen.outputs[0], ms.inputs[2])
+    L(ms.outputs[0], nt.nodes["World Output"].inputs["Surface"])
+
+def water():
+    """The region's water plane (export: water_height), 4 km across so it meets the sky at the horizon. Shaded without
+    tracing: the sky gradient looked up along the reflected view ray, weighted by a Fresnel-like facing term, over a dark
+    sea colour, as emission (a traced glossy plane cost ~3 s of the ~20 s budget). ponytail: no waves, no reflections of
+    objects or of the sun; ceiling = a calm, matte-mirror sea"""
+    wh = M.get("water_height"); env = M.get("env") or {}
+    if wh is None: return
+    bpy.ops.mesh.primitive_plane_add(size=4096, location=(128, 128, wh)); ob = bpy.context.object; ob.name = "water"
+    m = bpy.data.materials.new("water"); m.use_nodes = True; nt = m.node_tree; L = nt.links.new
+    for n in list(nt.nodes):
+        if n.type != "OUTPUT_MATERIAL": nt.nodes.remove(n)
+    h = env.get("horizon", [0.5, 0.5, 0.6]); z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3) * 0.85
+    night = (env.get("sun_dir") or [0, 0, 1])[2] < 0; s = 0.35 if night else 1.0
+    co = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); L(co.outputs["Reflection"], sp.inputs[0])
+    mr = nt.nodes.new("ShaderNodeMapRange"); mr.interpolation_type = "SMOOTHSTEP"; mr.inputs["From Max"].default_value = 0.45; L(sp.outputs["Z"], mr.inputs["Value"])
+    sky = nt.nodes.new("ShaderNodeMix"); sky.data_type = "RGBA"; L(mr.outputs["Result"], sky.inputs["Factor"])
+    sky.inputs["A"].default_value = (*h, 1); sky.inputs["B"].default_value = (*[min(1.0, c * k) for c in z], 1)
+    lw = nt.nodes.new("ShaderNodeLayerWeight"); lw.inputs["Blend"].default_value = 0.35
+    mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; L(lw.outputs["Fresnel"], mx.inputs["Factor"])
+    mx.inputs["A"].default_value = (0.02, 0.05, 0.07, 1); L(sky.outputs["Result"], mx.inputs["B"])
+    em = nt.nodes.new("ShaderNodeEmission"); L(mx.outputs["Result"], em.inputs["Color"]); em.inputs["Strength"].default_value = s
+    L(em.outputs[0], nt.nodes["Material Output"].inputs["Surface"])
+    ob.data.materials.append(m); ob.visible_shadow = False; ob.visible_diffuse = False; ob.visible_glossy = False
+
 def terrain():
+    # ponytail: one flat green material, a 4 m grid, this region only; a point with no land data sits at 20 m;
+    # ceiling = no terrain textures, no neighbouring regions
     t = json.load(open(f"{jobdir}/terrain.json")); nx, ny, st = t["nx"], t["ny"], t["step"]
     if nx < 2: return
-    verts = [(t["x0"] + i * st, t["y0"] + j * st, t["heights"][j][i] if t["heights"][j][i] is not None else 20.0) for j in range(ny) for i in range(nx)]
+    verts = [(t.get("x0", 0) + i * st, t.get("y0", 0) + j * st, t["heights"][j][i] if t["heights"][j][i] is not None else 20.0) for j in range(ny) for i in range(nx)]
     faces = [(j * nx + i, j * nx + i + 1, (j + 1) * nx + i + 1, (j + 1) * nx + i) for j in range(ny - 1) for i in range(nx - 1)]
     me = bpy.data.meshes.new("terrain"); me.from_pydata(verts, [], faces); ob = bpy.data.objects.new("terrain", me); sc.collection.objects.link(ob)
     m = bpy.data.materials.new("ground"); m.use_nodes = True; m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.24, 0.30, 0.14, 1); me.materials.append(m)
 
 gpu_setup(); views = []
 if kind == "scene":
-    build("scene"); terrain()
+    build("scene"); build("far"); terrain(); water()
     g = M["me"]; av = os.environ.get("GT_AV")  # "x,y,yaw_deg": stand/sit her there, on the first surface below
     x, y, yaw = [float(v) for v in av.split(",")] if av else (g[0], g[1], M.get("me_yaw", -90.0))
     bpy.context.view_layer.update(); dg = bpy.context.evaluated_depsgraph_get()

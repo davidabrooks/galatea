@@ -300,6 +300,7 @@ public static partial class Program
         var msg = $"OK in {sw.Elapsed.TotalSeconds:F1}s: region {client.Network.CurrentSim?.Name} pos {Fmt(client.Self.SimPosition)} agent {client.Self.AgentID}";
         Log("login", msg);
         if (tickerTask == null) tickerTask = Task.Run(Ticker);
+        EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);
@@ -386,6 +387,7 @@ public static partial class Program
             if (e.Type is ChatType.StartTyping or ChatType.StopTyping or ChatType.Debug) return;
             if (string.IsNullOrEmpty(e.Message)) return;
             if (e.SourceType == ChatSourceType.Agent) Remember(e.FromName, e.SourceID);
+            if (e.SourceType == ChatSourceType.Agent && e.SourceID != client.Self.AgentID && e.Type is ChatType.Normal or ChatType.Whisper) NoteChatPartner(e.SourceID);
             if (e.SourceType == ChatSourceType.Agent ? MutedDrop(e.SourceID, e.FromName, "chat") : MutedDrop(e.OwnerID, NameOf(e.OwnerID), "object chat")) return;
             if (e.SourceType == ChatSourceType.Agent && e.SourceID != UUID.Zero && e.SourceID != client.Self.AgentID
                 && e.Type is ChatType.Normal or ChatType.Whisper or ChatType.Shout)
@@ -1572,6 +1574,7 @@ public static partial class Program
   sit_home                    Naberrie seat rule: her pillow 10d8a656 if both rock pillows are free, else a quiet free seat in The Buddha Center parcel (not the zendo), else stand
   offers [all|selftest] | offers accept <n> [confirm] | offers decline <n>   pending inventory offers + friendship requests (never auto-accepted; non-allow-listed sender needs 'confirm' = David's OK)
   friend list | friend accept|decline <name> [confirm] | friend add <name> [confirm]   friendships (allow-list: David Nightingale, Sophie-Jeanne)
+  lookat [status|mode head|private|audit on|off|selftest]   head-turn LookAt policy (LookAt.cs): head = short Respond turns at avatars she deliberately looks at, nothing else
   friendwatch [status|selftest|simulate]   David Nightingale online -> urgent 'david_login' webhook ~10 s later (10 min debounce); simulate = 'david_login_test'
   payprice <object uuid> | pay object <uuid> <L$> confirm | pay selftest   quick-pay buttons (read-only) / pay an object (needs confirm = David's OK; never over the balance)
   remind add <text> | remind list | remind done <n>   in-world reminders for David (/workspace/secondlife/inworld-reminders.md; pending ones ride on david_login)
@@ -1626,6 +1629,7 @@ public static partial class Program
             {
                 if (rest.Length == 0) return "usage: say <text>";
                 var t = cmd == "say" ? ChatType.Normal : cmd == "shout" ? ChatType.Shout : ChatType.Whisper;
+                HeadTurnForSay();   // someone nearby talking with her: a short head turn to them (LookAt.cs)
                 client.Self.Chat(rest, 0, t);
                 Log("me-chat", $"({cmd}) {rest}");
                 return "ok";
@@ -1730,6 +1734,7 @@ public static partial class Program
             case "offers": return await OffersCmd(a);
             case "friend": case "friends": return await FriendCmd(a);
             case "friendwatch": return FriendWatchCmd(a);
+            case "lookat": return LookAtCmd(a);
             case "payprice": return await PayPriceCmd(a);
             case "pay": return await PayCmd(a);
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);

@@ -928,6 +928,7 @@ public static partial class Program
                     bool robeOn = RobeWorn(out var robeHow);
                     var txt = NextGreeting(DateTime.Now, gname, ref wGreetIdx, HDist(client.Self.SimPosition, DeerParkCentre) <= 25f, robeOn);
                     WLog($"greeting pool: {(robeOn ? "Buddhist" : "ordinary")} ({robeHow})");
+                    HeadTurnTo(who.id, "wander greeting");   // a short head turn to whom she greets (LookAt.cs)
                     client.Self.Chat(txt, 0, ChatType.Normal);
                     var now = DateTime.Now;
                     lock (wGreeted) wGreeted[who.id] = now;

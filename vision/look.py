@@ -12,6 +12,8 @@ os.environ.setdefault("GT_MAX_TEXTURES", "800")
 import handler, make_job  # texture fetch (CDN, capped) + bake decode / region sky: same code as the Runpod path
 
 MESHER = os.environ.get("SCENE_MESHER", "/home/box/tools/scene-mesher/SceneMesher.dll")
+# the text client's supervisor may not have dotnet on PATH (2026-10-04: "nice: 'dotnet': No such file"); DOTNET_ROOT is set
+DOTNET = shutil.which("dotnet") or os.path.join(os.environ.get("DOTNET_ROOT", "/home/box/.dotnet"), "dotnet")
 BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.2.3-linux-x64/blender")
 OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
@@ -29,7 +31,7 @@ def main(a):
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
         pt = [av["pos"][0], av["pos"][1], av["pos"][2] + 0.7] if av else obj["world_pos"] if obj else None
         if pt: args.append("--look=" + ",".join(str(v) for v in pt))
-    r = subprocess.run(["nice", "-n", "10", "dotnet", MESHER] + args, capture_output=True, text=True)
+    r = subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + args, capture_output=True, text=True)
     if r.returncode: sys.exit("scene-mesher failed: " + (r.stderr or r.stdout)[-400:])
     times["mesh"] = round(time.time() - t0, 1)
     meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc)

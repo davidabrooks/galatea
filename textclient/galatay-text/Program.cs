@@ -516,6 +516,19 @@ public static partial class Program
     }
 
     // ---- periodic work (follow) ---------------------------------------
+    // 2026-10-04 (David in front of her, `avatars` empty): the sim sends avatars only within the draw distance (Far, 128 m) of
+    // the CAMERA center we report in AgentUpdate. LibreMetaverse moves the camera only on TurnToward/UpdateFromHeading, so
+    // after a relog + sit (no turn, no walk) it stayed at its default <128,128,20>, ~123 m away: prims still streamed (360
+    // interest list), avatars didn't. Keep the camera on her whenever it is more than 4 m off (checked every second).
+    static void CameraAnchorTick()
+    {
+        if (!LoggedIn) return;
+        var mv = client.Self.Movement; var me = client.Self.SimPosition;
+        if (Vector3.Distance(mv.Camera.Position, me) <= 4f) return;
+        var f0 = Vector3.UnitX * client.Self.SimRotation; var fwd = new Vector3(f0.X, f0.Y, 0); if (fwd.Length() < 0.01f) fwd = Vector3.UnitX;
+        Log("camera", $"camera center {Fmt(mv.Camera.Position)} is {Vector3.Distance(mv.Camera.Position, me):F0} m from me: re-anchored at {Fmt(me)}");
+        mv.Camera.LookAt(me, me + Vector3.Normalize(fwd) * 5f); mv.SendUpdate(true);
+    }
     static async Task Ticker()
     {
         while (!cts.IsCancellationRequested)
@@ -541,6 +554,7 @@ public static partial class Program
             }
             catch { }
             try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
+            try { CameraAnchorTick(); } catch { }
             try { await Task.Delay(1000, cts.Token); } catch { }
         }
     }

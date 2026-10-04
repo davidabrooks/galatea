@@ -75,6 +75,9 @@ def fetch_textures(meta, out, work):
         mat = b.get("mat") or {}
         for t, cap in [(b["tex"], 1024 if b["group"].startswith("avatar") else 512)] + [(mat.get(k), 512) for k in ("normal", "spec", "mr", "emissive_tex")]:
             if isinstance(t, str) and UUID.match(t): want[t] = max(want.get(t, 0), cap)
+    near = {t for b in meta["batches"] if b["group"] != "far" for t in [b["tex"], *(b.get("mat") or {}).values()] if isinstance(t, str)}
+    if len(want) > MAX_TEXTURES:  # backdrop ("far") textures go first: those faces then show their plain colour
+        for t in [t for t in want if t not in near][:len(want) - MAX_TEXTURES]: del want[t]
     if len(want) > MAX_TEXTURES: return f"{len(want)} textures > {MAX_TEXTURES}"
     t = time.time()
     with cf.ThreadPoolExecutor(8) as ex:

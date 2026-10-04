@@ -1,5 +1,5 @@
 // Look.cs (2026-10-04, David: let her see) - `look [self|around|at <avatar|object>] [fast]`
-//   READ-ONLY in-world: a `scene export` (radius 32; 8 for self), then the box script vision/look.py meshes it and renders
+//   READ-ONLY in-world: a `scene export` (radius 96, backdrop beyond 30 m; 8 for self), then the box script vision/look.py meshes it and renders
 //   on the CPU (Cycles, nice 10) and prints the image path(s). Waits up to GT_LOOK_WAIT_S (75 s, under the 85 s command
 //   reply cap); a longer render keeps going and its paths land in the log as [look]. One look at a time (shared work dir).
 using System.Diagnostics;
@@ -28,7 +28,7 @@ public static partial class Program
             if (mode == "at")   // root prim names for the target match: same property fetch `nearby` uses
                 await EnsureProperties(Sim, Sim.ObjectsPrimitives.Values.Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim
                     && Vector3.Distance(p.Position, client.Self.SimPosition) <= 32).ToList());
-            var ex = await SceneExport(new[] { "export", mode == "self" ? "8" : "32" });
+            var ex = await SceneExport(new[] { "export", mode == "self" ? "8" : "96" });   // 96 m: backdrop beyond 30 m (look.py)
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }
             var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };

@@ -131,11 +131,27 @@ public static partial class Program
             ["materials"] = mats, ["gltf_overrides"] = gltf, ["visual_params"] = vparams, ["environment"] = env,
             ["sun_dir"] = OSD.FromVector3(client.Grid.SunDirection),
             ["region"] = sim.Name, ["agent_id"] = OSD.FromUUID(me.AgentID), ["me"] = new OSDMap { ["pos"] = OSD.FromVector3(myPos), ["rot"] = OSD.FromQuaternion(me.SimRotation), ["sitting_on"] = (int)me.SittingOn, ["anims"] = AnimsOf(me.AgentID) },
+            ["water_height"] = sim.WaterHeight, ["terrain"] = TerrainGrid(sim),
             ["radius"] = r, ["prims"] = outPrims, ["bakes"] = bakes, ["avatars"] = avatars, ["exported_at"] = DateTime.Now.ToString("o"),
         };
         File.WriteAllText(Path.Combine(dir, "scene.json"), OSDParser.SerializeJsonString(doc));
         return $"exported {outPrims.Count} prims, {mats.Count}/{matIds.Count} materials, {gltf.Count} gltf-override prims, {vparams.Count} visual params ({mine} on my attachments), {avatars.Count} avatar(s) ({theirs} prims on their attachments), bakes {string.Join(",", bakes.Keys)}" +
                (bakeErr.Count > 0 ? $" (failed: {string.Join(",", bakeErr)})" : "") + $"\n{dir}/scene.json";
+    }
+
+    // the region heightmap every 4 m (65 x 65, x/y 0..256; the last row/column reads 255) for the renderer's ground and
+    // shoreline (2026-10-04); a point without land-patch data is null
+    static OSDMap TerrainGrid(Simulator sim)
+    {
+        const int step = 4, n = 256 / step + 1; var rows = new OSDArray();
+        for (int j = 0; j < n; j++)
+        {
+            var row = new OSDArray();
+            for (int i = 0; i < n; i++)
+                row.Add(sim.TerrainHeightAtPoint(Math.Min(i * step, 255), Math.Min(j * step, 255), out var h) ? OSD.FromReal(h) : new OSD());
+            rows.Add(row);
+        }
+        return new OSDMap { ["x0"] = 0, ["y0"] = 0, ["step"] = step, ["nx"] = n, ["ny"] = n, ["heights"] = rows };
     }
 
     static OSDMap GltfOsd(AssetMaterial m) => new()

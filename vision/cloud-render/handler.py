@@ -13,7 +13,8 @@ WORKER_T0 = time.time()
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")  # trust boundary: ids become paths and URLs
 KINDS = {"scene", "face", "body"}
 BAKE_NAMES = {"head", "upper", "lower", "eyes", "skirt", "hair", "leftarm", "leftleg", "aux1", "aux2", "aux3"}
-MAX_TEXTURES = 200
+BAKE_KEY = re.compile(r"(?:[0-9a-f]{8}-)?(" + "|".join(sorted(BAKE_NAMES)) + ")")  # hers, or "<agent id[:8]>-<name>" for others
+MAX_TEXTURES = int(os.environ.get("GT_MAX_TEXTURES", "200"))  # per job; the box `look` path raises it (local disk cache, no worker timeout)
 
 def sh(c, timeout=60):
     try:
@@ -64,11 +65,15 @@ def mesh_job(inp, out, work):
     raw = base64.b64decode(mj["mesh_bin_xz_b64"]) if "mesh_bin_xz_b64" in mj else gzip.decompress(base64.b64decode(mj["mesh_bin_gz_b64"]))
     open(work + "/mesh.bin", "wb").write(lzma.decompress(raw) if "mesh_bin_xz_b64" in mj else raw)
     for name, b64 in mj.get("bakes", {}).items():  # PNG, decoded on the box (5-channel bake j2c)
-        if name in BAKE_NAMES: Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA").save(f"{work}/tex/bake-{name}.png")  # alpha = bake cut-outs
+        if BAKE_KEY.fullmatch(name): Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA").save(f"{work}/tex/bake-{name}.png")  # alpha = bake cut-outs
+    return fetch_textures(meta, out, work)
+
+def fetch_textures(meta, out, work):
+    """Every texture the batches reference (CDN, capped), into work/tex; None or an error string."""
     want = {}
     for b in meta["batches"]:
         mat = b.get("mat") or {}
-        for t, cap in [(b["tex"], 1024 if b["group"] == "avatar" else 512)] + [(mat.get(k), 512) for k in ("normal", "spec", "mr", "emissive_tex")]:
+        for t, cap in [(b["tex"], 1024 if b["group"].startswith("avatar") else 512)] + [(mat.get(k), 512) for k in ("normal", "spec", "mr", "emissive_tex")]:
             if isinstance(t, str) and UUID.match(t): want[t] = max(want.get(t, 0), cap)
     if len(want) > MAX_TEXTURES: return f"{len(want)} textures > {MAX_TEXTURES}"
     t = time.time()

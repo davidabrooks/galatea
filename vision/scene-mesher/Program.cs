@@ -1,6 +1,8 @@
 // scene-mesher: `scene export` dump -> geometry batches for the Blender worker (no SL login; assets from the public CDN).
 //   dotnet run -- --selftest | <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r] [--anim=<uuid>]
 //   (scene prims only within r of c; --anim=a,b,.. poses her with the held frame of SL animations (priority-blended), e.g. the default sit)
+//   Without --anim she is posed from the export's me.anims (the client's animation clock). Other avatars (export "avatars"
+//   with agent_id, 2026-10-04+) get their own shape, bakes and animations, one group "avatar:<id8>" each (mesh.json "others").
 // Writes <dir>/mesh.json (batches: material + counts) and <dir>/mesh.bin (float32 pos/normal/uv, uint32 indices),
 // one batch per material, world space for the scene and bind-pose avatar space for Galatea's rigged attachments.
 // Prims: LibreMetaverse PrimMesher (via MeshFoundry). Sculpts: sculpt map from the CDN. Mesh: LOD from the CDN.
@@ -59,10 +61,12 @@ static class Mesher
         var mf = new MeshFoundry();
         var batches = new ConcurrentDictionary<string, Batch>();
         var stats = new ConcurrentDictionary<string, int>();
-        var rigged = new ConcurrentBag<(Primitive, FacetedMesh)>(); var unrigged = new ConcurrentBag<(Primitive, FacetedMesh)>();
+        // avatar attachments by owner: "me" (hers) or the wearer's agent id (other avatars, exports from 2026-10-04)
+        var rigged = new ConcurrentBag<(string, Primitive, FacetedMesh)>(); var unrigged = new ConcurrentBag<(string, Primitive, FacetedMesh)>();
+        static string Owner(OSDMap o) => o.ContainsKey("attached_to_me") ? "me" : o.ContainsKey("attached_to") ? o["attached_to"].AsString() : null;
         void Count(string k) => stats.AddOrUpdate(k, 1, (_, v) => v + 1);
 
-        var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => o.ContainsKey("attached_to_me")
+        var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => Owner(o) != null
             ? only != "scene" : only != "avatar" && Vector3.Distance(o["world_pos"].AsVector3(), focus) <= focusR).ToList();
         var lights = new List<object>();
         var byLocal = ((OSDArray)doc["prims"]).Cast<OSDMap>().ToDictionary(o => o["localid"].AsUInteger());
@@ -86,7 +90,7 @@ static class Mesher
         Parallel.ForEach(prims, new ParallelOptions { MaxDegreeOfParallelism = 8 }, o =>
         {
             var p = Primitive.FromOSD(o);
-            bool mine = o.ContainsKey("attached_to_me");
+            var owner = Owner(o); bool mine = owner != null;
             var pos = mine ? Vector3.Zero : o["world_pos"].AsVector3();
             var rot = mine ? Quaternion.Identity : o["world_rot"].AsQuaternion();
             // child prims: world rotation = root * local, recomputed (exports before 2026-10-03 22:30 PT stored local * root)
@@ -118,8 +122,8 @@ static class Mesher
             if (!mine && p.Light is { Intensity: > 0 } li)   // SL point lights (projector textures ignored)
                 lock (lights) lights.Add(new { pos = new[] { pos.X, pos.Y, pos.Z }, color = new[] { li.Color.R, li.Color.G, li.Color.B }, intensity = li.Intensity, radius = li.Radius, falloff = li.Falloff });
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
-            if (mine) { (bind != null ? rigged : unrigged).Add((p, fm)); return; }  // posed after all joint overrides are known
-            Emit(p, fm, false, null, pos, rot, o);
+            if (mine) { (bind != null ? rigged : unrigged).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
+            Emit(p, fm, "scene", null, null, pos, rot, o);
         });
 
 
@@ -152,7 +156,7 @@ static class Mesher
             return m;
         }
 
-        void Emit(Primitive p, FacetedMesh fm, bool mine, Func<Vertex, VertexWeight?, (Vector3, Vector3)> pose, Vector3 pos, Quaternion rot, OSDMap o)
+        void Emit(Primitive p, FacetedMesh fm, string group, string bakePrefix, Func<Vertex, VertexWeight?, (Vector3, Vector3)> pose, Vector3 pos, Quaternion rot, OSDMap o)
         {
             foreach (var f in fm.Faces)
             {
@@ -160,10 +164,9 @@ static class Mesher
                 if (te == null || te.RGBA.A < 0.01f || te.TextureID == Transparent || f.Indices.Count == 0) continue;
                 var verts = f.Vertices.ToList(); var wts = f.Weights;
                 mf.TransformTexCoords(verts, Vector3.Zero, te, p.Scale);
-                string tex = BakeOf.TryGetValue(te.TextureID, out var bake) ? "bake:" + bake : te.TextureID.ToString();
+                string tex = BakeOf.TryGetValue(te.TextureID, out var bake) ? "bake:" + bakePrefix + bake : te.TextureID.ToString();
                 var rgba = new[] { te.RGBA.R, te.RGBA.G, te.RGBA.B, te.RGBA.A };
                 var mat = Mat(te, f.ID, o, ref tex, ref rgba);
-                string group = mine ? "avatar" : "scene";
                 string key = $"{group}|{tex}|{string.Join(",", rgba.Select(x => x.ToString("F2")))}|{te.Fullbright}|{JsonSerializer.Serialize(mat)}";
                 var b = batches.GetOrAdd(key, _ => new Batch { Group = group, Tex = tex, Rgba = rgba, Fullbright = te.Fullbright, Mat = mat });
                 lock (b)
@@ -189,97 +192,119 @@ static class Mesher
         // from alt_inverse_bind_matrix translations, as the SL viewer does. Reimplemented from the documented behaviour.
         // A mesh with lock_scale_if_joint_position also pins the scale of each joint it moves to the skeleton default,
         // undoing the shape sliders' bone scales there.
-        var overrides = new Dictionary<string, Vector3>(); var lockScale = new HashSet<string>();
-        foreach (var (_, fm) in rigged)
-        {
-            var sk = fm.SkinData;
-            if (sk.AltInverseBindMatrices.Length != sk.JointNames.Length * 16) continue;   // SL ignores a mismatched list
-            for (int j = 0; j < sk.JointNames.Length; j++)
-            {
-                overrides[sk.JointNames[j]] = new Vector3(sk.AltInverseBindMatrices[j * 16 + 12], sk.AltInverseBindMatrices[j * 16 + 13], sk.AltInverseBindMatrices[j * 16 + 14]);
-                if (sk.LockScaleIfJointPosition) lockScale.Add(sk.JointNames[j]);
-            }
-        }
-        // her shape: visual params -> bone/collision-volume position+scale (LibreMetaverse's port of LLPolySkeletalDistortion)
+        // one avatar: shape (visual params), joint overrides, animation pose, then its attachments in avatar-local space
+        // (feet near z=0, facing +x; render_mesh.py stands each group on the floor under the avatar's position)
         var lad = LindenAvatarDefinition.Load(Path.Combine(AppContext.BaseDirectory, "linden", "character", "avatar_lad.xml"));
-        var vp = doc.ContainsKey("visual_params") ? ((OSDMap)doc["visual_params"]).ToDictionary(kv => int.Parse(kv.Key), kv => (float)kv.Value.AsReal()) : new Dictionary<int, float>();
-        var shape = vp.Count > 0 ? lad.ComputeBoneTransforms(vp) : null;
-        // animations (her playing set, e.g. AO stand + head expression): per joint the highest priority wins, ties -> later
-        Dictionary<string, Quaternion> anim = null; Dictionary<string, Vector3> animPos = null; Vector3 pelvisOff = Vector3.Zero;
-        if (animId != null)
+        async Task<Dictionary<string, (Vector3 Pos, Quaternion Rot)>> PoseAvatar(string owner, string group, string bakePrefix, OSDMap vpMap, string animId)
         {
-            anim = new(); animPos = new(); var prio = new Dictionary<string, (int r, int p)>();
-            foreach (var spec in animId.Split(','))
+            Dictionary<string, (Vector3 Pos, Quaternion Rot)> frames;
+            var overrides = new Dictionary<string, Vector3>(); var lockScale = new HashSet<string>();
+            foreach (var (_, _, fm) in rigged.Where(x => x.Item1 == owner))
             {
-                // "uuid@seconds" = that far into playback (anims_at.py reads it off the client log); bare uuid = old hold frame
-                var id = spec.Split('@')[0]; float? played = spec.Contains('@') ? float.Parse(spec.Split('@')[1], System.Globalization.CultureInfo.InvariantCulture) : null;
-                var data = await Get("animatn", new UUID(id));
-                if (data == null) { Console.Error.WriteLine($"animation {id}: fetch failed, skipped"); continue; }
-                var a = new BinBVHAnimationReader(data);
-                // the frame SL shows `played` s in: a loop wraps between its in and out points after the first pass, else it
-                // holds the last frame; keys interpolate (positions lerp, rotations slerp). Without a time: mid-loop for loops
-                // (sits: in = out = end, so the end pose), else the last frame. ponytail: no ease-in/out weights
-                float tHold = played is float pt
-                    ? (a.Loop && a.OutPoint > a.InPoint && pt > a.OutPoint ? a.InPoint + (pt - a.InPoint) % (a.OutPoint - a.InPoint) : Math.Min(pt, a.Length))
-                    : a.Loop ? (a.InPoint + a.OutPoint) / 2 : a.Length;
-                Vector3 At(binBVHJointKey[] k, bool rot)
+                var sk = fm.SkinData;
+                if (sk.AltInverseBindMatrices.Length != sk.JointNames.Length * 16) continue;   // SL ignores a mismatched list
+                for (int j = 0; j < sk.JointNames.Length; j++)
                 {
-                    int i = Array.FindIndex(k, x => x.time >= tHold);
-                    if (i <= 0) return k[i < 0 ? k.Length - 1 : 0].key_element;
-                    var (k0, k1) = (k[i - 1], k[i]); float u = k1.time > k0.time ? (tHold - k0.time) / (k1.time - k0.time) : 1;
-                    if (!rot) return Vector3.Lerp(k0.key_element, k1.key_element, u);
-                    var q = Quaternion.Slerp(Q(k0.key_element), Q(k1.key_element), u); if (q.W < 0) q = -q;
-                    return new Vector3(q.X, q.Y, q.Z);
+                    overrides[sk.JointNames[j]] = new Vector3(sk.AltInverseBindMatrices[j * 16 + 12], sk.AltInverseBindMatrices[j * 16 + 13], sk.AltInverseBindMatrices[j * 16 + 14]);
+                    if (sk.LockScaleIfJointPosition) lockScale.Add(sk.JointNames[j]);
                 }
-                static Quaternion Q(Vector3 e) => new(e.X, e.Y, e.Z, MathF.Sqrt(Math.Max(0, 1 - e.LengthSquared())));
-                // LibreMetaverse decodes positions over -0.5..1.5; the SL format range is -5..5 (LL_MAX_PELVIS_OFFSET)
-                Vector3 Pos(binBVHJointKey[] k) => (At(k, false) + new Vector3(0.5f, 0.5f, 0.5f)) * 5f - new Vector3(5, 5, 5);
-                foreach (var j in a.joints)
-                {
-                    int jp = j.Priority >= 0 ? j.Priority : a.Priority;
-                    var cur = prio.TryGetValue(j.Name, out var c) ? c : (r: -1, p: -1);
-                    if (j.rotationkeys.Length > 0 && jp >= cur.r)
-                    { anim[j.Name] = Q(At(j.rotationkeys, true)); cur.r = jp; }
-                    if (j.positionkeys.Length > 0 && jp >= cur.p)
-                    { if (j.Name == "mPelvis") pelvisOff = Pos(j.positionkeys); else animPos[j.Name] = Pos(j.positionkeys); cur.p = jp; }
-                    prio[j.Name] = cur;
-                }
-                Console.WriteLine($"animation {id}: priority {a.Priority}, {a.joints.Length} joints, frame {tHold:F2}/{a.Length:F2} s");
             }
-            Console.WriteLine($"pose: {anim.Count} rotated joints, {animPos.Count} moved, pelvis offset {pelvisOff}");
-        }
-        var frames = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>();
-        var world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos, lockScale);
-        // non-rigged attachments: root prim sits at its attach point (avatar_lad.xml offset/rotation) on that point's joint
-        var points = lad.AttachmentPoints.ToDictionary(ap => ap.Id);
-        foreach (var (p, fm) in unrigged)
-        {
-            var o = byLocal[p.LocalID]; var root = o; Vector3 lp = p.Position; var lr = p.Rotation;
-            if (byLocal.TryGetValue(p.ParentID, out var r0)) { root = r0; var rr = r0["rotation"].AsQuaternion(); lp = r0["position"].AsVector3() + p.Position * rr; lr = rr * p.Rotation; }
-            int apId = root["attach_point"].AsInteger();
-            if (apId >= 31 && apId <= 38 || !points.TryGetValue(apId, out var ap) || !frames.TryGetValue(ap.Joint, out var jf)) { Count("attachment_hud_or_unknown_skipped"); continue; }
-            var apRot = Quaternion.CreateFromEulers(ap.Rotation.X * MathF.PI / 180, ap.Rotation.Y * MathF.PI / 180, ap.Rotation.Z * MathF.PI / 180);
-            var wr = jf.Rot * apRot * lr; var wp = jf.Pos + (ap.Position + lp * apRot) * jf.Rot;
-            Count("attachment_unrigged"); Emit(p, fm, true, null, wp, wr, o);
-        }
-        foreach (var (p, fm) in rigged)
-        {
-            var sk = fm.SkinData; var jm = new float[sk.JointNames.Length][];
-            for (int j = 0; j < jm.Length; j++)
-                jm[j] = world.TryGetValue(sk.JointNames[j], out var w) ? Skeleton.Mul(Skeleton.Mul(sk.BindShapeMatrix, sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)]), w) : null;
-            if (jm.Any(m => m == null)) Count("rigged_unknown_joint");
-            Emit(p, fm, true, (v, w) =>
+            // her shape: visual params -> bone/collision-volume position+scale (LibreMetaverse's port of LLPolySkeletalDistortion)
+            var vp = vpMap == null ? new Dictionary<int, float>() : vpMap.ToDictionary(kv => int.Parse(kv.Key), kv => (float)kv.Value.AsReal());
+            var shape = vp.Count > 0 ? lad.ComputeBoneTransforms(vp) : null;
+            // animations (her playing set, e.g. AO stand + head expression): per joint the highest priority wins, ties -> later
+            Dictionary<string, Quaternion> anim = null; Dictionary<string, Vector3> animPos = null; Vector3 pelvisOff = Vector3.Zero;
+            if (!string.IsNullOrEmpty(animId))
             {
-                if (w == null) return (Xform(sk.BindShapeMatrix, v.Position, 1), Vector3.Normalize(Xform(sk.BindShapeMatrix, v.Normal, 0)));
-                var x = w.Value; Vector3 ps = Vector3.Zero, ns = Vector3.Zero; float tw = 0;
-                foreach (var (j, wt) in new[] { (x.Joint0, x.Weight0), (x.Joint1, x.Weight1), (x.Joint2, x.Weight2), (x.Joint3, x.Weight3) })
+                anim = new(); animPos = new(); var prio = new Dictionary<string, (int r, int p)>();
+                foreach (var spec in animId.Split(','))
                 {
-                    if (wt <= 0 || j < 0 || j >= jm.Length || jm[j] == null) continue;
-                    ps += Xform(jm[j], v.Position, 1) * wt; ns += Xform(jm[j], v.Normal, 0) * wt; tw += wt;
+                    // "uuid@seconds" = that far into playback (anims_at.py reads it off the client log); bare uuid = old hold frame
+                    var id = spec.Split('@')[0]; float? played = spec.Contains('@') ? float.Parse(spec.Split('@')[1], System.Globalization.CultureInfo.InvariantCulture) : null;
+                    var data = await Get("animatn", new UUID(id));
+                    if (data == null) { Console.Error.WriteLine($"animation {id}: fetch failed, skipped"); continue; }
+                    var a = new BinBVHAnimationReader(data);
+                    // the frame SL shows `played` s in: a loop wraps between its in and out points after the first pass, else it
+                    // holds the last frame; keys interpolate (positions lerp, rotations slerp). Without a time: mid-loop for loops
+                    // (sits: in = out = end, so the end pose), else the last frame. ponytail: no ease-in/out weights
+                    float tHold = played is float pt
+                        ? (a.Loop && a.OutPoint > a.InPoint && pt > a.OutPoint ? a.InPoint + (pt - a.InPoint) % (a.OutPoint - a.InPoint) : Math.Min(pt, a.Length))
+                        : a.Loop ? (a.InPoint + a.OutPoint) / 2 : a.Length;
+                    Vector3 At(binBVHJointKey[] k, bool rot)
+                    {
+                        int i = Array.FindIndex(k, x => x.time >= tHold);
+                        if (i <= 0) return k[i < 0 ? k.Length - 1 : 0].key_element;
+                        var (k0, k1) = (k[i - 1], k[i]); float u = k1.time > k0.time ? (tHold - k0.time) / (k1.time - k0.time) : 1;
+                        if (!rot) return Vector3.Lerp(k0.key_element, k1.key_element, u);
+                        var q = Quaternion.Slerp(Q(k0.key_element), Q(k1.key_element), u); if (q.W < 0) q = -q;
+                        return new Vector3(q.X, q.Y, q.Z);
+                    }
+                    static Quaternion Q(Vector3 e) => new(e.X, e.Y, e.Z, MathF.Sqrt(Math.Max(0, 1 - e.LengthSquared())));
+                    // LibreMetaverse decodes positions over -0.5..1.5; the SL format range is -5..5 (LL_MAX_PELVIS_OFFSET)
+                    Vector3 Pos(binBVHJointKey[] k) => (At(k, false) + new Vector3(0.5f, 0.5f, 0.5f)) * 5f - new Vector3(5, 5, 5);
+                    foreach (var j in a.joints)
+                    {
+                        int jp = j.Priority >= 0 ? j.Priority : a.Priority;
+                        var cur = prio.TryGetValue(j.Name, out var c) ? c : (r: -1, p: -1);
+                        if (j.rotationkeys.Length > 0 && jp >= cur.r)
+                        { anim[j.Name] = Q(At(j.rotationkeys, true)); cur.r = jp; }
+                        if (j.positionkeys.Length > 0 && jp >= cur.p)
+                        { if (j.Name == "mPelvis") pelvisOff = Pos(j.positionkeys); else animPos[j.Name] = Pos(j.positionkeys); cur.p = jp; }
+                        prio[j.Name] = cur;
+                    }
+                    Console.WriteLine($"animation {id}: priority {a.Priority}, {a.joints.Length} joints, frame {tHold:F2}/{a.Length:F2} s");
                 }
-                return tw > 0 ? (ps / tw, Vector3.Normalize(ns)) : (Xform(sk.BindShapeMatrix, v.Position, 1), v.Normal);
-            }, Vector3.Zero, Quaternion.Identity, byLocal[p.LocalID]);
+                Console.WriteLine($"pose: {anim.Count} rotated joints, {animPos.Count} moved, pelvis offset {pelvisOff}");
+            }
+            frames = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>();
+            var world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos, lockScale);
+            // non-rigged attachments: root prim sits at its attach point (avatar_lad.xml offset/rotation) on that point's joint
+            var points = lad.AttachmentPoints.ToDictionary(ap => ap.Id);
+            foreach (var (_, p, fm) in unrigged.Where(x => x.Item1 == owner))
+            {
+                var o = byLocal[p.LocalID]; var root = o; Vector3 lp = p.Position; var lr = p.Rotation;
+                if (byLocal.TryGetValue(p.ParentID, out var r0)) { root = r0; var rr = r0["rotation"].AsQuaternion(); lp = r0["position"].AsVector3() + p.Position * rr; lr = rr * p.Rotation; }
+                int apId = root["attach_point"].AsInteger();
+                if (apId >= 31 && apId <= 38 || !points.TryGetValue(apId, out var ap) || !frames.TryGetValue(ap.Joint, out var jf)) { Count("attachment_hud_or_unknown_skipped"); continue; }
+                var apRot = Quaternion.CreateFromEulers(ap.Rotation.X * MathF.PI / 180, ap.Rotation.Y * MathF.PI / 180, ap.Rotation.Z * MathF.PI / 180);
+                var wr = jf.Rot * apRot * lr; var wp = jf.Pos + (ap.Position + lp * apRot) * jf.Rot;
+                Count("attachment_unrigged"); Emit(p, fm, group, bakePrefix, null, wp, wr, o);
+            }
+            foreach (var (_, p, fm) in rigged.Where(x => x.Item1 == owner))
+            {
+                var sk = fm.SkinData; var jm = new float[sk.JointNames.Length][];
+                for (int j = 0; j < jm.Length; j++)
+                    jm[j] = world.TryGetValue(sk.JointNames[j], out var w) ? Skeleton.Mul(Skeleton.Mul(sk.BindShapeMatrix, sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)]), w) : null;
+                if (jm.Any(m => m == null)) Count("rigged_unknown_joint");
+                Emit(p, fm, group, bakePrefix, (v, w) =>
+                {
+                    if (w == null) return (Xform(sk.BindShapeMatrix, v.Position, 1), Vector3.Normalize(Xform(sk.BindShapeMatrix, v.Normal, 0)));
+                    var x = w.Value; Vector3 ps = Vector3.Zero, ns = Vector3.Zero; float tw = 0;
+                    foreach (var (j, wt) in new[] { (x.Joint0, x.Weight0), (x.Joint1, x.Weight1), (x.Joint2, x.Weight2), (x.Joint3, x.Weight3) })
+                    {
+                        if (wt <= 0 || j < 0 || j >= jm.Length || jm[j] == null) continue;
+                        ps += Xform(jm[j], v.Position, 1) * wt; ns += Xform(jm[j], v.Normal, 0) * wt; tw += wt;
+                    }
+                    return tw > 0 ? (ps / tw, Vector3.Normalize(ns)) : (Xform(sk.BindShapeMatrix, v.Position, 1), v.Normal);
+                }, Vector3.Zero, Quaternion.Identity, byLocal[p.LocalID]);
+            }
+            return frames;
         }
+        static float Yaw(Quaternion q) => MathF.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.Y * q.Y + q.Z * q.Z)) * 180 / MathF.PI;
+        var meMap = (OSDMap)doc["me"];
+        animId ??= meMap.ContainsKey("anims") ? meMap["anims"].AsString() : null;   // the client's own animation clock (2026-10-04+)
+        var frames = only == "scene" ? null : await PoseAvatar("me", "avatar", "", doc.ContainsKey("visual_params") ? (OSDMap)doc["visual_params"] : null, animId);
+        var others = new List<object>();
+        if (only != "scene" && doc.ContainsKey("avatars"))
+            foreach (var av in ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id")))
+            {
+                var id = av["agent_id"].AsString(); if (!rigged.Any(x => x.Item1 == id) && !unrigged.Any(x => x.Item1 == id)) continue;  // nothing worn in view
+                string g = "avatar:" + id[..8];
+                var f = await PoseAvatar(id, g, id[..8] + "-", av.ContainsKey("visual_params") ? (OSDMap)av["visual_params"] : null, av.ContainsKey("anims") ? av["anims"].AsString() : null);
+                var ap = av["pos"].AsVector3();
+                others.Add(new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z } });
+                Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}");
+            }
         var outMeta = new List<object>(); long off = 0;
         using (var bin = new BinaryWriter(File.Create(Path.Combine(dir, "mesh.bin"))))
             foreach (var b in batches.Values.OrderBy(b => b.Group))
@@ -288,7 +313,7 @@ static class Mesher
                 outMeta.Add(new { group = b.Group, tex = b.Tex, rgba = b.Rgba, fullbright = b.Fullbright, mat = b.Mat, nv = b.P.Count / 3, ni = b.I.Count, offset = off });
                 off += (b.P.Count + b.N.Count + b.T.Count + b.I.Count) * 4L;
             }
-        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z } }));
+        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), others }));
         Console.WriteLine($"{batches.Count} batches, {outMeta.Sum(m => ((dynamic)m).nv)} vertices, {off / 1048576.0:F1} MB; " + string.Join(", ", stats.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}")));
         return 0;
     }

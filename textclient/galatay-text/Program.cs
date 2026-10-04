@@ -277,6 +277,7 @@ public static partial class Program
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
         HookQuiet(); // other avatars' ground-sit animations for the session detector (Quiet.cs)
+        HookAnimClock(); // every avatar's playing animations + since when, for scene export / look (SceneExport.cs)
         string password;
         try { password = ReadPassword(); } catch (Exception ex) { Log("error", "cannot read secrets file: " + ex.GetType().Name); return "FAILED: cannot read secrets file"; }
         if (string.IsNullOrEmpty(password)) { Log("error", "password empty; refusing to log in"); return "FAILED: password empty"; }
@@ -1563,6 +1564,7 @@ public static partial class Program
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
   shape get [filter] | shape set <slider|param id> <0-100>   worn shape sliders; set ONLY on 'Galatea Petite shape - Jani short neck' (backup in shape-backups/, upload + rebake)
   scene export [radius]       READ-ONLY: prims (shapes, sculpt/mesh ids, faces) within radius + my attachments + my bakes -> /workspace/secondlife/vision/export-*/ (SceneExport.cs)
+  look [self|around|at <name>] [fast]  READ-ONLY: scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
   texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG
   vendor look <name filter> [radius]   nearby objects matching name/hover text (default 20 m): face PNGs + index.json in textures/scan-*/
@@ -1714,6 +1716,7 @@ public static partial class Program
             case "door": case "doors": return await DoorTouch(rest);
             case "parcel": return await ParcelCmd(a);
             case "scene" when a.Length > 0 && a[0] == "export": return await SceneExport(a);
+            case "look": return await LookCmd(a);
             case "texture" when a.Length > 0 && a[0] == "save": case "faces": case "vendor" when a.Length > 0 && a[0] == "look": return await TextureCmds(cmd, a, rest);
             case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));
             case "touch-attachment": case "touchatt": return await TouchAttachment(rest);

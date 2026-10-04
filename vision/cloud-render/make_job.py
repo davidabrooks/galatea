@@ -9,14 +9,14 @@ import base64, datetime, glob, io, json, lzma, os, sys
 import imagecodecs
 from PIL import Image
 
-d, terrain, renders, out = sys.argv[1:5]
-meta = json.load(open(f"{d}/mesh.json"))
-bakes = {}
-for f in glob.glob(f"{d}/bake-*.j2c"):
-    a = imagecodecs.jpeg2k_decode(open(f, "rb").read())
-    if a.ndim == 3 and a.shape[0] > 8:  # 8x8-ish placeholders = unused bake slot
-        im = Image.fromarray(a[..., :4]); im.thumbnail((1024, 1024)); b = io.BytesIO(); im.save(b, "WEBP", quality=90)
-        bakes[os.path.basename(f)[5:-4]] = base64.b64encode(b.getvalue()).decode()
+def decode_bakes(d):
+    """bake-<key>.j2c in an export dir -> {key: Pillow RGBA image}; key = bake name, or "<agent8>-<name>" for others."""
+    res = {}
+    for f in glob.glob(f"{d}/bake-*.j2c"):
+        a = imagecodecs.jpeg2k_decode(open(f, "rb").read())
+        if a.ndim == 3 and a.shape[0] > 8:  # 8x8-ish placeholders = unused bake slot
+            im = Image.fromarray(a[..., :4]); im.thumbnail((1024, 1024)); res[os.path.basename(f)[5:-4]] = im
+    return res
 def eep(doc):
     """Ground-sky track of the region day cycle at export time (LL: (now + day_offset) % day_length), lerped."""
     try:
@@ -33,10 +33,16 @@ def eep(doc):
     hz = lambda f: f.get("legacy_haze", {}).get("blue_horizon", [0.3, 0.4, 0.6])
     return {"frac": frac, "sun_dir": z(doc.get("sun_dir", [0, 0, 1])), "sunlight": mix(lambda f: f["sunlight_color"])[:3],
             "horizon": mix(hz)[:3], "moon": (a.get("moon_brightness") or 0.0) * (1 - w) + (b.get("moon_brightness") or 0.0) * w}
-meta["env"] = eep(json.load(open(f"{d}/scene.json")))
-t = json.load(open(terrain))["terrain"] if terrain != "-" else {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}
-job = {"renders": renders.split(","), "cameras": {"scene": sys.argv[5]} if len(sys.argv) > 5 else {},
-       "avatar_at": {"scene": sys.argv[6]} if len(sys.argv) > 6 else {}, "mesh_job": {"mesh_json": meta, "terrain": t, "bakes": bakes,
-       "mesh_bin_xz_b64": base64.b64encode(lzma.compress(open(f"{d}/mesh.bin", "rb").read())).decode()}}  # xz: ~30% under gzip; /run caps ~10 MB
-json.dump(job, open(out, "w"))
-print(f"{out}: {os.path.getsize(out) / 1e6:.1f} MB, bakes {sorted(bakes)}, env {meta['env']}")
+if __name__ == "__main__":
+    d, terrain, renders, out = sys.argv[1:5]
+    meta = json.load(open(f"{d}/mesh.json"))
+    bakes = {}
+    for k, im in decode_bakes(d).items():
+        b = io.BytesIO(); im.save(b, "WEBP", quality=90); bakes[k] = base64.b64encode(b.getvalue()).decode()
+    meta["env"] = eep(json.load(open(f"{d}/scene.json")))
+    t = json.load(open(terrain))["terrain"] if terrain != "-" else {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}
+    job = {"renders": renders.split(","), "cameras": {"scene": sys.argv[5]} if len(sys.argv) > 5 else {},
+           "avatar_at": {"scene": sys.argv[6]} if len(sys.argv) > 6 else {}, "mesh_job": {"mesh_json": meta, "terrain": t, "bakes": bakes,
+           "mesh_bin_xz_b64": base64.b64encode(lzma.compress(open(f"{d}/mesh.bin", "rb").read())).decode()}}  # xz: ~30% under gzip; /run caps ~10 MB
+    json.dump(job, open(out, "w"))
+    print(f"{out}: {os.path.getsize(out) / 1e6:.1f} MB, bakes {sorted(bakes)}, env {meta['env']}")

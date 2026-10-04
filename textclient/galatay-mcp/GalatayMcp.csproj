@@ -39,6 +39,7 @@
     <Compile Include="../galatay-text/OutfitSave.cs" Link="Core/OutfitSave.cs" />
     <Compile Include="../galatay-text/NewCmds.cs" Link="Core/NewCmds.cs" />
     <Compile Include="../galatay-text/SceneExport.cs" Link="Core/SceneExport.cs" />
+    <Compile Include="../galatay-text/Look.cs" Link="Core/Look.cs" />
     <Compile Include="../galatay-text/TextureCmds.cs" Link="Core/TextureCmds.cs" />
     <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />

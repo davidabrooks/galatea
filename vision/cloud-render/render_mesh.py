@@ -150,23 +150,56 @@ def terrain():
     me = bpy.data.meshes.new("terrain"); me.from_pydata(verts, [], faces); ob = bpy.data.objects.new("terrain", me); sc.collection.objects.link(ob)
     m = bpy.data.materials.new("ground"); m.use_nodes = True; m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.24, 0.30, 0.14, 1); me.materials.append(m)
 
-gpu_setup()
+gpu_setup(); views = []
 if kind == "scene":
     build("scene"); terrain()
     g = M["me"]; av = os.environ.get("GT_AV")  # "x,y,yaw_deg": stand/sit her there, on the first surface below
-    x, y, yaw = [float(v) for v in av.split(",")] if av else (g[0], g[1], -90.0)
-    bpy.context.view_layer.update()
-    hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))
-    floor = loc.z if hit else g[2] - 1.15
+    x, y, yaw = [float(v) for v in av.split(",")] if av else (g[0], g[1], M.get("me_yaw", -90.0))
+    bpy.context.view_layer.update(); dg = bpy.context.evaluated_depsgraph_get()
+    def floor_at(px, py, pz):  # first surface below an agent position (cast before any avatar is built)
+        hit, loc, *_ = sc.ray_cast(dg, Vector((px, py, pz + 0.5)), Vector((0, 0, -1)))
+        return loc.z if hit else pz - 1.15
+    # other avatars (mesh.json "others", 2026-10-04+): each its own group, stood on the floor under its agent position
+    # ponytail: the LL viewer places the pelvis from the agent's bodysize/hover; a floor cast skips that; ceiling = seated
+    # or hovering avatars sit a few cm off
+    placed = [(o, floor_at(*o["pos"])) for o in M.get("others", [])]; floor = floor_at(x, y, g[2])
     lo, hi, obs = build("avatar")
     for ob in obs: ob.location = (x, y, floor - lo[2]); ob.rotation_euler = (0, 0, math.radians(yaw))
-    log("avatar at", round(x, 2), round(y, 2), "floor", round(floor, 2), "hit", hit)
+    log("avatar at", round(x, 2), round(y, 2), "floor", round(floor, 2))
+    def to_world(local, at, yw):
+        c, s_ = math.cos(math.radians(yw)), math.sin(math.radians(yw))
+        return Vector((at[0] + c * local[0] - s_ * local[1], at[1] + s_ * local[0] + c * local[1], at[2] + local[2]))
+    heads = {"me": to_world(M["head"], (x, y, floor - lo[2]), yaw) + Vector((0, 0, 0.07))}
+    for o, fl in placed:
+        olo, _, oobs = build(o["group"]); at = (o["pos"][0], o["pos"][1], fl - olo[2])
+        for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
+        heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])
     if M.get("env"): eep(M["env"])
     else:
         bpy.ops.object.light_add(type="SUN", rotation=(math.radians(50), 0, math.radians(200))); bpy.context.object.data.energy = 3.5
         world(1.0)
     cam = os.environ.get("GT_CAM")  # "x,y,z,tx,ty,tz[,lens]" in region coordinates
-    if cam:
+    # look: GT_VIEW = ";"-separated views, one image each: "eye[:yaw offset deg]" over her shoulder, "at:<avatar name>|x,y,z"
+    views = [v for v in os.environ.get("GT_VIEW", "").split(";") if v]
+    def set_view(view):
+        h = heads["me"]
+        def shoulder(f, back, side, up, target, lens):
+            """over her right shoulder; a wall or chimney behind her would fill the frame, so stop in front of the first
+            surface between her head and the camera (as the SL camera does)"""
+            want = h - f * back + f.cross(Vector((0, 0, 1))) * side + Vector((0, 0, up)); d = want - h; u = d.normalized()
+            bpy.context.view_layer.update()
+            hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.35, u, distance=d.length - 0.35)
+            camera(loc - u * 0.15 if hit else want, target, lens, (960, 540))
+        if view.startswith("at:"):
+            t = view[3:]; tgt = heads.get(t) or Vector([float(v) for v in t.split(",")])
+            f = (tgt - h); f.z = 0; f = f.normalized() if f.length > 1e-3 else Vector((1, 0, 0))
+            shoulder(f, 1.5, 0.45, 0.3, tgt, 35)
+        else:
+            a = math.radians(yaw + (float(view[4:]) if view.startswith("eye:") else 0)); f = Vector((math.cos(a), math.sin(a), 0))
+            shoulder(f, 2.2, 0.5, 0.35, h + f * 6 - Vector((0, 0, 0.5)), 24)
+        log("view", view, "camera from", [round(v, 2) for v in sc.camera.location])
+    if views: set_view(views[0])
+    elif cam:
         c = [float(v) for v in cam.split(",")]; camera(c[0:3], c[3:6], c[6] if len(c) > 6 else 24, (960, 540))
     else:
         camera((g[0] - 1.5, g[1] - 7.5, g[2] + 2.2), (g[0] + 0.5, g[1] + 3.5, g[2] + 0.3), 24, (960, 540))
@@ -184,6 +217,10 @@ else:
     world(0.5)
 sc.view_settings.view_transform = "Standard"  # SL shows textures as plain sRGB
 sc.view_settings.exposure = float(os.environ.get("GT_EXPOSURE", "0"))
-sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90; sc.render.filepath = out
+sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90
 log("build seconds", round(time.time() - T0, 1))
-t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1))
+views = views or [None]
+for i, v in enumerate(views):
+    if i: set_view(v)
+    sc.render.filepath = out if len(views) == 1 else out.replace(".jpg", f"-{i}.jpg")
+    t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)

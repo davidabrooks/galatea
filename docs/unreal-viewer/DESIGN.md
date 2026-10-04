@@ -324,6 +324,13 @@ How it's built:
 - Cost: **$0.0303 for the whole job** (3 renders, about 189 s billed at ≈ $0.00016/s), from the account balance before and after. That's in line with the cold estimate below. Logged in `/workspace/secondlife/render-cost-log.md`. The endpoint was scaled to 0 workers afterwards.
 - Next for fidelity: real geometry (mesh LODs, all faces and alpha) exported by the bridge, and avatar bakes. That needs bridge work, not more GPU.
 
+**Second test, Oct 3, 2026: real geometry and her real avatar ([PR #18](https://github.com/davidabrooks/galatea/pull/18)).** A new read-only `scene export` command in the text client dumps every prim (path/profile parameters, sculpt and mesh asset IDs, per-face textures and colours) plus her attachments, and fetches her server-side bakes from the appearance service. An offline tool on the box (`vision/scene-mesher`, no login) builds the geometry with LibreMetaverse's own meshers: PrimMesher for prims, sculpt maps, and mesh LODs from the public asset CDN. Rigged attachments are posed in bind pose on the default skeleton (LibreMetaverse's copy of `avatar_skeleton.xml`), including collision volumes for fitted mesh and joint-position overrides. That's the T-pose, not SL's animated default stand. BOM faces get the head/upper/lower/eyes bakes. Findings:
+- **Her real LeLutka EvoX head, BOM skin, eyes, hair, body and outfit render correctly** (face close-up and full body). Two jobs on one warm worker cost about $0.02 together; GPU time per render was 3–8 s.
+- **The Peronaut fireplace** renders from the house's real mesh, including the flame texture.
+- Bakes are 5-channel JPEG 2000 (RGB plus two extra channels). LibreMetaverse's CoreJ2K decoder garbles their colours, and Pillow can't open them, so the box decodes them with `imagecodecs` (OpenJPEG). The same bug affects SlTextureVision for bakes.
+- Still wrong (fidelity work for the bridge, not GPU): no SL alpha modes or materials (normal/specular/PBR) are exported, so blend vs. mask vs. none is guessed. Shape sliders aren't applied (default proportions). There's no animation pose, eyelid/expression state, or non-rigged attachments (they need attach-point placement). Lighting is a generic sky, not her windlight/EEP environment.
+- Payload limit: Runpod's `/run` body is capped at about 10 MB, so a scene job is limited to a radius of about 8–15 m around the subject. Bigger scenes need the renderer to fetch geometry itself (or an object store).
+
 **Options and prices** (list prices as published on the cited pages, Oct 3, 2026; per-snapshot costs are **our estimates** from those prices):
 
 | Provider / product | Billing model | Cited price | Fit for us |

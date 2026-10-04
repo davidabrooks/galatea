@@ -17,6 +17,7 @@ Every decision David makes goes here, newest last, and the sections below are ke
 | Oct 3, 2026 | **Tailscale is fine for remote access.** It is the supported way in from outside the PC; no port is opened to the internet. (Resolves open question 9.) | §4.1, §4.6, §9 (M4) |
 | Oct 3, 2026 | **Mobile, near term = a mobile website that works anywhere:** the same web client, responsive, reached from the phone over Tailscale from any network (not just the home LAN). **Later = dedicated apps in the iOS App Store and Google Play**, a future milestone. **How they're built is deliberately left open** (a wrapper around the web app, native apps, or a cross-platform toolkit; open question 15). The bridge API stays platform-neutral so any client type works. | §4.1, §4.6, §5, §9 (M4, M13) |
 | Oct 3, 2026 | **David creates a separate SL test avatar himself for viewer development.** Its credentials are stored as a secret on the box, never in the repo, logs or docs. (Resolves open question 3.) | §8, §9, §10 |
+| Oct 3, 2026 | **High-end targets Windows 11 first.** David's dev/test machines are a desktop with an NVIDIA RTX 4090 and a Razer laptop with an RTX 5090 Laptop GPU, both on Windows 11. The min-spec target stays lower (RTX 2000 / RX 6000 class), so testing on these top-end cards must include scaled-down settings so the min spec isn't neglected. (Resolves open question 4.) | §1, §8, §9 (M7–M10), §10 |
 
 ## 1. Goals, non-goals, target hardware
 
@@ -34,14 +35,15 @@ Every decision David makes goes here, newest last, and the sections below are ke
 - Build tools, mesh upload, the scripting editor, the marketplace, VR.
 - Voice in the first milestones. It *is* wanted (see Decisions) but comes later (§4.5, M11).
 - Supporting every SL feature in the high-end 3D mode. The fallback for anything missing is "use the official viewer or Firestorm for that."
-- Mac/Linux high-end builds in the first year: we target Windows (David's PC) first.
+- Mac/Linux high-end builds in the first year: we target **Windows 11** first (decided Oct 3), on David's machines.
 
 **Hardware, honestly**
 - UE5's documented development requirements are a quad-core 2.5 GHz CPU, 32 GB RAM and a DirectX 11/12 GPU with 8 GB+ VRAM. Lumen and Nanite need DirectX 12 with Shader Model 6 hardware: NVIDIA RTX 2000 series, AMD RX 6000 series, Intel Arc A-series or newer ([Epic: hardware and software specifications](https://dev.epicgames.com/documentation/en-us/unreal-engine/hardware-and-software-specifications-for-unreal-engine)). Those are requirements for the editor; a shipped game can run lower, but Lumen/Nanite set the floor for the high-end look.
 - For comparison, the official SL viewer's minimum is a GPU with 4 GB VRAM and OpenGL 3.2, recommended 8 GB+ ([SL system requirements](https://secondlife.com/system-requirements)). So SL is already not a "weak computer" app in 3D.
 - Epic's own Fortnite runs down to an Intel HD 4000 or Radeon Vega 8 with 8 GB RAM in its low-fidelity "Performance" mode ([Fortnite PC requirements](https://www.epicgames.com/help/en-US/c-Category_Fortnite/c-Fortnite_TechnicalSupport/what-are-the-system-requirements-for-fortnite-on-pc-a000084912)). But that is years of tuning by Epic on hand-authored content. SL content is user-made, unoptimized and streamed live, so we should not expect that.
 - **So:**
-  - **High-end** = RTX 2000 / RX 6000 class or better, 16 GB+ RAM. We will state that plainly.
+  - **High-end** = RTX 2000 / RX 6000 class or better, 16 GB+ RAM. We will state that plainly. This min spec stays the target even though development happens on far stronger cards (below).
+  - **Dev/test hardware (decided Oct 3):** David's desktop with an NVIDIA RTX 4090 and his Razer laptop with an RTX 5090 Laptop GPU, both Windows 11. Because these are top-end cards, every high-end test pass also runs with scaled-down settings: a "min-spec" profile with Unreal's lower scalability presets, a reduced resolution scale, a frame-rate check against a budget, and the laptop on battery or in a quiet power mode. Frame time and VRAM use are logged against the min-spec budget, so the RTX 2000 / RX 6000 class isn't neglected. A real min-spec GPU should be borrowed or bought before public release (M12).
   - **Low-end** = any machine that runs desktop Chrome comfortably, integrated graphics included, plus a phone browser (M4). That is only realistic *because* low-end mode does no 3D rendering (David's call, Oct 3). The bridge itself (a .NET process) runs on a PC; the browser can be on the same PC or another device.
 
 ## 2. Architecture
@@ -282,7 +284,7 @@ How it's built:
 
 - **Separate everything:** new code under a new folder (e.g. `viewer/`) on its own branches. The bridge is a *new* process built from the shared core; it never touches the live text client's run directory, socket, app folder or deploy scripts.
 - **Never Galatea's account for development, until the planned cut-over (M6).** SL allows one session per account, so logging in the viewer as Galatea would kick her live session. Use the separate test avatar David is creating himself (decided Oct 3), on the Aditi beta grid where possible. Its credentials live only as a secret on the box (outside the repo, never committed, logged or printed); the bridge reads them at login.
-- **Builds and GPU testing on David's Windows PC.** The box has no GPU. The box can build and test the bridge and the web UI (including headless Chrome tests), but Unreal builds, shader compiles and any 3D testing happen on David's PC.
+- **Builds and GPU testing on David's Windows 11 machines (RTX 4090 desktop, RTX 5090 laptop).** The box has no GPU. The box can build and test the bridge and the web UI (including headless Chrome tests), but Unreal builds, shader compiles and any 3D testing happen on David's machines, always including a scaled-down min-spec pass (§1).
 - **Agent rules:** no deploy or restart of the live client or MCP connector as part of viewer work. Viewer PRs never modify `textclient/`; shared code is copied or factored out only in a separate, explicitly approved PR.
 - **The cut-over itself (M6)** is the one planned exception: an explicitly approved, scheduled switch with the old text client kept ready to roll back.
 
@@ -302,14 +304,14 @@ How it's built:
   *Exit: on the test account, a generic MCP client (not our code) and the web UI are connected at the same time; the agent can chat but is refused `teleport` and `money` without those scopes; every action shows up in the audit log.*
 - **M6: Galatea migration.** Galatea moves from the text client onto the bridge. Before the switch: feature parity checked against a list of everything she uses today (webhook wake-ups and cap, IM guard and heads-up, persisted offers and auto-accept rules, autofollow, wander, sit/stand, worn/touch-attachment, texture vision, inventory, group invites, logs), with her agent connected through the M5 API. Then a scheduled cut-over approved by David, with the old text client kept installed and runnable for rollback, and a 1-week parallel watch period.
   *Exit: Galatea runs a full week on the bridge with no lost IMs/offers and no duplicate sends; rollback tested once in a dry run; the text client is retired only after David signs off.*
-- **M7: high-end spike.** Unreal project on David's PC connected to the bridge via the control + shared-memory channels. It renders region terrain and plain prims (PrimMesher geometry, flat colors) with free-fly camera.
+- **M7: high-end spike.** Unreal project on David's Windows 11 desktop (RTX 4090) connected to the bridge via the control + shared-memory channels. It renders region terrain and plain prims (PrimMesher geometry, flat colors) with free-fly camera.
   *Exit: a recognizable region layout in Unreal, live, with objects appearing as they stream in.*
 - **M8: textures, mesh, materials.** SlTextureVision textures through shared memory, mesh LODs, legacy + glTF PBR materials, EEP sky/water.
   *Exit: side-by-side screenshots with Firestorm of the same spot look clearly "the same place".*
 - **M9: avatars.** SL skeleton in Unreal, rigged mesh bodies/heads, bakes on mesh, alpha masks, animation playback, our own avatar walking.
   *Exit: Galatea's look (on the test account, with a copy of the outfit) renders correctly, standing, walking and sitting.*
 - **M10: high-end UI + polish.** Shared panels from low-end in UMG, Lumen on, scalability presets, impostors, cache.
-  *Exit: a 1-hour session in a busy region on an RTX-class PC at a stable frame rate, without crashes.*
+  *Exit: a 1-hour session in a busy region at a stable frame rate without crashes, on the RTX 4090 desktop at high settings and also in the scaled-down min-spec profile (§1) within its frame-time and VRAM budget; the Razer laptop passes the same checks.*
 - **M11: voice (WebRTC).** Spike approach (A), browser audio via the bridge's signaling, and fall back to (B), the bridge's LibreMetaverse WebRTC client, if needed. Push-to-talk in the web client (desktop Chrome first, then the mobile website); later in the Unreal client.
   *Exit: David holds a 10-minute voice conversation with another avatar (local/spatial voice and one IM call) from desktop Chrome, while text chat stays under the M1 latency bar.*
 - **M12: public-readiness.** TPV policy checklist, disclosures, privacy policy, unique viewer ID, installer/uninstaller, name chosen, public agent-API docs including the Scripted Agent Policy note (§6.4).
@@ -324,7 +326,7 @@ Low-end comes first because it is cheap and useful right away, and it builds the
 1. **Image generation approach for low-end mode:** are map tiles + profile pictures + composited scene cards (local, accurate, free) enough at first? Do you also want an opt-in software snapshot, a remote render from your PC, or AI-made "mood pictures" clearly labeled as illustrations?
 2. ~~Low-end UI technology: web or native?~~ **Resolved Oct 3, 2026: web-based (local web UI served by the bridge), desktop Chrome first.** See Decisions.
 3. ~~Test account for viewer development?~~ **Resolved Oct 3, 2026: David creates a separate test avatar himself; its credentials are stored as a secret on the box, never in the repo.** See Decisions.
-4. Is Windows-only acceptable for high-end mode in year one? Which GPU is in your PC?
+4. ~~Windows-only for high-end in year one? Which GPU?~~ **Resolved Oct 3, 2026: Windows 11 first; dev/test on an RTX 4090 desktop and an RTX 5090 Laptop GPU (Razer), with min-spec testing via scaled-down settings.** See Decisions.
 5. Product intent: open-source hobby viewer, or a product you may sell (affects the name, TPV directory listing and the Unreal royalty planning above $1M)?
 6. Viewer name: the TPV policy forbids "Second", "Life", "SL" or "Linden" in it. Any ideas?
 7. ~~Should Galatea herself eventually use the bridge?~~ **Resolved Oct 3, 2026: yes, for all her SL needs; migration milestone M6.** See Decisions.

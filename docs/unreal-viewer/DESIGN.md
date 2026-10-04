@@ -2,6 +2,17 @@
 
 Status: **draft for David's review**, Oct 3, 2026. Nothing here is built yet. This doc does not change the live text client or the MCP connector.
 
+## Decisions log
+
+Every decision David makes goes here, newest last, and the sections below are kept consistent with it.
+
+| Date | Decision | Where it shows up |
+|---|---|---|
+| Oct 3, 2026 | **Low-end mode has no 3D at all.** It is a chat-first client; pictures are 2D only and made in the background at lower priority than chat. | §1, §4.1–4.3, §8 |
+| Oct 3, 2026 | **The low-end client is web-based:** a local web UI served by the bridge, usable from any browser, including a phone. (Resolves open question 2.) | §2, §4.1, §5, §8 |
+| Oct 3, 2026 | **The web client targets Chrome first:** desktop Chrome is primary. Chrome on Android/phones and other browsers (Edge, Firefox, Safari/iOS) come in a later milestone. | §4.1, §8 |
+| Oct 3, 2026 | **Voice chat is needed at some point.** It goes in a later milestone, through SL's WebRTC voice. (Resolves open question 8.) | §1, §4.5, §8 |
+
 ## 1. Goals, non-goals, target hardware
 
 **Goals**
@@ -12,7 +23,8 @@ Status: **draft for David's review**, Oct 3, 2026. Nothing here is built yet. Th
 - Stay inside Linden Lab's [Third-Party Viewer Policy](https://secondlife.com/corporate/third-party-viewers) from day one.
 
 **Non-goals for now**
-- Build tools, mesh upload, the scripting editor, voice, the marketplace, VR.
+- Build tools, mesh upload, the scripting editor, the marketplace, VR.
+- Voice in the first milestones. It *is* wanted (see Decisions) but comes later (§4.5, M9).
 - Supporting every SL feature in the high-end 3D mode. The fallback for anything missing is "use the official viewer or Firestorm for that."
 - Mac/Linux high-end builds in the first year: we target Windows (David's PC) first.
 
@@ -22,7 +34,7 @@ Status: **draft for David's review**, Oct 3, 2026. Nothing here is built yet. Th
 - Epic's own Fortnite runs down to an Intel HD 4000 or Radeon Vega 8 with 8 GB RAM in its low-fidelity "Performance" mode ([Fortnite PC requirements](https://www.epicgames.com/help/en-US/c-Category_Fortnite/c-Fortnite_TechnicalSupport/what-are-the-system-requirements-for-fortnite-on-pc-a000084912)). But that is years of tuning by Epic on hand-authored content. SL content is user-made, unoptimized and streamed live, so we should not expect that.
 - **So:**
   - **High-end** = RTX 2000 / RX 6000 class or better, 16 GB+ RAM. We will state that plainly.
-  - **Low-end** = any laptop that can run a browser comfortably, integrated graphics included. That is only realistic *because* low-end mode does no 3D rendering (David's call, Oct 3).
+  - **Low-end** = any machine that runs desktop Chrome comfortably, integrated graphics included, plus a phone browser later. That is only realistic *because* low-end mode does no 3D rendering (David's call, Oct 3). The bridge itself (a .NET process) runs on a PC; the browser can be on the same PC or another device.
 
 ## 2. Architecture
 
@@ -40,14 +52,15 @@ flowchart LR
     SC --> IMG[Image jobs<br/>low priority, preemptible]
   end
 
-  CH -- "control channel<br/>(small messages, always first)" --> LOW[Low-end client<br/>2D chat-first UI]
-  IMG -- "finished images" --> LOW
-  CH -- control channel --> HIGH[High-end client<br/>Unreal Engine 5, C++]
+  CH -- "WebSocket push<br/>(chat first)" --> WEB[Built-in web server<br/>HTTP + WebSocket]
+  IMG -- "finished images<br/>(HTTP, cached)" --> WEB
+  WEB --> LOW[Low-end client<br/>web UI in Chrome<br/>desktop / phone]
+  CH -- "control channel<br/>(socket + protobuf)" --> HIGH[High-end client<br/>Unreal Engine 5, C++]
   SC -- "scene deltas" --> HIGH
   AS -- "bulk: vertices, textures<br/>(shared memory)" --> HIGH
 ```
 
-**One rule: the sim bridge owns the SL session.** Both front ends are views onto it. This is the text client's current shape, where the MCP connector and the CLI already talk to one process over a local socket, so we grow something that already works.
+**One rule: the sim bridge owns the SL session.** Both front ends are views onto it. For low-end mode the bridge also contains a small web server that serves the web UI, so "installing low-end mode" means running the bridge and opening a page in Chrome. This is the text client's current shape, where the MCP connector and the CLI already talk to one process over a local socket, so we grow something that already works.
 
 ### 2.2 Why a C# sidecar instead of porting the protocol to C++
 
@@ -60,8 +73,9 @@ flowchart LR
 
 ### 2.3 IPC between bridge and front ends
 
-- **Control channel:** chat, IM, presence, commands and scene deltas (object added/moved/removed). These are small, frequent messages that must arrive in order. Use a local socket (Unix socket on Linux, named pipe on Windows) with length-prefixed **protobuf** messages.
-  - **gRPC** is the polished version of this, with streaming and code generation. But it adds per-call RPC overhead and a heavy dependency for a same-machine link (see the discussion in [F. Werner, gRPC for local IPC](https://www.mpi-hd.mpg.de/personalhomes/fwerner/research/2021/09/grpc-for-ipc/)), and Unreal doesn't ship a gRPC client. Plain socket + protobuf keeps the low-end client tiny and is easy to call from C++ and C#.
+- **Web client (low-end):** the browser loads static pages over HTTP from the bridge, then opens one **WebSocket**. The bridge pushes chat, IM, presence and offers over it the moment they arrive, and the page sends commands back (send IM, teleport, accept offer). Messages are small JSON objects (easy to debug in Chrome DevTools; binary can come later if ever needed). Images are plain HTTP URLs served from the bridge's cache, so Chrome's own image cache helps and an image never travels on the chat socket.
+- **Control channel (high-end):** chat, IM, presence, commands and scene deltas (object added/moved/removed). These are small, frequent messages that must arrive in order. Use a local socket (Unix socket on Linux, named pipe on Windows) with length-prefixed **protobuf** messages.
+  - **gRPC** is the polished version of this, with streaming and code generation. But it adds per-call RPC overhead and a heavy dependency for a same-machine link (see the discussion in [F. Werner, gRPC for local IPC](https://www.mpi-hd.mpg.de/personalhomes/fwerner/research/2021/09/grpc-for-ipc/)), and Unreal doesn't ship a gRPC client. Plain socket + protobuf is easy to call from C++ and C#. Both channels carry the same message types, defined once.
 - **Bulk channel (high-end only):** decoded textures (RGBA mips) and mesh buffers go through **shared memory** (a ring of named memory-mapped regions). The control channel only carries a handle saying "texture X is ready at offset N". [FlatBuffers](https://github.com/google/flatbuffers) headers in the shared memory let Unreal read the data without parsing it.
 - **Priorities:** the control channel always has its own thread and is never blocked by asset traffic. Chat and IM messages sit at the head of the queue (see §4.3).
 
@@ -89,18 +103,24 @@ flowchart LR
 
 **What it is:** a fast text client with a good-looking 2D interface. It's what Galatea's text client already does, plus a human-friendly UI and pictures that show up when they're ready.
 
-**Should it depend on Unreal? Recommendation: no.**
-- Unreal (even with only Slate/UMG 2D) brings a large install, a GPU-backed window, Unreal's startup time and the EULA, all to draw text boxes and images.
-- A lightweight desktop UI that talks to the bridge does the job better. Two candidates:
-  - **(a) Avalonia UI**, C#, cross-platform; it could even run the bridge in the same process.
-  - **(b) a local web UI** served by the bridge and opened in the system browser or a small WebView shell. This one also works from a phone on the same network.
-- My lean is (b) for the first prototype, because it is fastest to iterate and phone-friendly, and (a) if David wants a "real app" feel.
-- Both stay BSD and royalty-free. Low-end mode would ship without any Epic code.
+**Decided (Oct 3): a local web UI served by the bridge, Chrome first.**
+- No Unreal in low-end mode. Unreal (even with only Slate/UMG 2D) would bring a large install, a GPU-backed window, Unreal's startup time and the EULA, all to draw text boxes and images. The web client ships without any Epic code and stays BSD and royalty-free.
+- The bridge serves plain HTML/CSS/JavaScript plus one WebSocket (§2.3). No build-heavy front-end framework is required at first; a small one can be added if the UI grows.
+- **Desktop Chrome is the target and the test browser.** We develop and measure against it (Chrome DevTools for the latency checks). Responsive layout is designed in from the start so a phone works later, but phone Chrome and other browsers are tested and fixed in their own milestone (M4).
+- The page keeps working if the WebSocket drops: it reconnects and asks the bridge for everything missed since its last message ID, so a sleeping laptop or a phone switching networks doesn't lose chat.
 
-**Responsiveness rules** (testable, see M3):
+**Access and security (implications of a web UI):**
+- **Local-only by default.** The bridge listens on `127.0.0.1` only, so nothing else on the network can reach it.
+- **Phone or another PC:** don't open a port to the internet. Recommended route: [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve), which exposes a local service only to devices in your own tailnet over HTTPS with an automatically provisioned certificate. LAN-only access is possible as an explicit opt-in.
+- **Login to the web UI:** even locally, the page needs a per-install secret (a token in the URL the bridge prints once, kept as a cookie), so another app or website in the same browser can't drive the session. The WebSocket checks the page's origin.
+- **HTTPS matters for voice:** Chrome only allows the microphone in a secure context, meaning HTTPS or `localhost` ([MDN: getUserMedia](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia); [MDN: secure contexts](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Secure_Contexts)). Desktop on the same PC is fine over `http://localhost`; a phone needs HTTPS, which the Tailscale route provides.
+- The SL password is entered once at the bridge, never stored in the browser, and never sent anywhere except Linden Lab's login server.
+
+**Responsiveness rules** (testable, see M1):
 - Chat/IM input-to-send and receive-to-display under 100 ms on the bridge's side, whatever image work is running.
 - Image work runs on a separate low-priority worker pool and is *preemptible*: it checks a cancel flag between steps and yields when chat traffic arrives.
 - The UI never waits on an image. Placeholders appear first, and images replace them when ready.
+- In the browser: chat arrives over the WebSocket and is drawn immediately. Images load lazily (only when visible), and the page never blocks rendering on them.
 
 ### 4.2 Where the 2D pictures come from
 
@@ -139,6 +159,21 @@ How it's built:
 - Content uses classic LODs (no Nanite, §3). Distant objects can fall back to cached **impostors**: billboards rendered once from the object.
 - A scalability menu (Unreal's built-in quality presets) lets mid-range cards (e.g. GTX 10-series) run without Lumen. But below RTX/RX 6000 class, we tell users to choose low-end mode.
 
+### 4.5 Voice (decided Oct 3: needed, later milestone)
+
+- **What SL uses:** SL historically used Vivox and is replacing it with its own WebRTC voice service ([SL wiki: WebRTC Voice](https://wiki.secondlife.com/wiki/WebRTC_Voice)). The full grid-wide WebRTC deployment was announced for May 5, 2026, and viewers that rely only on Vivox lose voice once Vivox is switched off ([Inara Pey, May 4, 2026](https://modemworld.me/2026/05/04/be-ready-webrtc-goes-grid-wide-in-second-life-may-5th-2026/)). **So we build WebRTC voice only, no Vivox.** We should confirm the switch-over really completed before M9.
+- **Why it fits the web client:** WebRTC is built into Chrome (microphone access, echo cancellation, audio codecs). Being built into most browsers is part of why LL picked it (same Inara Pey post).
+- **Two ways to wire it**, to be decided by a spike:
+  - **(A) Browser does the audio:** the bridge only does the SL side: asking the region for a voice session and passing the WebRTC offer/answer between Chrome and SL's voice server. Chrome then talks to the voice server directly. Nicest audio and lowest bridge load. Unverified risks: whether SL's voice servers accept a browser as a peer as-is, and how the bridge must relay connection details.
+  - **(B) Bridge does the audio:** LibreMetaverse already contains a C# WebRTC voice client (`LibreMetaverse.Voice.WebRTC`, built on SIPSorcery, in our vendored copy). The bridge joins voice itself and streams audio to and from the page. More moving parts and latency, but it doesn't depend on (A)'s unknowns, and the high-end Unreal client could reuse it.
+  - Plan: try (A) first in M9; fall back to (B).
+- **Constraints:**
+  - Microphone needs HTTPS or localhost in Chrome (§4.1).
+  - Push-to-talk by default, and the mic is off until the user turns it on.
+  - Spatial voice (louder when closer) is done by SL's voice service, which got an HRTF spatialization update during the rollout ([Inara Pey, Nov 25, 2025](https://modemworld.me/2025/11/25/)); we should not reimplement it.
+  - Voice is P0 traffic in the scheduler (§4.3), right next to chat.
+  - Galatea never joins voice unless David explicitly asks.
+
 ## 5. UI
 
 - **Both modes:**
@@ -151,11 +186,13 @@ How it's built:
   - Offers inbox (friendship, inventory, group invites; the same rules as today)
   - Notifications
   - Profiles
-- **Low-end:**
+- **Low-end (web, Chrome first):**
   - Chat is the center of the screen.
+  - Responsive layout: on a wide screen, chat + side panels; on a phone, chat full-screen with panels as tabs.
+  - Chrome desktop notifications (with permission) for IMs and offers when the tab is in the background.
   - A side panel shows the current "scene card" (map tile + composited image) and the person you're talking to.
-  - Keyboard first.
-- **High-end:** Unreal UMG panels over the 3D view, with the same panels as low-end so habits transfer.
+  - Keyboard first on desktop, large touch targets on phones.
+- **High-end:** Unreal UMG panels over the 3D view, with the same panels as low-end so habits transfer. (A later option: show the web UI inside Unreal's built-in web browser widget so we build the panels once.)
 - **HUDs:** in 3D, render HUD attachments as screen-space prims. In low-end, show a list of the HUD's buttons (prim names), backed by what `worn links` / `touch-attachment` already do.
 - **Build tools:** deferred (non-goal for now).
 
@@ -183,39 +220,44 @@ How it's built:
 
 - **Separate everything:** new code under a new folder (e.g. `viewer/`) on its own branches. The bridge is a *new* process built from the shared core; it never touches the live text client's run directory, socket, app folder or deploy scripts.
 - **Never Galatea's account for development.** SL allows one session per account, so logging in the viewer as Galatea would kick her live session. Use a separate test account (David's alt or a new one), on the Aditi beta grid where possible.
-- **Builds and GPU testing on David's Windows PC.** The box has no GPU. The box can build and unit-test the bridge and low-end UI (C#, headless), but Unreal builds, shader compiles and any 3D testing happen on David's PC.
+- **Builds and GPU testing on David's Windows PC.** The box has no GPU. The box can build and test the bridge and the web UI (including headless Chrome tests), but Unreal builds, shader compiles and any 3D testing happen on David's PC.
 - **Agent rules:** no deploy or restart of the live client or MCP connector as part of viewer work. Viewer PRs never modify `textclient/`; shared code is copied or factored out only in a separate, explicitly approved PR.
 
 ## 8. Milestones (each ends in a demo)
 
 - **M0: bridge spike.** A new bridge process logs a *test account* in and exposes the control channel. A throwaway CLI shows chat/IM flowing.
   *Exit: send and receive IM/chat through the bridge; Galatea's live session untouched.*
-- **M1: low-end prototype (chat first).** A local web UI with local chat, IM tabs, people nearby, offers inbox and the P0/P3 scheduler.
-  *Exit: a 30-minute live chat on a weak laptop, with the P3 load generator saturating image work, shows bridge-side chat latency under 100 ms throughout (measured and logged).*
-- **M2: low-end pictures.** Map tiles + avatar dots, profile pictures, texture previews via SlTextureVision, then the composited scene card.
-  *Exit: walking into a busy region shows a scene card within ~30 s without any chat slowdown (same latency log).*
-- **M3: low-end daily-driver.** Inventory (wear/detach), teleport by map/landmark, group chat, profiles, HUD button lists.
-  *Exit: David spends an evening in SL using only low-end mode.*
-- **M4: high-end spike.** Unreal project on David's PC connected to the bridge via the control + shared-memory channels. It renders region terrain and plain prims (PrimMesher geometry, flat colors) with free-fly camera.
+- **M1: low-end web prototype (chat first, desktop Chrome).** The bridge serves the web UI on `127.0.0.1` with a per-install token. Local chat, IM tabs, people nearby, offers inbox over the WebSocket push, reconnect-and-catch-up, and the P0/P3 scheduler.
+  *Exit: a 30-minute live chat in desktop Chrome on a weak laptop, with the P3 load generator saturating image work, shows chat latency under 100 ms throughout, bridge-side and receive-to-screen (measured and logged).*
+- **M2: low-end pictures.** Map tiles + avatar dots, profile pictures, texture previews via SlTextureVision (served over HTTP from the cache), then the composited scene card.
+  *Exit: in desktop Chrome, walking into a busy region shows a scene card within ~30 s without any chat slowdown (same latency log).*
+- **M3: low-end daily-driver (desktop Chrome).** Inventory (wear/detach), teleport by map/landmark, group chat, profiles, HUD button lists, desktop notifications.
+  *Exit: David spends an evening in SL using only low-end mode in desktop Chrome.*
+- **M4: phone and other browsers.** Phone layout polished. Remote access through Tailscale Serve (HTTPS, tailnet only). Testing and fixes on Chrome for Android, then Edge, Firefox and Safari on iOS.
+  *Exit: David chats for 30 minutes from his phone over Tailscale, with no port open to the internet; a checklist of the core flows passes in each listed browser.*
+- **M5: high-end spike.** Unreal project on David's PC connected to the bridge via the control + shared-memory channels. It renders region terrain and plain prims (PrimMesher geometry, flat colors) with free-fly camera.
   *Exit: a recognizable region layout in Unreal, live, with objects appearing as they stream in.*
-- **M5: textures, mesh, materials.** SlTextureVision textures through shared memory, mesh LODs, legacy + glTF PBR materials, EEP sky/water.
+- **M6: textures, mesh, materials.** SlTextureVision textures through shared memory, mesh LODs, legacy + glTF PBR materials, EEP sky/water.
   *Exit: side-by-side screenshots with Firestorm of the same spot look clearly "the same place".*
-- **M6: avatars.** SL skeleton in Unreal, rigged mesh bodies/heads, bakes on mesh, alpha masks, animation playback, our own avatar walking.
+- **M7: avatars.** SL skeleton in Unreal, rigged mesh bodies/heads, bakes on mesh, alpha masks, animation playback, our own avatar walking.
   *Exit: Galatea's look (on the test account, with a copy of the outfit) renders correctly, standing, walking and sitting.*
-- **M7: high-end UI + polish.** Shared panels from low-end in UMG, Lumen on, scalability presets, impostors, cache.
+- **M8: high-end UI + polish.** Shared panels from low-end in UMG, Lumen on, scalability presets, impostors, cache.
   *Exit: a 1-hour session in a busy region on an RTX-class PC at a stable frame rate, without crashes.*
-- **M8: public-readiness.** TPV policy checklist, disclosures, privacy policy, unique viewer ID, installer/uninstaller, name chosen.
+- **M9: voice (WebRTC).** Spike approach (A), browser audio via the bridge's signaling, and fall back to (B), the bridge's LibreMetaverse WebRTC client, if needed. Push-to-talk in the web client (desktop Chrome first); later in the Unreal client.
+  *Exit: David holds a 10-minute voice conversation with another avatar (local/spatial voice and one IM call) from desktop Chrome, while text chat stays under the M1 latency bar.*
+- **M10: public-readiness.** TPV policy checklist, disclosures, privacy policy, unique viewer ID, installer/uninstaller, name chosen.
   *Exit: ready to apply for the TPV directory.*
 
-Low-end comes first because it is cheap and useful right away, and it builds the bridge the 3D mode needs anyway.
+Low-end comes first because it is cheap and useful right away, and it builds the bridge the 3D mode needs anyway. Voice (M9) only depends on M1–M3, so it can move earlier than the 3D milestones if David wants it sooner.
 
 ## 9. Open questions for David
 
 1. **Image generation approach for low-end mode:** are map tiles + profile pictures + composited scene cards (local, accurate, free) enough at first? Do you also want an opt-in software snapshot, a remote render from your PC, or AI-made "mood pictures" clearly labeled as illustrations?
-2. Low-end UI technology: a local web UI (fast to build, works on a phone) or a native app (Avalonia, C#)?
+2. ~~Low-end UI technology: web or native?~~ **Resolved Oct 3, 2026: web-based (local web UI served by the bridge), desktop Chrome first.** See Decisions.
 3. Test account: may I create or use a separate SL account for viewer development? (It can't be Galatea, because one login per account.)
 4. Is Windows-only acceptable for high-end mode in year one? Which GPU is in your PC?
 5. Product intent: open-source hobby viewer, or a product you may sell (affects the name, TPV directory listing and the Unreal royalty planning above $1M)?
 6. Viewer name: the TPV policy forbids "Second", "Life", "SL" or "Linden" in it. Any ideas?
 7. Should Galatea herself eventually use the bridge (replacing today's text client), or should the viewer stay a separate product line?
-8. Voice: needed at some point, or permanently out of scope?
+8. ~~Voice: needed at some point, or permanently out of scope?~~ **Resolved Oct 3, 2026: needed, as a later milestone (M9), via SL's WebRTC voice.** See Decisions.
+9. Remote access for the phone: is Tailscale OK as the way in (§4.1), or do you prefer LAN-only?

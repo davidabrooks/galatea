@@ -16,6 +16,7 @@ Every decision David makes goes here, newest last, and the sections below are ke
 | Oct 3, 2026 | **Design principle: open to any AI agent and first-class for humans.** The bridge has a stable, versioned, documented agent API (command/event protocol plus an MCP server), with per-agent auth and permissions. The web UI and the high-end UI are first-class clients of the same bridge, not afterthoughts. | §1, §2, §6, §9 (M0, M5) |
 | Oct 3, 2026 | **Tailscale is fine for remote access.** It is the supported way in from outside the PC; no port is opened to the internet. (Resolves open question 9.) | §4.1, §4.6, §9 (M4) |
 | Oct 3, 2026 | **Mobile, near term = a mobile website that works anywhere:** the same web client, responsive, reached from the phone over Tailscale from any network (not just the home LAN). **Later = dedicated apps in the iOS App Store and Google Play**, a future milestone. **How they're built is deliberately left open** (a wrapper around the web app, native apps, or a cross-platform toolkit; open question 15). The bridge API stays platform-neutral so any client type works. | §4.1, §4.6, §5, §9 (M4, M13) |
+| Oct 3, 2026 | **David creates a separate SL test avatar himself for viewer development.** Its credentials are stored as a secret on the box, never in the repo, logs or docs. (Resolves open question 3.) | §8, §9, §10 |
 
 ## 1. Goals, non-goals, target hardware
 
@@ -280,14 +281,14 @@ How it's built:
 ## 8. Galatea stays unaffected (until the planned cut-over)
 
 - **Separate everything:** new code under a new folder (e.g. `viewer/`) on its own branches. The bridge is a *new* process built from the shared core; it never touches the live text client's run directory, socket, app folder or deploy scripts.
-- **Never Galatea's account for development, until the planned cut-over (M6).** SL allows one session per account, so logging in the viewer as Galatea would kick her live session. Use a separate test account (David's alt or a new one), on the Aditi beta grid where possible.
+- **Never Galatea's account for development, until the planned cut-over (M6).** SL allows one session per account, so logging in the viewer as Galatea would kick her live session. Use the separate test avatar David is creating himself (decided Oct 3), on the Aditi beta grid where possible. Its credentials live only as a secret on the box (outside the repo, never committed, logged or printed); the bridge reads them at login.
 - **Builds and GPU testing on David's Windows PC.** The box has no GPU. The box can build and test the bridge and the web UI (including headless Chrome tests), but Unreal builds, shader compiles and any 3D testing happen on David's PC.
 - **Agent rules:** no deploy or restart of the live client or MCP connector as part of viewer work. Viewer PRs never modify `textclient/`; shared code is copied or factored out only in a separate, explicitly approved PR.
 - **The cut-over itself (M6)** is the one planned exception: an explicitly approved, scheduled switch with the old text client kept ready to roll back.
 
 ## 9. Milestones (each ends in a demo)
 
-- **M0: bridge spike + protocol v0.** A new bridge process logs a *test account* in and exposes the control channel. The command/event schema (§6.1) is written down from day one, and a throwaway CLI uses only that schema to show chat/IM flowing.
+- **M0: bridge spike + protocol v0.** A new bridge process logs the *test avatar* in (credentials from the box secret) and exposes the control channel. The command/event schema (§6.1) is written down from day one, and a throwaway CLI uses only that schema to show chat/IM flowing.
   *Exit: send and receive IM/chat through the bridge; Galatea's live session untouched.*
 - **M1: low-end web prototype (chat first, desktop Chrome).** The bridge serves the web UI on `127.0.0.1` with a per-install token. Local chat, IM tabs, people nearby, offers inbox over the WebSocket push, reconnect-and-catch-up, and the P0/P3 scheduler. The web UI uses only the public protocol.
   *Exit: a 30-minute live chat in desktop Chrome on a weak laptop, with the P3 load generator saturating image work, shows chat latency under 100 ms throughout, bridge-side and receive-to-screen (measured and logged).*
@@ -322,7 +323,7 @@ Low-end comes first because it is cheap and useful right away, and it builds the
 
 1. **Image generation approach for low-end mode:** are map tiles + profile pictures + composited scene cards (local, accurate, free) enough at first? Do you also want an opt-in software snapshot, a remote render from your PC, or AI-made "mood pictures" clearly labeled as illustrations?
 2. ~~Low-end UI technology: web or native?~~ **Resolved Oct 3, 2026: web-based (local web UI served by the bridge), desktop Chrome first.** See Decisions.
-3. Test account: may I create or use a separate SL account for viewer development? (It can't be Galatea, because one login per account.)
+3. ~~Test account for viewer development?~~ **Resolved Oct 3, 2026: David creates a separate test avatar himself; its credentials are stored as a secret on the box, never in the repo.** See Decisions.
 4. Is Windows-only acceptable for high-end mode in year one? Which GPU is in your PC?
 5. Product intent: open-source hobby viewer, or a product you may sell (affects the name, TPV directory listing and the Unreal royalty planning above $1M)?
 6. Viewer name: the TPV policy forbids "Second", "Life", "SL" or "Linden" in it. Any ideas?

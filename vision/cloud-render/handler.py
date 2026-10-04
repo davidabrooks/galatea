@@ -4,8 +4,7 @@ Input: {"scene": {...gather_scene.py JSON...}, "renders": ["scene", "face"], "ee
 Output: diagnostics, per-render timings and JPEG images (base64). Textures are fetched by UUID from SL's
 public asset CDN and decoded with Pillow (JPEG 2000) at reduced resolution.
 """
-import base64, concurrent.futures as cf, glob, gzip, io, json, os, re, subprocess, time, urllib.request
-import runpod
+import base64, concurrent.futures as cf, glob, gzip, io, json, lzma, os, re, subprocess, time, urllib.request
 from PIL import Image
 
 CDN = "http://asset-cdn.glb.agni.lindenlab.com/?texture_id="
@@ -46,11 +45,7 @@ def fetch_tex(uuid, outdir, cap=512):
     path = os.path.join(outdir, uuid + ".png")
     if os.path.exists(path): return uuid, path, None
     try:
-        data = urllib.request.urlopen(CDN + uuid, timeout=20).read()
-        im = Image.open(io.BytesIO(data))
-        try: im.reduce = 2 if max(im.size) >= 1024 else (1 if max(im.size) >= 512 else 0)
-        except Exception: pass
-        im = im.convert("RGBA"); im.thumbnail((512, 512)); im.save(path)
+        to_png(urllib.request.urlopen(CDN + uuid, timeout=20).read(), path, cap)
         return uuid, path, None
     except Exception as e:
         return uuid, None, str(e)[:120]
@@ -63,15 +58,18 @@ def blender(args, timeout, env=None):
     return round(time.time() - t, 1), r.returncode, (r.stdout + r.stderr)
 
 def mesh_job(inp, out, work):
-    """Real geometry from scene-mesher: mesh.json + gzipped mesh.bin + terrain + her bakes (raw j2c)."""
+    """Real geometry from scene-mesher: mesh.json + xz (or gzip) mesh.bin + terrain + her bakes (raw j2c)."""
     mj = inp["mesh_job"]; os.makedirs(work + "/tex", exist_ok=True)
     meta = mj["mesh_json"]; json.dump(meta, open(work + "/mesh.json", "w")); json.dump(mj["terrain"], open(work + "/terrain.json", "w"))
-    open(work + "/mesh.bin", "wb").write(gzip.decompress(base64.b64decode(mj["mesh_bin_gz_b64"])))
+    raw = base64.b64decode(mj["mesh_bin_xz_b64"]) if "mesh_bin_xz_b64" in mj else gzip.decompress(base64.b64decode(mj["mesh_bin_gz_b64"]))
+    open(work + "/mesh.bin", "wb").write(lzma.decompress(raw) if "mesh_bin_xz_b64" in mj else raw)
     for name, b64 in mj.get("bakes", {}).items():  # PNG, decoded on the box (5-channel bake j2c)
-        if name in BAKE_NAMES: Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB").save(f"{work}/tex/bake-{name}.png")
+        if name in BAKE_NAMES: Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA").save(f"{work}/tex/bake-{name}.png")  # alpha = bake cut-outs
     want = {}
     for b in meta["batches"]:
-        if UUID.match(b["tex"]): want[b["tex"]] = max(want.get(b["tex"], 0), 1024 if b["group"] == "avatar" else 512)
+        mat = b.get("mat") or {}
+        for t, cap in [(b["tex"], 1024 if b["group"] == "avatar" else 512)] + [(mat.get(k), 512) for k in ("normal", "spec", "mr", "emissive_tex")]:
+            if isinstance(t, str) and UUID.match(t): want[t] = max(want.get(t, 0), cap)
     if len(want) > MAX_TEXTURES: return f"{len(want)} textures > {MAX_TEXTURES}"
     t = time.time()
     with cf.ThreadPoolExecutor(8) as ex:
@@ -94,7 +92,10 @@ def handler(job):
             img = f"{work}/{name}-mesh.jpg"
             cam = inp.get("cameras", {}).get(name)
             if cam is not None and not re.fullmatch(r"-?[\d.]+(,-?[\d.]+){5,6}", cam): return {"error": "camera must be x,y,z,tx,ty,tz[,lens]"}
-            secs, rc, log = blender(["/app/render_mesh.py", work, name, "CYCLES", img], timeout=200, env={"GT_CAM": cam} if cam else None)
+            av = inp.get("avatar_at", {}).get(name)
+            if av is not None and not re.fullmatch(r"-?[\d.]+,-?[\d.]+,-?[\d.]+", av): return {"error": "avatar_at must be x,y,yaw"}
+            env = {k: v for k, v in (("GT_CAM", cam), ("GT_AV", av), ("GT_EXPOSURE", str(float(inp.get("exposure", 0))))) if v}
+            secs, rc, log = blender(["/app/render_mesh.py", work, name, "CYCLES", img], timeout=200, env=env)
             info = {"seconds": secs, "returncode": rc, "log_tail": [l for l in log.splitlines() if l.startswith("GT:") or "Error" in l][-25:]}
             if os.path.exists(img): info["jpeg_b64"] = base64.b64encode(open(img, "rb").read()).decode()
             out["renders"][f"{name}-mesh"] = info
@@ -124,4 +125,6 @@ def handler(job):
     out["handler_seconds"] = round(time.time() - t_start, 1)
     return out
 
-runpod.serverless.start({"handler": handler})
+if __name__ == "__main__":
+    import runpod
+    runpod.serverless.start({"handler": handler})

@@ -1,6 +1,6 @@
 """Blender script: render real SL geometry from scene-mesher output (mesh.json + mesh.bin).
 
-blender -b --factory-startup --python render_mesh.py -- <jobdir> {scene|face|body} {CYCLES|EEVEE} out.jpg
+blender -b --factory-startup --python render_mesh.py -- <jobdir> {scene|face|body} {CYCLES|EEVEE|WORKBENCH} out.jpg
 jobdir holds mesh.json, mesh.bin, terrain.json and tex/<uuid>.png, tex/bake-<name>.png.
 Galatea's rigged attachments are in bind pose (= SL's default T-pose), in avatar space (+X forward, feet near z=0).
 """
@@ -16,25 +16,59 @@ sc = bpy.context.scene
 def log(*a): print("GT:", *a, flush=True)
 
 def material(b):
-    key = b["tex"]; m = bpy.data.materials.new(key[:50]); m.use_nodes = True
-    nt = m.node_tree; p = nt.nodes["Principled BSDF"]; r, g, bl, a = b["rgba"]
+    """SL face -> Principled BSDF. alpha: none | blend | mask (cutoff) | emissive (alpha = glow mask) | auto (texture alpha)."""
+    key = b["tex"]; mat = b.get("mat") or {"alpha": "auto"}; m = bpy.data.materials.new(key[:50]); m.use_nodes = True
+    nt = m.node_tree; p = nt.nodes["Principled BSDF"]; r, g, bl, a = b["rgba"]; L = nt.links.new
+    def img(uuid, data=False):
+        path = f"{jobdir}/tex/{uuid.replace('bake:', 'bake-')}.png" if uuid else None
+        if not path or not os.path.exists(path): return None
+        n = nt.nodes.new("ShaderNodeTexImage"); n.image = bpy.data.images.load(path, check_existing=True)
+        if data: n.image.colorspace_settings.name = "Non-Color"
+        return n
+    def mul(x, y):
+        n = nt.nodes.new("ShaderNodeMath"); n.operation = "MULTIPLY"; L(x, n.inputs[0])
+        if isinstance(y, float): n.inputs[1].default_value = y
+        else: L(y, n.inputs[1])
+        return n.outputs[0]
     p.inputs["Base Color"].default_value = (r, g, bl, 1); p.inputs["Roughness"].default_value = 0.6
-    path = f"{jobdir}/tex/{key.replace('bake:', 'bake-')}.png"
-    if os.path.exists(path):
-        it = nt.nodes.new("ShaderNodeTexImage"); it.image = bpy.data.images.load(path, check_existing=True)
+    alpha = None; it = img(key)
+    if it:
         mix = nt.nodes.new("ShaderNodeMix"); mix.data_type = "RGBA"; mix.blend_type = "MULTIPLY"; mix.inputs["Factor"].default_value = 1
-        nt.links.new(it.outputs["Color"], mix.inputs["A"]); mix.inputs["B"].default_value = (r, g, bl, 1)
-        nt.links.new(mix.outputs["Result"], p.inputs["Base Color"])
-        if a < 0.999:
-            mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"; mul.inputs[1].default_value = a
-            nt.links.new(it.outputs["Alpha"], mul.inputs[0]); nt.links.new(mul.outputs[0], p.inputs["Alpha"])
-        else:
-            nt.links.new(it.outputs["Alpha"], p.inputs["Alpha"])
-        # ponytail: every texture alpha is treated as blend/hashed; SL alpha modes (mask/emissive) from materials aren't exported
-    elif a < 0.999:
-        p.inputs["Alpha"].default_value = a
+        L(it.outputs["Color"], mix.inputs["A"]); mix.inputs["B"].default_value = (r, g, bl, 1); L(mix.outputs["Result"], p.inputs["Base Color"])
+        alpha = mul(it.outputs["Alpha"], a) if a < 0.999 else it.outputs["Alpha"]
+    mode = mat["alpha"]
+    if mode in ("auto", "blend"):
+        if alpha is not None: L(alpha, p.inputs["Alpha"])
+        elif a < 0.999: p.inputs["Alpha"].default_value = a
+    elif mode == "mask" and alpha is not None:
+        gt = nt.nodes.new("ShaderNodeMath"); gt.operation = "GREATER_THAN"; L(alpha, gt.inputs[0]); gt.inputs[1].default_value = mat.get("cutoff", 0.5) - 1e-4
+        L(gt.outputs[0], p.inputs["Alpha"])
+    elif mode == "emissive" and alpha is not None:
+        L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"]); L(alpha, p.inputs["Emission Strength"])
+    nm = img(mat.get("normal"), True)
+    if nm:
+        n = nt.nodes.new("ShaderNodeNormalMap"); L(nm.outputs["Color"], n.inputs["Color"]); L(n.outputs["Normal"], p.inputs["Normal"])
+    if mat.get("pbr"):
+        p.inputs["Metallic"].default_value = mat["metallic"]; p.inputs["Roughness"].default_value = mat["roughness"]
+        mr = img(mat.get("mr"), True)
+        if mr:  # glTF: G = roughness, B = metallic
+            sep = nt.nodes.new("ShaderNodeSeparateColor"); L(mr.outputs["Color"], sep.inputs["Color"])
+            L(mul(sep.outputs["Green"], float(mat["roughness"])), p.inputs["Roughness"]); L(mul(sep.outputs["Blue"], float(mat["metallic"])), p.inputs["Metallic"])
+        e = mat.get("emissive") or [0, 0, 0]; et = img(mat.get("emissive_tex"))
+        if max(e) > 0:
+            p.inputs["Emission Color"].default_value = (*e, 1); p.inputs["Emission Strength"].default_value = 1
+            if et: L(et.outputs["Color"], p.inputs["Emission Color"])
+    elif "gloss" in mat:  # legacy: specular colour x spec map; glossiness (exponent/255) -> roughness
+        sc = mat.get("spec_color", [1, 1, 1, 1]); sp = img(mat.get("spec"))
+        p.inputs["Roughness"].default_value = 1 - 0.85 * mat["gloss"]
+        p.inputs["Specular Tint"].default_value = (sc[0], sc[1], sc[2], 1)
+        if sp:
+            mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; mx.blend_type = "MULTIPLY"; mx.inputs["Factor"].default_value = 1
+            L(sp.outputs["Color"], mx.inputs["A"]); mx.inputs["B"].default_value = (sc[0], sc[1], sc[2], 1); L(mx.outputs["Result"], p.inputs["Specular Tint"])
+        p.inputs["Specular IOR Level"].default_value = 0.5 + 0.5 * mat.get("env", 0)
+        # ponytail: env intensity only raises specular; no reflection probes; ceiling = shiny SL surfaces look matte
     if b["fullbright"]:
-        if p.inputs["Base Color"].links: nt.links.new(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])
+        if p.inputs["Base Color"].links: L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])
         else: p.inputs["Emission Color"].default_value = (r, g, bl, 1)
         p.inputs["Emission Strength"].default_value = 0.8
     m.blend_method = "HASHED"
@@ -72,8 +106,10 @@ def gpu_setup():
         sc.cycles.samples = int(os.environ.get("GT_SAMPLES", "64")); sc.cycles.use_denoising = True
         sc.cycles.transparent_max_bounces = 16
         log("cycles device", sc.cycles.device)
+    elif engine == "WORKBENCH":  # flat preview: textures, no lighting model (cheapest; CPU/llvmpipe friendly)
+        sc.render.engine = "BLENDER_WORKBENCH"; sc.display.shading.color_type = "TEXTURE"; sc.display.shading.light = "STUDIO"
     else:
-        sc.render.engine = "BLENDER_EEVEE_NEXT"; sc.eevee.taa_render_samples = 16
+        sc.render.engine = "BLENDER_EEVEE_NEXT"; sc.eevee.taa_render_samples = int(os.environ.get("GT_SAMPLES", "16"))
 
 def world(strength):
     w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True
@@ -90,6 +126,22 @@ def area(loc, target, energy, size):
     bpy.ops.object.light_add(type="AREA", location=loc); L = bpy.context.object; L.data.energy = energy; L.data.size = size
     L.rotation_euler = (Vector(target) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
 
+def eep(env):
+    """Region EEP sky at export time (make_job.py): sun or, below the horizon, moon; sky colour as ambient; SL point lights."""
+    sun = Vector(env["sun_dir"]).normalized(); night = sun.z < 0
+    travel = sun if night else -sun   # ponytail: moon taken as opposite the sun; ceiling = real moon_rotation
+    c = env["sunlight"]; peak = max(max(c), 1e-3)
+    bpy.ops.object.light_add(type="SUN"); L = bpy.context.object; L.rotation_euler = travel.to_track_quat("-Z", "Y").to_euler()
+    L.data.color = [x / peak for x in c]; L.data.energy = (0.25 * env["moon"] if night else 1.2 * peak)
+    w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True; bg = w.node_tree.nodes["Background"]
+    bg.inputs["Color"].default_value = (*env["horizon"], 1); bg.inputs["Strength"].default_value = 0.35 if night else 1.0
+    for l in M.get("lights", []):
+        d = bpy.data.lights.new("sl", "POINT"); d.color = l["color"]; d.shadow_soft_size = 0.05
+        # ponytail: SL radius/falloff -> one energy figure (W ~ intensity x radius); ceiling = SL's linear falloff curve
+        d.energy = float(os.environ.get("GT_LIGHT_W", "25")) * l["intensity"] * l["radius"]
+        o = bpy.data.objects.new("sl", d); o.location = l["pos"]; sc.collection.objects.link(o)
+    log("eep", "night" if night else "day", "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
+
 def terrain():
     t = json.load(open(f"{jobdir}/terrain.json")); nx, ny, st = t["nx"], t["ny"], t["step"]
     if nx < 2: return
@@ -101,13 +153,18 @@ def terrain():
 gpu_setup()
 if kind == "scene":
     build("scene"); terrain()
-    g = M["me"]
+    g = M["me"]; av = os.environ.get("GT_AV")  # "x,y,yaw_deg": stand/sit her there, on the first surface below
+    x, y, yaw = [float(v) for v in av.split(",")] if av else (g[0], g[1], -90.0)
+    bpy.context.view_layer.update()
+    hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))
+    floor = loc.z if hit else g[2] - 1.15
     lo, hi, obs = build("avatar")
-    # ponytail: she stands in T-pose at her spot facing the camera, feet ~1.15 m below her agent position (she may be
-    # seated; posing needs the skeleton + animations); ceiling = posture and exact placement
-    for ob in obs: ob.location = (g[0], g[1], g[2] - 1.15 - lo[2]); ob.rotation_euler = (0, 0, math.radians(-90))
-    bpy.ops.object.light_add(type="SUN", rotation=(math.radians(50), 0, math.radians(200))); bpy.context.object.data.energy = 3.5
-    world(1.0)
+    for ob in obs: ob.location = (x, y, floor - lo[2]); ob.rotation_euler = (0, 0, math.radians(yaw))
+    log("avatar at", round(x, 2), round(y, 2), "floor", round(floor, 2), "hit", hit)
+    if M.get("env"): eep(M["env"])
+    else:
+        bpy.ops.object.light_add(type="SUN", rotation=(math.radians(50), 0, math.radians(200))); bpy.context.object.data.energy = 3.5
+        world(1.0)
     cam = os.environ.get("GT_CAM")  # "x,y,z,tx,ty,tz[,lens]" in region coordinates
     if cam:
         c = [float(v) for v in cam.split(",")]; camera(c[0:3], c[3:6], c[6] if len(c) > 6 else 24, (960, 540))
@@ -115,16 +172,18 @@ if kind == "scene":
         camera((g[0] - 1.5, g[1] - 7.5, g[2] + 2.2), (g[0] + 0.5, g[1] + 3.5, g[2] + 0.3), 24, (960, 540))
 else:
     lo, hi, _ = build("avatar")
-    head = np.array([0.0, 0.0, hi[2] - 0.13])  # ponytail: head centre from the avatar's top; ceiling = hats/tall hair shift it
+    # face: the mHead joint (base of the skull) + ~7 cm up to the eyes; older mesh.json: from the avatar's top
+    head = np.array(M["head"]) + (0, 0, 0.07) if "head" in M else np.array([0.0, 0.0, hi[2] - 0.13])
     if kind == "face":
         camera(head + (0.85, 0.0, 0.0), head + (0, 0, -0.01), 85, (768, 768))
         area(head + (0.6, 0.5, 0.25), head, 12, 0.6); area(head + (0.6, -0.6, 0.0), head, 5, 0.8); area(head + (-0.5, 0.0, 0.4), head, 8, 0.5)
     else:
-        mid = np.array([0.0, 0.0, (lo[2] + hi[2]) / 2]); h = hi[2] - lo[2]
+        mid = (lo + hi) / 2; h = hi[2] - lo[2]
         camera(mid + (h * 1.9, 0.0, 0.0), mid, 50, (640, 1024))
         area(mid + (2.0, 1.5, 1.0), mid, 120, 2.0); area(mid + (2.0, -2.0, 0.0), mid, 50, 2.5); area(mid + (-1.5, 0.0, 1.5), mid, 60, 1.5)
     world(0.5)
 sc.view_settings.view_transform = "Standard"  # SL shows textures as plain sRGB
+sc.view_settings.exposure = float(os.environ.get("GT_EXPOSURE", "0"))
 sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90; sc.render.filepath = out
 log("build seconds", round(time.time() - T0, 1))
 t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1))

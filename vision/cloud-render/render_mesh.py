@@ -99,15 +99,54 @@ def material(b):
     m.blend_method = "HASHED"
     return m
 
-def build(group):
+def arrays(b):
+    nv, ni, o = b["nv"], b["ni"], b["offset"]
+    P = np.frombuffer(BIN, np.float32, nv * 3, o); o += nv * 12
+    N = np.frombuffer(BIN, np.float32, nv * 3, o); o += nv * 12
+    T = np.frombuffer(BIN, np.float32, nv * 2, o); o += nv * 8
+    return P, N, T, np.frombuffer(BIN, np.uint32, ni, o)
+
+def inner_layers(bs, bones, sample=300):
+    """Double-sided clothing (2026-10-04, David's shirt): the shirt's lining is a second face of the same mesh, the same
+    surface with the winding reversed (normals inward, tinted grey). The SL viewer culls back faces, so from outside only the
+    cloth shows and from inside only the lining. Cycles draws both, and the coplanar layers z-fight into grey blotches. A
+    Backfacing -> Transparent shader can't fix it (the ray skips the coplanar front face and sees the lining across the body).
+    So a batch (one face/material) is a lining, and is dropped, when most of its triangles face into the body (normal
+    towards the nearest bone segment; scene-mesher exports the posed bone chain) AND most of a random sample has a coplanar
+    opposite-facing twin within 0.5 mm. Hair cards (half each way), mouth/eye interiors (no twin) and the cloth stay.
+    -> set of batch indices to drop. ponytail: whole batches only; ceiling = an open collar's inside shows the cloth colour"""
+    if not bones: return set()
+    from mathutils.bvhtree import BVHTree
+    S = np.array(bones, np.float64).reshape(-1, 2, 3); A, D = S[:, 0], S[:, 1] - S[:, 0]; DD = np.maximum((D * D).sum(1), 1e-12)
+    arr = [(k, *arrays(b)) for k, b in bs]
+    V = np.vstack([P.reshape(-1, 3) for _, P, _, _, _ in arr]) if arr else np.zeros((0, 3))
+    offs = np.cumsum([0] + [len(P) // 3 for _, P, _, _, _ in arr])
+    F = [I.reshape(-1, 3) + o for (_, _, _, _, I), o in zip(arr, offs)]
+    tree = None; drop = set(); rng = np.random.default_rng(1)
+    for (k, *_), f in zip(arr, F):
+        if len(f) < 8: continue
+        tp = V[f]; g = np.cross(tp[:, 1] - tp[:, 0], tp[:, 2] - tp[:, 0]); c = tp.mean(1)
+        t = np.clip(((c[:, None, :] - A[None]) * D[None]).sum(2) / DD[None], 0, 1)          # (tris, segments)
+        near = A[None] + t[..., None] * D[None]; d2 = ((c[:, None, :] - near) ** 2).sum(2); q = near[np.arange(len(c)), d2.argmin(1)]
+        inward = float(((g * (q - c)).sum(1) > 0).mean())
+        if inward < 0.7: continue
+        if tree is None: tree = BVHTree.FromPolygons(V.tolist(), np.vstack(F).tolist(), all_triangles=True)
+        pick = rng.choice(len(f), min(sample, len(f)), replace=False); twin = 0
+        for nn, cc in zip(g[pick], c[pick]):
+            nn = Vector(nn).normalized(); twin += any(nn.dot(h[1]) < -0.5 for h in tree.find_nearest_range(Vector(cc), 5e-4))
+        if twin / len(pick) >= 0.5: drop.add(k)
+        if os.environ.get("GT_DBG"): log("  batch", M["batches"][k]["tex"][:8], round(M["batches"][k]["rgba"][0], 2), "inward", round(inward, 2), "twin", round(twin / len(pick), 2), "DROP" if k in drop else "")
+    return drop
+
+def build(group, bones=None):
     lo, hi = np.full(3, 1e9), np.full(3, -1e9); n = 0; obs = []
-    for b in M["batches"]:
-        if b["group"] != group or b["ni"] == 0: continue
-        nv, ni, o = b["nv"], b["ni"], b["offset"]
-        P = np.frombuffer(BIN, np.float32, nv * 3, o); o += nv * 12
-        N = np.frombuffer(BIN, np.float32, nv * 3, o); o += nv * 12
-        T = np.frombuffer(BIN, np.float32, nv * 2, o); o += nv * 8
-        I = np.frombuffer(BIN, np.uint32, ni, o)
+    mine = [(i, b) for i, b in enumerate(M["batches"]) if b["group"] == group and b["ni"] > 0]
+    drop = set()
+    if group.startswith("avatar"):
+        t = time.time(); drop = inner_layers(mine, bones); log(group, "lining batches dropped", len(drop), "in", round(time.time() - t, 2), "s")
+    for bi, b in mine:
+        if bi in drop: continue
+        nv, ni = b["nv"], b["ni"]; P, N, T, I = arrays(b)
         me = bpy.data.meshes.new(b["tex"][:40]); nt = ni // 3
         me.vertices.add(nv); me.vertices.foreach_set("co", P)
         me.loops.add(ni); me.loops.foreach_set("vertex_index", I)
@@ -214,7 +253,7 @@ if kind == "scene":
         return fl - lo if ll is None or abs(ll + lo - fl) < 0.35 else ll
     placed = [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll = place(M, x, y, g[2]); ll = None if av else ll
-    lo, hi, obs = build("avatar"); z0 = z0_of(fl, ll, lo[2])
+    lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2])
     for ob in obs: ob.location = (x, y, z0); ob.rotation_euler = (0, 0, math.radians(yaw))
     log("avatar at", round(x, 2), round(y, 2), "mesh z0", round(z0, 2), "floor", round(fl, 2), "LL", ll and round(ll, 2))
     def to_world(local, at, yw):
@@ -222,7 +261,7 @@ if kind == "scene":
         return Vector((at[0] + c * local[0] - s_ * local[1], at[1] + s_ * local[0] + c * local[1], at[2] + local[2]))
     heads = {"me": to_world(M["head"], (x, y, z0), yaw) + Vector((0, 0, 0.07))}
     for o, fp in placed:
-        olo, _, oobs = build(o["group"]); at = (o["pos"][0], o["pos"][1], z0_of(*fp, olo[2]))
+        olo, _, oobs = build(o["group"], o.get("bones")); at = (o["pos"][0], o["pos"][1], z0_of(*fp, olo[2]))
         for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
         heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])
     if M.get("env"): eep(M["env"])
@@ -255,7 +294,7 @@ if kind == "scene":
     else:
         camera((g[0] - 1.5, g[1] - 7.5, g[2] + 2.2), (g[0] + 0.5, g[1] + 3.5, g[2] + 0.3), 24, (960, 540))
 else:
-    lo, hi, _ = build("avatar")
+    lo, hi, _ = build("avatar", M.get("bones"))
     # face: the mHead joint (base of the skull) + ~7 cm up to the eyes; older mesh.json: from the avatar's top
     head = np.array(M["head"]) + (0, 0, 0.07) if "head" in M else np.array([0.0, 0.0, hi[2] - 0.13])
     if kind == "face":

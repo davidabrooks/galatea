@@ -334,6 +334,17 @@ static class Mesher
             float ang = 2 * MathF.Acos(Math.Min(1, Math.Abs(q.W))), max = MathF.PI / 2 * 0.8f;
             return ang > max ? Quaternion.Slerp(Quaternion.Identity, q, max / ang) : q;
         }
+        // the main bone chain as segments (avatar space, posed): render_mesh.py tells a garment's inside from its outside by
+        // the nearest bone (bones are inside the body), to drop double-sided clothing's linings (see inner_layers there)
+        string[][] Chains = {
+            new[] { "mPelvis", "mTorso", "mChest", "mNeck", "mHead", "mSkull" },
+            new[] { "mChest", "mCollarLeft", "mShoulderLeft", "mElbowLeft", "mWristLeft", "mHandMiddle1Left" },
+            new[] { "mChest", "mCollarRight", "mShoulderRight", "mElbowRight", "mWristRight", "mHandMiddle1Right" },
+            new[] { "mPelvis", "mHipLeft", "mKneeLeft", "mAnkleLeft", "mFootLeft", "mToeLeft" },
+            new[] { "mPelvis", "mHipRight", "mKneeRight", "mAnkleRight", "mFootRight", "mToeRight" } };
+        float[][] Bones(Dictionary<string, (Vector3 Pos, Quaternion Rot)> f) =>
+            Chains.SelectMany(c => c.Zip(c.Skip(1)).Where(p => f.ContainsKey(p.First) && f.ContainsKey(p.Second))
+                .Select(p => new[] { f[p.First].Pos.X, f[p.First].Pos.Y, f[p.First].Pos.Z, f[p.Second].Pos.X, f[p.Second].Pos.Y, f[p.Second].Pos.Z })).ToArray();
         static float Yaw(Quaternion q) => MathF.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.Y * q.Y + q.Z * q.Z)) * 180 / MathF.PI;
         var meMap = (OSDMap)doc["me"];
         animId ??= meMap.ContainsKey("anims") ? meMap["anims"].AsString() : null;   // the client's own animation clock (2026-10-04+)
@@ -346,7 +357,7 @@ static class Mesher
                 string g = "avatar:" + id[..8];
                 var f = await PoseAvatar(id, g, id[..8] + "-", av.ContainsKey("visual_params") ? (OSDMap)av["visual_params"] : null, av.ContainsKey("anims") ? av["anims"].AsString() : null);
                 var ap = av["pos"].AsVector3();
-                others.Add(new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z } });
+                others.Add(new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f) });
                 Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}");
             }
         var outMeta = new List<object>(); long off = 0;
@@ -357,7 +368,7 @@ static class Mesher
                 outMeta.Add(new { group = b.Group, tex = b.Tex, rgba = b.Rgba, fullbright = b.Fullbright, mat = b.Mat, nv = b.P.Count / 3, ni = b.I.Count, offset = off });
                 off += (b.P.Count + b.N.Count + b.T.Count + b.I.Count) * 4L;
             }
-        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, others }));
+        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, bones = frames == null ? null : Bones(frames), others }));
         Console.WriteLine($"{batches.Count} batches, {outMeta.Sum(m => ((dynamic)m).nv)} vertices, {off / 1048576.0:F1} MB; " + string.Join(", ", stats.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}")));
         return 0;
     }

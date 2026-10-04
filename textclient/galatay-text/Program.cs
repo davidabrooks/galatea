@@ -1562,6 +1562,7 @@ public static partial class Program
   worn links <attachment|ao>  every prim of a worn attachment/HUD: link no., local id, name, description, faces, touch flag
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
   shape get [filter] | shape set <slider|param id> <0-100>   worn shape sliders; set ONLY on 'Galatea Petite shape - Jani short neck' (backup in shape-backups/, upload + rebake)
+  scene export [radius]       READ-ONLY: prims (shapes, sculpt/mesh ids, faces) within radius + my attachments + my bakes -> /workspace/secondlife/vision/export-*/ (SceneExport.cs)
   texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG
   vendor look <name filter> [radius]   nearby objects matching name/hover text (default 20 m): face PNGs + index.json in textures/scan-*/
@@ -1712,6 +1713,7 @@ public static partial class Program
             case "autofollow": return AutoFollowCmd(a);
             case "door": case "doors": return await DoorTouch(rest);
             case "parcel": return await ParcelCmd(a);
+            case "scene" when a.Length > 0 && a[0] == "export": return await SceneExport(a);
             case "texture" when a.Length > 0 && a[0] == "save": case "faces": case "vendor" when a.Length > 0 && a[0] == "look": return await TextureCmds(cmd, a, rest);
             case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));
             case "touch-attachment": case "touchatt": return await TouchAttachment(rest);

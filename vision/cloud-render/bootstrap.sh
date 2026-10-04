@@ -21,6 +21,7 @@ BASE=https://raw.githubusercontent.com/davidabrooks/galatea/$REF/vision/cloud-re
 mkdir -p /app && cd /app
 curl -sfL $BASE/handler.py -o handler.py
 curl -sfL $BASE/render_scene.py -o render_scene.py
+curl -sfL $BASE/render_mesh.py -o render_mesh.py
 export BLENDER=/opt/$BL/blender
 export GT_BOOTSTRAP_SECONDS=$(( $(date +%s) - T0 ))
 exec python3 -u handler.py

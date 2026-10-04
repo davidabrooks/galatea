@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tiny Runpod API helper for the vision test (key read from /home/box/.secrets/runpod_api_key, never printed).
-usage: runpod_api.py balance | create | run <endpoint> <input.json> <out.json> | status <endpoint> <job> | scale0 <endpoint> | delete <endpoint> <template>
+usage: runpod_api.py balance | create | endpoint <template> | run <endpoint> <input.json> <out.json> | health <endpoint> | scale <endpoint> 0|1 | scale0 <endpoint>
 """
 import json, sys, time, urllib.error, urllib.request
 
@@ -59,10 +59,11 @@ elif cmd == "endpoint":
     print(json.dumps({"template": t, "endpoint": e}))
 elif cmd == "health":
     print(json.dumps(req(f"https://api.runpod.ai/v2/{sys.argv[2]}/health")))
-elif cmd == "scale0":
-    ep = sys.argv[2]
+elif cmd in ("scale0", "scale"):
+    ep = sys.argv[2]; n = int(sys.argv[3]) if cmd == "scale" else 0
+    assert 0 <= n <= 1, "max 1 worker"
     q = gql('query { myself { endpoints { id templateId name gpuIds idleTimeout executionTimeoutMs scalerType scalerValue } } }')
     e = [x for x in q["myself"]["endpoints"] if x["id"] == ep][0]
     r = gql('mutation { saveEndpoint(input: {id: "' + ep + '", name: "' + e["name"] + '", templateId: "' + e["templateId"] + '", gpuIds: "' + e["gpuIds"] +
-            '", workersMin: 0, workersMax: 0, idleTimeout: 5, scalerType: "QUEUE_DELAY", scalerValue: 4, executionTimeoutMs: 300000}) { id workersMin workersMax } }')
+            '", workersMin: 0, workersMax: ' + str(n) + ', idleTimeout: 5, scalerType: "QUEUE_DELAY", scalerValue: 4, executionTimeoutMs: 300000}) { id workersMin workersMax } }')
     print(json.dumps(r))

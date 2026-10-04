@@ -36,7 +36,9 @@ def diagnostics():
 
 def to_png(data, path, cap):
     im = Image.open(io.BytesIO(data))
-    try: im.reduce = 2 if max(im.size) >= 2 * cap else (1 if max(im.size) > cap else 0)
+    r = 0
+    while max(im.size) >> (r + 1) >= cap: r += 1  # JPEG 2000: skip resolution levels we would throw away anyway
+    try: im.reduce = r
     except Exception: pass
     im = im.convert("RGBA"); im.thumbnail((cap, cap)); im.save(path)
 
@@ -57,7 +59,7 @@ def blender(args, timeout, env=None):
     t = time.time()
     script = args.pop(0) if args[0].endswith(".py") else "/app/render_scene.py"
     r = subprocess.run([BLENDER, "-b", "--factory-startup", "-noaudio", "--python", script, "--"] + args,
-                       capture_output=True, text=True, timeout=timeout)
+                       capture_output=True, text=True, timeout=timeout, env={**os.environ, **(env or {})})
     return round(time.time() - t, 1), r.returncode, (r.stdout + r.stderr)
 
 def mesh_job(inp, out, work):

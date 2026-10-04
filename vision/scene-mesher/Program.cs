@@ -1,5 +1,5 @@
 // scene-mesher: `scene export` dump -> geometry batches for the Blender worker (no SL login; assets from the public CDN).
-//   dotnet run -- <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r]   (scene prims only within r of c)
+//   dotnet run -- --selftest | <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r]   (scene prims only within r of c)
 // Writes <dir>/mesh.json (batches: material + counts) and <dir>/mesh.bin (float32 pos/normal/uv, uint32 indices),
 // one batch per material, world space for the scene and bind-pose avatar space for Galatea's rigged attachments.
 // Prims: LibreMetaverse PrimMesher (via MeshFoundry). Sculpts: sculpt map from the CDN. Mesh: LOD from the CDN.
@@ -37,6 +37,15 @@ static class Mesher
 
     static async Task<int> Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--selftest")  // default skeleton sanity: pelvis ~1.07 m, head ~1.75 m, arms out (T-pose)
+        {
+            var w = Skeleton.World(new());
+            float Z(string j) => w[j][14];
+            bool ok = Math.Abs(Z("mPelvis") - 1.067f) < 0.01f && Z("mHead") > 1.6f && Z("mHead") < 1.9f && Math.Abs(w["mWristLeft"][13]) > 0.5f
+                      && Xform(Skeleton.Mul(new float[] { 1,0,0,0, 0,1,0,0, 0,0,1,0, 1,2,3,1 }, new float[] { 2,0,0,0, 0,2,0,0, 0,0,2,0, 0,0,0,1 }), new Vector3(1, 1, 1), 1) == new Vector3(4, 6, 8);
+            Console.WriteLine(ok ? "selftest ok" : $"selftest FAILED pelvis={Z("mPelvis")} head={Z("mHead")} wristY={w["mWristLeft"][13]}");
+            return ok ? 0 : 1;
+        }
         if (args.Length < 1 || !File.Exists(Path.Combine(args[0], "scene.json"))) { Console.Error.WriteLine("usage: scene-mesher <export dir> [near_m]"); return 2; }
         string dir = args[0]; float near = args.Length > 1 ? float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 20;
         var doc = (OSDMap)OSDParser.DeserializeJson(File.ReadAllText(Path.Combine(dir, "scene.json")));

@@ -20,6 +20,7 @@
     <Compile Include="../galatay-text/AttachWatch.cs" Link="Core/AttachWatch.cs" />
     <Compile Include="../galatay-text/MuteGuard.cs" Link="Core/MuteGuard.cs" />
     <Compile Include="../galatay-text/NavWalk.cs" Link="Core/NavWalk.cs" />
+    <Compile Include="../galatay-text/NavPlan.cs" Link="Core/NavPlan.cs" />
     <Compile Include="../galatay-text/GroupPicks.cs" Link="Core/GroupPicks.cs" />
     <Compile Include="../galatay-text/RegionRestart.cs" Link="Core/RegionRestart.cs" />
     <Compile Include="../galatay-text/RouteNav.cs" Link="Core/RouteNav.cs" />

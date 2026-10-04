@@ -28,6 +28,14 @@ public static partial class Program
             if (mode == "at")   // root prim names for the target match: same property fetch `nearby` uses
                 await EnsureProperties(Sim, Sim.ObjectsPrimitives.Values.Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim
                     && Vector3.Distance(p.Position, client.Self.SimPosition) <= 32).ToList());
+            if (mode == "at")   // she deliberately looks: a short head turn others can see (LookAt.cs; nothing in private mode)
+            {
+                var tn = string.Join(" ", w[1..]).ToLowerInvariant();
+                var av = Sim.ObjectsAvatars.Values.FirstOrDefault(x => x != null && x.ID != client.Self.AgentID && (x.Name ?? "").ToLowerInvariant().Contains(tn));
+                var ob = av == null ? Sim.ObjectsPrimitives.Values.FirstOrDefault(p => p != null && p.ParentID == 0 && (p.Properties?.Name ?? "").ToLowerInvariant().Contains(tn)
+                    && Vector3.Distance(p.Position, client.Self.SimPosition) <= 32) : null;
+                if (av != null) HeadTurnTo(av.ID, "look at"); else if (ob != null) HeadTurnToPoint(ob.Position, "look at");
+            }
             var ex = await SceneExport(new[] { "export", mode == "self" ? "8" : "32" });
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }

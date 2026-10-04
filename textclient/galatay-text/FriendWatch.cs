@@ -1,8 +1,9 @@
 // FriendWatch.cs (2026-10-04, David): notice David Nightingale coming online and wake the chat webhook routine.
 // - Source: the friend online notification (FriendsManager.FriendOnline); fallback: every 60 s while logged in, ask the
 //   server for his status again (requestonlinenotification), so a missed notification still turns into an online event.
-// - Online notifications in the first 30 s after Galatea's own login are the server's "who is already online" list,
-//   not a login: they only set the baseline.
+// - Online notifications in the first 15 s after Galatea's own login are the server's "who is already online" list,
+//   not a login: they only set the baseline. At 15 s she checks his status once: online -> david_login, reason
+//   galatea_login (2026-10-04).
 // - ~10 s after he comes online, ONE urgent webhook event kind 'david_login' (his name + uuid + pending reminders) if Galatea is
 //   still logged in and he is still online. Debounce: at most one per 10 min (persisted in run/david-login.json), so a relog
 //   or a flapping status doesn't greet twice.
@@ -23,15 +24,16 @@ public static partial class Program
     const string DavidName = "David Nightingale";
     static readonly string RemindersPath = Env("GT_REMINDERS", "/workspace/secondlife/inworld-reminders.md");
     static readonly string DavidLoginState = Env("GT_DAVID_LOGIN_STATE", "/home/box/viewers/textclient/run/david-login.json");
-    static readonly TimeSpan GreetDelay = TimeSpan.FromSeconds(10), GreetDebounce = TimeSpan.FromMinutes(10), LoginBaseline = TimeSpan.FromSeconds(30);
+    static readonly TimeSpan GreetDelay = TimeSpan.FromSeconds(10), GreetDebounce = TimeSpan.FromMinutes(10), LoginBaseline = TimeSpan.FromSeconds(15);
     static DateTime myLoginAt = DateTime.MinValue, davidOnlineAt = DateTime.MinValue;
     static bool davidOnline; static int friendWatchHooked, friendPollRunning;
     static readonly Dictionary<string, DateTime> lastWake = new(); // kind -> last fired (UTC)
     static readonly object fwGate = new();
 
     // pure (selftest): should an online event fire a wake? (baseline window after my login, debounce)
-    public static bool ShouldWake(DateTime now, DateTime myLogin, DateTime lastFired, bool simulated) =>
-        (simulated || now - myLogin >= LoginBaseline) && now - lastFired >= GreetDebounce;
+    public static bool ShouldWake(DateTime now, DateTime myLogin, DateTime lastFired, bool simulated, bool atMyLogin = false) =>
+        (simulated || atMyLogin || now - myLogin >= LoginBaseline) && now - lastFired >= GreetDebounce;
+    static int loginGen;
 
     // called from LoginAsync after a good login
     static void FriendWatchStart()
@@ -45,6 +47,23 @@ public static partial class Program
         }
         davidOnline = client.Friends.FriendList.TryGetValue(DavidAgent, out var f) && f.IsOnline;
         if (Interlocked.Exchange(ref friendPollRunning, 1) == 0) _ = Task.Run(FriendPoll);
+        var gen = Interlocked.Increment(ref loginGen); _ = Task.Run(() => GalateaLoginCheck(gen));
+    }
+
+    // 2026-10-04 (David): she logs in while he is already online -> the same david_login wake, reason galatea_login. Online
+    // notices in the first 15 s are the server's "already online" list (baseline); at 15 s, once the login has settled,
+    // check his status (friend list + those notices, or ask the server) and wake if he is on. Same 10-min debounce.
+    static async Task GalateaLoginCheck(int gen)
+    {
+        await Task.Delay(LoginBaseline);
+        if (gen != loginGen || !LoggedIn) return;
+        bool On() => davidOnline || client.Friends.FriendList.TryGetValue(DavidAgent, out var f) && f.IsOnline;
+        if (!On()) { try { client.Friends.RequestOnlineNotification(DavidAgent); } catch { } await Task.Delay(3000); }
+        if (gen != loginGen || !LoggedIn) return;
+        if (!On()) { Log("friendwatch", $"galatea_login: {DavidName} is offline, no wake"); return; }
+        davidOnline = true; if (davidOnlineAt == DateTime.MinValue) davidOnlineAt = DateTime.UtcNow;
+        Log("friendwatch", $"galatea_login: {DavidName} is already online; wake now");
+        Wake("galatea_login (I just logged in and he was already online)", false, true, TimeSpan.Zero);
     }
 
     static async Task FriendPoll()
@@ -73,18 +92,23 @@ public static partial class Program
             if (now - myLoginAt < LoginBaseline) { Log("friendwatch", $"{DavidName} already online at my login ({source}): baseline, no wake"); return; }
             Log("friendwatch", $"{DavidName} came online ({source}); wake in {GreetDelay.TotalSeconds:F0} s");
         }
+        Wake(source, simulated, false, GreetDelay);
+    }
+
+    static void Wake(string source, bool simulated, bool atMyLogin, TimeSpan delay)
+    {
         _ = Task.Run(async () =>
         {
-            await Task.Delay(GreetDelay);
+            await Task.Delay(delay);
             var kind = simulated ? "david_login_test" : "david_login";
             if (!LoggedIn) { Log("friendwatch", $"{kind}: I'm not logged in any more, no wake"); return; }
-            if (!simulated && !davidOnline) { Log("friendwatch", $"{kind}: he went offline again within {GreetDelay.TotalSeconds:F0} s, no wake"); return; }
+            if (!simulated && !davidOnline) { Log("friendwatch", $"{kind}: he went offline again within {delay.TotalSeconds:F0} s, no wake"); return; }
             DateTime last; lock (fwGate) last = lastWake.GetValueOrDefault(kind, DateTime.MinValue);
-            if (!ShouldWake(DateTime.UtcNow, myLoginAt, last, simulated)) { Log("friendwatch", $"{kind}: debounced (last wake {last.ToLocalTime():HH:mm:ss} PT, < {GreetDebounce.TotalMinutes:F0} min)"); return; }
+            if (!ShouldWake(DateTime.UtcNow, myLoginAt, last, simulated, atMyLogin)) { Log("friendwatch", $"{kind}: debounced (last wake {last.ToLocalTime():HH:mm:ss} PT, < {GreetDebounce.TotalMinutes:F0} min)"); return; }
             lock (fwGate) { lastWake[kind] = DateTime.UtcNow; try { File.WriteAllText(DavidLoginState, JsonSerializer.Serialize(lastWake)); } catch { } }
             var pending = Reminders().Select((r, i) => (n: i + 1, r)).Where(x => x.r.pending).ToList();
             var text = (simulated ? "SIMULATED TEST (no real login; do NOT IM anyone): " : "") +
-                $"{DavidName} ({DavidAgent}) came online ({source}) at {DateTime.Now:HH:mm} PT. " +
+                $"{DavidName} ({DavidAgent}) {(atMyLogin ? "is online" : "came online")} ({source}) at {DateTime.Now:HH:mm} PT. " +
                 (pending.Count == 0 ? "No pending reminders." : $"Pending reminders ({pending.Count}): " + string.Join(" | ", pending.Select(x => $"#{x.n}: {x.r.text}")) +
                  " (after delivering: 'remind done <n>')");
             Log("friendwatch", $"{kind}: waking the chat routine ({pending.Count} pending reminder(s))");
@@ -157,6 +181,8 @@ public static partial class Program
             C(!ShouldWake(t.AddMinutes(15), t, t.AddMinutes(9), false), "relog 6 min after the last wake -> debounced");
             C(ShouldWake(t.AddMinutes(20), t, t.AddMinutes(9), false), "11 min after the last wake -> wake again");
             C(ShouldWake(t.AddSeconds(5), t, never, true), "simulate ignores the login baseline");
+            C(ShouldWake(t.AddSeconds(15), t, never, false, true), "galatea_login: he was already online at my login -> wake");
+            C(!ShouldWake(t.AddSeconds(15), t, t.AddMinutes(-4), false, true), "galatea_login 4 min after the last wake (relog) -> debounced");
             C(GalatayMcp.Webhook.UrgentKinds.Contains("david_login") && GalatayMcp.Webhook.UrgentKinds.Contains("david_login_test"), "david_login(_test) are urgent (immediate, cap-exempt)");
             return $"friendwatch selftest: {pass} PASS, {fail} FAIL (pure; nothing sent)\n" + sb.ToString().TrimEnd();
         }

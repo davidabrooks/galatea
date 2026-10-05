@@ -27,13 +27,18 @@ def amblit(env):
     t = [lin((x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9) for x in env["ambient"]]
     return 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2]
 AMB = amblit(M.get("env")) if kind == "scene" else 0.0  # face/body portraits have their own studio lights
-ALPHA_CACHE = {}
+ALPHA_CACHE = {}  # name -> (has_cutout, amax)
+def _alpha_stats(image):
+    if image.name not in ALPHA_CACHE:
+        if image.channels != 4 or not image.pixels:
+            ALPHA_CACHE[image.name] = (False, 1.0)
+        else:
+            a = np.empty(len(image.pixels), np.float32); image.pixels.foreach_get(a)
+            aa = a[3::4]; ALPHA_CACHE[image.name] = (float(aa.min()) < 0.98, float(aa.max()) if aa.size else 1.0)
+    return ALPHA_CACHE[image.name]
 def has_alpha(image):
     """any texel below 0.98 alpha (the image is loaded anyway; one numpy pass per distinct texture)"""
-    if image.name not in ALPHA_CACHE:
-        a = np.empty(len(image.pixels), np.float32); image.pixels.foreach_get(a)
-        ALPHA_CACHE[image.name] = image.channels == 4 and a.size > 0 and float(a[3::4].min()) < 0.98
-    return ALPHA_CACHE[image.name]
+    return _alpha_stats(image)[0]
 
 def material(b):
     """SL face -> Principled BSDF. alpha: none | blend | mask (cutoff) | emissive (alpha = glow mask) | auto (texture alpha)."""
@@ -96,7 +101,15 @@ def material(b):
         if p.inputs["Base Color"].links: L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])
         else: p.inputs["Emission Color"].default_value = (r, g, bl, 1)
         p.inputs["Emission Strength"].default_value = AMB
-    m.blend_method = "HASHED"
+    # Opaque clothes must depth-test solid: always-HASHED let body BOM show through jeans/tops (Scentual90).
+    if mode in ("none", "emissive"):
+        m.blend_method = "OPAQUE"
+    elif mode == "mask":
+        m.blend_method = "CLIP"; m.alpha_threshold = float(mat.get("cutoff", 0.5))
+    elif it and not has_alpha(it.image):
+        m.blend_method = "OPAQUE"
+    else:
+        m.blend_method = "HASHED"
     return m
 
 def arrays(b):
@@ -154,11 +167,16 @@ def build(group, bones=None):
         me.polygons.foreach_set("use_smooth", np.ones(nt, bool))
         uv = me.uv_layers.new(); uv.data.foreach_set("uv", T.reshape(-1, 2)[I].ravel())
         me.update(); me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
-        ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b)); obs.append(ob)
+        ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b))
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
         # shadow drew a grey "text" mark beside her nose. The SL viewer's sun shadow map is far too coarse to resolve them.
         # ponytail: decided per texture alpha; ceiling = no hair shadow on her neck
         tn = next((n for n in me.materials[0].node_tree.nodes if n.type == "TEX_IMAGE" and n.image), None)
+        # blank SL textures (32x32 all-alpha-0, e.g. Scentual f54a0c32 "clothing" layer): skip so they don't
+        # sit as hashed ghosts over BOM skin
+        if tn and _alpha_stats(tn.image)[1] < 1e-3:
+            bpy.data.objects.remove(ob, do_unlink=True); bpy.data.meshes.remove(me); continue
+        obs.append(ob)
         if group.startswith("avatar") and (b.get("mat") or {}).get("alpha", "auto") in ("auto", "blend") and not b["tex"].startswith("bake:") and tn and has_alpha(tn.image):
             ob.visible_shadow = False
         # the backdrop is seen and casts sun shadow, but takes no part in the near scene's bounce light or reflections:

@@ -4,7 +4,7 @@
 // - "detach <item>" / "attach <item>" (reversible; recorded in detached-attachments.log)
 // - attach-block.txt: items kept OFF while seated (detached before/after every sit, again if re-worn) and re-attached when standing
 // - anim-block.txt: animation ids stopped whenever they start while seated
-// - pose keeper: while seated, if a non-seat animation (re)starts after the seat pose, the seat pose is re-asserted
+// - pose keeper: while seated, if a non-seat animation (re)starts after the seat pose, the seat pose is re-asserted (only anims the seat still sources; drops stale solo/couples copies)
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -104,17 +104,42 @@ public static partial class Program
             foreach (var k in stopped)
                 if (log) Log("anim", $"stop {AnimName(k)} (was from {SrcDesc(prev[k].src)})");
             if (client.Self.SittingOn != 0 && started.Count > 0) _ = Task.Run(() => SeatedAnimGuard(started.Select(kv => (kv.Key, kv.Value.Item2, prev.ContainsKey(kv.Key))).ToList(), now));
-            if (client.Self.SittingOn == 0 && !keptPose.IsEmpty)
-                foreach (var id in keptPose.Keys.ToList()) { client.Self.AnimationStop(id, true); keptPose.TryRemove(id, out _); Log("height", $"pose keeper: stopped our copy of {AnimName(id)} after standing"); }
+            if (client.Self.SittingOn == 0)
+            {
+                NotePoseSeatShared(null); // alone/shared tracking ends when we stand
+                if (!keptPose.IsEmpty)
+                    foreach (var id in keptPose.Keys.ToList()) { client.Self.AnimationStop(id, true); keptPose.TryRemove(id, out _); Log("height", $"pose keeper: stopped our copy of {AnimName(id)} after standing"); }
+            }
         }
         catch (Exception ex) { Log("anim", "watch error: " + ex.GetBaseException().Message); }
     }
 
-    // while seated: stop blocked anims; built-in sit anims from non-seat sources once a seat pose runs; re-assert the seat pose
+    // while seated: stop blocked anims; built-in sit anims from non-seat sources once a seat pose runs; re-assert the seat pose.
+    // Never re-assert a kept copy the seat is no longer playing (solo<->couples switch when a partner sits/stands).
     static async Task SeatedAnimGuard(List<(UUID id, UUID src, bool restart)> started, Dictionary<UUID, (int seq, UUID src)> now)
     {
         var block = ReadIdFile(AnimBlockFile);
-        var seatAnims = now.Where(kv => IsSeatSource(kv.Value.src) || keptPose.ContainsKey(kv.Key)).Select(kv => kv.Key).ToList();
+        // Occupancy flip (partner sat/stood): drop kept copies so we do not re-apply the old mode's anim.
+        try
+        {
+            var sim = client.Network.CurrentSim;
+            if (sim != null && client.Self.SittingOn != 0 && sim.ObjectsPrimitives.TryGetValue(client.Self.SittingOn, out var seatPrim) && seatPrim != null)
+            {
+                var root = seatPrim;
+                if (seatPrim.ParentID != 0 && sim.ObjectsPrimitives.TryGetValue(seatPrim.ParentID, out var r) && r != null) root = r;
+                NotePoseSeatShared(SeatHasOtherSitters(root));
+            }
+        }
+        catch { }
+        // Only animations the seat is currently sourcing — not orphaned keptPose copies from a previous pose mode.
+        var seatAnims = now.Where(kv => IsSeatSource(kv.Value.src)).Select(kv => kv.Key).ToList();
+        foreach (var id in keptPose.Keys.ToList())
+        {
+            if (seatAnims.Contains(id)) continue;
+            try { client.Self.AnimationStop(id, true); } catch { }
+            keptPose.TryRemove(id, out _);
+            if (DateTime.Now < animLogUntil) Log("height", $"pose keeper: dropped stale copy of {AnimName(id)} (seat no longer playing it)");
+        }
         bool interloper = false;
         foreach (var (id, src, restart) in started)
         {

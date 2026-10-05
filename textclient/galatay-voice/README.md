@@ -22,7 +22,7 @@ Finished transcript lines can wake the same chat routine that text chat/IMs do, 
 
 | Mode | Behaviour |
 |---|---|
-| `name` (default) | Wake when a line mentions her (Galatea / Galatay / Gal / Nightingale, STT-tolerant) **or** opens the floor (`questions or comments?`, `any questions`, `any thoughts`, `anyone want to share`, `comments?`, …). Event includes prior ~30 s as `context` and `trigger` = `name` or `invitation`. |
+| `name` (default) | Wake when a line mentions her (Galatea / Galatay / Gal / Nightingale, STT-tolerant) **or** opens the floor (`questions, comments`, `questions or comments?`, `any questions`, `any thoughts`, `anyone want to share`, `comments?`, …). Event includes prior ~30 s as `context` and `trigger` = `name` or `invitation`. |
 | `all` | Wake on every utterance (same-speaker lines debounced ~3 s; wakes rate-limited to ~1 / 10 s, extras merge). |
 | `off` | Transcript still written; no voice webhook. |
 

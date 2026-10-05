@@ -97,6 +97,10 @@ static class Mesher
         // prims under 1 m skipped (David 2026-10-04: more background without slowing the render much) ponytail: far prims < 1 m vanish; ceiling = no small far detail (railings, signs)
         float farR = float.Parse(args.FirstOrDefault(a => a.StartsWith("--far="))?[6..] ?? "1e9", System.Globalization.CultureInfo.InvariantCulture);
         args = args.Where(a => !a.StartsWith("--far=")).ToArray();
+        // --roots=M (2026-10-04): only linksets whose root is within M m of the focus, the `scene export` radius rule, so a
+        // near-only look on a 96 m export meshes what a 32 m export holds (big linksets rooted far away pulled 800+ textures)
+        float rootsR = float.Parse(args.FirstOrDefault(a => a.StartsWith("--roots="))?[8..] ?? "1e9", System.Globalization.CultureInfo.InvariantCulture);
+        args = args.Where(a => !a.StartsWith("--roots=")).ToArray();
         // --nav (2026-10-04, walking planner scripts/nav_map.py): one group "nav:<localid>" per scene prim and invisible faces
         // kept (an invisible face still collides). ponytail: visual mesh as the collision shape; ceiling = mesh whose physics
         // shape differs from what it shows (a hull over a doorway, a phantom-looking curtain that is solid)
@@ -129,7 +133,8 @@ static class Mesher
         float Nearest(OSDMap o) { var (c, r) = sphere[RootOf(o, byLocal)]; return MathF.Max(0, Vector3.Distance(c, focus) - r); }
         bool Far(OSDMap o) => Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus) > farR;
         var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => Owner(o) != null
-            ? only != "scene" : only != "avatar" && Nearest(o) <= focusR && (!Far(o) || sphere[RootOf(o, byLocal)].r >= 0.85f)).ToList();
+            ? only != "scene" : only != "avatar" && Nearest(o) <= focusR && (!Far(o) || sphere[RootOf(o, byLocal)].r >= 0.85f)
+              && Vector3.Distance(byLocal[RootOf(o, byLocal)]["world_pos"].AsVector3(), focus) <= rootsR).ToList();
         var lights = new List<object>();
         // the export's TextureEntry JSON drops "face_number" for face 0, so LibreMetaverse would read face 0 as the default
         // face: restore it (the only per-face entry that can lack the key)

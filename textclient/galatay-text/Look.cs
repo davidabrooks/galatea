@@ -1,5 +1,5 @@
-// Look.cs (2026-10-04, David: let her see) - `look [self|around|at <avatar|object>] [fast]`
-//   READ-ONLY in-world: a `scene export` (radius 96, backdrop beyond 30 m; 8 for self), then the box script vision/look.py meshes it and renders
+// Look.cs (2026-10-04, David: let her see) - `look [self|around|at <avatar|object>] [fast] [far]`
+//   READ-ONLY in-world: a `scene export` (radius 32, the near scene; `far`: 96, backdrop beyond 30 m; 8 for self), then the box script vision/look.py meshes it and renders
 //   on the CPU (Cycles, nice 10) and prints the image path(s). Waits up to GT_LOOK_WAIT_S (75 s, under the 85 s command
 //   reply cap); a longer render keeps going and its paths land in the log as [look]. One look at a time (shared work dir).
 using System.Diagnostics;
@@ -16,8 +16,8 @@ public static partial class Program
 
     static async Task<string> LookCmd(string[] a)
     {
-        const string usage = "usage: look [self|around|at <avatar or object name>] [fast]";
-        bool fast = a.Contains("fast"); var w = a.Where(x => x != "fast").ToArray();
+        const string usage = "usage: look [self|around|at <avatar or object name>] [fast] [far]";
+        bool fast = a.Contains("fast"), far = a.Contains("far"); var w = a.Where(x => x != "fast" && x != "far").ToArray();
         string mode = w.Length == 0 ? "view" : w[0] is "self" or "around" or "at" ? w[0] : null;
         if (mode == null || (mode == "at") != (w.Length > 1) || (mode != "at" && w.Length > 1)) return usage;
         if (!File.Exists(LookPy)) return $"look: {LookPy} not found (set GT_LOOK_PY)";
@@ -36,13 +36,14 @@ public static partial class Program
                     && Vector3.Distance(p.Position, client.Self.SimPosition) <= 32) : null;
                 if (av != null) HeadTurnTo(av.ID, "look at"); else if (ob != null) HeadTurnToPoint(ob.Position, "look at");
             }
-            var ex = await SceneExport(new[] { "export", mode == "self" ? "8" : "96" });   // 96 m: backdrop beyond 30 m (look.py)
+            var ex = await SceneExport(new[] { "export", mode == "self" ? "8" : far ? "96" : "32" });   // far: backdrop beyond 30 m (look.py --far)
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }
             var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             psi.ArgumentList.Add(LookPy); psi.ArgumentList.Add(Path.GetDirectoryName(scene)!); psi.ArgumentList.Add(mode);
             if (mode == "at") psi.ArgumentList.Add(string.Join(" ", w[1..]));   // argv, never a shell: names can't inject
             if (fast) psi.ArgumentList.Add("--fast");
+            if (far) psi.ArgumentList.Add("--far");
             var pr = Process.Start(psi)!; var outText = new StringBuilder(); var errText = new StringBuilder();
             pr.OutputDataReceived += (_, e) => { if (e.Data != null) lock (outText) outText.AppendLine(e.Data); };
             pr.ErrorDataReceived += (_, e) => { if (e.Data != null) lock (errText) errText.AppendLine(e.Data); };

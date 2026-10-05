@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """`look` for the text client: a `scene export` dir -> mesh (scene-mesher) -> CPU Cycles render(s) of what's around her.
-usage: look.py <export dir> {view|self|around|at} [target name] [--fast]
+usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
   view    over her shoulder, along her facing        around  4 views (front, left, back, right)
   self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
+  --far   also the backdrop (scenery 30-96 m at a screen-size LOD, region terrain, water, sky gradient; needs a 96 m
+          export). Off by default (David 2026-10-04: her renders are for her own needs, speed first): near scene only.
 Prints one image path per line (then a JSON summary line). Read-only: never talks to SL; only CDN asset GETs.
 Needs: dotnet + SCENE_MESHER (built scene-mesher), BLENDER, the imgvenv python (imagecodecs, pillow).
 """
@@ -19,15 +21,18 @@ OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
 VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
 
+def mesher_args(d, mode, me, far):
+    return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + (["96", "--far=30"] if far else ["30", "--roots=32"])
+
 def main(a):
-    fast = "--fast" in a; a = [x for x in a if x != "--fast"]
+    fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
-    # her surroundings: full detail within 30 m (Highest LOD within 12), whole objects centred beyond 30 m as backdrop at a
-    # screen-size LOD (exports
-    # from 2026-10-04 reach 96 m); `self` meshes her alone
-    args = [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me), "96", "--far=30"]
+    # her surroundings: whole objects reaching within 30 m (Highest LOD within 12); with --far also objects out to 96 m,
+    # those centred beyond 30 m as backdrop at a screen-size LOD; `self` meshes her alone. --roots=32: the 32 m export's
+    # linksets even from a 96 m export (an older client that still exports 96 m)
+    args = mesher_args(d, mode, me, far)
     if mode == "at":  # she turns her head toward the target (scene-mesher --look); an avatar's head ~0.7 m above its agent position
         av = next((v for v in doc.get("avatars", []) if target in str(v.get("name", "")).lower() and "pos" in v), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
@@ -36,9 +41,10 @@ def main(a):
     r = subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + args, capture_output=True, text=True)
     if r.returncode: sys.exit("scene-mesher failed: " + (r.stderr or r.stdout)[-400:])
     times["mesh"] = round(time.time() - t0, 1)
-    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["water_height"] = doc.get("water_height")
+    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["backdrop"] = far
+    if far: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
-    json.dump(doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)
+    json.dump(far and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)
     for k, im in make_job.decode_bakes(d).items():
         if handler.BAKE_KEY.fullmatch(k): im.convert("RGBA").save(f"{WORK}/tex/bake-{k}.png")
     json.dump(meta, open(f"{WORK}/mesh.json", "w"))
@@ -64,7 +70,7 @@ def main(a):
         if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
         outs += got; times[kind] = round(time.time() - t, 1)
     for p in outs: print(p)
-    print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "seconds": times, "total": round(time.time() - t0, 1),
+    print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "seconds": times, "total": round(time.time() - t0, 1),
                       "others": [o["name"] for o in meta.get("others", [])], "textures": info["textures"]}))
 
 if __name__ == "__main__":

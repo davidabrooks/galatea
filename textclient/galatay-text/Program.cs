@@ -48,7 +48,7 @@ public static partial class Program
     public static bool ExitOnLogout = true; // daemon mode: process ends after logout
     public record EventItem(string time, string kind, string text);
     public static readonly ConcurrentQueue<EventItem> Events = new();
-    static readonly HashSet<string> NonEvents = new() { "greet-reply", "cmd", "ready", "webhook", "profile", "height", "muted-drop", "mute" };
+    static readonly HashSet<string> NonEvents = new() { "greet-reply", "cmd", "ready", "webhook", "profile", "height", "muted-drop", "mute", "voice-sc" };
     // Incoming avatar chat/IM notification (MCP webhook wake-up). Invoked AFTER the event is queued for poll_events.
     public record IncomingChat(string type, string from, string from_id, string text, string time, double? distance, string region, long? msg_id = null);
     public static Action<IncomingChat> OnIncoming;
@@ -229,6 +229,7 @@ public static partial class Program
         if (args.Contains("--attach-move-selftest")) { var r = AttachMoveSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--detach-cof-selftest")) { var r = DetachCofSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--pose-keeper-selftest")) { var r = PoseKeeperSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--voice-selftest")) { var r = await VoiceSelfTest(); Console.WriteLine(r); return r.Contains("FAIL ") || !r.Contains(": 0 FAIL") ? 1 : 0; } // offline: voice broker + sidecar vs fake_voice_server.py (Voice.cs)
         if (args.Contains("--exp-selftest")) { var r = ExpSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)
         {
@@ -249,7 +250,7 @@ public static partial class Program
             // summaries say "0 FAIL" / "0 fail"; only a FAIL line or a non-zero count is a failure
             return System.Text.RegularExpressions.Regex.IsMatch(all, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|[1-9]\d*\s+fail\b") ? 1 : 0;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest|--exp-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest|--exp-selftest|--voice-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -367,6 +368,7 @@ public static partial class Program
         // 2026-09-26: a signal without a stop request (hang monitor's TERM, a stray kill) exits 75 so the supervisor relaunches
         ExitCode = ShutdownExitCode(why, deliberate, ExitCode);
         try { WanderOnShutdown(deliberate); } catch { }
+        try { await VoiceShutdown(); } catch { } // leave voice (Voice.cs); the sidecar finishes its transcript on its own
         if (deliberate && ExitOnLogout) MarkDeliberateStop(why); // daemon only: a logout command also keeps her down across a reboot
         Log("logout", $"logging out ({why}{(deliberate ? "; deliberate stop" : "")})");
         try
@@ -1542,9 +1544,9 @@ public static partial class Program
   map [radius] [x y] | terrain <x> <y>   planning data: objects with size/rotation, ground height
   route list | route show <name> | route status | route steer [smooth|legacy]   named routes (textclient/routes/*.json) + places of this region's path graph
   route walk <name> [reverse] [allow_zendo] [allow_outside]   follow a route (joins at the nearest point; carrot steering 2.5 m ahead)
-  wander start|stop|pause|hold|resume|status|seats|selftest|resumetest   autonomous loop deerpark<->landing with random sits, greetings, chat pause (Wander.cs); resumes after restart/reboot unless stale after a deliberate stop
+  wander start|stop|pause|hold|resume|status|seats|selftest|resumetest   Naberrie: deerpark<->landing; Peronaut home: front/patio/living loop + upper seats (Wander.cs); resumes after restart/reboot unless stale after a deliberate stop
   quiet status | quiet selftest | quiet override <min 1-30>|off   session detector (>= 3 seated in zendo / Deer Park -> quiet: no greetings, keep 15 m away, nearby say refused) (Quiet.cs)
-  goto_place <place> [nosit] [allow_zendo] [allow_outside]    shortest way over the path graph (Naberrie: zendo, landing, waterfall, poolrock, deerpark); poolrock ends with sit_home
+  goto_place <place> [nosit] [allow_zendo] [allow_outside]    shortest way over the path graph (Naberrie places, or Peronaut home: home/living/front/chairs/patio-*/desk/bed/...); poolrock ends with sit_home
   route record <avatar> <name> | route record stop | route stop   record an avatar's walk as a route / stop walking+recording
      (bounds: The Buddha Center parcel in Naberrie, never the zendo unless allowed; stuck -> max 1 m sidestep, no flying, stop+log; avatars on the path -> pause 10 s, 1 m sidestep, else wait/stop)
   overhead [tag] | snapshot [tag]   map-tile overhead picture (position, avatars, seats, path, route) -> /workspace/secondlife/images/overhead-<time>[-tag].png
@@ -1615,6 +1617,7 @@ public static partial class Program
   outfit plan|create <name> [extra ids]   dry run / create an Outfit folder under My Outfits with links to the original items (COF minus LSL Bridge)
   outfit check                   READ-ONLY: WARNING for COF object links whose items are not attached (stale links re-attach on relog)
   invitem <item uuid>         check that an inventory item exists (FetchItem; never attaches)
+  voice on|off|status|tail [n] LISTEN-ONLY SL voice (WebRTC, the parcel/region channel here) -> local transcript /workspace/secondlife/voice/transcript-<date>.md with speaker names; mic never sent; off after every login (Voice.cs)
   logout                      log out cleanly and exit";
 
     static async Task<string> Exec(string line)
@@ -1760,6 +1763,7 @@ public static partial class Program
             case "quiet": return QuietCmds(a);
             case "pose": return await PoseCmd(a);
             case "exp": return await ExpCmd(a); // Experiences.cs
+            case "voice": return await VoiceCmd(a); // listen-only SL voice + transcript (Voice.cs)
             case "watchdog": return a.Length > 0 && a[0] == "selftest" ? WatchdogSelfTest() : WatchdogStatus();
             case "ao": return a.Length > 0 && a[0] == "selftest" ? AoSelfTest() : AoStatus();
             case "imguard": return await ImGuardCmd(a);

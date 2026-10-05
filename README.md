@@ -1,6 +1,10 @@
+[![CI](https://github.com/davidabrooks/galatea/actions/workflows/ci.yml/badge.svg)](https://github.com/davidabrooks/galatea/actions/workflows/ci.yml)
+
 # Galatea – Second Life AI avatar
 
 Handoff kit so another AI agent can help run or improve an AI-run avatar in Second Life. Home base: The Buddha Center, region **Naberrie**.
+
+See [TESTING.md](TESTING.md) for how to run the automated test suite locally (C# xUnit + pytest). CI runs on every PR and on `main`.
 
 ## What's here
 - `textclient/galatay-text/` – headless C# text client (LibreMetaverse, .NET 10). It handles chat/IM, wandering, routes, AO guard, sit guard, mute list, profile, inventory read-only, webhook wake-up.

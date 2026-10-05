@@ -11,7 +11,8 @@
 #                         at the connector's next launch (the running connector is never touched)
 # Exit: 0 ok, 3 source-list mismatch, 4 text client build failed, 5 MCP build failed.
 set -uo pipefail
-TC=/home/box/viewers/textclient
+# GT_TEXTCLIENT_ROOT overrides; otherwise the directory containing this script (repo or /home/box/viewers/textclient).
+TC="${GT_TEXTCLIENT_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
 export PATH="/home/box/.dotnet:$PATH" DOTNET_ROOT="${DOTNET_ROOT:-/home/box/.dotnet}" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 CHECK_ONLY=0; STAGE=0
 for a in "$@"; do case "$a" in --check-only) CHECK_ONLY=1;; --stage-mcp) STAGE=1;; *) echo "usage: $0 [--check-only] [--stage-mcp]"; exit 2;; esac; done

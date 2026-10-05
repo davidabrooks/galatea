@@ -11,7 +11,10 @@
 //   attach pos/move also report rigged prims and the owner's modify/move permission from ObjectProperties.
 // - attach-block.txt: items kept OFF while seated (detached before/after every sit, again if re-worn) and re-attached when standing
 // - anim-block.txt: animation ids stopped whenever they start while seated
-// - pose keeper: while seated, if a non-seat animation (re)starts after the seat pose, the seat pose is re-asserted (only anims the seat still sources; drops stale solo/couples copies)
+// - pose keeper: while seated, if a non-seat animation (re)starts after the seat pose, the seat pose is re-asserted.
+//   Kept copies are dropped only when the seat sources a *different* pose (solo<->couples / AVsitter swap), never merely
+//   because our AnimationStart made the source self (that stale-drop sank Galatea through the floor on 2026-10-05).
+//   Default STAND/WALK overlays are stopped while seated; if no seat pose is playing for a few seconds, recover via the seat menu.
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -32,6 +35,12 @@ public static partial class Program
     static readonly object animLock = new();
     static readonly ConcurrentDictionary<UUID, UUID> keptPose = new(); // pose anims we re-asserted ourselves (stop them on stand)
     static DateTime lastKeep = DateTime.MinValue;
+    static DateTime lastSeatPoseMenuAt = DateTime.MinValue; // SeatPose / ClearKeptPoseCopies — grace before auto-recovery
+    static DateTime? seatPoseMissingSince; // when we first noticed no seat/kept pose while seated
+    static DateTime lastPoseRecovery = DateTime.MinValue;
+    // Anims / object ids seen from seat-off attachments (Martha AO). They linger after detach and override seat poses.
+    static readonly ConcurrentDictionary<UUID, byte> seatOffPlayedAnims = new();
+    static readonly ConcurrentDictionary<UUID, byte> seatOffObjectIds = new();
     static readonly ConcurrentDictionary<UUID, DateTime> animSince = new();
     static readonly ConcurrentDictionary<UUID, bool> longLived = new(); // anims seen playing > 20 s
     static readonly ConcurrentDictionary<UUID, Queue<DateTime>> restartTimes = new(); // periodic restarters (hand/face loops) are ignored by the pose keeper
@@ -108,7 +117,10 @@ public static partial class Program
             foreach (var k in stopped) if (animSince.TryRemove(k, out var t0) && (DateTime.Now - t0).TotalSeconds > 20) longLived[k] = true;
             foreach (var kv in now) if (animSince.TryGetValue(kv.Key, out var t1) && (DateTime.Now - t1).TotalSeconds > 20) longLived[kv.Key] = true;
             foreach (var kv in started)
+            {
                 if (log) Log("anim", $"{(prev.ContainsKey(kv.Key) ? "RESTART" : "start")} {AnimName(kv.Key)} seq {kv.Value.Item1} from {SrcDesc(kv.Value.Item2)}");
+                NoteSeatOffAnim(kv.Key, kv.Value.Item2); // learn AO/seat-off anims while standing so we can stop them after sit
+            }
             foreach (var k in stopped)
                 if (log) Log("anim", $"stop {AnimName(k)} (was from {SrcDesc(prev[k].src)})");
             if (client.Self.SittingOn != 0 && started.Count > 0) _ = Task.Run(() => SeatedAnimGuard(started.Select(kv => (kv.Key, kv.Value.Item2, prev.ContainsKey(kv.Key))).ToList(), now));
@@ -122,12 +134,67 @@ public static partial class Program
         catch (Exception ex) { Log("anim", "watch error: " + ex.GetBaseException().Message); }
     }
 
-    // while seated: stop blocked anims; built-in sit anims from non-seat sources once a seat pose runs; re-assert the seat pose.
-    // Never re-assert a kept copy the seat is no longer playing (solo<->couples switch when a partner sits/stands).
+    // Pure (offline selftest): drop kept overlay only when seat sources a *different* pose — not when our re-assert made source=self.
+    internal static bool ShouldDropKeptPose(bool keptStillPlaying, bool seatSourcesThisKept, int seatSourcedOtherCount)
+    {
+        if (seatSourcesThisKept) return false;
+        if (seatSourcedOtherCount > 0) return true;
+        return !keptStillPlaying;
+    }
+    internal static bool IsDefaultStandOrWalk(UUID id) => AoDefaultLoco.Contains(id);
+    // Seat-off (AO) linger: stop while seated if the anim was ever played from a seat-off attachment, or its source is a remembered seat-off object.
+    internal static bool IsSeatOffLingerAnim(bool inSeatOffPlayed, bool srcIsSeatOffObject)
+        => inSeatOffPlayed || srcIsSeatOffObject;
+    internal static bool NeedsSeatPoseRecovery(bool seated, int seatSourcedCount, int keptPlayingCount, double missingForSeconds, double graceSeconds = 3.0)
+        => seated && seatSourcedCount == 0 && keptPlayingCount == 0 && missingForSeconds >= graceSeconds;
+
+    static bool IsSeatOffAttachmentSource(UUID src)
+    {
+        if (src == UUID.Zero) return false;
+        try { if (src == client.Self.AgentID) return false; } catch { }
+        if (seatOffObjectIds.ContainsKey(src)) return true;
+        try
+        {
+            var sim = client.Network.CurrentSim; if (sim == null) return false;
+            var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == src);
+            if (p == null || p.ParentID != client.Self.LocalID) return false;
+            var item = AttachItemId(p);
+            if (item != UUID.Zero && SeatOffItems().ContainsKey(item)) { seatOffObjectIds[src] = 1; return true; }
+            var n = p.Properties?.Name ?? "";
+            if (n.Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)) { seatOffObjectIds[src] = 1; return true; }
+        }
+        catch { }
+        return false;
+    }
+
+    static void NoteSeatOffAnim(UUID id, UUID src)
+    {
+        if (IsSeatOffAttachmentSource(src)) { seatOffPlayedAnims[id] = 1; seatOffObjectIds[src] = 1; }
+    }
+
+    // Stop lingering seat-off / AO / default-stand overlays while seated. Returns how many were stopped.
+    static int StopSeatOffAndStandOverlays(Dictionary<UUID, (int seq, UUID src)> now, string why)
+    {
+        int n = 0;
+        foreach (var kv in now.ToList())
+        {
+            var id = kv.Key; var src = kv.Value.src;
+            if (IsSeatSource(src) || keptPose.ContainsKey(id)) continue;
+            bool linger = IsSeatOffLingerAnim(seatOffPlayedAnims.ContainsKey(id), seatOffObjectIds.ContainsKey(src) || IsSeatOffAttachmentSource(src));
+            bool stand = IsDefaultStandOrWalk(id);
+            if (!linger && !stand) continue;
+            try { client.Self.AnimationStop(id, true); } catch { }
+            n++;
+            Log("height", $"seated guard: stopped {(stand ? "stand/walk" : "seat-off/AO")} {AnimName(id)} from {SrcDesc(src)} ({why})");
+        }
+        return n;
+    }
+
+    // while seated: stop blocked / stand / seat-off-linger anims; re-assert seat pose; drop kept copies only on real seat swaps.
     static async Task SeatedAnimGuard(List<(UUID id, UUID src, bool restart)> started, Dictionary<UUID, (int seq, UUID src)> now)
     {
         var block = ReadIdFile(AnimBlockFile);
-        // Occupancy flip (partner sat/stood): drop kept copies so we do not re-apply the old mode's anim.
+        foreach (var (id, src, _) in started) NoteSeatOffAnim(id, src);
         try
         {
             var sim = client.Network.CurrentSim;
@@ -139,19 +206,29 @@ public static partial class Program
             }
         }
         catch { }
-        // Only animations the seat is currently sourcing — not orphaned keptPose copies from a previous pose mode.
-        var seatAnims = now.Where(kv => IsSeatSource(kv.Value.src)).Select(kv => kv.Key).ToList();
+        var seatSourced = now.Where(kv => IsSeatSource(kv.Value.src)).Select(kv => kv.Key).ToHashSet();
         foreach (var id in keptPose.Keys.ToList())
         {
-            if (seatAnims.Contains(id)) continue;
-            try { client.Self.AnimationStop(id, true); } catch { }
+            bool playing = now.ContainsKey(id);
+            bool seatHasThis = seatSourced.Contains(id);
+            int others = seatSourced.Count(s => s != id);
+            if (!ShouldDropKeptPose(playing, seatHasThis, others)) continue;
+            if (playing) { try { client.Self.AnimationStop(id, true); } catch { } }
             keptPose.TryRemove(id, out _);
-            if (DateTime.Now < animLogUntil) Log("height", $"pose keeper: dropped stale copy of {AnimName(id)} (seat no longer playing it)");
+            Log("height", $"pose keeper: dropped stale copy of {AnimName(id)} (seat sourced a different pose or copy already stopped)");
         }
+        var seatAnims = seatSourced.Count > 0
+            ? seatSourced.ToList()
+            : now.Keys.Where(k => keptPose.ContainsKey(k)).ToList();
+        StopSeatOffAndStandOverlays(now, "while seated");
         bool interloper = false;
         foreach (var (id, src, restart) in started)
         {
             if (block.Contains(id)) { client.Self.AnimationStop(id, true); Log("height", $"seated guard: stopped blocked anim {AnimName(id)} from {SrcDesc(src)}"); continue; }
+            if (IsDefaultStandOrWalk(id) && !IsSeatSource(src))
+            { client.Self.AnimationStop(id, true); Log("height", $"seated guard: stopped stand/walk {AnimName(id)} from {SrcDesc(src)} while seated"); continue; }
+            if (IsSeatOffLingerAnim(seatOffPlayedAnims.ContainsKey(id), seatOffObjectIds.ContainsKey(src) || IsSeatOffAttachmentSource(src)))
+            { client.Self.AnimationStop(id, true); Log("height", $"seated guard: stopped seat-off/AO {AnimName(id)} from {SrcDesc(src)} while seated"); continue; }
             if (seatAnims.Count > 0 && SitAnims.Contains(id) && !IsSeatSource(src) && id != Animations.SIT_GROUND_staticRAINED)
             { client.Self.AnimationStop(id, true); Log("height", $"seated guard: stopped built-in {AnimName(id)} from {SrcDesc(src)} (seat pose is playing)"); continue; }
             if (!IsSeatSource(src) && src != client.Self.AgentID && !keptPose.ContainsKey(id) && (restart || longLived.ContainsKey(id)) && !Periodic(id)) interloper = true;
@@ -161,7 +238,7 @@ public static partial class Program
             lastKeep = DateTime.Now;
             await Task.Delay(300);
             foreach (var id in seatAnims) { client.Self.AnimationStart(id, true); keptPose[id] = id; }
-            if (DateTime.Now < animLogUntil) Log("height", $"pose keeper: re-asserted seat pose {string.Join(",", seatAnims.Select(AnimName))} after a non-seat animation started");
+            Log("height", $"pose keeper: re-asserted seat pose {string.Join(",", seatAnims.Select(AnimName))} after a non-seat animation started");
         }
     }
 
@@ -225,6 +302,21 @@ public static partial class Program
     {
         var p = WornPrims().FirstOrDefault(x => AttachItemId(x) == item);
         var desc = p == null ? "(not currently worn)" : $"'{p.Properties?.Name ?? "?"}' @{p.PrimData.AttachmentPoint} obj {p.ID}";
+        // Seat-off (AO): remember object id and stop its currently playing anims so they cannot linger after detach.
+        bool isSeatOff = false; try { isSeatOff = SeatOffItems().ContainsKey(item); } catch { }
+        if (p != null && isSeatOff)
+        {
+            seatOffObjectIds[p.ID] = 1;
+            Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = ownAnims;
+            int stopped = 0;
+            foreach (var kv in cur.ToList())
+                if (kv.Value.src == p.ID)
+                {
+                    seatOffPlayedAnims[kv.Key] = 1;
+                    try { client.Self.AnimationStop(kv.Key, true); stopped++; } catch { }
+                }
+            if (stopped > 0) Log("height", $"seat-off detach: stopped {stopped} anim(s) from {desc} before detach");
+        }
         bool keepCof = KeepCofForDetachWhy(why);
         detachIntent[item] = (DateTime.Now, keepCof, why);
         try { File.AppendAllText(DetachLog, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} detach item {item} {desc} point={(p == null ? "?" : ((int)p.PrimData.AttachmentPoint).ToString())} ({why}){(keepCof ? " [COF kept]" : " [COF remove]")}; re-attach: text-galatay.sh cmd \"attach {item}\"\n"); } catch { }
@@ -349,6 +441,8 @@ public static partial class Program
                                     DetachItem(it, lastSeat == seat ? "seated; it was re-worn" : "seated");
                                 }
                             attachTries = 0; standChecked = true; seatAttachState = $"seated: {items.Count} seat-off item(s) kept off";
+                            // Periodic: stop lingering AO/stand overlays and recover if the seat pose vanished (2026-10-05 floor sink).
+                            await SeatedPoseMaintenanceTick();
                         }
                         else
                         {
@@ -375,11 +469,45 @@ public static partial class Program
                         }
                     }
                     lastSeat = seat;
+                    // Even when attach-block is empty: while seated, keep AO linger / missing-pose maintenance running.
+                    if (seat != 0 && items.Count == 0) await SeatedPoseMaintenanceTick();
                 }
             }
             catch (Exception ex) { Log("height", "seat/attach loop error: " + ex.GetBaseException().Message); }
             try { await Task.Delay(1000, cts.Token); } catch { }
         }
+    }
+
+    // Every ~1 s while seated: stop lingering seat-off/AO/stand overlays; if no seat pose for a few seconds, re-pick via seat menu.
+    static async Task SeatedPoseMaintenanceTick()
+    {
+        if (client.Self.SittingOn == 0) { seatPoseMissingSince = null; return; }
+        Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = ownAnims;
+        StopSeatOffAndStandOverlays(cur, "seat maintenance");
+        var seatSourced = cur.Count(kv => IsSeatSource(kv.Value.src));
+        var keptPlaying = cur.Keys.Count(k => keptPose.ContainsKey(k));
+        if (seatSourced > 0 || keptPlaying > 0) { seatPoseMissingSince = null; return; }
+        if ((DateTime.Now - lastSeatPoseMenuAt).TotalSeconds < 8) { seatPoseMissingSince = null; return; }
+        if (seatPoseMissingSince == null) seatPoseMissingSince = DateTime.Now;
+        double missing = (DateTime.Now - seatPoseMissingSince.Value).TotalSeconds;
+        if (!NeedsSeatPoseRecovery(true, seatSourced, keptPlaying, missing)) return;
+        if ((DateTime.Now - lastPoseRecovery).TotalSeconds < 20) return;
+        lastPoseRecovery = DateTime.Now;
+        seatPoseMissingSince = null;
+        try
+        {
+            var sim = client.Network.CurrentSim;
+            if (sim == null || !sim.ObjectsPrimitives.TryGetValue(client.Self.SittingOn, out var p) || p == null)
+            { Log("height", "pose recovery: seated but seat object not loaded"); return; }
+            if (p.ParentID != 0 && sim.ObjectsPrimitives.TryGetValue(p.ParentID, out var root) && root != null) p = root;
+            if (p.Properties == null) await EnsureProperties(sim, new() { p });
+            var name = p.Properties?.Name ?? p.ID.ToString();
+            Log("height", $"pose recovery: no seat pose while seated for {missing:0.#}s; re-selecting via seat menu on '{name}'");
+            using var t = new CancellationTokenSource(30000);
+            var r = await SeatPose(p, name, DateTime.Now.AddSeconds(-20), true, t.Token);
+            Log("height", "pose recovery result: " + r);
+        }
+        catch (Exception ex) { Log("height", "pose recovery error: " + ex.GetBaseException().Message); }
     }
 
     static void StopKeptPose(string why)
@@ -681,6 +809,31 @@ public static partial class Program
         C(ShouldRemoveCofOnUnexpectedDetach(false, false, false, false, false, 1), "lone unexpected unpacker detach -> remove");
         C(OutfitCheckWarnLine("Top", new UUID("aa265665-7a17-34f6-b423-66d336262ed2"), "last point Chest").StartsWith("WARNING:"), "outfit check WARN line format");
         return $"detach COF selftest: {pass} pass, {fail} fail (offline)\n" + string.Join("\n", lines);
+    }
+
+
+    static string PoseKeeperSelfTest()
+    {
+        var lines = new List<string>(); int pass = 0, fail = 0;
+        void C(bool ok, string name) { if (ok) pass++; else fail++; lines.Add($"{(ok ? "PASS" : "FAIL")} {name}"); }
+        // 2026-10-05 floor-sink: after re-assert, source becomes self — must NOT drop while still playing and seat has no other pose.
+        C(!ShouldDropKeptPose(keptStillPlaying: true, seatSourcesThisKept: false, seatSourcedOtherCount: 0), "re-asserted copy still playing, seat quiet -> keep");
+        C(!ShouldDropKeptPose(true, true, 0), "seat still sources kept anim -> keep");
+        C(ShouldDropKeptPose(true, false, 1), "seat sourced a different pose -> drop stale overlay");
+        C(ShouldDropKeptPose(false, false, 0), "kept already stopped and seat quiet -> cleanup");
+        C(!ShouldDropKeptPose(false, true, 0), "seat sources it even if not in our playing map -> keep");
+        C(IsDefaultStandOrWalk(Animations.STAND) && IsDefaultStandOrWalk(Animations.STAND_1) && IsDefaultStandOrWalk(Animations.WALK), "default STAND/WALK detected");
+        C(!IsDefaultStandOrWalk(Animations.SIT), "SIT is not a stand/walk overlay");
+        C(IsSeatOffLingerAnim(true, false) && IsSeatOffLingerAnim(false, true) && !IsSeatOffLingerAnim(false, false), "seat-off linger = played-from-AO or remembered object");
+        C(NeedsSeatPoseRecovery(true, 0, 0, 3.0), "seated, no seat/kept pose for 3s -> recover");
+        C(!NeedsSeatPoseRecovery(true, 0, 0, 2.0), "missing only 2s -> wait");
+        C(!NeedsSeatPoseRecovery(true, 1, 0, 10.0), "seat pose present -> no recover");
+        C(!NeedsSeatPoseRecovery(true, 0, 1, 10.0), "kept pose playing -> no recover");
+        C(!NeedsSeatPoseRecovery(false, 0, 0, 10.0), "standing -> no recover");
+        // Regression labels for the two bugs David hit
+        C(!ShouldDropKeptPose(true, false, 0), "REGRESSION 10:00:45: re-assert then AvatarAnimation must not drop the only seat pose");
+        C(IsSeatOffLingerAnim(true, false), "REGRESSION 10:17: Martha AO stand 2af3a656 lingering after detach must be stopped while seated");
+        return $"pose keeper selftest: {pass} pass, {fail} fail (offline)\n" + string.Join("\n", lines);
     }
 
     static async Task<string> AttachCmds(string cmd, string[] a, string rest = "")

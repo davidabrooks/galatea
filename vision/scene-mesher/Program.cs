@@ -55,6 +55,27 @@ static class Mesher
         foreach (var j in positionAnimated) overrides.Remove(j);
     }
 
+    // collision volumes take their bone's shape-slider scale: in the SL viewer a skeletal param's bone scale delta also goes
+    // to that bone's collision-volume children, times each volume's default scale (LLAvatarJointCollisionVolume inherits
+    // scale; reimplemented from the documented LLPolySkeletalDistortion behaviour). LibreMetaverse's ComputeBoneTransforms
+    // scales the bones only, so fitted mesh weighted to the volumes (L_CLAVICLE, L_UPPER_ARM, CHEST, NECK...) missed the
+    // shape's broadening: David's shoulders came out narrow and sloped (2026-10-04). ponytail: param sex not checked (as
+    // before); ceiling = a female-only skeletal param on a male shape would count
+    static void InheritVolumeScale(Dictionary<string, BoneTransform> shape, IReadOnlyDictionary<int, float> vp)
+    {
+        var cvs = new Dictionary<string, CollisionVolume[]>();
+        void Walk(Joint j) { if (j.collision_volume?.Length > 0) cvs[j.name] = j.collision_volume; foreach (var c in j.bone ?? Array.Empty<Joint>()) Walk(c); }
+        Walk(LindenSkeleton.Load().bone);
+        foreach (var p in VisualParams.Params.Values.Where(p => p.SkeletalDistortions != null))
+        {
+            float w = Math.Max(p.MinValue, Math.Min(p.MaxValue, vp.TryGetValue(p.ParamID, out var v) ? v : p.DefaultValue));
+            foreach (var b in p.SkeletalDistortions)
+                foreach (var cv in cvs.GetValueOrDefault(b.BoneName) ?? Array.Empty<CollisionVolume>())
+                    if (shape.TryGetValue(cv.name, out var t) && cv.scale is { Length: >= 3 } s)
+                    { t.Scale += new Vector3(s[0] * b.ScaleDeformation.X, s[1] * b.ScaleDeformation.Y, s[2] * b.ScaleDeformation.Z) * w; shape[cv.name] = t; }
+        }
+    }
+
     static readonly UUID Transparent = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
 
     sealed class Batch { public string Group, Tex; public float[] Rgba; public bool Fullbright; public Dictionary<string, object> Mat; public List<float> P = new(), N = new(), T = new(); public List<uint> I = new(); }
@@ -86,7 +107,11 @@ static class Mesher
             var wb = Skeleton.World(ovr, null, null, new Vector3(0, 0.1f, 0.01f));
             ok &= !ovr.ContainsKey("mPelvis") && ovr.ContainsKey("mKneeLeft") && MathF.Abs(wb["mPelvis"][14] - 1.077f) < 0.01f && wb["mHead"][14] < 2f;
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
-            Console.WriteLine(ok ? "selftest ok" : $"selftest FAILED pelvis={Z("mPelvis")} head={Z("mHead")} wristY={w["mWristLeft"][13]} look={lookGot}");
+            // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028
+            var lad0 = LindenAvatarDefinition.Load(Path.Combine(AppContext.BaseDirectory, "linden", "character", "avatar_lad.xml"));
+            float Clav(float th) { var vp0 = new Dictionary<int, float> { [34] = th }; var sh = lad0.ComputeBoneTransforms(vp0); InheritVolumeScale(sh, vp0); return sh["L_CLAVICLE"].Scale.Y; }
+            float dClav = Clav(1) - Clav(0); ok &= MathF.Abs(dClav - 0.028f) < 1e-4f;
+            Console.WriteLine(ok ? "selftest ok" : $"selftest FAILED pelvis={Z("mPelvis")} head={Z("mHead")} wristY={w["mWristLeft"][13]} look={lookGot} clavicle={dClav}");
             return ok ? 0 : 1;
         }
         string animId = args.FirstOrDefault(a => a.StartsWith("--anim="))?[7..]; args = args.Where(a => !a.StartsWith("--anim=")).ToArray();
@@ -286,6 +311,7 @@ static class Mesher
             // her shape: visual params -> bone/collision-volume position+scale (LibreMetaverse's port of LLPolySkeletalDistortion)
             var vp = vpMap == null ? new Dictionary<int, float>() : vpMap.ToDictionary(kv => int.Parse(kv.Key), kv => (float)kv.Value.AsReal());
             var shape = vp.Count > 0 ? lad.ComputeBoneTransforms(vp) : null;
+            if (shape != null) InheritVolumeScale(shape, vp);
             // animations (her playing set, e.g. AO stand + head expression): per joint the highest priority wins, ties -> later
             Dictionary<string, Quaternion> anim = null; Dictionary<string, Vector3> animPos = null; Vector3 pelvisOff = Vector3.Zero;
             var prio = new Dictionary<string, (int r, int p)>();

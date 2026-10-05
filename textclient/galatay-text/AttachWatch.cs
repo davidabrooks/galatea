@@ -181,6 +181,7 @@ public static partial class Program
         {
             var id = kv.Key; var src = kv.Value.src;
             if (IsSeatSource(src) || keptPose.ContainsKey(id)) continue;
+            if (IsTempAttachSource(src)) continue; // Experiences.cs: keep prop hold anims from temp attaches
             bool linger = IsSeatOffLingerAnim(seatOffPlayedAnims.ContainsKey(id), seatOffObjectIds.ContainsKey(src) || IsSeatOffAttachmentSource(src));
             bool stand = IsDefaultStandOrWalk(id);
             if (!linger && !stand) continue;
@@ -225,6 +226,7 @@ public static partial class Program
         bool interloper = false;
         foreach (var (id, src, restart) in started)
         {
+            if (IsTempAttachSource(src)) continue; // Experiences.cs: prop hold anims from temp attaches must keep playing
             if (block.Contains(id)) { client.Self.AnimationStop(id, true); Log("height", $"seated guard: stopped blocked anim {AnimName(id)} from {SrcDesc(src)}"); continue; }
             if (IsDefaultStandOrWalk(id) && !IsSeatSource(src))
             { client.Self.AnimationStop(id, true); Log("height", $"seated guard: stopped stand/walk {AnimName(id)} from {SrcDesc(src)} while seated"); continue; }
@@ -254,7 +256,8 @@ public static partial class Program
         {
             var item = AttachItemId(p);
             var anims = cur.Where(kv => kv.Value.src == p.ID).Select(kv => AnimName(kv.Key)).ToList();
-            sb.AppendLine($"  {p.PrimData.AttachmentPoint,-14} '{p.Properties?.Name ?? "?"}' item {item} obj {p.ID} {(((p.Flags & PrimFlags.Scripted) != 0) ? "SCRIPTED" : "no-scripts")}{(block.Contains(item) ? " SEAT-OFF" : "")}{(anims.Count > 0 ? " animating: " + string.Join(",", anims) : "")}");
+            var temp = IsTempAttach(p.ID) || IsTempAttachItem(item);
+            sb.AppendLine($"  {p.PrimData.AttachmentPoint,-14} '{p.Properties?.Name ?? "?"}' item {item} obj {p.ID} {(((p.Flags & PrimFlags.Scripted) != 0) ? "SCRIPTED" : "no-scripts")}{(temp ? " TEMP" : "")}{(block.Contains(item) ? " SEAT-OFF" : "")}{(anims.Count > 0 ? " animating: " + string.Join(",", anims) : "")}");
             if (scripts)
             {
                 try
@@ -341,6 +344,7 @@ public static partial class Program
     static void NoteOwnAttachmentKilled(UUID item, uint local, bool avatarKilledInSamePacket, int ownAttachmentsKilledInPacket)
     {
         if (item == UUID.Zero) return;
+        if (IsTempAttachItem(item)) return; // Experiences.cs: temp props were never in COF
         bool recent = detachIntent.TryGetValue(item, out var di) && (DateTime.Now - di.t).TotalSeconds < 60;
         bool seatOff = false; try { seatOff = SeatOffItems().ContainsKey(item); } catch { }
         bool seated = false; try { seated = client?.Self?.SittingOn != 0; } catch { }

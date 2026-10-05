@@ -161,7 +161,10 @@ public static partial class Program
         }
         if (IsSelfParent(parent) && r.Item != UUID.Zero) AttPointRemember(r.Item, AttachPointFromState(state));
         if (isNew && IsSelfParent(parent))
+        {
             Log("attach", string.Format(CultureInfo.InvariantCulture, "seen local {0} {1} point #{2} state 0x{3:X2} item {4} via {5}", local, full, AttachPointFromState(state), state, r.Item, src));
+            try { NotePossibleTempAttach(full, local, r.Item, src); } catch { } // Experiences.cs: llAttachToAvatarTemp props
+        }
     }
 
     static void AtObjectUpdate(object sender, PacketReceivedEventArgs e)
@@ -251,6 +254,7 @@ public static partial class Program
                     if (self)
                     {
                         Log("attach", string.Format(CultureInfo.InvariantCulture, "killed local {0} {1} point #{2} item {3} (detached or derezzed)", b.ID, r.Full, AttachPointFromState(r.State), item));
+                    try { TempAttachGone(r.Full); } catch { }
                         ownKilled.Add((b.ID, item));
                     }
                 }

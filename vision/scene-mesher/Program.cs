@@ -307,7 +307,10 @@ static class Mesher
             foreach (var f in fm.Faces)
             {
                 var te = f.TextureFace ?? p.Textures?.DefaultTexture;
-                if (te == null || f.Indices.Count == 0 || (!nav && (te.RGBA.A < 0.01f || te.TextureID == Transparent))) continue;
+                // Alpha HUD / mesh-body hide: face colour A=0 (OSD JSON writes 0 as null → AsColor4 A=0). Transparent TE too.
+                if (te == null || f.Indices.Count == 0) continue;
+                if (!nav && te.RGBA.A < 0.01f) { Count("face_alpha0_skipped"); continue; }
+                if (!nav && te.TextureID == Transparent) { Count("face_transparent_tex_skipped"); continue; }
                 var verts = f.Vertices.ToList(); var wts = f.Weights;
                 mf.TransformTexCoords(verts, Vector3.Zero, te, p.Scale);
                 string tex = BakeOf.TryGetValue(te.TextureID, out var bake) ? "bake:" + bakePrefix + bake : te.TextureID.ToString();

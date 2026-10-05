@@ -146,8 +146,19 @@ public static partial class Program
             var today = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow,
                 TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles")).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             string prev = null;
-            try { if (File.Exists(DailyOutfitDateFile)) prev = File.ReadAllText(DailyOutfitDateFile).Trim(); } catch { }
+            try
+            {
+                if (File.Exists(DailyOutfitDateFile))
+                {
+                    // file is "yyyy-MM-dd\n<outfit>\n" — only the first line is the date
+                    prev = File.ReadLines(DailyOutfitDateFile).FirstOrDefault()?.Trim();
+                }
+            }
+            catch { }
             if (prev == today) { Log("outfit-daily", $"already picked for {today} PT; skip"); return; }
+            // Beach zone owns the look while she is on the Peronaut beach (do not ReplaceOutfit over Bikini).
+            if (beachMode || OutfitZoneFor(client.Network.CurrentSim?.Name ?? "", client.Self.SimPosition.Z, beachMode) == "beach")
+            { Log("outfit-daily", "on beach: deferring daily pick until upstairs"); return; }
             using var cts = new CancellationTokenSource(90000);
             var folders = await ListOutfitFolders(cts.Token);
             var cands = DailyOutfitCandidates(folders.Select(f => f.Name));

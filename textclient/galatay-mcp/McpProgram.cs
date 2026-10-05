@@ -118,8 +118,9 @@ public sealed class SlTools
     [McpServerTool(Name = "auto_accept_teleports"), Description("Turn automatic acceptance of teleport offers from the allow-list (David Nightingale) on or off.")]
     public static Task<string> AutoAccept(bool on) => R("autolure " + (on ? "on" : "off"));
 
-    [McpServerTool(Name = "follow"), Description("Follow an avatar in view by name; pass 'off' to stop.")]
-    public static Task<string> Follow(string name) => R("follow " + Clean(name));
+    [McpServerTool(Name = "follow"), Description("Follow an avatar in view by name, keeping ~2.5 m behind them (stops at 2-3 m, resumes past 3.5 m, routes around furniture, handles doors); pass 'off' to stop. Optional distance_m (1-8) applies to this follow only.")]
+    public static Task<string> Follow(string name, [Description("Optional follow distance in metres (1-8) for this follow; default is the persisted 'follow dist' (2.5 m).")] double? distance_m = null)
+        => R("follow " + Clean(name) + (distance_m is double d && !Clean(name).Equals("off", StringComparison.OrdinalIgnoreCase) ? " " + d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : ""));
 
     [McpServerTool(Name = "get_profile"), Description("Read Galatay's own profile (About text, first-life text, image ids, URL, publish flags). Uses the AgentProfile capability, else legacy UDP.")]
     public static async Task<string> GetProfile() => Json(await Core.GetProfileObj());

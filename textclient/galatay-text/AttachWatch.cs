@@ -123,6 +123,7 @@ public static partial class Program
             }
             foreach (var k in stopped)
                 if (log) Log("anim", $"stop {AnimName(k)} (was from {SrcDesc(prev[k].src)})");
+            try { SeatLingerNote(now); } catch (Exception ex2) { Log("anim", "seat linger error: " + ex2.GetBaseException().Message); } // SeatLinger.cs
             if (client.Self.SittingOn != 0 && started.Count > 0) _ = Task.Run(() => SeatedAnimGuard(started.Select(kv => (kv.Key, kv.Value.Item2, prev.ContainsKey(kv.Key))).ToList(), now));
             if (client.Self.SittingOn == 0)
             {
@@ -426,6 +427,7 @@ public static partial class Program
             {
                 if (LoggedIn && client.Network.CurrentSim != null && (DateTime.Now - loginAt).TotalSeconds > 6)
                 {
+                    try { SeatLingerTick(); } catch (Exception ex2) { Log("height", "seat linger tick error: " + ex2.GetBaseException().Message); } // SeatLinger.cs
                     var seat = client.Self.SittingOn;
                     var items = SeatOffItems();
                     if (items.Count > 0)
@@ -521,9 +523,15 @@ public static partial class Program
         if (client.Self.SittingOn != 0) return;
         Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = ownAnims;
         var block = ReadIdFile(AnimBlockFile);
-        var stuck = cur.Keys.Where(k => (SitAnims.Contains(k) && k != Animations.SIT_TO_STAND) || block.Contains(k) || keptPose.ContainsKey(k)).ToList();
+        var seatLeft = LastSeatLingerers(cur);   // SeatLinger.cs: anims of the seat she just left (2026-10-05 sofa pose d61ed35e)
+        var stuck = cur.Keys.Where(k => (SitAnims.Contains(k) && k != Animations.SIT_TO_STAND) || block.Contains(k) || keptPose.ContainsKey(k)).Concat(seatLeft).Distinct().ToList();
         foreach (var k in stuck) { client.Self.AnimationStop(k, true); keptPose.TryRemove(k, out _); }
-        Log("height", $"stand check: playing [{string.Join(", ", cur.Select(kv => $"{AnimName(kv.Key)} from {SrcDesc(kv.Value.src)}"))}]{(stuck.Count > 0 ? " -> stopped stuck " + string.Join(",", stuck.Select(AnimName)) : " OK")}");
+        // other in-world objects animating her while standing: reported, not stopped (dance balls etc. are legitimate)
+        var objAnims = cur.Where(kv => !stuck.Contains(kv.Key) && kv.Value.src != UUID.Zero && kv.Value.src != client.Self.AgentID && !WornPrims().Any(p => p.ID == kv.Value.src)).ToList();
+        var verdict = seatLeft.Count > 0 ? $" -> FAIL: seat anim(s) lingered after standing: {string.Join(",", seatLeft.Select(AnimName))}; stopped{(stuck.Count > seatLeft.Count ? " (+ " + string.Join(",", stuck.Except(seatLeft).Select(AnimName)) + ")" : "")}"
+                    : stuck.Count > 0 ? " -> stopped stuck " + string.Join(",", stuck.Select(AnimName)) : " OK";
+        if (objAnims.Count > 0) verdict += $"; WARN object-sourced anim(s) while standing: {string.Join(", ", objAnims.Select(kv => $"{AnimName(kv.Key)} from {SrcDesc(kv.Value.src)}"))}";
+        Log("height", $"stand check: playing [{string.Join(", ", cur.Select(kv => $"{AnimName(kv.Key)} from {SrcDesc(kv.Value.src)}"))}]{verdict}");
     }
 
     // ---- attach move / attach pos (2026-10-05) ---------------------------------

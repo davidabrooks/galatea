@@ -3,7 +3,8 @@
 // - goto_avatar <name>          walk to ~1.5 m from an avatar (straight legs of <= 8 m with stuck recovery)
 // - sit_near <avatar>           goto_avatar if needed, then sit on the nearest UNOCCUPIED pillow/cushion/seat within 3 m of them
 // - walk_status | walk_stop     progress / cancel;  map [radius] [x y] | terrain <x> <y>   planning data
-// Position is checked every 0.5 s; < 0.25 m progress in 3 s = stuck -> back off 1.5 m, then side offsets +-2 m / +-4 m;
+// Position is checked every 0.5 s; < 0.25 m progress in 3 s = stuck -> (door/gate within 3 m: the door sequence, Doors.cs,
+// once per leg) back off 1.5 m, then side offsets +-2 m / +-4 m;
 // a short logged fly hop only as a last resort, and only with 'nofly off' or '--fly' for that walk (2026-10-04, David: no
 // flying on the walking test; NavPlan.cs). Every leg is logged as [walk] with local (PT) timestamps.
 using System.Globalization;
@@ -55,7 +56,7 @@ public static partial class Program
     {
         var start = client.Self.SimPosition;
         Log("walk", $"leg {label}: {V(start)} -> {V(target)} ({HDist(start, target):F1} m)");
-        int recoveries = 0; bool flew = false;
+        int recoveries = 0; bool flew = false, doorTried = false;
         var legStart = DateTime.Now;
         Vector3 goal = target;
         AutoPilotTo(goal);
@@ -82,6 +83,17 @@ public static partial class Program
             if ((DateTime.Now - legStart).TotalSeconds > 90) { client.Self.AutoPilotCancel(); Log("walk", $"leg {label}: timeout at {V(p)}"); return false; }
             if (!stuck) continue;
             hist.Clear();
+            if (!doorTried && !flew)
+            {   // 2026-10-05: stuck near a door/gate -> the door sequence first (Doors.cs DoorUnstick), once per leg
+                doorTried = true; client.Self.AutoPilotCancel();
+                var dr = await DoorUnstick(null, target, 3f, $"walk {label}", ct);
+                if (dr != null)
+                {
+                    Log("walk", $"leg {label}: stuck at a door -> {dr}");
+                    legStart = DateTime.Now; goal = target; AutoPilotTo(goal); hist.Clear();
+                    if (!dr.Contains("FAILED")) continue;
+                }
+            }
             recoveries++;
             var dir = new Vector3(target.X - p.X, target.Y - p.Y, 0); if (dir.Length() < 0.01f) dir = Vector3.UnitX; dir = Vector3.Normalize(dir);
             var side = new Vector3(-dir.Y, dir.X, 0);

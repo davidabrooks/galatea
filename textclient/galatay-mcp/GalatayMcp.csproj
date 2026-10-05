@@ -38,6 +38,7 @@
     <Compile Include="../galatay-text/Doors.cs" Link="Core/Doors.cs" />
     <Compile Include="../galatay-text/Follow.cs" Link="Core/Follow.cs" />
     <Compile Include="../galatay-text/SeatLinger.cs" Link="Core/SeatLinger.cs" />
+    <Compile Include="../galatay-text/Experiences.cs" Link="Core/Experiences.cs" />
     <Compile Include="../galatay-text/Outfit.cs" Link="Core/Outfit.cs" />
     <Compile Include="../galatay-text/OutfitSave.cs" Link="Core/OutfitSave.cs" />
     <Compile Include="../galatay-text/NewCmds.cs" Link="Core/NewCmds.cs" />

@@ -229,6 +229,7 @@ public static partial class Program
         if (args.Contains("--attach-move-selftest")) { var r = AttachMoveSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--detach-cof-selftest")) { var r = DetachCofSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--pose-keeper-selftest")) { var r = PoseKeeperSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--exp-selftest")) { var r = ExpSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)
         {
             var r = FollowSelfTest() + "\n" + DoorSelfTest() + "\n" + SeatLingerSelfTest() + "\n" + NavSelfTest(); Console.WriteLine(r);
@@ -248,7 +249,7 @@ public static partial class Program
             // summaries say "0 FAIL" / "0 fail"; only a FAIL line or a non-zero count is a failure
             return System.Text.RegularExpressions.Regex.IsMatch(all, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|[1-9]\d*\s+fail\b") ? 1 : 0;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest|--exp-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -297,6 +298,7 @@ public static partial class Program
         client.Throttle.Land = 200000; client.Throttle.Task = 1000000; client.Throttle.Texture = 50000; client.Throttle.Asset = 100000;
         Hook();
         HookAttachWatch(); // own AvatarAnimation watch with sources (AttachWatch.cs)
+        HookExperiences(); // Experience perms + temp attaches (Experiences.cs)
         HookGroups(); // current-groups cache + JoinGroupReply log (GroupPicks.cs)
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
@@ -537,7 +539,6 @@ public static partial class Program
             }
             if (!shuttingDown) { shuttingDown = true; if (ExitOnLogout) cts.Cancel(); }
         };
-        client.Self.ScriptQuestion += (s, e) => Log("perm", $"'{e.ObjectName}' (owner {e.ObjectOwnerName}) asks permissions [{e.Questions}]: IGNORED (never granted; debit is never granted)");
         client.Network.LoggedOut += (s, e) => Log("logout", "logged out by server/client");
         client.Avatars.UUIDNameReply += (s, e) => { foreach (var kv in e.Names) Remember(kv.Value, kv.Key); };
         client.Friends.FriendshipOffered += (s, e) => { /* ignored on purpose (logged via IM handler) */ };
@@ -1559,6 +1560,7 @@ public static partial class Program
   dialog <button label>       answer the last script dialog (e.g. AVsitter pose menu)
   touch <object uuid>         touch an object (seat/HUD) so it opens its own menu (NOT the AO HUD: a touch toggles it off)
   pose [change|selftest]      random pose from the seat's AVsitter menu: couples when shared, solo when alone (never male)
+  exp [list|status|refresh|selftest] | exp info|allow|block|forget <id>   Experience Tools: auto-grant land/allowlist (AVsitter); TEMP props in worn; Debit never granted
   watchdog [selftest]         freeze / heartbeat (60 s) / stale-connection (45 s) watchdog -> clean logout + exit 75 -> supervisor relogin
   offlineim [status|selftest] stored (offline) IMs: fetched at every login, logged [offline, sent ...], sent to the webhook; no auto-actions
   ao [status|selftest]        AO guard: no walking unless the AO override stand/walk is playing (restore = detach+re-attach HUD)
@@ -1757,6 +1759,7 @@ public static partial class Program
             case "wander": return await WanderCmds(a);
             case "quiet": return QuietCmds(a);
             case "pose": return await PoseCmd(a);
+            case "exp": return await ExpCmd(a); // Experiences.cs
             case "watchdog": return a.Length > 0 && a[0] == "selftest" ? WatchdogSelfTest() : WatchdogStatus();
             case "ao": return a.Length > 0 && a[0] == "selftest" ? AoSelfTest() : AoStatus();
             case "imguard": return await ImGuardCmd(a);
@@ -1811,7 +1814,7 @@ public static partial class Program
                 Interlocked.Increment(ref sitGen);
                 client.Self.Stand();
                 await Task.Delay(800);
-                if (client.Self.SittingOn == 0) { try { SeatLingerTick(); } catch { } return (DateTime.Now - lastSitEnded).TotalSeconds < 5 ? $"standing; seat anims: {seatLingerLast}" : "standing"; }   // SeatLinger.cs: stop the seat's pose anims now
+                if (client.Self.SittingOn == 0) { try { SeatLingerTick(); } catch { } _ = Task.Run(CleanupTempAttachesAfterStand); return (DateTime.Now - lastSitEnded).TotalSeconds < 5 ? $"standing; seat anims: {seatLingerLast}" : "standing"; }   // SeatLinger.cs + Experiences.cs temp props
                 return "stand sent (still reported seated)";
             case "moveto": case "goto":
             {

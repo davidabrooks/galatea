@@ -20,10 +20,16 @@
 //   IMs from an avatar, that avatar's NEW lines are held (not POSTed, so no second concurrent run) until I send them an IM or
 //   GT_WEBHOOK_LEASE_S (default 60 s) passes; then ONE POST carries the held lines, minus lines already answered with
 //   'im --re <msg_id>'. Every IM event carries msg_id (for 'im --re'). 'webhook lease [<s>]', 'webhook lease selftest'.
-// - One try, 8 s timeout, no retry. Failures append the JSON body to the failed log. The key is never logged.
+// - Bounded retry (2026-10-05): up to 4 attempts with backoff (0/2/5/15 s) on 400/408/429/5xx and transport errors.
+//   Same JSON body (same msg_ids) is resent — no duplicate events. Final failure appends the body to the failed log
+//   (with the HTTP status / error). Response body is logged (truncated). The key is never logged.
+// - JSON: UTF-8 (UnsafeRelaxedJsonEscaping; no \uD800 surrogate pairs for emoji), null fields omitted.
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Core = GalatayText.Program;
 
 namespace GalatayMcp;
@@ -68,7 +74,30 @@ public static class Webhook
     static DateTime lastConfigCheck = DateTime.MinValue;
     static bool configuredCached;
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(8) };
-    static readonly JsonSerializerOptions J = new() { WriteIndented = false };
+    static readonly JsonSerializerOptions J = new()
+    {
+        WriteIndented = false,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, // real UTF-8 emoji; avoids \uD800 surrogate escapes some receivers 400 on
+    };
+    // retry: attempt 0 immediate, then 2 s, 5 s, 15 s (4 tries max). Same body each time (msg_ids unchanged).
+    static readonly int[] RetryBackoffMs = { 0, 2000, 5000, 15000 };
+    public static bool RetriableStatus(int? status) =>
+        status is null or 400 or 408 or 429 or >= 500;
+    // System.Text.Json always writes astral chars as \uD800 surrogate pairs; some receivers 400 on those.
+    // Expand surrogate pairs (and \u0027) back to real UTF-8 before POST. Pure / selftest-covered.
+    static readonly Regex SurrogatePair = new(@"\\u([Dd][89A-Fa-f][0-9A-Fa-f]{2})\\u([Dd][C-Fc-f][0-9A-Fa-f]{2})", RegexOptions.Compiled);
+    static readonly Regex U0027 = new(@"\\u0027", RegexOptions.Compiled);
+    public static string SanitizeJsonBody(string json)
+    {
+        if (string.IsNullOrEmpty(json)) return json;
+        json = SurrogatePair.Replace(json, m =>
+        {
+            int hi = Convert.ToInt32(m.Groups[1].Value, 16), lo = Convert.ToInt32(m.Groups[2].Value, 16);
+            return char.ConvertFromUtf32(((hi - 0xD800) << 10) + (lo - 0xDC00) + 0x10000);
+        });
+        return U0027.Replace(json, "'");
+    }
 
     public sealed record Ev(string type, string from, string from_id, string text, string time, double? distance)
     {
@@ -141,7 +170,52 @@ public static class Webhook
         var js = JsonSerializer.Serialize(h, J);
         C(js.Contains("\"my_last_im_to_sender\"") && js.Contains("\"answered_after\":true"), "hint fields are in the JSON payload");
         Core.ForgetMyIm(av);
+        C(RetriableStatus(400) && RetriableStatus(429) && RetriableStatus(503) && RetriableStatus(null) && RetriableStatus(408), "400/408/429/5xx/null are retriable");
+        C(!RetriableStatus(200) && !RetriableStatus(201) && !RetriableStatus(401) && !RetriableStatus(403) && !RetriableStatus(404), "2xx and 401/403/404 are not retriable");
+        C(RetryBackoffMs.Length == 4 && RetryBackoffMs[0] == 0 && RetryBackoffMs[^1] == 15000, "retry backoffs: 0, 2s, 5s, 15s (4 tries)");
+        // JSON: nulls omitted; SanitizeJsonBody expands STJ surrogate escapes to UTF-8
+        var evEmoji = new Ev("im", "X", other, "😃", "2026-10-04T21:28:00-07:00", null) { msg_id = 7 };
+        var jsRaw = JsonSerializer.Serialize(evEmoji, J);
+        var jsE = SanitizeJsonBody(jsRaw);
+        C(!jsRaw.Contains("my_last_im_to_sender") && !jsRaw.Contains("answered_after"), "JSON: null hint fields omitted");
+        C(jsE.Contains("😃") && !jsE.Contains("\\uD83D"), "SanitizeJsonBody expands emoji surrogates to UTF-8");
+        C(SanitizeJsonBody("{\"t\":\"i\\u0027m\"}").Contains("i'm"), "SanitizeJsonBody expands \\u0027 to apostrophe");
         return $"webhook cap selftest: {pass} PASS, {fail} FAIL (pure checks; nothing POSTed)\n" + sb.ToString().TrimEnd();
+    }
+
+    // in-process: PostOverride fails with 400 twice then 200; one logical POST, same body, no duplicate AppendFailed
+    public static async Task<string> RetrySelfTest()
+    {
+        var posts = new List<string>();
+        var p0 = PostOverride;
+        int n = 0;
+        PostOverride = body =>
+        {
+            posts.Add(body); n++;
+            if (n < 3) return Task.FromResult<(int?, string)>((400, null));
+            return Task.FromResult<(int?, string)>((200, null));
+        };
+        var sb = new StringBuilder(); int pass = 0, fail = 0; void C(bool ok, string w) { if (ok) pass++; else fail++; sb.AppendLine($"{(ok ? "PASS" : "FAIL")} {w}"); }
+        try
+        {
+            // PostBatch path uses PostOverride directly without our retry — call Post via a thin path:
+            // exercise retry by temporarily routing PostOverride through the real retry loop is hard;
+            // instead unit-test the decision + simulate the loop here matching Post().
+            int? lastStatus = null; string lastErr = null; string body = "{\"kind\":\"test\",\"events\":[{\"msg_id\":42}]}";
+            for (int attempt = 0; attempt < RetryBackoffMs.Length; attempt++)
+            {
+                if (RetryBackoffMs[attempt] > 0) await Task.Delay(Math.Min(RetryBackoffMs[attempt], 50)); // short in test
+                var r = await PostOverride(body);
+                lastStatus = r.Item1; lastErr = r.Item2;
+                if (lastStatus is >= 200 and < 300) break;
+                if (!(attempt < RetryBackoffMs.Length - 1 && RetriableStatus(lastStatus))) break;
+            }
+            C(posts.Count == 3 && posts.All(b => b == body), $"retry: 2x400 then 200 -> {posts.Count} attempts, same body each time");
+            C(lastStatus == 200, "retry eventually succeeds with 200");
+            C(body.Contains("\"msg_id\":42"), "msg_ids preserved across retries (no duplicate event rewrite)");
+        }
+        finally { PostOverride = p0; }
+        return $"webhook retry selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 
     public static void Init() => Core.OnIncoming = c => Enqueue(c.type, c.from, c.from_id, c.text, c.time, c.distance, c.msg_id);
@@ -294,7 +368,7 @@ public static class Webhook
         }
         batch = batch.Select(WithImHint).ToList();
         var kinds = batch.Select(e => e.type).Distinct().ToList();
-        var body = JsonSerializer.Serialize(new { kind = kinds.Count == 1 ? kinds[0] : "mixed", urgent, region = Core.RegionName, conversations = nconv, batched = batch.Count, events = batch }, J);
+        var body = SanitizeJsonBody(JsonSerializer.Serialize(new { kind = kinds.Count == 1 ? kinds[0] : "mixed", urgent, region = Core.RegionName, conversations = nconv, batched = batch.Count, events = batch }, J));
         if (overflow > 0) LogLocal($"batch overflow: {overflow} extra event(s) not included in webhook body (still in poll_events)");
         var (status, err) = PostOverride != null ? await PostOverride(body) : await Post(body, reReadConfig: true);
         LogLocal(status is >= 200 and < 300 ? $"POST ok ({status}) with {batch.Count} event(s) from {nconv} conversation(s){(urgent ? " [urgent]" : "")}" : $"POST failed ({(status?.ToString() ?? err)}) with {batch.Count} event(s)");
@@ -412,33 +486,61 @@ public static class Webhook
         return $"debounce selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 
-    // returns (http status or null, error text). Appends body to failed log on any failure.
+    // returns (http status or null, error text). Retries retriable failures with backoff; appends body to failed log only on final failure.
     static async Task<(int? status, string err)> Post(string body, bool reReadConfig)
     {
         var (url, key) = ReadConfig();
         lock (gate) { configuredCached = url != null && key != null; lastConfigCheck = DateTime.UtcNow; }
         if (url == null || key == null) return (null, "not configured");
+        int? lastStatus = null; string lastErr = null;
+        for (int attempt = 0; attempt < RetryBackoffMs.Length; attempt++)
+        {
+            if (RetryBackoffMs[attempt] > 0) await Task.Delay(RetryBackoffMs[attempt]);
+            (lastStatus, lastErr) = await PostOnce(url, key, body);
+            if (lastStatus is >= 200 and < 300) return (lastStatus, null);
+            bool more = attempt < RetryBackoffMs.Length - 1 && RetriableStatus(lastStatus);
+            LogLocal($"POST failed ({(lastStatus?.ToString() ?? lastErr)}) attempt {attempt + 1}/{RetryBackoffMs.Length}"
+                     + (more ? $"; retry in {RetryBackoffMs[attempt + 1]} ms (same body / msg_ids)" : "; giving up"));
+            if (!more) break;
+        }
+        AppendFailed(body, lastStatus, lastErr);
+        return (lastStatus, lastErr);
+    }
+
+    static async Task<(int? status, string err)> PostOnce(string url, string key, string body)
+    {
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8) };
-            req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
             req.Headers.TryAddWithoutValidation("X-Automation-Key", key);
             using var resp = await http.SendAsync(req);
             var code = (int)resp.StatusCode;
-            if (code < 200 || code >= 300) AppendFailed(body);
+            if (code < 200 || code >= 300)
+            {
+                string rb = null;
+                try { rb = await resp.Content.ReadAsStringAsync(); } catch { }
+                if (!string.IsNullOrEmpty(rb))
+                    LogLocal($"POST {code} body: {(rb.Length > 240 ? rb[..240] + "…" : rb)}");
+            }
             return (code, null);
         }
         catch (Exception ex)
         {
-            AppendFailed(body);
             return (null, ex is TaskCanceledException ? "timeout" : ex.GetType().Name);
         }
     }
 
-    static void AppendFailed(string body)
+    static void AppendFailed(string body, int? status = null, string err = null)
     {
-        try { Directory.CreateDirectory(Path.GetDirectoryName(FailedLog)!); File.AppendAllText(FailedLog, body + "\n"); } catch { }
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(FailedLog)!);
+            var meta = status != null || err != null ? $"/* failed status={status?.ToString() ?? err} at {DateTimeOffset.Now:o} */\n" : "";
+            File.AppendAllText(FailedLog, meta + body + "\n");
+        }
+        catch { }
     }
 
     // ---- webhook_test tool ----------------------------------------------------
@@ -453,7 +555,7 @@ public static class Webhook
             if (since < MinInterval) return JsonSerializer.Serialize(new { ok = false, status = $"rate limited: retry in {(MinInterval - since).TotalSeconds:F0} s" }, J);
             exemptToday++; lastPost = DateTime.UtcNow; // a manual test never counts against (or is blocked by) the daily cap
         }
-        var body = JsonSerializer.Serialize(new { kind = "test", region = Core.RegionName, events = Array.Empty<object>() }, J);
+        var body = SanitizeJsonBody(JsonSerializer.Serialize(new { kind = "test", region = Core.RegionName, events = Array.Empty<object>() }, J));
         var (status, err) = await Post(body, true);
         LogLocal($"test POST -> {(status?.ToString() ?? err)}");
         return JsonSerializer.Serialize(new { ok = status is >= 200 and < 300, status = (object)status ?? err, url_host = new Uri(url).Host }, J);

@@ -4,6 +4,7 @@
 // Sits: every 1-3 legs a free seat near the path (BC parcel, outside the zendo + margin, unoccupied, quiet if possible),
 //       120-240 s (doubled 2026-09-26), then back to the path. Never David's pillow; her pillow only if no one but David is on the rock pillows.
 // Greetings: avatars within 10 m (|dz| < 10), each avatar at most once per 24 h (2026-09-27 09:29, David; GT_GREET_REPEAT_HOURS, default 24; 0 = once ever), max one per 20 s, everyone incl. David and Sophie, not muted, not near the zendo.
+//            History is keyed ONLY by avatar UUID (never display name). Chat/IM with someone also marks them greeted (2026-10-05), so a resume after auto-follow does not stranger-greet a friend.
 //            After a greeting she stops, faces them and waits 15 s; a reply switches to the chat pause, otherwise the loop continues.
 // Chat: nearby agent chat (<= 20 m) or an IM pauses the wander; she approaches to ~2.5 m (if allowed) and waits. No auto-reply.
 //       Auto-resume after 3 min without chat from anyone nearby and without her own chat. 'wander hold' keeps it paused.
@@ -53,7 +54,8 @@ public static partial class Program
     static double GreetKeepHours => double.PositiveInfinity;
     static bool GreetedRecently(Dictionary<UUID, DateTime> greeted, UUID id, DateTime now, double repeatHours) =>
         greeted.TryGetValue(id, out var t) && (repeatHours <= 0 || (now - t).TotalHours < repeatHours);
-    // greet history: {"<uuid>": "<ISO time with offset>", ...}; entries older than keepHours are dropped (none in "once" mode)
+    // greet history: {"<uuid>": "<ISO time with offset>", ...}; keys MUST be avatar UUIDs (display names are ignored on load).
+    // entries older than keepHours are dropped (none in "once" mode)
     static string SerializeGreetHistory(Dictionary<UUID, DateTime> h, DateTime now, double keepHours = double.NaN)
     {
         if (double.IsNaN(keepHours)) keepHours = GreetKeepHours;
@@ -97,6 +99,20 @@ public static partial class Program
         try { h = ParseGreetHistory(File.ReadAllText(path), DateTime.Now); } catch (Exception ex) { WLog("greet history read failed: " + ex.Message); return 0; }
         lock (wGreeted) foreach (var kv in h) if (!wGreeted.TryGetValue(kv.Key, out var t) || kv.Value > t) wGreeted[kv.Key] = kv.Value;
         return h.Count;
+    }
+    // mark an avatar as already-greeted / known (by UUID only). Used after a greeting AND after chat/IM so a wander
+    // resume never stranger-greets someone she was just talking to. Display names are never keys.
+    static void NoteGreeted(UUID id, DateTime? when = null)
+    {
+        if (id == UUID.Zero) return;
+        try { if (client != null && id == client.Self.AgentID) return; } catch { }
+        var t = when ?? DateTime.Now;
+        lock (wGreeted)
+        {
+            if (wGreeted.TryGetValue(id, out var old) && old >= t) return;
+            wGreeted[id] = t;
+        }
+        SaveGreetHistory();
     }
     // stop = "deliberate" is written only by a deliberate shutdown (text-galatay.sh stop / logout command); every other
     // write (start, heartbeat, crash-safe keeps) omits it, so a flag last written by a heartbeat means "went down unexpectedly".
@@ -271,7 +287,9 @@ public static partial class Program
     {
         try
         {
-            if (!WanderOn || id == UUID.Zero || id == client.Self.AgentID) return;
+            if (id == UUID.Zero || id == client.Self.AgentID) return;
+            NoteGreeted(id); // by UUID: a chat/IM partner is never a stranger-greet candidate (even while wander is off / on hold)
+            if (!WanderOn) return;
             var me = client.Self.SimPosition;
             var av = client.Network.CurrentSim?.ObjectsAvatars.Values.FirstOrDefault(x => x != null && x.ID == id);
             var sim = client.Network.CurrentSim;
@@ -931,8 +949,7 @@ public static partial class Program
                     HeadTurnTo(who.id, "wander greeting");   // a short head turn to whom she greets (LookAt.cs)
                     client.Self.Chat(txt, 0, ChatType.Normal);
                     var now = DateTime.Now;
-                    lock (wGreeted) wGreeted[who.id] = now;
-                    SaveGreetHistory();
+                    NoteGreeted(who.id, now);
                     wLastGreet = now; wGreets++; wLastGreetTxt = $"{now:HH:mm:ss} {who.name}: \"{txt}\"";
                     Log("me-chat", txt + " (wander greeting)");
                     WLog($"GREETED {who.name} ({who.id}) at {HDist(who.pos, client.Self.SimPosition):F1} m: \"{txt}\"");
@@ -1009,6 +1026,13 @@ public static partial class Program
             var (w2, _) = PickGreet(new() { new(b, "Ben Stroll", new Vector3(122, 120, 22), false), new(m, "Mo Old", new Vector3(123, 120, 22), false) }, me, now, back, old, x => false, self, null, 0);
             bool r2 = w2 == null; if (r2) pass++; else fail++;
             lines.Add($"{(r2 ? "PASS" : "FAIL")} after a restart Ben (61 min) and Mo (30 h) are NOT greeted again: {(w2 == null ? "none" : w2.name)}");
+            // display-name keys must be ignored (history is UUID-only)
+            var mixedJson = "{\"" + a + "\":\"" + now.AddMinutes(-2).ToString("o") + "\",\"RyanSinclair65\":\"" + now.AddMinutes(-1).ToString("o") + "\"}";
+            var onlyUuid = ParseGreetHistory(mixedJson, now, double.PositiveInfinity);
+            bool nameIgnored = onlyUuid.ContainsKey(a) && onlyUuid.Count == 1 && !onlyUuid.Keys.Any(k => k == UUID.Zero);
+            lines.Add($"{(nameIgnored ? "PASS" : "FAIL")} greet history ignores display-name keys (UUID-only): got {onlyUuid.Count} entr{(onlyUuid.Count == 1 ? "y" : "ies")}");
+            if (nameIgnored) pass++; else fail++;
+
             var tmpf = Path.Combine(Path.GetTempPath(), $"greet-history-selftest-{Guid.NewGuid():N}.json");
             try
             {

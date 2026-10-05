@@ -225,7 +225,15 @@ public static partial class Program
             return pw == null ? 0 : 1;
         }
         if (args.Contains("--worn-selftest")) { var r = WornSelfTest(); Console.WriteLine(r); return r.Contains("FAIL") ? 1 : 0; } // offline, no login
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Contains("--bugfix-selftest")) // offline: autofollow restore + greet UUID history + webhook cap/retry (2026-10-05)
+        {
+            var a = AutoFollowSelfTest(); Console.WriteLine(a);
+            var g = GreetSelfTest(); Console.WriteLine(g);
+            var c = GalatayMcp.Webhook.CapCmd(new[] { "selftest" }); Console.WriteLine(c);
+            var r = await GalatayMcp.Webhook.RetrySelfTest(); Console.WriteLine(r);
+            return (a + g + c + r).Contains("FAIL") ? 1 : 0;
+        }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--bugfix-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -1576,6 +1584,7 @@ public static partial class Program
   webhook_test | webhook status      probe the chat webhook (HTTP status) / show config (never the key)
   webhook cap [<n>|selftest] | webhook reset-cap   daily POST cap (default 600, GT_WEBHOOK_DAILY_CAP); urgent kinds + David's IMs/chat are exempt
   webhook debounce [<quiet s> [<max s> [<detect s>]]] | webhook debounce detect <s> | webhook debounce selftest   per-conversation debounce: single line after 4 s detect window; burst (2nd line inside it) after 20 s quiet, cap 60 s; urgent = immediate
+  webhook retry selftest   bounded POST retry (400/408/429/5xx) with backoff; same body/msg_ids (Webhook.cs)
   restart status | restart test [fast] | restart cancel   region-restart evacuation: state / simulate a warning / abort
                               (warning -> stand, go home [fallbacks, else logout], poll every 60 s, return >= 3 min after the restart, re-sit; 45 min limit)
   sit_home                    Naberrie seat rule: her pillow 10d8a656 if both rock pillows are free, else a quiet free seat in The Buddha Center parcel (not the zendo), else stand
@@ -1680,6 +1689,7 @@ public static partial class Program
                 var (sent, skip) = ImGuardedSend(id.ToString(), NameOf(id), id == DavidId, force, () => client.Self.InstantMessage(id, text), null, headsup, re, text);
                 if (!sent) return skip;
                 Log("me-im", $"to {NameOf(id)} ({id}): {text}");
+                NoteGreeted(id); // UUID: outgoing IM partner is not a stranger-greet candidate
                 return $"sent to {NameOf(id)} ({id})";
             }
             case "nearby":
@@ -1985,6 +1995,7 @@ public static partial class Program
                 if (a.Length > 0 && a[0].Equals("reset-cap", StringComparison.OrdinalIgnoreCase)) return GalatayMcp.Webhook.ResetCap();
                 if (a.Length > 0 && a[0].Equals("cap", StringComparison.OrdinalIgnoreCase)) return GalatayMcp.Webhook.CapCmd(a[1..]);
                 if (a.Length > 0 && a[0].Equals("lease", StringComparison.OrdinalIgnoreCase)) return GalatayMcp.Webhook.LeaseCmd(a[1..]);
+                if (a.Length > 0 && a[0].Equals("retry", StringComparison.OrdinalIgnoreCase) && a.Length > 1 && a[1].Equals("selftest", StringComparison.OrdinalIgnoreCase)) return await GalatayMcp.Webhook.RetrySelfTest();
                 if (a.Length > 0 && a[0].Equals("debounce", StringComparison.OrdinalIgnoreCase)) return a.Length > 1 && a[1] == "selftest" ? await GalatayMcp.Webhook.DebounceSelfTest() : GalatayMcp.Webhook.DebounceCmd(a[1..]);
                 return GalatayMcp.Webhook.ConfigSummary();
             case "logout": case "quit": case "exit":

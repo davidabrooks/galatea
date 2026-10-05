@@ -205,7 +205,7 @@ public static partial class Program
             {
                 var root = seatPrim;
                 if (seatPrim.ParentID != 0 && sim.ObjectsPrimitives.TryGetValue(seatPrim.ParentID, out var r) && r != null) root = r;
-                NotePoseSeatShared(SeatHasOtherSitters(root));
+                NotePoseSeatShared(SeatHasOtherSitters(root), SeatHasDavid(root));
             }
         }
         catch { }
@@ -489,9 +489,21 @@ public static partial class Program
     // WITHOUT ever auto-picking couples (restore last path or leave/solo). After alone<->shared, wait for AVsitter.
     static async Task SeatedPoseMaintenanceTick()
     {
-        if (client.Self.SittingOn == 0) { seatPoseMissingSince = null; return; }
+        if (client.Self.SittingOn == 0) { seatPoseMissingSince = null; poseDavidOnSeat = false; return; }
         Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = ownAnims;
         StopSeatOffAndStandOverlays(cur, "seat maintenance");
+        // Refresh David-on-seat each tick (stand / logout / region leave while we stay seated)
+        try
+        {
+            var sim0 = client.Network.CurrentSim;
+            if (sim0 != null && sim0.ObjectsPrimitives.TryGetValue(client.Self.SittingOn, out var sp) && sp != null)
+            {
+                var root0 = sp;
+                if (sp.ParentID != 0 && sim0.ObjectsPrimitives.TryGetValue(sp.ParentID, out var r0) && r0 != null) root0 = r0;
+                NotePoseSeatShared(SeatHasOtherSitters(root0), SeatHasDavid(root0));
+            }
+        }
+        catch { }
         var seatSourced = cur.Count(kv => IsSeatSource(kv.Value.src));
         var keptPlaying = cur.Keys.Count(k => keptPose.ContainsKey(k));
         if (seatSourced > 0 || keptPlaying > 0) { seatPoseMissingSince = null; return; }

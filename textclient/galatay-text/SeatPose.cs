@@ -1,9 +1,11 @@
 // Seat poses (added 2026-09-25 23:30, David's request): after a wander sit, pick a random pose from the SEAT'S OWN pose menu
 // (AVsitter dialog sent on sit, or opened by touching the seat). No daemon-played animations: we only press dialog buttons.
 // Skipped buttons: anything in [brackets] (AVsitter controls: [ADJUST] [BACK] [SYNC] [SWAP] [STOP] ...), adjust/position/sync/unsit/stand/next/prev/options/help/reset.
-// Occupancy / couples (David, 2026-10-05 evening): NEVER auto-pick couples. Couples menus only when David explicitly asks
-// ('pose couples'). When the seat is shared he controls poses; recovery / wander / plain 'pose' stay solo or restore the
-// last known menu path. Shared mid-sit must not switch us into Couples PG / Cuddles / etc. (bug 2026-10-05 11:53 PT).
+// Occupancy / couples (David, 2026-10-05 evening + noon follow-up): NEVER auto-pick couples. Couples menus only when
+// David explicitly asks ('pose couples'). The "David chooses" hold-back applies ONLY while David himself is on the same
+// seat — other sitters (e.g. Sophie) do not block solo pose / recovery. When David leaves a seat we shared in a couples
+// pose, auto-switch to solo (last solo path on that seat, else PG Solo* menu; skip adult). 'pose path' always backs to
+// the menu root first ([BACK] until top). Bug 2026-10-05 11:53: shared mid-sit must not auto-pick Couples PG.
 // PREFERENCE (David, 2026-09-25): skip MALE poses: any button/submenu labelled male, men, man, guy, boy, or the token M (M, M1, M 2, (M))
 // is never chosen; female/F/woman sections and neutral poses are fine.
 // Submenus (AVsitter labels ending in '*') are entered at random (max depth 3). The current pose (last [..] in the menu text) is avoided.
@@ -22,13 +24,18 @@ public static partial class Program
     static readonly Regex PoseCouplesName = new(@"\b(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair|2p)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Solo submenu names (Trompe Loeil Reiley etc. use SINGLE*).
     static readonly Regex PoseSoloMenuName = new(@"\b(singles?|solo|alone|one\s*p|1p)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Adult / multi-avatar menus to skip when auto-picking PG solo after David leaves.
+    static readonly Regex PoseAdultMenuName = new(@"\b(adult|ffm|mmf|f\+?f\d*|m\+?f\d*|xxx|nsfw)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // David 2026-09-25: never pick male poses
     static readonly Regex PoseMaleSkip = new(@"\b(male|males|men|man|guy|guys|boy|boys|him|his|masc\w*)\b|(^|[\s(\[_/-])m(\d+|(?=[\s)\]_*/-])|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly ConcurrentQueue<(DateTime at, ScriptDialogEventArgs e)> wDialogs = new();
     static string wLastPose = "-";
     static List<string> wLastPosePath = new(); // last AVsitter menu path we pressed/restored
-    static bool? poseSeatShared; // last seen shared-seat state while seated
+    static List<string> wLastSoloPosePath = new(); // last non-couples path on this seat (for David-left restore)
+    static bool? poseSeatShared; // last seen shared-seat state while seated (any other sitter)
+    static bool poseDavidOnSeat; // David Nightingale specifically on this seat with me
     static DateTime poseSharedChangedAt = DateTime.MinValue; // alone<->shared flip (recovery grace)
+    static int poseDavidLeftSwitchGen; // debounce auto-solo when David leaves
     // David 2026-10-05: after a partner sits/stands, AVsitter often restarts anims; wait before "pose lost" recovery.
     public static double PoseSharedFlipGraceS = 15;
     public static double PoseRecoveryMissingS = 8; // was 3; brief AVsitter swaps were false positives
@@ -39,6 +46,19 @@ public static partial class Program
     // pure: still inside the post-occupancy-change grace window?
     public static bool InSharedFlipGrace(DateTime flipAt, DateTime now, double graceS) =>
         flipAt != DateTime.MinValue && (now - flipAt).TotalSeconds < graceS;
+
+    // pure: "David chooses" hold-back — only while David himself shares the seat (not Sophie alone).
+    public static bool DavidChoosesPoses(bool davidOnSeat, bool explicitCouplesRequest) =>
+        davidOnSeat && !explicitCouplesRequest;
+
+    // pure: does this menu path go through a couples-named step?
+    public static bool PosePathIsCouples(IReadOnlyList<string> path) =>
+        path != null && path.Any(PoseIsCouplesNamed);
+
+    // pure: sitter name list from Sitters() includes David Nightingale?
+    public static bool SitterListHasDavid(IEnumerable<string> names) =>
+        names != null && names.Any(n => n != null && n != "ME"
+            && n.IndexOf("David Nightingale", StringComparison.OrdinalIgnoreCase) >= 0);
 
     static void WanderDialogIn(ScriptDialogEventArgs e)
     {
@@ -65,24 +85,37 @@ public static partial class Program
     }
     static bool PoseIsCouplesNamed(string raw) => PoseCouplesName.IsMatch(PoseBare(raw));
     static bool PoseIsSoloMenu(string raw) => PoseSoloMenuName.IsMatch(PoseBare(raw));
+    static bool PoseIsAdultMenu(string raw) => PoseAdultMenuName.IsMatch(PoseBare(raw));
     static bool PoseIsMale(string raw) => PoseMaleSkip.IsMatch(PoseBare(raw));
-
-    // true when another avatar (not ME) is seated on this seat's root (same map objinfo uses as occupied=ME,<name>).
-    static bool SeatHasOtherSitters(Primitive seat)
+    static bool PoseIsBackButton(string raw)
     {
-        if (seat == null) return false;
-        var sim = Sim; if (sim == null) return false;
+        var b = PoseBare(raw).Trim().TrimStart('[').TrimEnd(']').Trim();
+        return b.Equals("BACK", StringComparison.OrdinalIgnoreCase) || b.Equals("<<", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // sitter name list on this seat's root (Sitters map: "ME", "David Nightingale", ...).
+    static List<string> SeatSitterNames(Primitive seat)
+    {
+        if (seat == null) return new();
+        var sim = Sim; if (sim == null) return new();
         uint root = seat.LocalID;
         if (seat.ParentID != 0 && sim.ObjectsPrimitives.ContainsKey(seat.ParentID)) root = seat.ParentID;
-        if (!Sitters(sim).TryGetValue(root, out var l) || l == null) return false;
-        return l.Any(n => n != "ME");
+        if (!Sitters(sim).TryGetValue(root, out var l) || l == null) return new();
+        return l.ToList();
     }
+    // true when another avatar (not ME) is seated on this seat's root.
+    static bool SeatHasOtherSitters(Primitive seat) => SeatSitterNames(seat).Any(n => n != "ME");
+    // true when David Nightingale specifically shares this seat with me.
+    static bool SeatHasDavid(Primitive seat) => SitterListHasDavid(SeatSitterNames(seat));
 
     // Track alone/shared flips. Do NOT hard-clear kept anim copies on a flip: that + AVsitter's brief restart
     // looked like "no seat pose for 3 s" and pose recovery then auto-picked Couples (2026-10-05 Lalou sofa).
-    static void NotePoseSeatShared(bool? shared)
+    static void NotePoseSeatShared(bool? shared, bool? davidOnSeat = null)
     {
-        if (shared == null) { poseSeatShared = null; poseSharedChangedAt = DateTime.MinValue; return; }
+        if (shared == null)
+        {
+            poseSeatShared = null; poseSharedChangedAt = DateTime.MinValue; poseDavidOnSeat = false; return;
+        }
         if (poseSeatShared != null && poseSeatShared != shared)
         {
             SoftForgetKeptPoseCopies();
@@ -92,11 +125,25 @@ public static partial class Program
             Log("height", $"pose: seat occupancy -> {(shared.Value ? "shared" : "alone")}; recovery grace {PoseSharedFlipGraceS:g} s (AVsitter may restart anims)");
         }
         poseSeatShared = shared;
+        if (davidOnSeat != null) NotePoseDavidOnSeat(davidOnSeat.Value);
+    }
+
+    // When David leaves a seat we shared in a couples pose, switch to solo right away (other sitters OK).
+    static void NotePoseDavidOnSeat(bool davidHere)
+    {
+        bool was = poseDavidOnSeat;
+        poseDavidOnSeat = davidHere;
+        if (was && !davidHere && PosePathIsCouples(wLastPosePath) && client?.Self?.SittingOn != 0)
+        {
+            var gen = System.Threading.Interlocked.Increment(ref poseDavidLeftSwitchGen);
+            Log("height", "pose: David left the seat while we were in a couples pose — switching to solo");
+            _ = Task.Run(() => PoseSwitchToSoloAfterDavidLeft(gen));
+        }
     }
 
     // pure: which button to press (null = nothing suitable). submenu = AVsitter '*' label.
     // couplesMode: ONLY for explicit 'pose couples'. !couplesMode (default/recovery/wander): skip couples even if shared.
-    static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false)
+    static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false)
     {
         var ok = new List<string>(); var skipped = new List<string>();
         foreach (var raw in labels ?? new())
@@ -113,6 +160,7 @@ public static partial class Program
             else
             {
                 if (PoseIsCouplesNamed(l)) { skipped.Add(l); continue; }
+                if (preferPgSolo && PoseIsAdultMenu(l)) { skipped.Add(l); continue; }
             }
             ok.Add(l);
         }
@@ -121,10 +169,16 @@ public static partial class Program
             var mode = couplesMode ? (inCouplesMenu ? "couples submenu" : "couples (explicit)") : "solo";
             return (null, false, $"no suitable {mode} option (skipped: {string.Join(", ", skipped)})");
         }
+        // After David leaves: prefer Solo*/SINGLE* submenu at the top level when present
+        if (preferPgSolo && !couplesMode && !inCouplesMenu)
+        {
+            var soloMenus = ok.Where(PoseIsSoloMenu).ToList();
+            if (soloMenus.Count > 0) ok = soloMenus;
+        }
         var notCur = ok.Where(l => current == null || !string.Equals(PoseBare(l), current, StringComparison.OrdinalIgnoreCase)).ToList();
         var pool = notCur.Count > 0 ? notCur : ok;
         var p = pool[rnd.Next(pool.Count)];
-        return (p, p.TrimEnd().EndsWith("*"), $"{pool.Count} choices, skipped {skipped.Count}{(couplesMode ? ", couples" : ", solo")}");
+        return (p, p.TrimEnd().EndsWith("*"), $"{pool.Count} choices, skipped {skipped.Count}{(couplesMode ? ", couples" : preferPgSolo ? ", pg-solo" : ", solo")}");
     }
     static bool DialogFromSeat(ScriptDialogEventArgs e, Primitive seat, Simulator sim)
     {
@@ -157,24 +211,25 @@ public static partial class Program
     }
 
     // couplesMode only when explicitCouples (David asked). recovery: restore path or leave/solo — never couples.
-    static async Task<string> SeatPose(Primitive seat, string seatName, DateTime since, bool change, CancellationToken ct, bool explicitCouples = false, bool recovery = false)
+    static async Task<string> SeatPose(Primitive seat, string seatName, DateTime since, bool change, CancellationToken ct, bool explicitCouples = false, bool recovery = false, bool preferPgSolo = false)
     {
         lastSeatPoseMenuAt = DateTime.Now; seatPoseMissingSince = null;
         bool shared = SeatHasOtherSitters(seat);
-        NotePoseSeatShared(shared);
+        bool davidHere = SeatHasDavid(seat);
+        NotePoseSeatShared(shared, davidHere);
         bool couplesMode = AutoMayPickCouples(explicitCouples);
         if (recovery) couplesMode = false;
-        if (recovery && wLastPosePath.Count > 0)
+        if (recovery && wLastPosePath.Count > 0 && !PosePathIsCouples(wLastPosePath))
         {
             var rest = await SeatPosePath(seat, seatName, wLastPosePath.ToList(), ct);
             if (rest.Contains("restored") || rest.Contains("already") || rest.Contains("chose"))
             { WLog("POSE recovery restore: " + rest); return rest; }
             WLog("POSE recovery: path restore failed (" + rest + "); falling back to solo/leave");
         }
-        // shared + not explicit couples + not recovery: David controls poses — do not change
-        if (shared && !couplesMode && !recovery)
+        // ONLY while David himself shares the seat: he chooses poses (other sitters do not block solo)
+        if (DavidChoosesPoses(davidHere, explicitCouples) && !recovery)
         {
-            var m = $"'{seatName}': shared seat — not auto-picking a pose (David chooses; use 'pose couples' only if he asks)";
+            var m = $"'{seatName}': David is on this seat — not auto-picking a pose (he chooses; use 'pose couples' only if he asks)";
             WLog("POSE " + m); return m;
         }
         var d = change || recovery ? null : await WaitSeatDialog(seat, since, 5000, ct);
@@ -195,13 +250,14 @@ public static partial class Program
         {
             if (client.Self.SittingOn == 0 || (WanderOn && wanderPause != null)) { WLog($"POSE '{seatName}': stopped choosing (no longer seated or paused)"); return "aborted"; }
             shared = SeatHasOtherSitters(seat);
-            NotePoseSeatShared(shared);
-            if (shared && !couplesMode && !recovery)
+            davidHere = SeatHasDavid(seat);
+            NotePoseSeatShared(shared, davidHere);
+            if (DavidChoosesPoses(davidHere, explicitCouples) && !recovery)
             {
-                var m = $"'{seatName}': seat became shared mid-pick — stopping (David chooses poses)";
+                var m = $"'{seatName}': David joined mid-pick — stopping (he chooses poses)";
                 WLog("POSE " + m); return m;
             }
-            var (pick, sub, why) = PickPoseButton(d.ButtonLabels, current, wRnd, couplesMode, inCouples);
+            var (pick, sub, why) = PickPoseButton(d.ButtonLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo);
             if (pick == null)
             {
                 var m = $"'{seatName}': {why}; keeping the current pose {current ?? "?"}";
@@ -216,6 +272,7 @@ public static partial class Program
             if (!sub)
             {
                 wLastPosePath = path.ToList();
+                if (!PosePathIsCouples(path)) wLastSoloPosePath = path.ToList();
                 var tag = recovery ? " (recovery)" : change ? " (mid-sit change)" : "";
                 var mode = couplesMode ? " [couples/explicit]" : " [solo]";
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", path)}{tag}{mode}";
@@ -229,7 +286,32 @@ public static partial class Program
         return "too deep";
     }
 
-    // Press an exact AVsitter menu path (e.g. Couples PG* > Cuddles* > Together).
+    // Press [BACK] until the top-level menu (AVsitter reopens in the last submenu).
+    static async Task<ScriptDialogEventArgs> SeatPoseBackToRoot(Primitive seat, ScriptDialogEventArgs d, CancellationToken ct)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            if (d?.ButtonLabels == null) return d;
+            int back = d.ButtonLabels.FindIndex(PoseIsBackButton);
+            if (back < 0) return d; // no [BACK] => already at root (or leaf without back — unlikely at top)
+            var before = string.Join("|", d.ButtonLabels);
+            var t1 = DateTime.Now;
+            client.Self.ReplyToScriptDialog(d.Channel, back, d.ButtonLabels[back], d.ObjectID);
+            var next = await WaitSeatDialog(seat, t1, 5000, ct);
+            if (next == null) return d;
+            var after = string.Join("|", next.ButtonLabels ?? new List<string>());
+            d = next;
+            if (after == before) return d; // stuck
+            // stop early if this looks like a top menu (Solo*/Couples* siblings, or several category *)
+            bool hasSolo = d.ButtonLabels.Any(PoseIsSoloMenu);
+            bool hasCouples = d.ButtonLabels.Any(PoseIsCouplesNamed);
+            int stars = d.ButtonLabels.Count(b => (b ?? "").TrimEnd().EndsWith("*") && !PoseIsControl(b));
+            if ((hasSolo && hasCouples) || (hasSolo && stars >= 3)) return d;
+        }
+        return d;
+    }
+
+    // Press an exact AVsitter menu path from the ROOT (backs out first). e.g. Solo* > Solo Couch* > Cross legs
     static async Task<string> SeatPosePath(Primitive seat, string seatName, List<string> want, CancellationToken ct)
     {
         if (want == null || want.Count == 0) return "empty path";
@@ -237,6 +319,7 @@ public static partial class Program
         var t0 = DateTime.Now; client.Self.Touch(seat.LocalID);
         var d = await WaitSeatDialog(seat, t0, 5000, ct);
         if (d == null) return $"'{seatName}': no pose menu for path restore";
+        d = await SeatPoseBackToRoot(seat, d, ct);
         var path = new List<string>();
         for (int i = 0; i < want.Count; i++)
         {
@@ -260,6 +343,7 @@ public static partial class Program
             if (i == want.Count - 1 && !sub)
             {
                 wLastPosePath = path.ToList();
+                if (!PosePathIsCouples(path)) wLastSoloPosePath = path.ToList();
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", path)} (restored)";
                 var m = $"'{seatName}' {seat.ID}: restored {string.Join(" > ", path)}";
                 WLog("POSE " + m); return m;
@@ -276,8 +360,35 @@ public static partial class Program
         return $"'{seatName}': path ended in submenus ({string.Join(" > ", path)})";
     }
 
-    // 'pose' / 'pose change' = solo only (never couples, even when shared)
-    // 'pose couples' = ONLY when David explicitly asks
+    static async Task PoseSwitchToSoloAfterDavidLeft(int gen)
+    {
+        try
+        {
+            await Task.Delay(800); // let AVsitter finish its sit-leave shuffle
+            if (gen != System.Threading.Volatile.Read(ref poseDavidLeftSwitchGen)) return;
+            if (client?.Self?.SittingOn == 0) return;
+            if (poseDavidOnSeat) return; // he came back
+            var sim = Sim;
+            if (sim == null || !sim.ObjectsPrimitives.TryGetValue(client.Self.SittingOn, out var p) || p == null) return;
+            if (p.ParentID != 0 && sim.ObjectsPrimitives.TryGetValue(p.ParentID, out var root) && root != null) p = root;
+            if (p.Properties == null) await EnsureProperties(sim, new() { p });
+            var name = p.Properties?.Name ?? p.ID.ToString();
+            using var cts = new CancellationTokenSource(45000);
+            if (wLastSoloPosePath.Count > 0)
+            {
+                var r = await SeatPosePath(p, name, wLastSoloPosePath.ToList(), cts.Token);
+                Log("height", "pose: David-left solo restore: " + r);
+                if (r.Contains("restored") || r.Contains("already") || r.Contains("chose")) return;
+            }
+            // random PG solo (prefer Solo* menus, skip adult). Not recovery: that would leave the couples pose.
+            var r2 = await SeatPose(p, name, DateTime.Now, true, cts.Token, explicitCouples: false, recovery: false, preferPgSolo: true);
+            Log("height", "pose: David-left solo pick: " + r2);
+        }
+        catch (Exception ex) { Log("height", "pose: David-left solo switch error: " + ex.GetBaseException().Message); }
+    }
+
+    // 'pose' / 'pose change' = solo only (never couples). Blocked only while David himself shares the seat.
+    // 'pose couples' = ONLY when David explicitly asks (and is on the seat)
     // 'pose path A > B > C' = restore an exact menu path
     // 'pose selftest'
     static async Task<string> PoseCmd(string[] a)
@@ -301,7 +412,7 @@ public static partial class Program
         }
         bool change = a.Length > 0 && a[0].Equals("change", StringComparison.OrdinalIgnoreCase);
         bool couples = a.Length > 0 && a[0].Equals("couples", StringComparison.OrdinalIgnoreCase);
-        if (couples && !SeatHasOtherSitters(p)) return "pose couples: seat is not shared (nobody else sitting); refusing";
+        if (couples && !SeatHasDavid(p)) return "pose couples: David is not on this seat; refusing (couples only when he asks while sharing)";
         return await SeatPose(p, name, DateTime.Now.AddSeconds(-20), change || couples, cts.Token, explicitCouples: couples);
     }
 
@@ -359,6 +470,45 @@ public static partial class Program
             lines.Add($"{(a ? "PASS" : "FAIL")} AutoMayPickCouples: false unless explicit");
             if (g) pass++; else fail++;
             lines.Add($"{(g ? "PASS" : "FAIL")} InSharedFlipGrace: 15 s window after occupancy flip");
+        }
+        {
+            bool d1 = DavidChoosesPoses(davidOnSeat: true, explicitCouplesRequest: false);
+            bool d2 = !DavidChoosesPoses(davidOnSeat: false, explicitCouplesRequest: false); // Sophie alone: no hold-back
+            bool d3 = !DavidChoosesPoses(davidOnSeat: true, explicitCouplesRequest: true);
+            bool names = SitterListHasDavid(new[] { "ME", "SophieJeanneLaDouce Resident" }) == false
+                      && SitterListHasDavid(new[] { "ME", "David Nightingale" });
+            bool couplesPath = PosePathIsCouples(new[] { "Couples PG*", "Cuddles*", "Together" })
+                            && !PosePathIsCouples(new[] { "Solo*", "Solo Couch*", "Cross legs" });
+            if (d1 && d2 && d3) pass++; else fail++;
+            lines.Add($"{(d1 && d2 && d3 ? "PASS" : "FAIL")} DavidChoosesPoses: only while David is on the seat");
+            if (names) pass++; else fail++;
+            lines.Add($"{(names ? "PASS" : "FAIL")} SitterListHasDavid: David Nightingale vs Sophie");
+            if (couplesPath) pass++; else fail++;
+            lines.Add($"{(couplesPath ? "PASS" : "FAIL")} PosePathIsCouples: Couples PG path vs Solo path");
+        }
+        {
+            // after David leaves: prefer Solo*, skip Adult / Couples
+            bool good = true;
+            for (int i = 0; i < 40; i++)
+            {
+                var (p, _, _) = PickPoseButton(new() { "[ SWAP ]*", "Clean*", "[ADJUST]", "F+F2*", "FFM*", "Solo*", "Couples PG*", "Adult M+F*", "[BACK]" },
+                    "Together", rnd, couplesMode: false, preferPgSolo: true);
+                if (p != "Solo*") good = false;
+            }
+            if (good) pass++; else fail++;
+            lines.Add($"{(good ? "PASS" : "FAIL")} after David leaves: preferPgSolo picks Solo* (skips adult/couples)");
+        }
+        {
+            bool back = PoseIsBackButton("[BACK]") && PoseIsBackButton("BACK") && PoseIsBackButton("[ BACK ]")
+                     && PoseIsBackButton("<<") && !PoseIsBackButton("Solo*") && !PoseIsBackButton("[ADJUST]");
+            if (back) pass++; else fail++;
+            lines.Add($"{(back ? "PASS" : "FAIL")} PoseIsBackButton detects [BACK]");
+        }
+        {
+            // Sophie alone must not trigger DavidChooses; shared-with-Sophie is fine for solo pick
+            bool hold = DavidChoosesPoses(davidOnSeat: false, explicitCouplesRequest: false) == false;
+            if (hold) pass++; else fail++;
+            lines.Add($"{(hold ? "PASS" : "FAIL")} Sophie alone: pose/recovery not held back (DavidChooses false)");
         }
         var cur = PoseCurrent("AVsitter™2.1\n\n [Onlegs 4]"); bool c = cur == "Onlegs 4"; if (c) pass++; else fail++;
         lines.Add($"{(c ? "PASS" : "FAIL")} current pose parsed from the menu text: '{cur}'");

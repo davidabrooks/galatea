@@ -43,7 +43,7 @@ public static partial class Program
         {
             try { var st = JsonSerializer.Deserialize<Dictionary<string, DateTime>>(File.ReadAllText(DavidLoginState)); lock (fwGate) foreach (var kv in st) lastWake[kv.Key] = kv.Value; } catch { }
             client.Friends.FriendOnline += (s, e) => { if (e.Friend.UUID == DavidAgent) DavidCameOnline("online notification", false); };
-            client.Friends.FriendOffline += (s, e) => { if (e.Friend.UUID == DavidAgent) { if (davidOnline) Log("friendwatch", $"{DavidName} went offline"); davidOnline = false; } };
+            client.Friends.FriendOffline += (s, e) => { if (e.Friend.UUID == DavidAgent) { if (davidOnline) Log("friendwatch", $"{DavidName} went offline"); davidOnline = false; NotePoseDavidOnSeat(false); } };
         }
         davidOnline = client.Friends.FriendList.TryGetValue(DavidAgent, out var f) && f.IsOnline;
         if (Interlocked.Exchange(ref friendPollRunning, 1) == 0) _ = Task.Run(FriendPoll);

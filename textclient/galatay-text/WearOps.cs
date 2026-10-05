@@ -3,7 +3,8 @@
 // wear add <item uuid> [point]          ADD (never replace): attach an object (ATTACHMENT_ADD) or add a clothing layer,
 //                                       then add a COF link to the ORIGINAL item (so logins keep it). Body parts refused.
 // wear remove <item uuid>               take off: detach an object / remove a clothing layer, then remove ONLY its COF link(s).
-//                                       Body parts refused. The inventory item itself is never touched.
+//                                       Objects go through DetachItemAsync (same COF cleanup as `detach`). Body parts refused.
+//                                       The inventory item itself is never touched.
 // rez <item uuid>                       rez an OBJECT item from her inventory 1.5 m in front of her (e.g. a delivery box)
 // take <object uuid>                    take back an object SHE owns into her Objects folder
 // offer allow <object name> [minutes]   accept task-inventory offers ONLY from an object with that exact name owned by her,
@@ -22,6 +23,26 @@ public static partial class Program
     {
         var root = client.Inventory.Store?.RootFolder; if (root == null) return null;
         return (await ReadFolderRO(root.UUID, ct)).OfType<InventoryFolder>().FirstOrDefault(f => f.PreferredType == FolderType.CurrentOutfit && f.ParentUUID == root.UUID);
+    }
+
+    // Remove ONLY the Current Outfit Folder link(s) that point at this original item. The inventory item itself is untouched.
+    // Used by detach / wear remove / unexpected self-detach cleanup.
+    static async Task<string> RemoveCofLinksForItem(UUID item, string why, CancellationToken ct)
+    {
+        if (item == UUID.Zero) return "no item";
+        try
+        {
+            var cof = await CofFolder(ct);
+            if (cof == null) return "Current Outfit folder not found";
+            var mine = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>()
+                .Where(l => l.ParentUUID == cof.UUID && l.IsLink() && l.AssetUUID == item).ToList();
+            if (mine.Count == 0) return "no COF link to remove";
+            await client.Inventory.RemoveItemsAsync(mine.Select(l => l.UUID), ct);
+            var ids = string.Join(", ", mine.Select(l => l.UUID));
+            Log("wear", $"COF link(s) removed for item {item} ({why}): {ids} (item itself untouched)");
+            return $"COF link(s) removed: {ids} (the item itself is untouched)";
+        }
+        catch (Exception ex) { return "COF link removal FAILED: " + ex.GetBaseException().Message; }
     }
 
     static async Task<string> WearOpsCmd(string cmd, string[] a)
@@ -80,13 +101,21 @@ public static partial class Program
                 }
                 else
                 {
-                    if (isObj) { DetachItem(it.UUID, "wear remove"); sb.AppendLine($"detach sent for '{it.Name}'"); }
-                    else { client.Appearance.RemoveFromOutfit(it); sb.AppendLine($"clothing layer removed: '{it.Name}'"); }
-                    if (mine.Count == 0) sb.AppendLine("no COF link to remove");
+                    if (isObj)
+                    {
+                        // DetachItemAsync sends Detach and removes COF link(s) (same as detach command)
+                        sb.AppendLine(await DetachItemAsync(it.UUID, "wear remove"));
+                    }
                     else
                     {
-                        try { await client.Inventory.RemoveItemsAsync(mine.Select(l => l.UUID), ct); sb.AppendLine($"COF link(s) removed: {string.Join(", ", mine.Select(l => l.UUID))} (the item itself is untouched)"); }
-                        catch (Exception ex) { sb.AppendLine("COF link removal FAILED: " + ex.GetBaseException().Message); }
+                        client.Appearance.RemoveFromOutfit(it);
+                        sb.AppendLine($"clothing layer removed: '{it.Name}'");
+                        if (mine.Count == 0) sb.AppendLine("no COF link to remove");
+                        else
+                        {
+                            try { await client.Inventory.RemoveItemsAsync(mine.Select(l => l.UUID), ct); sb.AppendLine($"COF link(s) removed: {string.Join(", ", mine.Select(l => l.UUID))} (the item itself is untouched)"); }
+                            catch (Exception ex) { sb.AppendLine("COF link removal FAILED: " + ex.GetBaseException().Message); }
+                        }
                     }
                     Log("wear", $"wear remove '{it.Name}' {it.UUID}: {sb.ToString().Replace("\n", "; ").TrimEnd(' ', ';')}");
                 }

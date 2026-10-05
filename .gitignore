@@ -3,3 +3,4 @@ obj/
 *.bak*
 *.log
 webhook-url.txt
+__pycache__/

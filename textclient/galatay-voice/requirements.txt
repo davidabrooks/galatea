@@ -1,0 +1,7 @@
+# galatay-voice sidecar (listen-only SL WebRTC voice + local transcription). Install: ./install.sh
+aiortc==1.15.0
+av==17.1.0
+aioice==0.10.2
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+numpy==2.5.3

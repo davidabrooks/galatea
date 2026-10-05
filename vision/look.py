@@ -25,6 +25,17 @@ VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
 def mesher_args(d, mode, me, far):
     return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + (["96", "--far=30"] if far else ["30", "--roots=32"])
 
+def bake_keys(meta, doc):
+    """Exact bake-<key>.j2c keys needed: batch bake: refs + stand-in heads for placeholder others."""
+    keys = set()
+    for b in meta.get("batches", []):
+        t = b.get("tex") or ""
+        if t.startswith("bake:"): keys.add(t[5:])
+    for o in meta.get("others", []):
+        pref = o.get("bake_prefix") or (o.get("agent_id") or "")[:8]
+        if pref: keys.add(f"{pref}-head")  # stand_in head sphere
+    return keys
+
 def main(a):
     fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
@@ -46,9 +57,21 @@ def main(a):
     if far: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
     json.dump(far and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)
-    for k, im in make_job.decode_bakes(d).items():
-        if handler.BAKE_KEY.fullmatch(k): im.convert("RGBA").save(f"{WORK}/tex/bake-{k}.png")
+    # bakes: only agents in this mesh (not every bake-*.j2c in a crowded export — was ~55–100 s)
+    t = time.time()
+    bake_cap = 256 if mode == "around" else (512 if fast else 1024)
+    only = bake_keys(meta, doc)
+    n_bake = 0
+    for k, im in make_job.decode_bakes(d, only=only, cap=bake_cap).items():
+        if handler.BAKE_KEY.fullmatch(k):
+            im.convert("RGBA").save(f"{WORK}/tex/bake-{k}.png"); n_bake += 1
+    times["bakes"] = round(time.time() - t, 1)
     json.dump(meta, open(f"{WORK}/mesh.json", "w"))
+    # around: diffuse only, smaller caps (nav: who's there / obstacles — not fabric normal maps)
+    if mode == "around":
+        os.environ.setdefault("GT_TEX_MAPS", "0")
+        os.environ.setdefault("GT_TEX_CAP_AVATAR", "512")
+        os.environ.setdefault("GT_TEX_CAP_SCENE", "256")
     info = {}; err = handler.fetch_textures(meta, info, WORK)
     if err: sys.exit(err)
     times["textures"] = info["textures"]["seconds"]
@@ -64,15 +87,25 @@ def main(a):
     os.makedirs(OUT, exist_ok=True); stamp = time.strftime("%Y%m%d-%H%M%S"); outs = []
     for kind in (["face", "body"] if mode == "self" else ["scene"]):
         out = f"{OUT}/look-{stamp}-{mode}{'-' + kind if mode == 'self' else ''}.jpg"; t = time.time()
-        env = {**os.environ, "GT_SAMPLES": "8" if fast else "24" if mode == "around" else "48", **({"GT_VIEW": view} if view else {})}
+        env = {**os.environ, "GT_SAMPLES": "8" if fast else "12" if mode == "around" else "48", **({"GT_VIEW": view} if view else {})}
+        if mode == "around":
+            env.setdefault("GT_RES", "640x360")
+            env.setdefault("GT_NOSKY", "1")
+            env.setdefault("GT_DENOISE", "0")
+            env.setdefault("GT_MIN_TRIS", "12")  # drop dust; keep chairs/walls/avatars
         r = subprocess.run(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
                             f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], capture_output=True, text=True, env=env)
-        got = [l.split()[-1] for l in r.stdout.splitlines() if l.startswith("GT: render seconds")]
+        lines = r.stdout.splitlines()
+        got = [l.split()[-1] for l in lines if l.startswith("GT: render seconds")]
+        rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
+        build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
         if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
         outs += got; times[kind] = round(time.time() - t, 1)
+        if build is not None: times["build"] = build
+        times["render_views"] = rend
     for p in outs: print(p)
     print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "seconds": times, "total": round(time.time() - t0, 1),
-                      "others": [o["name"] for o in meta.get("others", [])], "textures": info["textures"]}))
+                      "others": [o["name"] for o in meta.get("others", [])], "textures": info["textures"], "bakes": n_bake}))
 
 if __name__ == "__main__":
     main(sys.argv[1:])

@@ -9,13 +9,25 @@ import base64, datetime, glob, io, json, lzma, os, sys
 import imagecodecs
 from PIL import Image
 
-def decode_bakes(d):
-    """bake-<key>.j2c in an export dir -> {key: Pillow RGBA image}; key = bake name, or "<agent8>-<name>" for others."""
-    res = {}
-    for f in glob.glob(f"{d}/bake-*.j2c"):
+def decode_bakes(d, only=None, cap=1024, workers=None):
+    """bake-<key>.j2c -> {key: RGBA Pillow}. only=iterable of keys (or prefixes like 'd2d5be85') to decode;
+    None = all. Parallel workers default min(8, cpu). Cap thumbnails for look-around speed."""
+    import concurrent.futures as cf
+    files = glob.glob(f"{d}/bake-*.j2c")
+    if only is not None:
+        want = set(only)
+        files = [f for f in files if os.path.basename(f)[5:-4] in want]
+    def one(f):
+        key = os.path.basename(f)[5:-4]
         a = imagecodecs.jpeg2k_decode(open(f, "rb").read())
-        if a.ndim == 3 and a.shape[0] > 8:  # 8x8-ish placeholders = unused bake slot
-            im = Image.fromarray(a[..., :4]); im.thumbnail((1024, 1024)); res[os.path.basename(f)[5:-4]] = im
+        if a.ndim == 3 and a.shape[0] > 8:
+            im = Image.fromarray(a[..., :4]); im.thumbnail((cap, cap)); return key, im
+        return key, None
+    res = {}
+    n = workers or min(8, max(1, (os.cpu_count() or 4)))
+    with cf.ThreadPoolExecutor(n) as ex:
+        for key, im in ex.map(one, files):
+            if im is not None: res[key] = im
     return res
 def eep(doc):
     """Ground-sky track of the region day cycle at export time (LL: (now + day_offset) % day_length), lerped."""

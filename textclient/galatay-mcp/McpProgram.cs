@@ -134,12 +134,15 @@ public sealed class SlTools
     [McpServerTool(Name = "webhook_status"), Description("Show whether the chat webhook URL and key are configured (never shows the key), POSTs sent today, and pending batch size.")]
     public static string WebhookStatus() => Webhook.ConfigSummary();
 
-    [McpServerTool(Name = "voice"), Description("LISTEN-ONLY Second Life voice (WebRTC; the parcel/region voice channel where I stand) with local speech-to-text: 'on' joins and transcribes to /workspace/secondlife/voice/transcript-<date>.md with speaker names (my mic is never sent), 'off' leaves, 'status' shows connection, who is in the channel/speaking and the transcription backlog, 'tail' returns the latest transcript lines. Off after every login; only turn it on when David asks.")]
-    public static Task<string> Voice([Description("on | off | status | tail")] string action = "status",
+    [McpServerTool(Name = "voice"), Description("LISTEN-ONLY Second Life voice (WebRTC; the parcel/region voice channel where I stand) with local speech-to-text: 'on' joins and transcribes to /workspace/secondlife/voice/transcript-<date>.md with speaker names (my mic is never sent), 'off' leaves, 'status' shows connection/wake mode/who is speaking, 'tail' returns transcript lines, 'wake off|name|all' controls chat-webhook wakes on voice (default name = only when a line mentions Galatea; replies go in local text chat). Off after every login; only turn it on when David asks.")]
+    public static Task<string> Voice([Description("on | off | status | tail | wake")] string action = "status",
+                                     [Description("tail: line count (default 15). wake: off|name|all|test|selftest")] string arg = "",
                                      [Description("tail only: number of lines (default 15, max 200)")] int lines = 15)
     {
         var a = Clean(action).ToLowerInvariant();
-        if (a is not ("on" or "off" or "status" or "tail")) return Task.FromResult(Json(new { ok = false, result = "action must be on, off, status or tail" }));
+        var rest = Clean(arg);
+        if (a == "wake") return R(string.IsNullOrEmpty(rest) ? "voice wake" : "voice wake " + rest);
+        if (a is not ("on" or "off" or "status" or "tail")) return Task.FromResult(Json(new { ok = false, result = "action must be on, off, status, tail or wake" }));
         return R(a == "tail" ? $"voice tail {Math.Clamp(lines, 1, 200)}" : "voice " + a);
     }
 

@@ -6,13 +6,27 @@ parcel or the region/estate channel), **never sends audio**, and writes a timest
 
 ```
 voice on | voice off | voice status | voice tail [n]        (socket command; MCP tool "voice")
+voice wake off|name|all|test|selftest                       (chat-webhook wake on voice; default name)
 galatay-text --voice-selftest                               (offline: real broker + real sidecar vs fake_voice_server.py)
+galatay-text --voice-wake-selftest                          (offline: name filter, own-speech skip, debounce/rate-limit)
 # testdata/jfk-ask-not.ogg: 11 s of JFK's 1961 inaugural address (US government work, public domain), as in faster-whisper's tests
 voice-venv/bin/python fake_voice_server.py --drive          (offline: sidecar only)
 textclient/galatay-voice/install.sh                         (venv + scripts into /home/box/viewers/textclient/voice)
 ```
 
 Voice is off by default and after every login. Galatea only joins voice when David asks (design doc §4.5).
+
+## Chat-webhook wake (type `voice`)
+
+Finished transcript lines can wake the same chat routine that text chat/IMs do, so Galatea can **reply in local text chat** (she cannot speak in voice yet).
+
+| Mode | Behaviour |
+|---|---|
+| `name` (default) | Wake when a line mentions her (Galatea / Galatay / Gal / Nightingale, STT-tolerant) **or** opens the floor (`questions or comments?`, `any questions`, `any thoughts`, `anyone want to share`, `comments?`, …). Event includes prior ~30 s as `context` and `trigger` = `name` or `invitation`. |
+| `all` | Wake on every utterance (same-speaker lines debounced ~3 s; wakes rate-limited to ~1 / 10 s, extras merge). |
+| `off` | Transcript still written; no voice webhook. |
+
+Own lines never wake (she has no mic). Payload shape matches other chat events, with `type`/`kind` `"voice"`, plus optional `parcel`, `channel`, and `context` on each event. `voice wake test` posts one synthetic event whose text says no reply is needed.
 
 ## Split
 

@@ -104,10 +104,14 @@ public static class Webhook
         public string my_last_im_to_sender { get; init; } // dedupe hint: my last outgoing IM to this avatar (ISO time), null = none known
         public bool? answered_after { get; init; }         // true = that IM was sent after this event arrived
         public long? msg_id { get; init; }                 // incoming IM id, for 'im --re <msg_id>' (claim-and-send)
+        public string parcel { get; init; }                // voice: parcel name where the utterance was heard
+        public string context { get; init; }               // voice name-mode: prior ~30 s of other speakers
+        public string channel { get; init; }               // voice: "voice" (medium) or the session channel label
+        public string trigger { get; init; }               // voice: "name" | "invitation" | "all" (why this wake fired)
     }
 
     // pure (selftest-covered): bypasses the daily cap?
-    public static bool CapExempt(Ev e) => UrgentKinds.Contains(e.type) || (e.from_id == DavidId && e.type is "im" or "local_chat");
+    public static bool CapExempt(Ev e) => UrgentKinds.Contains(e.type) || (e.from_id == DavidId && e.type is "im" or "local_chat" or "voice");
     // pure: may a batch be POSTed? exempt batches always; others while under the cap
     public static bool CapAllows(bool exempt, int postsToday, int cap) => exempt || postsToday < cap;
 
@@ -218,7 +222,7 @@ public static class Webhook
         return $"webhook retry selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 
-    public static void Init() => Core.OnIncoming = c => Enqueue(c.type, c.from, c.from_id, c.text, c.time, c.distance, c.msg_id);
+    public static void Init() => Core.OnIncoming = c => Enqueue(c.type, c.from, c.from_id, c.text, c.time, c.distance, c.msg_id, c.parcel, c.context, c.channel, c.trigger);
 
     static void LogLocal(string msg) => Core.Log("webhook", msg);
 
@@ -288,13 +292,14 @@ public static class Webhook
     }
 
     // ---- debounced batching ------------------------------------------------------
-    static string ConvKey(string type, string fromId) => type == "local_chat" ? "local_chat" : $"{type}:{fromId}";
+    static string ConvKey(string type, string fromId) => type is "local_chat" or "voice" ? type : $"{type}:{fromId}";
 
-    public static void Enqueue(string type, string from, string fromId, string text, string time, double? distance, long? msgId = null)
+    public static void Enqueue(string type, string from, string fromId, string text, string time, double? distance, long? msgId = null, string parcel = null, string context = null, string channel = null, string trigger = null)
     {
         if (PostOverride == null && !ConfiguredCached()) return; // silent no-op until URL and key exist
         if (text != null && text.Length > MaxTextChars) text = text[..MaxTextChars] + "…";
-        var ev = new Ev(type, from, fromId, text, time, distance) { msg_id = msgId };
+        if (context != null && context.Length > MaxTextChars * 2) context = context[..(MaxTextChars * 2)] + "…";
+        var ev = new Ev(type, from, fromId, text, time, distance) { msg_id = msgId, parcel = parcel, context = context, channel = channel, trigger = trigger };
         if (UrgentKinds.Contains(type)) { _ = Task.Run(() => PostBatch(new List<Ev> { ev }, 0, urgent: true)); return; }
         var now = DateTime.UtcNow;
         lock (gate)

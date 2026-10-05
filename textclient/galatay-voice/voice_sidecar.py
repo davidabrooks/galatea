@@ -224,21 +224,26 @@ class Transcriber(threading.Thread):
         if not text:
             return
         self.prev = text
-        speaker = self._speaker(votes)
+        speaker, speaker_id = self._speaker(votes)
         when = dt.datetime.fromtimestamp(t0)
         self._write(when, speaker, text)
         self.lines += 1
-        emit({"t": "line", "time": when.strftime("%H:%M:%S"), "speaker": speaker, "text": text,
-              "audio_s": round(len(pcm) / SR, 1), "stt_s": round(took, 1)})
+        line = {"t": "line", "time": when.strftime("%H:%M:%S"), "speaker": speaker, "text": text,
+                "audio_s": round(len(pcm) / SR, 1), "stt_s": round(took, 1)}
+        if speaker_id:
+            line["speaker_id"] = speaker_id
+        emit(line)
 
     def _speaker(self, votes):
+        """Return (display name, primary agent UUID or "")."""
         if not votes:
-            return "(unattributed)"
+            return "(unattributed)", ""
         top = votes.most_common(2)
         def nm(i): return self.names.get(i) or ("speaker " + i[:8])
+        primary = top[0][0]
         if len(top) > 1 and top[1][1] >= 0.4 * top[0][1]:
-            return f"{nm(top[0][0])} / {nm(top[1][0])}"
-        return nm(top[0][0])
+            return f"{nm(primary)} / {nm(top[1][0])}", primary
+        return nm(primary), primary
 
     def _write(self, when, speaker, text):
         path = os.path.join(self.args.out, f"transcript-{when:%Y-%m-%d}.md")

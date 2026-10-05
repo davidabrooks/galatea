@@ -45,8 +45,10 @@ def material(b):
     key = b["tex"]; mat = b.get("mat") or {"alpha": "auto"}; m = bpy.data.materials.new(key[:50]); m.use_nodes = True
     nt = m.node_tree; p = nt.nodes["Principled BSDF"]; r, g, bl, a = b["rgba"]; L = nt.links.new
     def img(uuid, data=False):
-        path = f"{jobdir}/tex/{uuid.replace('bake:', 'bake-')}.png" if uuid else None
-        if not path or not os.path.exists(path): return None
+        if not uuid: return None
+        base = f"{jobdir}/tex/{uuid.replace('bake:', 'bake-')}"
+        path = next((p for p in (base + ".png", *(f"{base}.{c}.png" for c in (1024, 512, 256, 128))) if os.path.exists(p)), None)
+        if not path: return None
         n = nt.nodes.new("ShaderNodeTexImage"); n.image = bpy.data.images.load(path, check_existing=True)
         if data: n.image.colorspace_settings.name = "Non-Color"
         return n
@@ -157,9 +159,12 @@ def build(group, bones=None):
     drop = set()
     if group.startswith("avatar"):
         t = time.time(); drop = inner_layers(mine, bones); log(group, "lining batches dropped", len(drop), "in", round(time.time() - t, 2), "s")
+    min_tris = int(os.environ.get("GT_MIN_TRIS", "0"))  # look around: drop dust (nav still sees big obstacles)
     for bi, b in mine:
         if bi in drop: continue
-        nv, ni = b["nv"], b["ni"]; P, N, T, I = arrays(b)
+        nv, ni = b["nv"], b["ni"]
+        if min_tris and ni // 3 < min_tris and not b["group"].startswith("avatar"): continue
+        P, N, T, I = arrays(b)
         me = bpy.data.meshes.new(b["tex"][:40]); nt = ni // 3
         me.vertices.add(nv); me.vertices.foreach_set("co", P)
         me.loops.add(ni); me.loops.foreach_set("vertex_index", I)
@@ -195,8 +200,9 @@ def gpu_setup():
             for d in prefs.devices: d.use = d.type == "OPTIX"
             sc.cycles.device = "GPU" if any(d.type == "OPTIX" for d in prefs.devices) else "CPU"
         except Exception as e: log("optix unavailable", e); sc.cycles.device = "CPU"
-        sc.cycles.samples = int(os.environ.get("GT_SAMPLES", "64")); sc.cycles.use_denoising = True
-        sc.cycles.transparent_max_bounces = 16
+        sc.cycles.samples = int(os.environ.get("GT_SAMPLES", "64"))
+        sc.cycles.use_denoising = os.environ.get("GT_DENOISE", "1") != "0" and sc.cycles.samples >= 24
+        sc.cycles.transparent_max_bounces = 8 if sc.cycles.samples < 24 else 16
         log("cycles device", sc.cycles.device)
     elif engine == "WORKBENCH":  # flat preview: textures, no lighting model (cheapest; CPU/llvmpipe friendly)
         sc.render.engine = "BLENDER_WORKBENCH"; sc.display.shading.color_type = "TEXTURE"; sc.display.shading.light = "STUDIO"
@@ -212,7 +218,10 @@ def world(strength):
 def camera(loc, target, lens, res):
     cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam")); sc.collection.objects.link(cam); sc.camera = cam
     cam.location = loc; cam.rotation_euler = (Vector(target) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
-    cam.data.lens = lens; cam.data.clip_start = 0.02; sc.render.resolution_x, sc.render.resolution_y = res
+    cam.data.lens = lens; cam.data.clip_start = 0.02
+    if os.environ.get("GT_RES"):
+        res = tuple(int(x) for x in os.environ["GT_RES"].split("x"))
+    sc.render.resolution_x, sc.render.resolution_y = res
 
 def area(loc, target, energy, size):
     bpy.ops.object.light_add(type="AREA", location=loc); L = bpy.context.object; L.data.energy = energy; L.data.size = size
@@ -386,7 +395,12 @@ if kind == "scene":
         at = (o["pos"][0], o["pos"][1], z0_of(*fp, olo[2]))
         for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
         heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])
-    if M.get("env"): eep(M["env"])
+    if os.environ.get("GT_NOSKY") == "1":
+        # lean look-around: flat horizon, one sun; no sky gradient / water reflections work
+        bpy.ops.object.light_add(type="SUN", rotation=(math.radians(50), 0, math.radians(200))); bpy.context.object.data.energy = 2.5
+        w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True
+        bg = w.node_tree.nodes["Background"]; bg.inputs["Color"].default_value = (0.45, 0.55, 0.7, 1); bg.inputs["Strength"].default_value = 0.8
+    elif M.get("env"): eep(M["env"])
     else:
         bpy.ops.object.light_add(type="SUN", rotation=(math.radians(50), 0, math.radians(200))); bpy.context.object.data.energy = 3.5
         world(1.0)

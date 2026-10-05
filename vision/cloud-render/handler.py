@@ -43,8 +43,21 @@ def to_png(data, path, cap):
     im = im.convert("RGBA"); im.thumbnail((cap, cap)); im.save(path)
 
 def fetch_tex(uuid, outdir, cap=512):
-    path = os.path.join(outdir, uuid + ".png")
+    # Cap in the filename so a 256 look-around cache entry isn't reused as a 1024 portrait (and vice versa).
+    path = os.path.join(outdir, f"{uuid}.{cap}.png")
+    legacy = os.path.join(outdir, uuid + ".png")
     if os.path.exists(path): return uuid, path, None
+    # reuse / downscale legacy uncappped cache (uuid.png) so a cap change is free offline
+    if os.path.exists(legacy):
+        try:
+            with Image.open(legacy) as im:
+                im = im.convert("RGBA")
+                if max(im.size) <= cap:
+                    return uuid, legacy, None
+                im.thumbnail((cap, cap)); im.save(path)
+                return uuid, path, None
+        except Exception:
+            pass
     try:
         to_png(urllib.request.urlopen(CDN + uuid, timeout=20).read(), path, cap)
         return uuid, path, None
@@ -70,20 +83,28 @@ def mesh_job(inp, out, work):
 
 def fetch_textures(meta, out, work):
     """Every texture the batches reference (CDN, capped), into work/tex; None or an error string."""
+    max_tex = int(os.environ.get("GT_MAX_TEXTURES", str(MAX_TEXTURES)))
+    maps = os.environ.get("GT_TEX_MAPS", "1") != "0"  # 0 = diffuse only (look around navigation)
+    av_cap = int(os.environ.get("GT_TEX_CAP_AVATAR", "1024"))
+    sc_cap = int(os.environ.get("GT_TEX_CAP_SCENE", "512"))
     want = {}
     for b in meta["batches"]:
         mat = b.get("mat") or {}
-        for t, cap in [(b["tex"], 1024 if b["group"].startswith("avatar") else 512)] + [(mat.get(k), 512) for k in ("normal", "spec", "mr", "emissive_tex")]:
+        pairs = [(b["tex"], av_cap if b["group"].startswith("avatar") else sc_cap)]
+        if maps:
+            pairs += [(mat.get(k), min(512, sc_cap)) for k in ("normal", "spec", "mr", "emissive_tex")]
+        for t, cap in pairs:
             if isinstance(t, str) and UUID.match(t): want[t] = max(want.get(t, 0), cap)
     near = {t for b in meta["batches"] if b["group"] != "far" for t in [b["tex"], *(b.get("mat") or {}).values()] if isinstance(t, str)}
-    if len(want) > MAX_TEXTURES:  # backdrop ("far") textures go first: those faces then show their plain colour
-        for t in [t for t in want if t not in near][:len(want) - MAX_TEXTURES]: del want[t]
-    if len(want) > MAX_TEXTURES: return f"{len(want)} textures > {MAX_TEXTURES}"
+    if len(want) > max_tex:  # backdrop ("far") textures go first: those faces then show their plain colour
+        for t in [t for t in want if t not in near][:len(want) - max_tex]: del want[t]
+    if len(want) > max_tex: return f"{len(want)} textures > {max_tex}"
     t = time.time()
     workers = max(1, int(os.environ.get("GT_TEX_WORKERS", "8")))
     with cf.ThreadPoolExecutor(workers) as ex:
         res = list(ex.map(lambda kv: fetch_tex(kv[0], work + "/tex", kv[1]), want.items()))
-    out["textures"] = {"requested": len(want), "ok": sum(1 for r in res if r[1]), "errors": [r for r in res if r[2]][:5], "seconds": round(time.time() - t, 1), "workers": workers}
+    out["textures"] = {"requested": len(want), "ok": sum(1 for r in res if r[1]), "errors": [r for r in res if r[2]][:5],
+                       "seconds": round(time.time() - t, 1), "workers": workers, "maps": maps, "caps": [av_cap, sc_cap]}
     return None
 
 def handler(job):

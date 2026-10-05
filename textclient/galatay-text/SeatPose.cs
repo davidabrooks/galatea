@@ -121,10 +121,13 @@ public static partial class Program
     static void ClearKeptPoseCopies()
     {   // the pose keeper may hold copies of the previous seat pose; drop them so the seat's new pose shows
         foreach (var id in keptPose.Keys.ToList()) { try { client.Self.AnimationStop(id, true); } catch { } keptPose.TryRemove(id, out _); }
+        lastSeatPoseMenuAt = DateTime.Now; // grace: SeatAttachLoop must not "recover" during an intentional pose change
+        seatPoseMissingSince = null;
     }
     // choose a random pose from the seat's menu; since = when the sit was requested (the auto menu may already be here)
     static async Task<string> SeatPose(Primitive seat, string seatName, DateTime since, bool change, CancellationToken ct)
     {
+        lastSeatPoseMenuAt = DateTime.Now; seatPoseMissingSince = null;
         bool shared = SeatHasOtherSitters(seat);
         NotePoseSeatShared(shared);
         var d = change ? null : await WaitSeatDialog(seat, since, 5000, ct);

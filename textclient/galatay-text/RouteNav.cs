@@ -5,6 +5,9 @@
 //           route record <avatar> <name> | route record stop | route stop | goto_place <place> [nosit] [allow_zendo] [allow_outside]
 //           overhead [tag] (alias snapshot) -> /workspace/secondlife/images/overhead-<time>[-tag].png
 // Walking: server autopilot re-aimed every 0.4 s at a carrot 2.5 m ahead on the polyline (no stop at waypoints).
+// Doors (2026-10-05): before a known nav-grid door on the path, touch it (and same-axis siblings / double doors) and
+// walk straight through without a long pause — these auto-close quickly. Stuck near a door: DoorUnstick first, then
+// the usual sidestep recoveries. Same FollowPoly path is used by route walk and goto_place.
 // Bounds: every point checked (2 m steps) against the zendo footprint (+2 m) and the parcel (Naberrie: The Buddha Center;
 // elsewhere: the parcel she starts in) unless allow_zendo / allow_outside. Stuck: sidestep max 1 m / back off 1.2 m, no flying,
 // after 4 failed recoveries she stops and logs. People: avatar within the next 3 m of her lane -> pause up to 10 s, then
@@ -259,6 +262,7 @@ public static partial class Program
         float s = 0, lastProgS = 0, recovAtS = -99, lane = 0, laneUntil = -1, maxDev = 0; Vector3 maxDevAt = Vector3.Zero;
         DateTime lastProgT = DateTime.Now, lastDriftLog = DateTime.MinValue; DateTime? blockedSince = null, belowSince = null;
         int recov = 0, pauses = 0, sidesteps = 0, stuckEvents = 0; Block lastBlock = null; bool triedSide = false;
+        var doorsOpened = new HashSet<UUID>(); bool doorSeqTried = false;
         double idleSecs = 0; float nextIdle = o.Idle ? 15f + (float)wRnd.NextDouble() * 30f : float.MaxValue; // wander: short natural pauses
         var start = client.Self.SimPosition;
         bool legacy = steerLegacy;
@@ -370,11 +374,40 @@ public static partial class Program
                         lastProgT = DateTime.Now; lastProgS = s;
                     }
                 }
+                // doors ahead on a nav grid: touch (pair) then keep moving — auto-close, no long pause
+                {
+                    var look = Math.Min(poly.Len, s + 4f);
+                    var a2 = V2(poly.At(s)); var b2 = V2(poly.At(look));
+                    var ng = NavGridFor(region, poly.At(s), poly.At(look));
+                    if (ng != null)
+                    {
+                        var ahead = DoorsForCrossing(ng, a2, b2).Where(nd => !doorsOpened.Contains(nd.Id)).ToList();
+                        if (ahead.Count > 0 && Vector2.Distance(a2, new Vector2(ahead[0].OpenCenter.X, ahead[0].OpenCenter.Y)) < 5f)
+                        {
+                            client.Self.AutoPilotCancel();
+                            RLogR($"{o.Label}: door(s) ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching then through");
+                            await EnsureDoorsOpen(ahead, ct);
+                            foreach (var nd in ahead) doorsOpened.Add(nd.Id);
+                            doorSeqTried = false; // allow unstick again if still blocked
+                            lastProgT = now; lastProgS = s; needAim = true; // no long idle — through within DoorThroughDelayMs
+                        }
+                    }
+                }
                 // stuck?
                 if (s - lastProgS >= 0.4f) { lastProgS = s; lastProgT = now; if (s - recovAtS > 2.5f) recov = 0; }
                 else if ((now - lastProgT).TotalSeconds > 3.0)
                 {
                     recov++; stuckEvents++; recovAtS = s;
+                    if (!doorSeqTried)
+                    {
+                        doorSeqTried = true; client.Self.AutoPilotCancel();
+                        var dr = await DoorUnstick(null, poly.At(Math.Min(poly.Len, s + 3f)), 4f, o.Label, ct);
+                        if (dr != null)
+                        {
+                            RLogR($"{o.Label}: stuck near a door -> {dr}");
+                            if (!dr.Contains("FAILED")) { lastProgT = now; lastProgS = s; needAim = true; recov = Math.Max(0, recov - 1); continue; }
+                        }
+                    }
                     if (recov > 4) { client.Self.AutoPilotCancel(); var m = Summary($"stopped: STUCK at {P3(me)} (s={s:F0}) after 4 recoveries"); RLogR($"{o.Label}: {m}"); return (false, m); }
                     float side = recov switch { 1 => 1f, 2 => -1f, 3 => 1f, _ => -1f };
                     if (recov >= 3)

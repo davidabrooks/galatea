@@ -13,6 +13,7 @@ public class SelftestCliTests
     [InlineData("--attach-move-selftest")]    // PR #40/#42 attach move
     [InlineData("--detach-cof-selftest")]     // PR #41 detach COF
     [InlineData("--follow-door-selftest")]    // PR #44/#48 follow + doors + nav + linger
+    [InlineData("--front-selftest")]         // front arc + avatar heading helpers
     [InlineData("--exp-selftest")]            // PR #45/#46 experiences + TEMP
     [InlineData("--worn-selftest")]           // attachment tracking
     [InlineData("--voice-wake-selftest")]     // PR #49/#50 voice wake

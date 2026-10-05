@@ -143,7 +143,15 @@ public static partial class Program
             {
                 var sub = from + (to - from) * (k / (float)n);
                 bool last = i == pts.Count - 1 && k == n;
+                // Proactive door open on nav grids (same as route walk / nav): touch closed leaves, go through fast
+                var ng = NavGridFor(client.Network.CurrentSim?.Name, from, sub);
+                if (ng != null)
+                {
+                    var doors = DoorsForCrossing(ng, V2(from), V2(sub));
+                    if (doors.Count > 0) await EnsureDoorsOpen(doors, ct);
+                }
                 if (!await WalkLeg(sub, last ? lastTol : 1.0f, $"{i + 1}/{pts.Count}{(n > 1 ? $".{k}" : "")}", ct)) return false;
+                from = client.Self.SimPosition;
             }
         }
         return true;

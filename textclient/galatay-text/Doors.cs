@@ -385,6 +385,15 @@ public static partial class Program
         C(DoorNextAfterFailedOpenWalk("bounced back") == "touch", "bounced open-walk -> touch next");
         C(DoorNextAfterFailedOpenWalk("nothing (no progress)") == "touch", "no-progress open-walk -> touch next");
         C(DoorNextAfterFailedOpenWalk("passed through") == "none", "passed -> no extra touch");
+        C(DoorThroughDelayMs == 300, "door through delay 300 ms (go before auto-close)");
+        {
+            var east = new NavDoor { Name = "front-double-east", Id = UUID.Parse("1b5752e3-7a49-aa75-621f-033b5b61d125"), AlongX = true, Center = new Vector3(229.44f, 79.58f, 29.39f) };
+            var west = new NavDoor { Name = "front-double-west", Id = UUID.Parse("22927a8c-b2f0-1299-d837-952bd27b31da"), AlongX = true, Center = new Vector3(226.66f, 79.58f, 29.39f) };
+            var side = new NavDoor { Name = "side-room-2", Id = UUID.Parse("c9a6a523-81dd-fadc-331f-4e0147ee2841"), AlongX = false, Center = new Vector3(231.85f, 76.03f, 29.38f) };
+            var pair = DoorPairGroup(new[] { east, west, side }, east);
+            C(pair.Count == 2 && pair.Any(d => d.Name.Contains("east")) && pair.Any(d => d.Name.Contains("west")), "door pair: east+west together, not side-room");
+            C(DoorPairGroup(new[] { east, west, side }, side).Count == 1, "side-room has no same-axis sibling in pair radius");
+        }
         C(DoorPlan.Length >= 5 && DoorPlan.Select(p => p.kind).Distinct().Count() >= 4 && DoorPlan.Any(p => p.lateral > 0) && DoorPlan.Any(p => p.lateral < 0), "plan: >= 5 distinct attempts incl. +-0.5 m re-approach");
         C(LooksLikeDoor("Front Door", "") && LooksLikeDoor("Garden gate", "") && !LooksLikeDoor("Door mat", "") && !LooksLikeDoor("Door frame", ""), "door names (not mats/frames)");
         return $"door selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();

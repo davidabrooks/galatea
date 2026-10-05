@@ -73,62 +73,23 @@ public static partial class Program
     static async Task<string> OutfitWearNamed(string name, bool replace)
     {
         if (!LoggedIn) return "not logged in";
-        using var cts = new CancellationTokenSource(90000); var ct = cts.Token;
+        using var cts = new CancellationTokenSource(150000); var ct = cts.Token;
         var folder = await FindOutfitFolder(name, ct);
         if (folder == null) return $"no outfit '{name}' under My Outfits";
-        var kids = await ReadFolderRO(folder.UUID, ct);
-        var items = new List<InventoryBase>();
-        foreach (var b in kids.Where(k => k.ParentUUID == folder.UUID))
+        if (!replace)
         {
-            if (b is InventoryItem link && link.IsLink())
-            {
-                var t = await FetchItemRO(link.AssetUUID, ct);
-                if (t != null && !t.IsLink()) items.Add(t);
-            }
-            else if (b is InventoryItem it && !it.IsLink()) items.Add(it);
+            var items = await ResolveOutfitItems(folder, ct);
+            client.Appearance.AddToOutfit(items.Where(i => OutfitGroup(i.Name) == null && i.UUID != RetiredAwpAo).ToList(), false);
+            return $"added outfit '{folder.Name}' pieces (no hair/head/body; add mode)";
         }
-        if (items.Count == 0) return $"outfit '{folder.Name}' has no wearable links";
-        await client.Appearance.WearOutfitAsync(items, replace);
-        RememberNamedOutfit(folder.Name);
-        Log("outfit", $"wore outfit '{folder.Name}' ({items.Count} items, replace={replace})");
-        return $"wearing outfit '{folder.Name}' ({items.Count} items, replace={replace})";
+        return await OutfitWearSafe(folder, ct); // never stacks hair/head/body (OutfitSafe.cs)
     }
 
     static async Task<string> BikiniHudRandomize(CancellationToken ct)
     {
-        // Attach HUD (ADD), wait ready, pick random [TEXTURE], touch, detach. Never Martha AO.
-        var add = await WearOpsCmd("wear", new[] { "add", BikiniHudItem.ToString() });
-        var sb = new StringBuilder(); sb.AppendLine(add);
-        // Wait for HUD ready ownersay / attachment appear
-        Primitive hud = null;
-        for (int i = 0; i < 40; i++)
-        {
-            await Task.Delay(250, ct);
-            hud = WornPrims().FirstOrDefault(p => AttachItemId(p) == BikiniHudItem || p.ID == BikiniHudItem
-                || (p.Properties?.Name ?? "").Contains("<HUD> Spicy Bikini", StringComparison.OrdinalIgnoreCase));
-            if (hud != null) break;
-        }
-        if (hud == null) { sb.AppendLine("HUD did not appear after wear add"); return sb.ToString().TrimEnd(); }
-        await EnsureProperties(Sim, new List<Primitive> { hud });
-        // brief settle for HUD scripts
-        await Task.Delay(2500, ct);
-        var prims = LinkPrims(hud); await EnsureProperties(Sim, prims);
-        var list = new List<(int link, uint local, string name, string desc)>();
-        for (int i = 0; i < prims.Count; i++)
-            list.Add((i + 1, prims[i].LocalID, prims[i].Properties?.Name ?? "?", prims[i].Properties?.Description ?? ""));
-        var pick = BikiniPickTexture(list, Random.Shared);
-        if (pick == null) { sb.AppendLine("no [TEXTURE] buttons on HUD"); }
-        else
-        {
-            var (link, local, label) = pick.Value;
-            var touch = await TouchAttachment($"67c881aa-5adf-3f68-9c5c-0adb67e8e484 {link}");
-            sb.AppendLine($"picked HUD texture/color '{label}' (link {link}): {touch}");
-            await Task.Delay(2000, ct); // let scripts apply to top+panties
-            Log("bikini", $"HUD pick '{label}' link {link} local {local}");
-        }
-        var rem = await WearOpsCmd("wear", new[] { "remove", BikiniHudItem.ToString() });
-        sb.AppendLine(rem);
-        return sb.ToString().TrimEnd();
+        var hud = await FetchItemRO(BikiniHudItem, ct);
+        if (hud == null) return "Spicy Bikini HUD item not found";
+        return await HudRandomize(hud, new List<UUID> { BikiniTopItem, BikiniPantiesItem }, ct); // OutfitSafe.cs: random among all colors/patterns, verify, detach
     }
 
     static async Task<string> BikiniOn()

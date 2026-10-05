@@ -27,8 +27,12 @@ public static partial class Program
     static DateTime beachTickAt = DateTime.MinValue;
     static int dailyOutfitKick; // 0=pending after login, 1=running/done this process
 
+    static volatile bool zoneArmed; // false until the login sequence has decided beach/house (no race with the daily pick)
+    static bool BikiniWorn() { var have = WornPrims().Select(AttachItemId).ToHashSet(); return have.Contains(BikiniTopItem) && have.Contains(BikiniPantiesItem); }
+
     static void OutfitZonesLoad()
     {
+        zoneArmed = false; Interlocked.Exchange(ref dailyOutfitKick, 0);
         try { if (File.Exists(LastNamedOutfitFile)) lastNamedOutfit = File.ReadAllText(LastNamedOutfitFile).Trim(); } catch { }
         try
         {
@@ -78,7 +82,7 @@ public static partial class Program
 
     static async Task OutfitZoneTick()
     {
-        if (!LoggedIn || beachOutfitBusy) return;
+        if (!LoggedIn || beachOutfitBusy || !zoneArmed) return;
         var now = DateTime.UtcNow;
         if ((now - beachTickAt).TotalSeconds < 2.5) return;
         beachTickAt = now;
@@ -121,7 +125,7 @@ public static partial class Program
                 else
                 {
                     Log("outfit-zone", $"leaving beach (z={z:F1}): restoring outfit '{restore}'");
-                    var r = await OutfitWearNamed(restore, replace: true);
+                    var r = await WearOutfitWithHuds(restore);
                     RememberNamedOutfit(restore);
                     // Detach bikini HUD if still on
                     if (WornPrims().Any(p => AttachItemId(p) == BikiniHudItem))
@@ -135,42 +139,64 @@ public static partial class Program
         finally { beachOutfitBusy = false; }
     }
 
+    // Login order (David 16:16): settle, decide beach/house FIRST, then the daily pick. On the beach: keep / put on the
+    // Bikini and save the daily pick for the walk up to the house. Not on the beach: wear the daily pick (once per PT day).
+    internal static string LoginOutfitPlan(bool onBeach, bool bikiniWorn, bool dailyPending, string rememberedForHouse)
+    {
+        if (onBeach) return (bikiniWorn ? "keep-bikini" : "bikini-on") + (dailyPending ? "+daily-deferred" : "");
+        if (dailyPending) return "daily-wear";
+        return string.IsNullOrWhiteSpace(rememberedForHouse) ? "keep" : "restore-remembered";
+    }
+
     static async Task DailyOutfitAfterLogin()
     {
         if (Interlocked.Exchange(ref dailyOutfitKick, 1) != 0) return;
         try
         {
-            await Task.Delay(25000); // let appearance / COF settle
+            await Task.Delay(20000); // attachments + COF settle after login
             if (!LoggedIn) return;
-            OutfitZonesLoad();
             var today = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow,
-                TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles")).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles")).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
             string prev = null;
+            try { if (File.Exists(DailyOutfitDateFile)) prev = File.ReadLines(DailyOutfitDateFile).FirstOrDefault()?.Trim(); } catch { }
+            bool dailyPending = prev != today;
+            var region = client.Network.CurrentSim?.Name ?? "";
+            var z = client.Self.SimPosition.Z;
+            bool onBeach = OutfitZoneFor(region, z, false) == "beach" || (beachMode && OutfitZoneFor(region, z, true) == "beach");
+            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null);
+            Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT)");
+            string pick = null;
+            if (dailyPending)
+            {
+                using var cts = new CancellationTokenSource(60000);
+                var cands = DailyOutfitCandidates((await ListOutfitFolders(cts.Token)).Select(f => f.Name));
+                if (cands.Count > 0) pick = cands[Random.Shared.Next(cands.Count)];
+            }
+            beachOutfitBusy = true;
             try
             {
-                if (File.Exists(DailyOutfitDateFile))
+                if (onBeach)
                 {
-                    // file is "yyyy-MM-dd\n<outfit>\n" — only the first line is the date
-                    prev = File.ReadLines(DailyOutfitDateFile).FirstOrDefault()?.Trim();
+                    if (pick != null) beachRememberedOutfit = pick;           // worn when she goes up to the house
+                    else if (string.IsNullOrWhiteSpace(beachRememberedOutfit) && !string.IsNullOrWhiteSpace(lastNamedOutfit) && !BikiniNameRx.IsMatch(lastNamedOutfit))
+                        beachRememberedOutfit = lastNamedOutfit;
+                    beachMode = true; PersistBeachState();
+                    if (!BikiniWorn()) Log("outfit-daily", "on the beach without the bikini: " + (await BikiniOn()).Replace("\n", " | "));
+                    else Log("outfit-daily", "on the beach in the bikini: keeping it");
+                    if (pick != null) Log("outfit-daily", $"daily pick '{pick}' saved for the house");
                 }
+                else
+                {
+                    if (beachMode && !string.IsNullOrWhiteSpace(beachRememberedOutfit) && pick == null) pick = beachRememberedOutfit;
+                    beachMode = false; beachRememberedOutfit = null; PersistBeachState();
+                    if (pick != null) Log("outfit-daily", $"wearing '{pick}': " + (await WearOutfitWithHuds(pick)).Replace("\n", " | "));
+                }
+                if (dailyPending && pick != null)
+                    try { Directory.CreateDirectory(Path.GetDirectoryName(DailyOutfitDateFile)!); File.WriteAllText(DailyOutfitDateFile, today + "\n" + pick + "\n"); } catch { }
             }
-            catch { }
-            if (prev == today) { Log("outfit-daily", $"already picked for {today} PT; skip"); return; }
-            // Beach zone owns the look while she is on the Peronaut beach (do not ReplaceOutfit over Bikini).
-            if (beachMode || OutfitZoneFor(client.Network.CurrentSim?.Name ?? "", client.Self.SimPosition.Z, beachMode) == "beach")
-            { Log("outfit-daily", "on beach: deferring daily pick until upstairs"); return; }
-            using var cts = new CancellationTokenSource(90000);
-            var folders = await ListOutfitFolders(cts.Token);
-            var cands = DailyOutfitCandidates(folders.Select(f => f.Name));
-            if (cands.Count == 0) { Log("outfit-daily", "no non-Bikini outfits to pick"); return; }
-            var pick = cands[Random.Shared.Next(cands.Count)];
-            Log("outfit-daily", $"first login of {today} PT: wearing '{pick}' among {cands.Count}: {string.Join(", ", cands)}");
-            var r = await OutfitWearNamed(pick, replace: true);
-            RememberNamedOutfit(pick);
-            try { Directory.CreateDirectory(Path.GetDirectoryName(DailyOutfitDateFile)!); File.WriteAllText(DailyOutfitDateFile, today + "\n" + pick + "\n"); } catch { }
-            Log("outfit-daily", r);
+            finally { beachOutfitBusy = false; zoneArmed = true; }
         }
-        catch (Exception ex) { Log("outfit-daily", "error: " + ex.GetBaseException().Message); }
+        catch (Exception ex) { Log("outfit-daily", "error: " + ex.GetBaseException().Message); zoneArmed = true; }
     }
 
     // Move My Outfits folders to Trash (reversible from inventory Trash). Does not purge items.
@@ -236,6 +262,11 @@ public static partial class Program
         var c = DailyOutfitCandidates(new[] { "Bikini", "Spicy", "tubetop", "tshirt", "monk", "Bikini" });
         C(c.SequenceEqual(new[] { "monk", "tshirt", "tubetop" }), $"daily candidates ({string.Join(",", c)})");
         C(!c.Any(BikiniNameRx.IsMatch), "Bikini/Spicy excluded");
+        C(LoginOutfitPlan(true, true, true, null) == "keep-bikini+daily-deferred", "login on beach in bikini: keep, defer daily");
+        C(LoginOutfitPlan(true, false, false, null) == "bikini-on", "login on beach not in bikini: bikini on");
+        C(LoginOutfitPlan(false, true, true, null) == "daily-wear", "login upstairs: daily wear");
+        C(LoginOutfitPlan(false, false, false, "tshirt") == "restore-remembered", "login upstairs after beach: restore");
+        C(LoginOutfitPlan(false, false, false, null) == "keep", "login upstairs, daily done: keep");
         return $"outfit-zones selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

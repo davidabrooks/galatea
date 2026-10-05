@@ -236,6 +236,7 @@ public static partial class Program
         if (args.Contains("--exp-selftest")) { var r = ExpSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--front-selftest")) { var r = FrontSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--bikini-selftest")) { var r = BikiniSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: HUD texture pick among D/W/T (BikiniOutfit.cs)
+        if (args.Contains("--outfit-safe-selftest")) { var r = OutfitSafeSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--outfit-zones-selftest")) { var r = OutfitZonesSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)
         {
@@ -298,7 +299,8 @@ public static partial class Program
         // 13:03 (David): the Firestorm LSL Bridge is only for Firestorm (which re-adds it itself): never re-attach it from the text client.
         // The COF link stays as it is. Comma-separated name prefixes, GT_OUTFIT_KEEP_OFF.
         var keepOff = Env("GT_OUTFIT_KEEP_OFF", "#Firestorm LSL Bridge").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        client.Settings.Agent.OutfitSendExclude = (id, name) => keepOff.Any(k => name.StartsWith(k, StringComparison.OrdinalIgnoreCase));
+        // 2026-10-05: clothing color HUDs ('<HUD> ...', '[HUD ...') are transient: never re-attached by the after-bake outfit send
+        client.Settings.Agent.OutfitSendExclude = (id, name) => keepOff.Any(k => name.StartsWith(k, StringComparison.OrdinalIgnoreCase)) || ClothingHudNameRx.IsMatch(name ?? "");
         Log("appearance", $"login outfit send keeps off: {string.Join(", ", keepOff)}");
         Log("appearance", $"login outfit re-send mode: {outfitMode} (SendOutfitAfterBake={client.Settings.Agent.SendOutfitAfterBake}, detach-all={client.Settings.Agent.OutfitSendDetachAll})");
         client.Throttle.Wind = 0; client.Throttle.Cloud = 0;
@@ -1632,7 +1634,10 @@ public static partial class Program
   offer allow <object name> [min] | offer status | offer off   accept task-inventory offers ONLY from her own object with that name (default 5 min, one offer)
   outfit plan|create <name> [extra ids]   dry run / create an Outfit folder under My Outfits with links to the original items (COF minus LSL Bridge)
   outfit rename <old> <new>      rename a My Outfits folder (reversible; Spicy Bikini also matches folder named Spicy)
-  outfit wear <name> [replace|add]   wear an Outfit folder (default replace)
+  outfit wear <name> [replace|add]   wear an Outfit folder without stacking (hair/head/body replace, never two hairs; AO untouched) + clothing color HUDs randomized
+  outfit huds <name>             attach each clothing HUD of that outfit, random color/pattern, verify, detach
+  outfit coffix                  add COF links for worn items that have none (so relog keeps the look)
+  outfit link-remove <outfit> <name part> | outfit link-add <outfit> <item uuid>   edit an outfit definition (removed link -> Trash)
   outfit trash <name…>|defaults  move outfit folder(s) to inventory Trash (defaults=Original, Avatar Welcome Pack, monk*)
   outfit zone status|selftest    Peronaut beach/house outfit swap status
   outfit daily status            last once-per-PT-day random outfit pick

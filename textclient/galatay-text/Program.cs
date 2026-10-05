@@ -235,6 +235,8 @@ public static partial class Program
         if (args.Contains("--voice-selftest")) { var r = await VoiceSelfTest(); Console.WriteLine(r); return r.Contains("FAIL ") || !r.Contains(": 0 FAIL") ? 1 : 0; } // offline: voice broker + sidecar vs fake_voice_server.py (Voice.cs)
         if (args.Contains("--exp-selftest")) { var r = ExpSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--front-selftest")) { var r = FrontSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--bikini-selftest")) { var r = BikiniSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: HUD texture pick among D/W/T (BikiniOutfit.cs)
+        if (args.Contains("--outfit-zones-selftest")) { var r = OutfitZonesSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)
         {
             var r = FollowSelfTest() + "\n" + DoorSelfTest() + "\n" + SeatLingerSelfTest() + "\n" + NavSelfTest() + "\n" + FrontSelfTest(); Console.WriteLine(r);
@@ -339,6 +341,8 @@ public static partial class Program
         _ = Task.Run(() => RefreshMutes(20000));
         _ = Task.Run(FetchOfflineIms); // IMs stored while logged out / session dead (OfflineIm.cs)
         _ = Task.Run(ResurfaceRestoredOffers); // restored group invites: re-check + urgent webhook again ~45 s after login (OfferStore.cs)
+        OutfitZonesLoad();
+        _ = Task.Run(DailyOutfitAfterLogin); // once per PT calendar day: random non-Bikini outfit (OutfitZones.cs)
         if (attachBlockTask == null) attachBlockTask = Task.Run(SeatAttachLoop); // seat-off attachments (AttachWatch.cs)
         GC.Collect();
         return msg;
@@ -572,6 +576,7 @@ public static partial class Program
             // follow itself runs in FollowLoop (Follow.cs, 250 ms: standoff point, bands, doors)
             try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
             try { CameraAnchorTick(); } catch { }
+            try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } // OutfitZones.cs beach/house
             try { await Task.Delay(1000, cts.Token); } catch { }
         }
     }
@@ -1626,7 +1631,13 @@ public static partial class Program
   rez <item> | take <object>  rez her own Object item 1.5 m in front of her / take her own object back into Objects
   offer allow <object name> [min] | offer status | offer off   accept task-inventory offers ONLY from her own object with that name (default 5 min, one offer)
   outfit plan|create <name> [extra ids]   dry run / create an Outfit folder under My Outfits with links to the original items (COF minus LSL Bridge)
+  outfit rename <old> <new>      rename a My Outfits folder (reversible; Spicy Bikini also matches folder named Spicy)
+  outfit wear <name> [replace|add]   wear an Outfit folder (default replace)
+  outfit trash <name…>|defaults  move outfit folder(s) to inventory Trash (defaults=Original, Avatar Welcome Pack, monk*)
+  outfit zone status|selftest    Peronaut beach/house outfit swap status
+  outfit daily status            last once-per-PT-day random outfit pick
   outfit check                   READ-ONLY: WARNING for COF object links whose items are not attached (stale links re-attach on relog)
+  bikini on|off                  on: wear Bikini outfit, attach Spicy Bikini HUD, random [TEXTURE] (D/W/T color or pattern), detach HUD; off: bikini off, strapless+jeans on. Auto on Peronaut beach zone; restore remembered outfit upstairs.
   invitem <item uuid>         check that an inventory item exists (FetchItem; never attaches)
   voice on|off|status|tail [n] | voice wake off|name|all|test|selftest   LISTEN-ONLY SL voice + webhook wake (default wake=name: only when a line mentions me); transcript /workspace/secondlife/voice/transcript-<date>.md; mic never sent; off after every login (Voice.cs)
   logout                      log out cleanly and exit";
@@ -1845,6 +1856,11 @@ public static partial class Program
             case "wear": case "rez": case "take": case "offer": return await WearOpsCmd(cmd, a);
             case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...]";
             case "outfit": return await OutfitCmd(a);
+            case "bikini":
+                if (a.Length >= 1 && a[0] == "on") return await BikiniOn();
+                if (a.Length >= 1 && a[0] == "off") return await BikiniOff();
+                if (a.Length >= 1 && a[0] == "selftest") return BikiniSelfTest();
+                return "usage: bikini on|off|selftest";
             case "sitguard":
                 if (a.Length == 1 && (a[0] == "on" || a[0] == "off")) sitGuard = a[0] == "on";
                 return $"sit guard {(sitGuard ? "on" : "off")}; last check: {lastHeightCheck}";

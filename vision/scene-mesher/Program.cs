@@ -56,10 +56,11 @@ static class Mesher
     }
 
     // Some mesh bodies ship inverse_bind_matrix / bind_shape_matrix factored for a non-1x bind skeleton
-    // (IB diag 0.1 with BS~25, or IB diag 100 with BS~0.025 — same BS*IB product). LLSkinningUtil still does
-    // IB * jointWorld on the viewer's 1x joints, so those meshes pancake (Scentual90 2026-10-04: body collapsed into
-    // arm clusters). Retarget: IB' = inv(default 1x World), BS' = BS * s (s = mPelvis IB diagonal). Rest pose matches
-    // the correctly-sized shape; Galatea-style s≈1 is unchanged. Study-only vs Firestorm LLSkinningUtil.
+    // (IB diag ~0.1 with BS~25, or IB diag ~100 with BS~0.025 — same BS*IB product). LLSkinningUtil still does
+    // IB * jointWorld on the viewer's 1x joints, so those meshes pancake (Scentual90 2026-10-04). Retarget only those
+    // two factorizations: IB' = inv(default 1x World), BS' = BS * s. Do NOT retarget s≈1 (Galatea) or s≈0 (degenerate
+    // IB on some Bento heads — BS T_y~175, IB diag all zero; multiplying BS by 0 collapsed them to the feet and blew
+    // the avatar height to ~2.7 m). Study-only vs Firestorm LLSkinningUtil.
     static float InvBindScale(MeshSkinData sk)
     {
         int i = Array.IndexOf(sk.JointNames, "mPelvis");
@@ -67,11 +68,12 @@ static class Mesher
         var m = sk.InverseBindMatrices; int o = i * 16;
         return (MathF.Abs(m[o]) + MathF.Abs(m[o + 5]) + MathF.Abs(m[o + 10])) / 3f;
     }
+    static bool NeedsSkinRetarget(float s) => (s > 0.05f && s < 0.3f) || (s > 3f && s < 300f);  // ~0.1 or ~100 only
     static void SkinRetarget(MeshSkinData sk, Dictionary<string, float[]> bindWorld, out float[] bs, out float[][] ib)
     {
         bs = sk.BindShapeMatrix; ib = null;
         float s = InvBindScale(sk);
-        if (s > 0.3f && s < 3f) return;   // already 1x-factored
+        if (!NeedsSkinRetarget(s)) return;
         bs = (float[])sk.BindShapeMatrix.Clone();
         for (int k = 0; k < 12; k++) bs[k] *= s;
         bs[12] *= s; bs[13] *= s; bs[14] *= s;
@@ -143,6 +145,14 @@ static class Mesher
                 ok &= ibR != null && MathF.Abs(bsR[0] - 2.5f) < 1e-4f && MathF.Abs(bsR[14] - 1f) < 1e-4f;
                 var rest = Xform(Skeleton.Mul(Skeleton.Mul(bsR, ibR[0]), bw["mPelvis"]), Vector3.Zero, 1);
                 ok &= MathF.Abs(rest.Z - 1f) < 0.02f;   // BS translation 10*0.1, not floating at z=10
+                // degenerate IB (diag 0) must NOT retarget — BS*=0 would wipe the mesh (Scentual Bento heads)
+                var bad = new MeshSkinData {
+                    JointNames = new[] { "mPelvis" },
+                    BindShapeMatrix = new float[] { 20,0,0,0, 0,25,0,0, 0,0,24,0, 0,175,1,1 },
+                    InverseBindMatrices = new float[] { 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,-1.067f,1 }
+                };
+                SkinRetarget(bad, bw, out var bsB, out var ibB);
+                ok &= ibB == null && bsB[0] == 20f && bsB[13] == 175f;
             }
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028

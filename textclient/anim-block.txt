@@ -1,2 +1,4 @@
 # animation ids stopped whenever they start while seated (AttachWatch.cs)
 a2ecf6aa-df49-1c6f-907d-149c8ae09e21  # AWP/NUX AO "Sitting" override (played from sim state, source none)
+# Martha AO full-body stands that linger after seat-off detach (2026-10-05: override seat pose, legs through floor)
+2af3a656-1f26-02af-d7f2-38d9a0f49f68  # Martha AO stand (pri 3, 49 joints, full body)

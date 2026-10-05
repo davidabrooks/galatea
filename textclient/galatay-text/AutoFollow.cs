@@ -2,7 +2,9 @@
 // - David Nightingale (44ce5a36-...) in the same region within GT_AUTOFOLLOW_RANGE_M (default 20 m) -> stand up if sitting,
 //   stop the wander (flag kept, remembered) and follow him (the normal 'follow' ticker: autopilot until ~3 m, then stop close;
 //   if he sits she just stops close by).
-// - He leaves the region / logs off (absent for 10 s) -> stop following; restart the wander if it was running before.
+// - He leaves the region / logs off (absent for 10 s) -> stop following; restore the earlier wander state (2026-10-05):
+//   if wander was on hold/user/ao, put it back on that pause; never start an active wander while she is seated;
+//   otherwise restart the wander as before.
 // - An explicit 'follow off' (or David saying "stop following" / "stay" in chat or IM) while auto-following: no auto-follow
 //   for 10 min (GT_AUTOFOLLOW_SNOOZE_MIN). "follow me" from David lifts that. A manual 'follow <someone else>' is never overridden.
 // - 'autofollow on|off|status'; default on; persisted in run/autofollow.txt.
@@ -21,7 +23,8 @@ public static partial class Program
     static readonly TimeSpan AutoFollowSnooze = TimeSpan.FromMinutes(double.TryParse(Env("GT_AUTOFOLLOW_SNOOZE_MIN", "10"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var afs) && afs >= 0 ? afs : 10);
     static bool? autoFollowOnCache;
     static volatile bool afEngaged;            // we started the current follow of David
-    static bool afWanderWasOn;                 // wander was running when we engaged (restart it afterwards)
+    static bool afWanderWasOn;                 // wander was running when we engaged (restore it afterwards)
+    static string afWanderPause;               // wanderPause at engage (null | hold | user | ao | chat | greet); restore hold/user/ao
     static DateTime afSnoozeUntil = DateTime.MinValue, afDavidLastSeen = DateTime.MinValue, afLastMoveCheck = DateTime.MinValue, afLastDoorTouch = DateTime.MinValue;
     static Vector3 afLastPos; static string afLastRegion; static DateTime afRegionSince = DateTime.MinValue;
     static string afLast = "-";
@@ -77,14 +80,16 @@ public static partial class Program
         if (act == AfAction.Engage)
         {
             afWanderWasOn = WanderOn;
-            if (afWanderWasOn) StopWander("auto-follow David (resumes when he leaves)", clearFlag: false);
+            afWanderPause = WanderOn ? wanderPause : null; // capture before StopWander clears it
+            if (afWanderWasOn) StopWander("auto-follow David (restores wander state when he leaves)", clearFlag: false);
             if (client.Self.SittingOn != 0) client.Self.Stand();
             followId = DavidId; followName = av.Name; afEngaged = true; afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now;
-            AfLog($"David is {dist:F1} m away in {sim.Name}: following him{(afWanderWasOn ? " (wander stopped; resumes when he leaves)" : "")}");
+            var wnote = !afWanderWasOn ? "" : afWanderPause is "hold" or "user" or "ao" ? $" (wander was on {afWanderPause}; will restore)" : " (wander stopped; resumes when he leaves)";
+            AfLog($"David is {dist:F1} m away in {sim.Name}: following him{wnote}");
         }
         else if (act == AfAction.Release)
         {
-            if (someoneElse) afWanderWasOn = false; // she follows someone else now: do not restart the wander under them
+            if (someoneElse) { afWanderWasOn = false; afWanderPause = null; } // she follows someone else now: do not restart the wander under them
             if (followingDavid) { followId = UUID.Zero; try { client.Self.AutoPilotCancel(); } catch { } }
             afEngaged = false;
             AfLog(av == null ? "David left the region / logged off: stopped following" : !AutoFollowOn ? "autofollow turned off: stopped following" : "follow changed: auto-follow released");
@@ -103,16 +108,39 @@ public static partial class Program
         else if (afEngaged && (DateTime.Now - afLastMoveCheck).TotalSeconds >= 6) { afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now; }
     }
 
+    // pure (selftest-covered): after auto-follow, what wander restore action?
+    // hold/user/ao -> restore that pause (even if seated); active wander -> only if standing; else none.
+    internal enum AfWanderRestore { None, Start, StartHeld }
+    internal static AfWanderRestore AutoFollowWanderRestore(bool wasOn, string pause, bool seated) =>
+        !wasOn ? AfWanderRestore.None
+        : pause is "hold" or "user" or "ao" ? AfWanderRestore.StartHeld
+        : seated ? AfWanderRestore.None
+        : AfWanderRestore.Start;
+
     static void ResumeWanderAfterFollow()
     {
-        if (!afWanderWasOn) return;
-        afWanderWasOn = false;
+        if (!afWanderWasOn) { afWanderPause = null; return; }
+        var wasOn = afWanderWasOn; var pause = afWanderPause;
+        afWanderWasOn = false; afWanderPause = null;
         _ = Task.Run(async () =>
         {
             await Task.Delay(3000);
             if (WanderOn || afEngaged) return;
-            if (!InNaberrie) { AfLog("not restarting the wander (not in Naberrie)"); return; }
-            AfLog("restarting the wander: " + StartWander("after auto-follow"));
+            if (!InNaberrie) { AfLog("not restoring the wander (not in Naberrie)"); return; }
+            bool seated = client.Self.SittingOn != 0;
+            var act = AutoFollowWanderRestore(wasOn, pause, seated);
+            if (act == AfWanderRestore.None)
+            {
+                AfLog(seated ? "not restarting the wander (she is seated; was not on hold)" : "not restoring the wander");
+                return;
+            }
+            var r = StartWander("after auto-follow");
+            if (act == AfWanderRestore.StartHeld && WanderOn)
+            {
+                SetPause(pause, $"restored after auto-follow (was on {pause} before David)");
+                AfLog($"restored wander on {pause}: {r}");
+            }
+            else AfLog("restarting the wander: " + r);
         });
     }
 
@@ -173,6 +201,11 @@ public static partial class Program
         C(AutoFollowDecide(false, true, true, 3, 0, false, false, false) == AfAction.Release, "engaged, turned off -> release");
         C(AfStopRx.IsMatch("ok stop following me") && AfStopRx.IsMatch("Stay here babe") && AfStopRx.IsMatch("don't follow me") && !AfStopRx.IsMatch("I'll stay online a bit"), "stop phrases ('stop following', 'stay here', 'don't follow'; not 'stay online')");
         C(AfFollowRx.IsMatch("follow me") && !AfFollowRx.IsMatch("I follow the news"), "'follow me' detection");
+        C(AutoFollowWanderRestore(false, null, false) == AfWanderRestore.None, "wander was off -> no restore");
+        C(AutoFollowWanderRestore(true, "hold", false) == AfWanderRestore.StartHeld && AutoFollowWanderRestore(true, "hold", true) == AfWanderRestore.StartHeld, "was on hold -> restore hold (even if seated)");
+        C(AutoFollowWanderRestore(true, "user", true) == AfWanderRestore.StartHeld && AutoFollowWanderRestore(true, "ao", false) == AfWanderRestore.StartHeld, "was on user/ao -> restore that pause");
+        C(AutoFollowWanderRestore(true, null, true) == AfWanderRestore.None, "active wander + seated -> do NOT resume");
+        C(AutoFollowWanderRestore(true, null, false) == AfWanderRestore.Start && AutoFollowWanderRestore(true, "chat", false) == AfWanderRestore.Start, "active / chat pause + standing -> restart");
         return $"autofollow selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

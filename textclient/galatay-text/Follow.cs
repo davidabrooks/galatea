@@ -12,6 +12,8 @@
 //   otherwise a short stuck-escape (back 1 m, sidestep 1.2 m). Never flies, never teleports.
 // - 'follow <name> [m]' (m = this follow only), 'follow dist [m]' (persisted default, run/follow-dist.txt, 1-8 m),
 //   'follow status', 'follow selftest'. Auto-follow of David uses the default.
+// - After 'follow dist' (or this-follow metres) changes while she is holding, re-evaluate at once and close in if
+//   she is beyond the new stop band (otherwise the old resume hysteresis keeps her put until he moves).
 using System.Globalization;
 using System.Text;
 using LibreMetaverse;
@@ -45,11 +47,13 @@ public static partial class Program
     internal static (float stopAt, float resumeAt, float tooClose) FollowBands(float s, bool indoor)
         => (s + (indoor ? 0.5f : 0.4f), s + (indoor ? 1.2f : 1.0f), MathF.Max(0.8f, s - 0.5f));
     internal enum FollowAct { Hold, Pursue, Arrive, BackOff }
-    internal static FollowAct FollowDecide(float d, bool pursuing, float toTarget, double leaderStillS, float s, bool indoor, bool sheClosedIn = true)
+    internal static FollowAct FollowDecide(float d, bool pursuing, float toTarget, double leaderStillS, float s, bool indoor, bool sheClosedIn = true, bool reband = false)
     {
         var (stopAt, resumeAt, tooClose) = FollowBands(s, indoor);
         if (pursuing) return d <= stopAt || toTarget <= 0.5f ? FollowAct.Arrive : FollowAct.Pursue;
         if (d > resumeAt) return FollowAct.Pursue;
+        // Dist just lowered while holding: close in past the new stop (do not wait for the old resume band)
+        if (reband && d > stopAt) return FollowAct.Pursue;
         if (d < tooClose && leaderStillS >= 1.5 && sheClosedIn) return FollowAct.BackOff;
         return FollowAct.Hold;
     }
@@ -83,7 +87,9 @@ public static partial class Program
     static CancellationTokenSource fBusyCts = new();
     static int fEscapeSide = 1;
     static string followLast = "-"; static float fLastD = -1; static bool fIndoor; static Vector2 fLastT;
+    static bool fDistReband;   // set when follow dist changes: next Hold tick may close in past new stopAt
     static void FLog(string m) { followLast = $"{DateTime.Now:HH:mm:ss} {m}"; Log("follow", m); }
+    static void FollowNoteDistChange() { fDistReband = true; }
 
     static async Task FollowLoop()
     {
@@ -153,7 +159,8 @@ public static partial class Program
         }
         // back-offs only correct HER overshoot (stopped inside 2 m after her own walk); if he walks up to her she stays
         bool sheClosedIn = (now - fLastArriveAt).TotalSeconds < 8 || fBackoffs > 0;
-        var act = FollowDecide(d, fMode == FMode.Pursue, HDist(me, T3), still, s, indoor, sheClosedIn);
+        bool reband = fDistReband; fDistReband = false;
+        var act = FollowDecide(d, fMode == FMode.Pursue, HDist(me, T3), still, s, indoor, sheClosedIn, reband);
         if (act == FollowAct.Pursue)
         {
             if (fMode != FMode.Pursue) { fMode = FMode.Pursue; fModeSince = now; fHist.Clear(); fAim = null; FLog($"{followName} is {d:F1} m away: following to {s:F1} m behind{(indoor ? " (indoors)" : "")}"); }
@@ -249,7 +256,7 @@ public static partial class Program
         if (sub == "selftest" && a.Length == 1) return FollowSelfTest();
         if (sub is "dist" or "distance" && a.Length <= 2)
         {
-            if (a.Length == 2) { if (!F(a[1], out var v) || v <= 0) return "usage: follow dist <metres 1-8>"; FollowDistDefault = v; FLog($"default follow distance set to {FollowDistDefault:F1} m"); }
+            if (a.Length == 2) { if (!F(a[1], out var v) || v <= 0) return "usage: follow dist <metres 1-8>"; FollowDistDefault = v; FollowNoteDistChange(); FLog($"default follow distance set to {FollowDistDefault:F1} m"); }
             var (st, rs, tc) = FollowBands(FollowDistDefault, false);
             return $"follow distance {FollowDistDefault:F1} m (default, persisted): stops at <= {st:F1} m, resumes at > {rs:F1} m, backs off when he stands still and she is < {tc:F1} m";
         }
@@ -262,6 +269,7 @@ public static partial class Program
         if (av.av == null) return $"'{name}' is not in view (must be in the same region and within draw distance)";
         if (client.Self.SittingOn != 0) client.Self.Stand();
         followDistThis = dist;
+        if (dist != null) FollowNoteDistChange();
         followId = av.av.ID; followName = av.av.Name;
         return $"following {followName} ({av.dist:F1} m away), keeping {FollowDist:F1} m behind{(dist != null ? " (this follow; 'follow dist <m>' sets the default)" : "")}";
     }
@@ -273,6 +281,10 @@ public static partial class Program
         C(FollowDecide(6f, false, 3.5f, 0, S, false) == FollowAct.Pursue, "6 m away, holding -> pursue");
         C(FollowDecide(3.3f, false, 0.8f, 0, S, false) == FollowAct.Hold, "3.3 m away, holding -> hold (resume only > 3.5 m)");
         C(FollowDecide(3.6f, false, 1.1f, 0, S, false) == FollowAct.Pursue, "3.6 m -> resume");
+        // Dist lowered while holding (e.g. 1.6 m with new s=1.0: stop 1.4, resume 2.0): close in immediately
+        C(FollowDecide(1.6f, false, 0.6f, 0, 1.0f, false, true, reband: true) == FollowAct.Pursue, "reband: 1.6 m with s=1.0 while holding -> pursue");
+        C(FollowDecide(1.6f, false, 0.6f, 0, 1.0f, false, true, reband: false) == FollowAct.Hold, "without reband: 1.6 m with s=1.0 stays hold (< resume 2.0)");
+        C(FollowDecide(1.2f, false, 0.2f, 0, 1.0f, false, true, reband: true) == FollowAct.Hold, "reband: already inside new stop band -> hold");
         C(FollowDecide(3.2f, true, 0.7f, 0, S, false) == FollowAct.Pursue, "pursuing at 3.2 m -> keep walking");
         C(FollowDecide(2.85f, true, 0.4f, 0, S, false) == FollowAct.Arrive, "pursuing reaches 2.85 m -> stop (never aims at him)");
         C(FollowDecide(4f, true, 0.4f, 0, S, false) == FollowAct.Arrive, "at the standoff point -> stop");

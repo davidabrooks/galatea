@@ -4,8 +4,9 @@
 // (radius 4 m, at most once per 30 s). Touch only: never buys, sits, or answers a dialog.
 // 2026-10-05 (David's house tour: she got stuck at a door while following): DoorUnstick - a sequence of distinct attempts,
 // each logged as [door] 'attempt k <how>: <outcome>' (moved / phantom / passed / bounced back / nothing / locked message):
-//   1. touch it (skipped if it is already open/phantom) and watch ~3 s for movement / phantom; open -> walk through at once
-//      (many doors auto-close on a timer); open but still stuck -> stuck-escape, walk again
+//   1. touch it (skipped only if phantom, or pose-open with a recent LastTouch — stale pose after auto-close
+//      used to skip touch and walk into a closed door, 2026-10-05 Plane.014); open -> walk through at once
+//      (many doors auto-close on a timer); already-open walk blocked -> touch then walk (not stuck-escape)
 //   2. walk into it (collision / volume-detect doors open on bump)
 //   3. locked/owner-only? (no movement after touch + walk, or chat/IM from the door says locked/owner/access): press an
 //      'Open'/'Unlock'/'Enter' button on a dialog from the door if one came, else touch once more and wait for a menu
@@ -116,6 +117,21 @@ public static partial class Program
          : best - end > 0.3f && best - start > 0.2f ? "bounced back"
          : end - start > 0.3f ? "got closer, blocked"
          : "nothing (no progress)";
+    // How long after OUR touch we trust pose-"open" (auto-close + stale ObjectUpdate otherwise lie).
+    internal const double DoorOpenTrustAfterTouchS = 12;
+    // Skip the opening touch only for true phantom walk-through, or pose-open right after we touched.
+    // Pose-"open" alone while stuck is often a stale rotation after auto-close (2026-10-05 Plane.014).
+    internal static bool DoorSkipTouchAlreadyOpen(bool poseMovedOpen, bool phantom, DateTime lastTouch, DateTime now, double trustAfterTouchS = DoorOpenTrustAfterTouchS)
+    {
+        if (phantom) return true;
+        if (!poseMovedOpen) return false;
+        if (lastTouch == DateTime.MinValue) return false;
+        var age = (now - lastTouch).TotalSeconds;
+        return age >= 0 && age < trustAfterTouchS;
+    }
+    // After "already open -> walk" that did not pass: next step must be touch (not stuck-escape / walk-again).
+    internal static string DoorNextAfterFailedOpenWalk(string walkOutcome)
+        => string.IsNullOrEmpty(walkOutcome) || walkOutcome.StartsWith("passed", StringComparison.OrdinalIgnoreCase) ? "none" : "touch";
     // the attempt plan (selftest documents it): kind, lateral offset
     internal static readonly (string kind, float lateral)[] DoorPlan = { ("touch", 0f), ("walk-into", 0f), ("dialog/locked", 0f), ("re-approach", 0.5f), ("re-approach", -0.5f) };
 
@@ -190,6 +206,17 @@ public static partial class Program
             if (navDoor != null) { var st = DoorState(navDoor); if (st.known) return st.open; }
             var dn = DoorNow(); return dn.mv > 0.2f || dn.ang > 5 || dn.ph;
         }
+        // Skip touch only when passable for sure (phantom, or we just opened it). Stale pose-"open" must not skip.
+        bool SkipTouchAlreadyOpen()
+        {
+            bool ph = (dp.Flags & PrimFlags.Phantom) != 0;
+            if (navDoor != null)
+            {
+                var st = DoorState(navDoor);
+                if (st.known) return DoorSkipTouchAlreadyOpen(poseMovedOpen: st.open && !ph, phantom: ph, navDoor.LastTouch, DateTime.Now);
+            }
+            return ph;
+        }
         // messages / dialogs from the door while we work
         var msgs = new ConcurrentQueue<string>(); ScriptDialogEventArgs dlg = null;
         bool FromDoor(UUID id, string name) => id == dp.ID || id == droot.ID || (!string.IsNullOrEmpty(name) && (name == dname || name == rname) && name != "Object");
@@ -242,17 +269,18 @@ public static partial class Program
         {
             doorRunAt = DateTime.Now;
             Log("door", $"[{why}] stuck near {what}, {HDist(client.Self.SimPosition, c0):F1} m from the opening (progress {Prog():+0.0;-0.0} m): trying a door sequence");
-            // 1. touch (unless it is already open), walk through at once
-            if (OpenNow())
+            // 1. touch (unless phantom / just-opened), walk through at once
+            if (SkipTouchAlreadyOpen())
             {
                 var (w, _) = await Walk(throughPt, 5);
                 Note("door already open/phantom -> walk through", w + Heard());
                 if (w.StartsWith("passed")) through = true;
-                else
+                else if (DoorNextAfterFailedOpenWalk(w) == "touch")
                 {
-                    await StuckEscape(throughPt, "door open but stuck", ct);
+                    // Stale open / auto-closed: touch next — never stuck-escape or walk-again first (2026-10-05)
+                    var t = await Touch();
                     (w, _) = await Walk(throughPt, 5);
-                    Note("stuck-escape, walk again", w + Heard());
+                    Note("open-walk blocked -> touch then walk", $"door {t}, {w}{Heard()}");
                     through = w.StartsWith("passed");
                 }
             }
@@ -347,6 +375,16 @@ public static partial class Program
         C(DoorWalkOutcome(-1.5f, -0.3f, -0.9f) == "bounced back", "walk: bounced back");
         C(DoorWalkOutcome(-1.5f, -0.5f, -0.5f) == "got closer, blocked", "walk: blocked at the panel");
         C(DoorWalkOutcome(-0.4f, -0.35f, -0.4f).StartsWith("nothing"), "walk: no progress");
+        var t0 = new DateTime(2026, 10, 5, 15, 22, 0);
+        C(!DoorSkipTouchAlreadyOpen(true, false, DateTime.MinValue, t0), "stale pose-open, never touched: do NOT skip touch");
+        C(!DoorSkipTouchAlreadyOpen(true, false, t0.AddMinutes(-30), t0), "pose-open, LastTouch 30 min ago: do NOT skip (auto-close / stale)");
+        C(DoorSkipTouchAlreadyOpen(true, false, t0.AddSeconds(-5), t0), "pose-open, touched 5 s ago: skip touch");
+        C(DoorSkipTouchAlreadyOpen(false, true, DateTime.MinValue, t0), "phantom: skip touch");
+        C(!DoorSkipTouchAlreadyOpen(false, false, t0, t0), "closed, not phantom: touch");
+        C(DoorNextAfterFailedOpenWalk("got closer, blocked") == "touch", "blocked open-walk -> touch next");
+        C(DoorNextAfterFailedOpenWalk("bounced back") == "touch", "bounced open-walk -> touch next");
+        C(DoorNextAfterFailedOpenWalk("nothing (no progress)") == "touch", "no-progress open-walk -> touch next");
+        C(DoorNextAfterFailedOpenWalk("passed through") == "none", "passed -> no extra touch");
         C(DoorPlan.Length >= 5 && DoorPlan.Select(p => p.kind).Distinct().Count() >= 4 && DoorPlan.Any(p => p.lateral > 0) && DoorPlan.Any(p => p.lateral < 0), "plan: >= 5 distinct attempts incl. +-0.5 m re-approach");
         C(LooksLikeDoor("Front Door", "") && LooksLikeDoor("Garden gate", "") && !LooksLikeDoor("Door mat", "") && !LooksLikeDoor("Door frame", ""), "door names (not mats/frames)");
         return $"door selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();

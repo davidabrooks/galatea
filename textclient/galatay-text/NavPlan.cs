@@ -236,7 +236,12 @@ public static partial class Program
     {
         var st = DoorState(d);
         if (!st.known) { Log("nav", $"door {d.Name}: {st.how}; walking on"); return st.how; }
-        if (st.open) { Log("nav", $"door {d.Name}: already {st.how}"); return st.how; }
+        var sim0 = client.Network.CurrentSim;
+        var p0 = sim0?.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == d.Id);
+        bool ph = p0 != null && (p0.Flags & PrimFlags.Phantom) != 0;
+        // Trust pose-"open" only briefly after our touch (auto-close / stale rotation otherwise) — same as DoorUnstick
+        if (DoorSkipTouchAlreadyOpen(poseMovedOpen: st.open && !ph, phantom: ph, d.LastTouch, DateTime.Now))
+        { Log("nav", $"door {d.Name}: already {st.how}"); return st.how; }
         var sim = client.Network.CurrentSim; var p = sim.ObjectsPrimitives.Values.First(x => x != null && x.ID == d.Id);
         d.LastTouch = DateTime.Now; client.Self.Touch(p.LocalID);
         Log("door", $"touched nav door {d.Name} {d.Id} to open it (was {st.how})");

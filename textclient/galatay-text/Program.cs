@@ -1638,7 +1638,7 @@ public static partial class Program
   outfit huds <name>             attach each clothing HUD of that outfit, random color/pattern, verify, detach
   outfit coffix                  add COF links for worn items that have none (so relog keeps the look)
   outfit link-remove <outfit> <name part> | outfit link-add <outfit> <item uuid>   edit an outfit definition (removed link -> Trash)
-  outfit trash <name…>|defaults  move outfit folder(s) to inventory Trash (defaults=Original, Avatar Welcome Pack, monk*)
+  outfit trash <name>[, <name>…] [force] | defaults   move outfit folder(s) to Trash (exact names, comma separated; Bikini + run/daily-outfits.txt refused without force) | outfit untrash <name>
   outfit zone status|selftest    Peronaut beach/house outfit swap status
   outfit daily status            last once-per-PT-day random outfit pick
   outfit check                   READ-ONLY: WARNING for COF object links whose items are not attached (stale links re-attach on relog)

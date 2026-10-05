@@ -12,6 +12,7 @@ public static partial class Program
 {
     static readonly string DailyOutfitDateFile = Env("GT_DAILY_OUTFIT_DATE", "/home/box/viewers/textclient/run/daily-outfit-date.txt");
     static readonly string LastNamedOutfitFile = Env("GT_LAST_OUTFIT", "/home/box/viewers/textclient/run/last-named-outfit.txt");
+    static readonly string DailyOutfitAllowFile = Env("GT_DAILY_OUTFITS", "/home/box/viewers/textclient/run/daily-outfits.txt");
     static readonly string BeachOutfitStateFile = Env("GT_BEACH_OUTFIT_STATE", "/home/box/viewers/textclient/run/beach-outfit-state.txt");
 
     // Peronaut home: beach ~z20–23, mid porch ~25.5, upper ~27–30. Hysteresis avoids thrash on stairs.
@@ -71,8 +72,17 @@ public static partial class Program
         return z <= BeachEnterZ ? "beach" : (z >= BeachLeaveZ ? "house" : "mid");
     }
 
-    internal static List<string> DailyOutfitCandidates(IEnumerable<string> folderNames) =>
-        folderNames.Where(n => !string.IsNullOrWhiteSpace(n) && !BikiniNameRx.IsMatch(n.Trim())).Select(n => n.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+    // allow == null: every saved outfit except Bikini; else only the names in the allow-list (run/daily-outfits.txt, David 16:28: tubetop + tshirt)
+    internal static List<string> DailyOutfitCandidates(IEnumerable<string> folderNames, ICollection<string> allow = null) =>
+        folderNames.Where(n => !string.IsNullOrWhiteSpace(n) && !BikiniNameRx.IsMatch(n.Trim()))
+                   .Where(n => allow == null || allow.Count == 0 || allow.Contains(n.Trim(), StringComparer.OrdinalIgnoreCase))
+                   .Select(n => n.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+
+    static List<string> DailyOutfitAllow()
+    {
+        try { if (File.Exists(DailyOutfitAllowFile)) return File.ReadAllLines(DailyOutfitAllowFile).Select(l => l.Split('#')[0].Trim()).Where(l => l.Length > 0).ToList(); } catch { }
+        return new();
+    }
 
     static async Task<List<InventoryFolder>> ListOutfitFolders(CancellationToken ct)
     {
@@ -103,7 +113,7 @@ public static partial class Program
                 if (string.IsNullOrWhiteSpace(remember) || BikiniNameRx.IsMatch(remember))
                 {
                     var folders = await ListOutfitFolders(CancellationToken.None);
-                    remember = DailyOutfitCandidates(folders.Select(f => f.Name)).FirstOrDefault() ?? "tubetop";
+                    remember = DailyOutfitCandidates(folders.Select(f => f.Name), DailyOutfitAllow()).FirstOrDefault() ?? "tubetop";
                 }
                 beachRememberedOutfit = remember;
                 beachMode = true; PersistBeachState();
@@ -169,7 +179,7 @@ public static partial class Program
             if (dailyPending)
             {
                 using var cts = new CancellationTokenSource(60000);
-                var cands = DailyOutfitCandidates((await ListOutfitFolders(cts.Token)).Select(f => f.Name));
+                var cands = DailyOutfitCandidates((await ListOutfitFolders(cts.Token)).Select(f => f.Name), DailyOutfitAllow());
                 if (cands.Count > 0) pick = cands[Random.Shared.Next(cands.Count)];
             }
             beachOutfitBusy = true;
@@ -199,8 +209,24 @@ public static partial class Program
         catch (Exception ex) { Log("outfit-daily", "error: " + ex.GetBaseException().Message); zoneArmed = true; }
     }
 
-    // Move My Outfits folders to Trash (reversible from inventory Trash). Does not purge items.
-    static async Task<string> OutfitTrashNamed(IEnumerable<string> names)
+    // Move a folder with the classic MoveInventoryFolder UDP message. The AIS PATCH parent_id route the library uses
+    // answers 400 Bad Request on SL (16:13 + 16:28 PT): the local cache moved, the server did not.
+    static void MoveFolderUdp(InventoryFolder f, UUID newParent)
+    {
+        var move = new LibreMetaverse.Packets.MoveInventoryFolderPacket
+        {
+            AgentData = { AgentID = client.Self.AgentID, SessionID = client.Self.SessionID, Stamp = false },
+            InventoryData = new[] { new LibreMetaverse.Packets.MoveInventoryFolderPacket.InventoryDataBlock { FolderID = f.UUID, ParentID = newParent } }
+        };
+        client.Network.SendPacket(move);
+        try { f.ParentUUID = newParent; client.Inventory.Store.UpdateNodeFor(f); } catch { }
+    }
+
+    internal static List<string> ParseOutfitNames(string rest) =>
+        (rest ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(n => n.Trim('"', '\'')).Where(n => n.Length > 0).ToList();
+
+    // Move My Outfits folders to Trash (exact names only; Bikini + the daily outfits refused unless 'force'). Never purges.
+    static async Task<string> OutfitTrashNamed(IEnumerable<string> names, bool force = false)
     {
         if (!LoggedIn) return "not logged in";
         using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
@@ -208,22 +234,34 @@ public static partial class Program
         var trash = client.Inventory.FindFolderForType(FolderType.Trash);
         if (trash == UUID.Zero) return "Trash folder not found";
         var kids = (await ReadFolderRO(mo.UUID, ct)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID).ToList();
-        var want = names.Select(n => n.Trim()).Where(n => n.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var keep = DailyOutfitAllow().Append("Bikini").ToHashSet(StringComparer.OrdinalIgnoreCase);
         var sb = new StringBuilder();
-        var moved = new List<string>();
-        foreach (var f in kids.Where(f => want.Contains(f.Name)).ToList())
+        foreach (var n in names.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            client.Inventory.MoveFolder(f.UUID, trash);
-            moved.Add($"'{f.Name}' {f.UUID}");
-            Log("outfit", $"moved outfit folder '{f.Name}' {f.UUID} → Trash");
+            if (keep.Contains(n) && !force) { sb.AppendLine($"refused: '{n}' is a kept outfit (Bikini / daily list)"); continue; }
+            var f = kids.FirstOrDefault(k => k.Name.Equals(n, StringComparison.OrdinalIgnoreCase));
+            if (f == null) { sb.AppendLine($"not found under My Outfits (exact name): '{n}'"); continue; }
+            MoveFolderUdp(f, trash);
+            Log("outfit", $"moved outfit folder '{f.Name}' {f.UUID} -> Trash (UDP)");
             sb.AppendLine($"trashed outfit folder '{f.Name}' ({f.UUID})");
         }
-        foreach (var n in want.Where(n => !moved.Any(m => m.StartsWith($"'{n}'", StringComparison.OrdinalIgnoreCase))))
-            sb.AppendLine($"not found under My Outfits: '{n}'");
-        await Task.Delay(1000, ct);
+        await Task.Delay(1500, ct);
         var left = (await ReadFolderRO(mo.UUID, ct)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID).OrderBy(f => f.Name).Select(f => f.Name).ToList();
         sb.AppendLine($"remaining My Outfits ({left.Count}): {string.Join(", ", left.Select(n => $"'{n}'"))}");
         return sb.ToString().TrimEnd();
+    }
+
+    // Put a folder that sits in Trash back under My Outfits (also repairs a cache that thinks it was moved).
+    static async Task<string> OutfitUntrash(string name)
+    {
+        using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
+        var mo = await FindMyOutfits(ct); if (mo == null) return "My Outfits folder not found";
+        var trash = client.Inventory.FindFolderForType(FolderType.Trash);
+        var f = (await ReadFolderRO(trash, ct)).OfType<InventoryFolder>().FirstOrDefault(k => k.ParentUUID == trash && k.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (f == null) return $"no folder '{name}' in Trash";
+        MoveFolderUdp(f, mo.UUID);
+        Log("outfit", $"moved folder '{f.Name}' {f.UUID} Trash -> My Outfits (UDP)");
+        return $"'{f.Name}' ({f.UUID}) back under My Outfits";
     }
 
     static async Task<string> OutfitZonesCmd(string[] a)
@@ -243,10 +281,12 @@ public static partial class Program
         }
         if (a[0] == "trash")
         {
-            var names = a.Length > 1 ? a[1..] : TrashOutfitNames;
-            if (names.Length == 1 && names[0].Equals("defaults", StringComparison.OrdinalIgnoreCase)) names = TrashOutfitNames;
-            return await OutfitTrashNamed(names);
+            bool force = a.Length > 1 && a[^1].Equals("force", StringComparison.OrdinalIgnoreCase);
+            var rest = string.Join(' ', a[1..(force ? a.Length - 1 : a.Length)]);
+            var names = rest.Trim().Equals("defaults", StringComparison.OrdinalIgnoreCase) || rest.Trim().Length == 0 ? TrashOutfitNames.ToList() : ParseOutfitNames(rest);
+            return await OutfitTrashNamed(names, force);
         }
+        if (a[0] == "untrash" && a.Length > 1) return await OutfitUntrash(string.Join(' ', a[1..]));
         return "usage: outfit zone status|selftest | outfit trash <name…>|defaults | outfit daily status";
     }
 
@@ -267,6 +307,10 @@ public static partial class Program
         C(LoginOutfitPlan(false, true, true, null) == "daily-wear", "login upstairs: daily wear");
         C(LoginOutfitPlan(false, false, false, "tshirt") == "restore-remembered", "login upstairs after beach: restore");
         C(LoginOutfitPlan(false, false, false, null) == "keep", "login upstairs, daily done: keep");
+        var al = DailyOutfitCandidates(new[] { "Bikini", "tubetop", "tshirt", "Jiyoo tubetop", "jiyoo Tshirt", "Jani tshirt" }, new[] { "tubetop", "tshirt" });
+        C(al.SequenceEqual(new[] { "tshirt", "tubetop" }), $"daily allow-list tubetop+tshirt ({string.Join(",", al)})");
+        var pn = ParseOutfitNames("Jiyoo tubetop, jiyoo Tshirt,'Jani tshirt'");
+        C(pn.SequenceEqual(new[] { "Jiyoo tubetop", "jiyoo Tshirt", "Jani tshirt" }), "trash names: comma separated, spaces kept");
         return $"outfit-zones selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

@@ -14,6 +14,9 @@
     <NoWarn>$(NoWarn);CS8632;CS0618</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="GalatayText.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <Compile Include="../galatay-mcp/Webhook.cs" Link="Webhook.cs" />
     <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
   </ItemGroup>

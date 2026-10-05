@@ -55,6 +55,31 @@ static class Mesher
         foreach (var j in positionAnimated) overrides.Remove(j);
     }
 
+    // Some mesh bodies ship inverse_bind_matrix / bind_shape_matrix factored for a non-1x bind skeleton
+    // (IB diag 0.1 with BS~25, or IB diag 100 with BS~0.025 — same BS*IB product). LLSkinningUtil still does
+    // IB * jointWorld on the viewer's 1x joints, so those meshes pancake (Scentual90 2026-10-04: body collapsed into
+    // arm clusters). Retarget: IB' = inv(default 1x World), BS' = BS * s (s = mPelvis IB diagonal). Rest pose matches
+    // the correctly-sized shape; Galatea-style s≈1 is unchanged. Study-only vs Firestorm LLSkinningUtil.
+    static float InvBindScale(MeshSkinData sk)
+    {
+        int i = Array.IndexOf(sk.JointNames, "mPelvis");
+        if (i < 0 || sk.InverseBindMatrices.Length < (i + 1) * 16) return 1f;
+        var m = sk.InverseBindMatrices; int o = i * 16;
+        return (MathF.Abs(m[o]) + MathF.Abs(m[o + 5]) + MathF.Abs(m[o + 10])) / 3f;
+    }
+    static void SkinRetarget(MeshSkinData sk, Dictionary<string, float[]> bindWorld, out float[] bs, out float[][] ib)
+    {
+        bs = sk.BindShapeMatrix; ib = null;
+        float s = InvBindScale(sk);
+        if (s > 0.3f && s < 3f) return;   // already 1x-factored
+        bs = (float[])sk.BindShapeMatrix.Clone();
+        for (int k = 0; k < 12; k++) bs[k] *= s;
+        bs[12] *= s; bs[13] *= s; bs[14] *= s;
+        ib = new float[sk.JointNames.Length][];
+        for (int j = 0; j < sk.JointNames.Length; j++)
+            ib[j] = bindWorld.TryGetValue(sk.JointNames[j], out var w) ? Skeleton.Invert(w) : sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)];
+    }
+
     // collision volumes take their bone's shape-slider scale: in the SL viewer a skeletal param's bone scale delta also goes
     // to that bone's collision-volume children, times each volume's default scale (LLAvatarJointCollisionVolume inherits
     // scale; reimplemented from the documented LLPolySkeletalDistortion behaviour). LibreMetaverse's ComputeBoneTransforms
@@ -106,6 +131,19 @@ static class Mesher
             PoseOverrides(ovr, new[] { "mPelvis" });
             var wb = Skeleton.World(ovr, null, null, new Vector3(0, 0.1f, 0.01f));
             ok &= !ovr.ContainsKey("mPelvis") && ovr.ContainsKey("mKneeLeft") && MathF.Abs(wb["mPelvis"][14] - 1.077f) < 0.01f && wb["mHead"][14] < 2f;
+            // skin retarget: IB scale 0.1 -> BS scaled by 0.1, IB' = inv(World); rest pose v*BS'*IB'*W = v*(BS*0.1)
+            {
+                var bw = Skeleton.World(new());
+                var sk = new MeshSkinData {
+                    JointNames = new[] { "mPelvis" },
+                    BindShapeMatrix = new float[] { 25,0,0,0, 0,25,0,0, 0,0,25,0, 0,0,10,1 },
+                    InverseBindMatrices = new float[] { 0.1f,0,0,0, 0,0.1f,0,0, 0,0,0.1f,0, 0,0,-1.067f,1 }
+                };
+                SkinRetarget(sk, bw, out var bsR, out var ibR);
+                ok &= ibR != null && MathF.Abs(bsR[0] - 2.5f) < 1e-4f && MathF.Abs(bsR[14] - 1f) < 1e-4f;
+                var rest = Xform(Skeleton.Mul(Skeleton.Mul(bsR, ibR[0]), bw["mPelvis"]), Vector3.Zero, 1);
+                ok &= MathF.Abs(rest.Z - 1f) < 0.02f;   // BS translation 10*0.1, not floating at z=10
+            }
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028
             var lad0 = LindenAvatarDefinition.Load(Path.Combine(AppContext.BaseDirectory, "linden", "character", "avatar_lad.xml"));
@@ -309,6 +347,9 @@ static class Mesher
                 {
                     var jn = sk.JointNames[j];
                     var pos = new Vector3(sk.AltInverseBindMatrices[j * 16 + 12], sk.AltInverseBindMatrices[j * 16 + 13], sk.AltInverseBindMatrices[j * 16 + 14]);
+                    // 10x-upload artifact: mPelvis as (0,0,10.67) = 10 * default pelvis height. On a 1x skeleton it lifts
+                    // the avatar ~9.6 m (David's boots; Scentual90). Real pelvis locals stay near 0 — skip the giant ones.
+                    if (jn == "mPelvis" && pos.Z > 5f) continue;
                     if (!ovrFrom.TryGetValue(jn, out var prev) || meshId.CompareTo(prev) > 0)
                     { overrides[jn] = pos; ovrFrom[jn] = meshId; }
                     if (sk.LockScaleIfJointPosition) lockScale.Add(jn);
@@ -406,22 +447,29 @@ static class Mesher
                 var wr = jf.Rot * apRot * lr; var wp = jf.Pos + (ap.Position + lp * apRot) * jf.Rot;
                 Count("attachment_unrigged"); Emit(p, fm, group, bakePrefix, null, wp, wr, o);
             }
+            var bindWorld = Skeleton.World(new());   // default 1x bind for SkinRetarget (upload-time skeleton)
             foreach (var (_, p, fm) in rigged.Where(x => x.Item1 == owner))
             {
-                var sk = fm.SkinData; var jm = new float[sk.JointNames.Length][];
+                var sk = fm.SkinData; SkinRetarget(sk, bindWorld, out var bs, out var ib);
+                var jm = new float[sk.JointNames.Length][];
                 for (int j = 0; j < jm.Length; j++)
-                    jm[j] = world.TryGetValue(sk.JointNames[j], out var w) ? Skeleton.Mul(Skeleton.Mul(sk.BindShapeMatrix, sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)]), w) : null;
+                {
+                    if (!world.TryGetValue(sk.JointNames[j], out var w)) { jm[j] = null; continue; }
+                    var inv = ib != null ? ib[j] : sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)];
+                    jm[j] = Skeleton.Mul(Skeleton.Mul(bs, inv), w);
+                }
                 if (jm.Any(m => m == null)) Count("rigged_unknown_joint");
+                if (ib != null) Count("skin_retarget_1x");
                 Emit(p, fm, group, bakePrefix, (v, w) =>
                 {
-                    if (w == null) return (Xform(sk.BindShapeMatrix, v.Position, 1), Vector3.Normalize(Xform(sk.BindShapeMatrix, v.Normal, 0)));
+                    if (w == null) return (Xform(bs, v.Position, 1), Vector3.Normalize(Xform(bs, v.Normal, 0)));
                     var x = w.Value; Vector3 ps = Vector3.Zero, ns = Vector3.Zero; float tw = 0;
                     foreach (var (j, wt) in new[] { (x.Joint0, x.Weight0), (x.Joint1, x.Weight1), (x.Joint2, x.Weight2), (x.Joint3, x.Weight3) })
                     {
                         if (wt <= 0 || j < 0 || j >= jm.Length || jm[j] == null) continue;
                         ps += Xform(jm[j], v.Position, 1) * wt; ns += Xform(jm[j], v.Normal, 0) * wt; tw += wt;
                     }
-                    return tw > 0 ? (ps / tw, Vector3.Normalize(ns)) : (Xform(sk.BindShapeMatrix, v.Position, 1), v.Normal);
+                    return tw > 0 ? (ps / tw, Vector3.Normalize(ns)) : (Xform(bs, v.Position, 1), v.Normal);
                 }, Vector3.Zero, Quaternion.Identity, byLocal[p.LocalID]);
             }
             return frames;
@@ -486,6 +534,12 @@ static class Mesher
             var r = new float[16];
             for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) { float t = 0; for (int k = 0; k < 4; k++) t += a[i * 4 + k] * b[k * 4 + j]; r[i * 4 + j] = t; }
             return r;
+        }
+        public static float[] Invert(float[] m)
+        {
+            var a = new System.Numerics.Matrix4x4(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+            if (!System.Numerics.Matrix4x4.Invert(a, out var inv)) return (float[])m.Clone();
+            return new[] { inv.M11, inv.M12, inv.M13, inv.M14, inv.M21, inv.M22, inv.M23, inv.M24, inv.M31, inv.M32, inv.M33, inv.M34, inv.M41, inv.M42, inv.M43, inv.M44 };
         }
         static float[] Matrix(Vector3 scale, Quaternion rot, Vector3 pos)
         {

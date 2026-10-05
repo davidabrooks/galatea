@@ -178,7 +178,7 @@ public static partial class Program
 
     static async Task<string> OutfitCmd(string[] a)
     {
-        if (a.Length >= 1 && (a[0] == "zone" || a[0] == "trash" || a[0] == "daily")) return await OutfitZonesCmd(a);
+        if (a.Length >= 1 && (a[0] == "zone" || a[0] == "trash" || a[0] == "untrash" || a[0] == "daily")) return await OutfitZonesCmd(a);
         if (!LoggedIn) return "not logged in";
         if (a.Length >= 1 && a[0] == "check") return await OutfitCheck();
         if (a.Length >= 1 && a[0] == "rename")

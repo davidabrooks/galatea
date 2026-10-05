@@ -226,18 +226,20 @@ public static partial class Program
         }
         if (args.Contains("--worn-selftest")) { var r = WornSelfTest(); Console.WriteLine(r); return r.Contains("FAIL") ? 1 : 0; } // offline, no login
         if (args.Contains("--pose-selftest")) { var r = PoseSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: solo vs couples seat occupancy (2026-10-05)
-        if (args.Contains("--bugfix-selftest")) // offline: autofollow restore + greet UUID history + webhook cap/retry (2026-10-05)
+        if (args.Contains("--attach-move-selftest")) { var r = AttachMoveSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--bugfix-selftest")) // offline: autofollow restore + greet UUID history + webhook cap/retry + attach move (2026-10-05)
         {
             var a = AutoFollowSelfTest(); Console.WriteLine(a);
             var g = GreetSelfTest(); Console.WriteLine(g);
             var c = GalatayMcp.Webhook.CapCmd(new[] { "selftest" }); Console.WriteLine(c);
             var r = await GalatayMcp.Webhook.RetrySelfTest(); Console.WriteLine(r);
             var p = PoseSelfTest(); Console.WriteLine(p);
-            var all = a + g + c + r + p;
+            var m = AttachMoveSelfTest(); Console.WriteLine(m);
+            var all = a + g + c + r + p + m;
             // summaries say "0 FAIL" / "0 fail"; only a FAIL line or a non-zero count is a failure
             return System.Text.RegularExpressions.Regex.IsMatch(all, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|[1-9]\d*\s+fail\b") ? 1 : 0;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--bugfix-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--attach-move-selftest|--bugfix-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -1541,6 +1543,8 @@ public static partial class Program
   worn [scripts]              attachments incl. HUDs: item id, scripted, animations each plays (scripts = list contents)
   worn all                    READ-ONLY: body parts + clothing (wearables/COF), attachments + HUDs (points, COF links), My Outfits (Outfit.cs)
   detach <item> | attach <item> [point]   reversible; logged; attach-block.txt items are off while seated, re-worn on stand
+  attach move <item|obj|name> <dx> <dy> <dz> [hudok]   nudge worn attachment root by metres in attachment-local frame (±0.1 m/axis; HUD needs hudok); logged with undo
+  attach pos <item|obj|name>   print worn attachment root local position + rotation (quote names with spaces)
   walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | walk_status | walk_stop   walking navigation (never teleports; add --fly to allow the stuck fly hop once)
   nav [status|doors|places|reload|selftest] | nav door <name> [touch] | nav plan|to <x,y|place|door|avatar>[;...]   grid planner (routes/_nav-*.json)
   nofly [on|off]   walking never flies (default on)
@@ -1786,7 +1790,7 @@ public static partial class Program
             case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));
             case "touch-attachment": case "touchatt": return await TouchAttachment(rest);
             case "shape": return await ShapeCmd(a);
-            case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a);
+            case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a, rest);
             case "inv" when a.Length >= 2 && a[0] == "ls": return await WearOpsCmd("invls", a[1..]);
             case "inv" when a.Length == 2 && a[0] == "read":
             {   // 2026-09-27 (David's gift): READ-ONLY - print the text of one of her own notecards (never modifies anything)

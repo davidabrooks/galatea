@@ -288,9 +288,9 @@ public static partial class Program
         var rt = Enumerable.Range(0, 3).Select(_ => Task.Run(() => { go3.Wait(); return ImGuardedSend(id3, "Selftest Person", false, false, () => { Interlocked.Increment(ref s4); Thread.Sleep(50); }, null, false, new long[] { w }, "reply"); })).ToArray();
         go3.Set(); var rr = await Task.WhenAll(rt);
         C(s4 == 1 && rr.Count(x => x.sent) == 1, $"race: 3 concurrent 'im --re {w}' -> {s4} sent");
-        var p1 = NoteInbound(id3, "plain one"); ImGuardedSend(id3, "Selftest Person", false, false, () => { }, () => DateTimeOffset.Now.AddSeconds(30), false, null, "plain reply");
-        C(InMsgsOf(id3).First(m => m.Id == p1).AnsweredAt != null && !AnsweredExplicitly(id3, p1) && AnsweredExplicitly(id3, w), "plain 'im' marks earlier messages answered (implicit); --re marks explicitly");
-        ForgetMyIm(id3); inMsgs.TryRemove(id3, out _); imGuardLocks.TryRemove(id3, out _);
+        var p1 = NoteInbound(id3, "plain one"); NoteImFrom(id3, DateTimeOffset.Now.AddSeconds(1)); var pr = ImGuardedSend(id3, "Selftest Person", false, false, () => { }, () => DateTimeOffset.Now.AddSeconds(30), false, null, "plain reply");
+        C(pr.sent && InMsgsOf(id3).First(m => m.Id == p1).AnsweredAt != null && !AnsweredExplicitly(id3, p1) && AnsweredExplicitly(id3, w), "plain 'im' marks earlier messages answered (implicit); --re marks explicitly");
+        ForgetMyIm(id3); ForgetImFrom(id3); inMsgs.TryRemove(id3, out _); imGuardLocks.TryRemove(id3, out _);
         // recipient sanity (the 21:08 PT 'im history ThomasNejutto' -> History Resident)
         C(ImTargetCheck("history", false, true) != null && ImTargetCheck("History", true, true) != null && ImTargetCheck("log", false, false) != null, "'history' / 'log' are command words -> refused even if quoted or known");
         C(ImTargetCheck("somestranger", false, false) != null, "bare single word not known locally -> refused (no directory lookup)");

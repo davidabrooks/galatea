@@ -234,9 +234,10 @@ public static partial class Program
         if (args.Contains("--voice-wake-selftest")) { var r = VoiceWakeSelfTest(); Console.WriteLine(r); return r.Contains("FAIL ") || !r.Contains(": 0 FAIL") ? 1 : 0; } // offline: name filter, own-speech, debounce/rate-limit (Voice.cs)
         if (args.Contains("--voice-selftest")) { var r = await VoiceSelfTest(); Console.WriteLine(r); return r.Contains("FAIL ") || !r.Contains(": 0 FAIL") ? 1 : 0; } // offline: voice broker + sidecar vs fake_voice_server.py (Voice.cs)
         if (args.Contains("--exp-selftest")) { var r = ExpSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--front-selftest")) { var r = FrontSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)
         {
-            var r = FollowSelfTest() + "\n" + DoorSelfTest() + "\n" + SeatLingerSelfTest() + "\n" + NavSelfTest(); Console.WriteLine(r);
+            var r = FollowSelfTest() + "\n" + DoorSelfTest() + "\n" + SeatLingerSelfTest() + "\n" + NavSelfTest() + "\n" + FrontSelfTest(); Console.WriteLine(r);
             return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|FAILED") ? 1 : 0;
         }
         if (args.Contains("--bugfix-selftest")) // offline: autofollow + greet + webhook + pose + pose-keeper + attach move + detach COF (2026-10-05)
@@ -1454,8 +1455,9 @@ public static partial class Program
         {
             Remember(a.Name, a.ID);
             var seat = a.ParentID != 0 ? $"  seated on {SeatName(a.ParentID)}" : "";
-            sb.AppendLine(d < 0 ? $"     ?m  {a.ID}  {a.Name}  (seated on an object not loaded yet){seat}"
-                              : string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}", d, a.ID, a.Name, Fmt(p), seat));
+            var head = "  " + FmtAvatarHeading(a.Rotation);
+            sb.AppendLine(d < 0 ? $"     ?m  {a.ID}  {a.Name}  (seated on an object not loaded yet){seat}{head}"
+                              : string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}{5}", d, a.ID, a.Name, Fmt(p), seat, head));
         }
         if (list.Count == 0) sb.AppendLine("(no avatars in view)");
         return sb.ToString();
@@ -1533,7 +1535,9 @@ public static partial class Program
   im --re <msg id[,id..]> <to> <text>   claim-and-send: answers exactly those incoming messages (msg_id from the webhook / imlog); refused if any was already answered (names the answer + the open ids)
   imlog <name> [n=20] | im history <name> [n]   READ-ONLY IM history with that avatar + message ids / answered state (never sends)
   imguard [check <name>|selftest]   duplicate-IM guard status / dry run / offline test (ImGuard.cs)
-  nearby [radius=20]          avatars + objects (uuid, distance, owner, occupancy)
+  nearby [radius=20]          avatars + objects (uuid, distance, facing, owner, occupancy)
+  avatars                    avatars in view with facing heading (ObjectUpdate rotation)
+  front <avatar> [m=1.5]     walk a tight ~1 m arc to m metres in front of them, then face them
   avatars | objects [radius=20] [name filter] | find <name filter> (64 m)
   objinfo <uuid>
   sit <object uuid> | stand     (sit guard re-checks pose/hover ~6 s after each sit)
@@ -1730,6 +1734,7 @@ public static partial class Program
                 return "AVATARS\n" + AvatarList() + $"OBJECTS within {r} m\n" + await Objects(r, "");
             }
             case "avatars": return AvatarList();
+            case "front": return await FrontCmd(rest);
             case "objects":
             {
                 float r = 20; string filt = "";

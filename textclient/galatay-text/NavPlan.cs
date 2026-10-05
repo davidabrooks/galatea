@@ -1,7 +1,7 @@
 // NavPlan.cs (2026-10-04, David: learn to walk around the Peronaut patio and through the two patio doors, without flying)
 // Walkable grids built offline by scripts/nav_map.py from a `scene export` (prims sliced at avatar height, deck edges,
 // door panels) live in routes/_nav-<name>.json. With a grid covering her and the goal she plans an 8-connected A* path
-// (door cells cost x3), smooths it by line of sight, and walks it leg by leg (NavWalk.cs WalkLeg); a leg that crosses a
+// (door cells cost x3), smooths it by line of sight, and walks it leg by leg (NavWalk.cs WalkLeg); a door crossing
 // door first opens it (touch) if the door is still in its exported, closed pose. goto_avatar / sit_near and follow
 // (manual and auto-follow of David) use the plan too whenever the straight line is blocked on the grid.
 //   nav [status] | nav reload | nav doors | nav door <name> [touch] | nav plan <target> | nav to <target>[;<target>...] [--fly]
@@ -17,7 +17,7 @@ namespace GalatayText;
 
 public static partial class Program
 {
-    sealed class NavDoor { public string Name; public UUID Id; public bool AlongX; public Vector2 OpenCenter, Leaf; public Vector3 Pos, Center; public Quaternion Rot; public float X0, Y0, X1, Y1; public DateTime LastTouch = DateTime.MinValue; }
+    internal sealed class NavDoor { public string Name; public UUID Id; public bool AlongX; public Vector2 OpenCenter, Leaf; public Vector3 Pos, Center; public Quaternion Rot; public float X0, Y0, X1, Y1; public DateTime LastTouch = DateTime.MinValue; }
     sealed class NavGrid
     {
         public string File, Name, Region; public float X0, Y0, Cell, FloorZ, Radius = 0.4f; public int Nx, Ny; public byte[] C; public DateTime Mtime;
@@ -181,17 +181,75 @@ public static partial class Program
     static bool NavStraightClear(NavGrid g, Vector3 a, Vector3 b)
     { var ia = g.IJ(a.X, a.Y); var ib = g.IJ(b.X, b.Y); return Free(g, ia.i, ia.j) && Free(g, ib.i, ib.j) && Los(g, ia, ib); }
     // the grid door a segment crosses (a 'D' cell on it), if any
-    static NavDoor DoorOnSegment(NavGrid g, Vector2 a, Vector2 b)
+    static NavDoor DoorOnSegment(NavGrid g, Vector2 a, Vector2 b) => DoorsOnSegment(g, a, b).FirstOrDefault();
+    // all doors a segment crosses (double doors share an opening line)
+    static List<NavDoor> DoorsOnSegment(NavGrid g, Vector2 a, Vector2 b)
     {
+        var hit = new List<NavDoor>();
+        if (g == null) return hit;
         int n = Math.Max(1, (int)(Vector2.Distance(a, b) / (g.Cell * 0.5f)));
         for (int k = 0; k <= n; k++)
         {
             var p = a + (b - a) * (k / (float)n); var (i, j) = g.IJ(p.X, p.Y);
             if (g.At(i, j) != 2) continue;
-            var d = g.Doors.OrderBy(d => Vector2.Distance(new Vector2(d.Center.X, d.Center.Y), p)).FirstOrDefault(d => p.X >= d.X0 - 0.5f && p.X <= d.X1 + 0.5f && p.Y >= d.Y0 - 0.5f && p.Y <= d.Y1 + 0.5f);
-            if (d != null) return d;
+            foreach (var d in g.Doors.OrderBy(d => Vector2.Distance(new Vector2(d.Center.X, d.Center.Y), p)))
+            {
+                if (p.X < d.X0 - 0.5f || p.X > d.X1 + 0.5f || p.Y < d.Y0 - 0.5f || p.Y > d.Y1 + 0.5f) continue;
+                if (hit.All(h => h.Id != d.Id)) hit.Add(d);
+            }
         }
-        return null;
+        return hit;
+    }
+    // pure: a door + same-axis siblings within pairRadius (front-double-east + front-double-west)
+    internal static List<NavDoor> DoorPairGroup(IReadOnlyList<NavDoor> all, NavDoor primary, float pairRadius = 3.5f)
+    {
+        if (primary == null || all == null) return new List<NavDoor>();
+        return all.Where(d => d != null && (d.Id == primary.Id
+            || (d.AlongX == primary.AlongX && Vector3.Distance(d.Center, primary.Center) <= pairRadius)))
+            .GroupBy(d => d.Id).Select(g => g.First()).ToList();
+    }
+    // doors crossed by the segment, each expanded to its pair group
+    static List<NavDoor> DoorsForCrossing(NavGrid g, Vector2 a, Vector2 b)
+    {
+        var primary = DoorsOnSegment(g, a, b);
+        if (primary.Count == 0) return primary;
+        var seen = new HashSet<UUID>(); var outL = new List<NavDoor>();
+        foreach (var d in primary)
+            foreach (var s in DoorPairGroup(g.Doors, d))
+                if (seen.Add(s.Id)) outL.Add(s);
+        return outL;
+    }
+    // How long we may pause after touches before walking through (auto-close; 2026-10-05 David: within ~0.3 s).
+    internal const int DoorThroughDelayMs = 300;
+    // Touch closed doors only (never re-touch an already-open leaf — these toggle shut). Touch the pair in one burst,
+    // wait at most DoorThroughDelayMs, then return so the walker goes through at full speed. One open leaf is enough;
+    // a slow/failed sibling must not delay the pass (2026-10-05).
+    static async Task EnsureDoorsOpen(IReadOnlyList<NavDoor> doors, CancellationToken ct)
+    {
+        if (doors == null || doors.Count == 0) return;
+        var sim = client.Network.CurrentSim; if (sim == null) return;
+        var need = new List<(NavDoor d, Primitive p, string how)>();
+        int alreadyOpen = 0;
+        foreach (var d in doors)
+        {
+            var st = DoorState(d);
+            var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == d.Id);
+            bool ph = p != null && (p.Flags & PrimFlags.Phantom) != 0;
+            if (!st.known || p == null) { Log("nav", $"door {d.Name}: {st.how}; walking on"); continue; }
+            // Pose/phantom already open: do NOT touch (toggle would shut it). Count as passable.
+            if (st.open || ph)
+            { alreadyOpen++; Log("nav", $"door {d.Name}: already {st.how} — not touching (toggle risk)"); continue; }
+            need.Add((d, p, st.how));
+        }
+        if (need.Count == 0) { if (alreadyOpen > 0) Log("nav", $"doors: {alreadyOpen} already open, going through"); return; }
+        foreach (var (d, p, how) in need)
+        {
+            d.LastTouch = DateTime.Now; client.Self.Touch(p.LocalID);
+            Log("door", $"touched nav door {d.Name} {d.Id} to open it (was {how})");
+        }
+        // Fixed short delay then GO — do not wait for every leaf; one opening is enough to pass
+        await Task.Delay(DoorThroughDelayMs, ct);
+        foreach (var (d, _, _) in need) Log("nav", $"door {d.Name}: {DoorState(d).how} (through after {DoorThroughDelayMs} ms)");
     }
 
     // ---- doors ----
@@ -236,22 +294,12 @@ public static partial class Program
     {
         var st = DoorState(d);
         if (!st.known) { Log("nav", $"door {d.Name}: {st.how}; walking on"); return st.how; }
-        var sim0 = client.Network.CurrentSim;
-        var p0 = sim0?.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == d.Id);
-        bool ph = p0 != null && (p0.Flags & PrimFlags.Phantom) != 0;
-        // Trust pose-"open" only briefly after our touch (auto-close / stale rotation otherwise) — same as DoorUnstick
-        if (DoorSkipTouchAlreadyOpen(poseMovedOpen: st.open && !ph, phantom: ph, d.LastTouch, DateTime.Now))
-        { Log("nav", $"door {d.Name}: already {st.how}"); return st.how; }
-        var sim = client.Network.CurrentSim; var p = sim.ObjectsPrimitives.Values.First(x => x != null && x.ID == d.Id);
-        d.LastTouch = DateTime.Now; client.Self.Touch(p.LocalID);
-        Log("door", $"touched nav door {d.Name} {d.Id} to open it (was {st.how})");
-        for (int i = 0; i < 10; i++)
-        {
-            await Task.Delay(400, ct); st = DoorState(d);
-            if (st.open) { await Task.Delay(600, ct); Log("nav", $"door {d.Name}: opened, {st.how}"); return "opened: " + st.how; }
-        }
-        Log("nav", $"door {d.Name}: touched but no movement in 4 s ({st.how}); trying to walk through anyway");
-        return "touched, no movement: " + st.how;
+        // Open this leaf and any same-axis sibling (double doors) together, then go through quickly
+        var g = NavGrids().FirstOrDefault(x => x.Doors.Any(dd => dd.Id == d.Id));
+        var group = g != null ? DoorPairGroup(g.Doors, d) : new List<NavDoor> { d };
+        await EnsureDoorsOpen(group, ct);
+        st = DoorState(d);
+        return st.how;
     }
 
     // ---- walking a plan ----
@@ -279,26 +327,28 @@ public static partial class Program
             if (kd < 0) { ok = await NavLegs(g, path, 1, path.Count - 1, lastTol, ct); if (ok) return true; }
             else
             {
-                // cross square through the middle of the opening: wait 1.6 m before it, open it, walk to 1.6 m past it. These doors
-                // swing about the hinge (2026-10-04 test: the east patio door pushed her 1 m aside when she stood next to it, and a
-                // closed panel stops her 0.3 m short); 1.6 m from the opening's middle is outside a 1.43 m leaf's arc.
-                var n = door.AlongX ? new Vector2(0, 1) : new Vector2(1, 0); var oc = door.OpenCenter; var near = path[kd - 1];   // the plan's side of the door (not hers: rooms wrap around doors)
-                if ((near.X - oc.X) * n.X + (near.Y - oc.Y) * n.Y > 0) n = -n;   // n points from the near side to the far side
-                Vector2 Spot(float sgn) { foreach (var dist in new[] { 1.6f, 1.3f, 1.0f }) { var q = oc + n * (sgn * dist); var c = g.IJ(q.X, q.Y); if (g.At(c.i, c.j) == 0) return q; } return default; }
-                var wait = Spot(-1); var through = Spot(1);
-                if (wait == default) wait = path[kd - 1];
-                if (through == default) through = path[kd];
-                var toWait = NavPlanPath(gl, V2(client.Self.SimPosition), wait);
-                if (toWait != null && toWait.Zip(toWait.Skip(1)).All(sg => DoorOnSegment(g, sg.First, sg.Second) == null))
-                { toWait[^1] = wait; ok = await NavLegs(g, toWait, 1, toWait.Count - 1, 0.6f, ct, $" to {door.Name} (wait spot)"); }
-                else ok = await NavLegs(g, path, 1, kd - 1, 0.6f, ct);
+                // Cross through the opening at full speed (2026-10-05): NO wait-spot detour (that walked her backwards
+                // while doors auto-closed). Walk along the plan up to the door segment, touch closed leaves (~0.3 s),
+                // then WalkLeg straight past OpenCenter to the far side. Try both of a double door; one open is enough.
+                var n = door.AlongX ? new Vector2(0, 1) : new Vector2(1, 0); var oc = door.OpenCenter; var near = path[kd - 1];
+                if ((near.X - oc.X) * n.X + (near.Y - oc.Y) * n.Y > 0) n = -n;   // n = near -> far
+                Vector2 FarSpot()
+                {
+                    foreach (var dist in new[] { 1.6f, 1.3f, 1.0f })
+                    { var q = oc + n * dist; var c = g.IJ(q.X, q.Y); if (g.At(c.i, c.j) == 0) return q; }
+                    return path[kd];
+                }
+                var through = FarSpot();
+                // Approach along the planned path (never a side wait spot). Stop short of the panel so touch can fire.
+                ok = kd > 1 ? await NavLegs(g, path, 1, kd - 1, 0.7f, ct, $" toward {door.Name}") : true;
                 if (ok)
                 {
-                    await EnsureDoorOpen(door, ct);
+                    var pair = DoorsForCrossing(g, path[kd - 1], path[kd]);
+                    await EnsureDoorsOpen(pair, ct);   // <= DoorThroughDelayMs, then GO
                     navTrack = true;
                     try { ok = await WalkLeg(new Vector3(through.X, through.Y, client.Self.SimPosition.Z), 0.6f, $"nav through {door.Name}", ct, navMode: true); }
                     finally { navTrack = false; }
-                    if (ok && ++crossings <= 6) { Log("nav", $"through {door.Name}: at {V(client.Self.SimPosition)}"); attempt--; continue; }   // a door crossed is progress: re-plan from here
+                    if (ok && ++crossings <= 6) { Log("nav", $"through {door.Name}: at {V(client.Self.SimPosition)}"); attempt--; continue; }
                 }
             }
             Log("nav", $"leg failed at {V(client.Self.SimPosition)}: re-planning");

@@ -229,6 +229,11 @@ public static partial class Program
         if (args.Contains("--attach-move-selftest")) { var r = AttachMoveSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--detach-cof-selftest")) { var r = DetachCofSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--pose-keeper-selftest")) { var r = PoseKeeperSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)
+        {
+            var r = FollowSelfTest() + "\n" + DoorSelfTest() + "\n" + SeatLingerSelfTest() + "\n" + NavSelfTest(); Console.WriteLine(r);
+            return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|FAILED") ? 1 : 0;
+        }
         if (args.Contains("--bugfix-selftest")) // offline: autofollow + greet + webhook + pose + pose-keeper + attach move + detach COF (2026-10-05)
         {
             var a = AutoFollowSelfTest(); Console.WriteLine(a);
@@ -243,7 +248,7 @@ public static partial class Program
             // summaries say "0 FAIL" / "0 fail"; only a FAIL line or a non-zero count is a failure
             return System.Text.RegularExpressions.Regex.IsMatch(all, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|[1-9]\d*\s+fail\b") ? 1 : 0;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -319,6 +324,7 @@ public static partial class Program
         var msg = $"OK in {sw.Elapsed.TotalSeconds:F1}s: region {client.Network.CurrentSim?.Name} pos {Fmt(client.Self.SimPosition)} agent {client.Self.AgentID}";
         Log("login", msg);
         if (tickerTask == null) tickerTask = Task.Run(Ticker);
+        if (followTask == null) followTask = Task.Run(FollowLoop); // Follow.cs
         EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
@@ -330,7 +336,7 @@ public static partial class Program
         GC.Collect();
         return msg;
     }
-    static Task tickerTask;
+    static Task tickerTask, followTask;
     static Task attachBlockTask;
     // Default SL interest list is frustum-based (objects behind the camera are not sent); a headless
     // client wants everything around it, like Firestorm's 360 capture.
@@ -555,27 +561,7 @@ public static partial class Program
     {
         while (!cts.IsCancellationRequested)
         {
-            try
-            {
-                if (followId != UUID.Zero && LoggedIn)
-                {
-                    var sim = client.Network.CurrentSim;
-                    var av = sim?.ObjectsAvatars.Values.FirstOrDefault(a => a.ID == followId);
-                    if (av != null && sim != null)
-                    {
-                        var p = PositionHelper.GetAvatarPosition(sim, av);
-                        var d = Vector3.Distance(p, client.Self.SimPosition);
-                        if (d > 3f)
-                        {
-                            Utils.LongToUInts(sim.Handle, out var rx, out var ry);
-                            var step = NavFollowStep(client.Self.SimPosition, p) ?? p;   // NavPlan.cs: around walls / via doors on a nav grid
-                            client.Self.AutoPilot(step.X + (double)rx, step.Y + (double)ry, step.Z);
-                        }
-                        else client.Self.AutoPilotCancel();
-                    }
-                }
-            }
-            catch { }
+            // follow itself runs in FollowLoop (Follow.cs, 250 ms: standoff point, bands, doors)
             try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
             try { CameraAnchorTick(); } catch { }
             try { await Task.Delay(1000, cts.Token); } catch { }
@@ -1565,9 +1551,10 @@ public static partial class Program
   animwatch on|off|<minutes> | posekeeper on|off   log own animation start/stop with source; re-assert seat pose
   moveto <x> <y> <z>  (goto is an alias)  | walk <meters> | turn <degrees> | face <x y z | avatar name> | stop
   teleport [force] <region name> <x> <y> <z> | home [force]  (refused outside Naberrie while the robe is worn)
-  follow <First Last> | follow off
+  follow <First Last> [m] | follow off | follow dist [m] | follow status|selftest   keep ~2.5 m behind (default, 'follow dist' persists; [m] = this follow only); stops at 2-3 m, resumes > 3.5 m, backs off if he stands still and she is < 2 m; routes around furniture on a nav grid; stalled at a door -> door sequence
   autofollow on|off|status|selftest   follow David automatically when he is within 20 m in the same region (default on, persisted); 'follow off' snoozes it 10 min
   door [name filter|uuid]     touch the nearest door/gate/entrance prim (incl. house links) within 10 m; reports what moved
+  door try [filter|uuid]      full door sequence: touch, walk into, dialog Open / locked check, back up 1.5 m + re-approach +-0.5 m; every attempt logged [door] | door selftest
   accept | decline            pending teleport offer (allow-list only)
   dialog <button label>       answer the last script dialog (e.g. AVsitter pose menu)
   touch <object uuid>         touch an object (seat/HUD) so it opens its own menu (NOT the AO HUD: a touch toggles it off)
@@ -1824,7 +1811,8 @@ public static partial class Program
                 Interlocked.Increment(ref sitGen);
                 client.Self.Stand();
                 await Task.Delay(800);
-                return client.Self.SittingOn == 0 ? "standing" : "stand sent (still reported seated)";
+                if (client.Self.SittingOn == 0) { try { SeatLingerTick(); } catch { } return (DateTime.Now - lastSitEnded).TotalSeconds < 5 ? $"standing; seat anims: {seatLingerLast}" : "standing"; }   // SeatLinger.cs: stop the seat's pose anims now
+                return "stand sent (still reported seated)";
             case "moveto": case "goto":
             {
                 if (client.Self.SittingOn == 0 && !AoStateNow().active) { AoLog($"moveto REFUSED: {AoStateNow().why}"); return "refused: AO not active (" + AoStateNow().why + "); not walking"; }
@@ -1902,17 +1890,7 @@ public static partial class Program
                 var ok = await client.Self.GoHomeAsync();
                 return ok ? $"home: {client.Network.CurrentSim?.Name}" : $"go home failed: {client.Self.TeleportMessage}";
             }
-            case "follow":
-            {
-                if (rest.Length == 0 || rest.Equals("off", StringComparison.OrdinalIgnoreCase))
-                { AutoFollowOnFollowOff("explicit 'follow off'"); followId = UUID.Zero; client.Self.AutoPilotCancel(); return "follow off"; }
-                var av = Avatars().FirstOrDefault(t => t.av.Name.Equals(rest, StringComparison.OrdinalIgnoreCase) ||
-                                                        t.av.Name.Equals(rest + " Resident", StringComparison.OrdinalIgnoreCase));
-                if (av.av == null) return $"'{rest}' is not in view (must be in the same region and within draw distance)";
-                if (client.Self.SittingOn != 0) client.Self.Stand();
-                followId = av.av.ID; followName = av.av.Name;
-                return $"following {followName} ({av.dist:F1} m away)";
-            }
+            case "follow": return FollowCmd(rest);   // Follow.cs
             case "accept":
             {
                 if (pendingLure is not { } pl) return "no pending teleport offer";

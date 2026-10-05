@@ -1,15 +1,14 @@
 // AutoFollow.cs (2026-10-03, David): follow David automatically when he is near.
 // - David Nightingale (44ce5a36-...) in the same region within GT_AUTOFOLLOW_RANGE_M (default 20 m) -> stand up if sitting,
-//   stop the wander (flag kept, remembered) and follow him (the normal 'follow' ticker: autopilot until ~3 m, then stop close;
-//   if he sits she just stops close by).
+//   stop the wander (flag kept, remembered) and follow him (the normal follow, Follow.cs: ~2.5 m standoff behind him,
+//   'follow dist' default; if he sits she just stops 2-3 m away).
 // - He leaves the region / logs off (absent for 10 s) -> stop following; restore the earlier wander state (2026-10-05):
 //   if wander was on hold/user/ao, put it back on that pause; never start an active wander while she is seated;
 //   otherwise restart the wander as before.
 // - An explicit 'follow off' (or David saying "stop following" / "stay" in chat or IM) while auto-following: no auto-follow
 //   for 10 min (GT_AUTOFOLLOW_SNOOZE_MIN). "follow me" from David lifts that. A manual 'follow <someone else>' is never overridden.
 // - 'autofollow on|off|status'; default on; persisted in run/autofollow.txt.
-// - While following, if she has not moved for ~6 s while > 4 m from him, she touches the nearest door/gate within 4 m once
-//   (max one touch per 30 s; Doors.cs).
+// - Stalled while following (2026-10-05): the robust door sequence / stuck-escape in Follow.cs + Doors.cs (was: one touch per 30 s).
 using System.Text.RegularExpressions;
 using LibreMetaverse;
 
@@ -83,7 +82,7 @@ public static partial class Program
             afWanderPause = WanderOn ? wanderPause : null; // capture before StopWander clears it
             if (afWanderWasOn) StopWander("auto-follow David (restores wander state when he leaves)", clearFlag: false);
             if (client.Self.SittingOn != 0) client.Self.Stand();
-            followId = DavidId; followName = av.Name; afEngaged = true; afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now;
+            followDistThis = null; followId = DavidId; followName = av.Name; afEngaged = true; afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now;
             var wnote = !afWanderWasOn ? "" : afWanderPause is "hold" or "user" or "ao" ? $" (wander was on {afWanderPause}; will restore)" : " (wander stopped; resumes when he leaves)";
             AfLog($"David is {dist:F1} m away in {sim.Name}: following him{wnote}");
         }
@@ -95,17 +94,7 @@ public static partial class Program
             AfLog(av == null ? "David left the region / logged off: stopped following" : !AutoFollowOn ? "autofollow turned off: stopped following" : "follow changed: auto-follow released");
             ResumeWanderAfterFollow();
         }
-        else if (afEngaged && followingDavid && dist > 4 && (DateTime.Now - afLastMoveCheck).TotalSeconds >= 6)
-        {   // stuck? try a door once in a while
-            var moved = Vector3.Distance(client.Self.SimPosition, afLastPos);
-            afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now;
-            if (moved < 0.5f && (DateTime.Now - afLastDoorTouch).TotalSeconds >= 30)
-            {
-                afLastDoorTouch = DateTime.Now;
-                _ = Task.Run(async () => { try { var r = await DoorTouch(null, 4f, quiet: true); if (r != null) AfLog("stuck while following: " + r); } catch { } });
-            }
-        }
-        else if (afEngaged && (DateTime.Now - afLastMoveCheck).TotalSeconds >= 6) { afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now; }
+        // stuck at a door while following: Follow.cs FollowStalled -> Doors.cs DoorUnstick (manual and auto-follow alike)
     }
 
     // pure (selftest-covered): after auto-follow, what wander restore action?

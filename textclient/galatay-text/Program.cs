@@ -1544,9 +1544,9 @@ public static partial class Program
   map [radius] [x y] | terrain <x> <y>   planning data: objects with size/rotation, ground height
   route list | route show <name> | route status | route steer [smooth|legacy]   named routes (textclient/routes/*.json) + places of this region's path graph
   route walk <name> [reverse] [allow_zendo] [allow_outside]   follow a route (joins at the nearest point; carrot steering 2.5 m ahead)
-  wander start|stop|pause|hold|resume|status|seats|selftest|resumetest   autonomous loop deerpark<->landing with random sits, greetings, chat pause (Wander.cs); resumes after restart/reboot unless stale after a deliberate stop
+  wander start|stop|pause|hold|resume|status|seats|selftest|resumetest   Naberrie: deerpark<->landing; Peronaut home: front/patio/living loop + upper seats (Wander.cs); resumes after restart/reboot unless stale after a deliberate stop
   quiet status | quiet selftest | quiet override <min 1-30>|off   session detector (>= 3 seated in zendo / Deer Park -> quiet: no greetings, keep 15 m away, nearby say refused) (Quiet.cs)
-  goto_place <place> [nosit] [allow_zendo] [allow_outside]    shortest way over the path graph (Naberrie: zendo, landing, waterfall, poolrock, deerpark); poolrock ends with sit_home
+  goto_place <place> [nosit] [allow_zendo] [allow_outside]    shortest way over the path graph (Naberrie places, or Peronaut home: home/living/front/chairs/patio-*/desk/bed/...); poolrock ends with sit_home
   route record <avatar> <name> | route record stop | route stop   record an avatar's walk as a route / stop walking+recording
      (bounds: The Buddha Center parcel in Naberrie, never the zendo unless allowed; stuck -> max 1 m sidestep, no flying, stop+log; avatars on the path -> pause 10 s, 1 m sidestep, else wait/stop)
   overhead [tag] | snapshot [tag]   map-tile overhead picture (position, avatars, seats, path, route) -> /workspace/secondlife/images/overhead-<time>[-tag].png

@@ -225,15 +225,19 @@ public static partial class Program
             return pw == null ? 0 : 1;
         }
         if (args.Contains("--worn-selftest")) { var r = WornSelfTest(); Console.WriteLine(r); return r.Contains("FAIL") ? 1 : 0; } // offline, no login
+        if (args.Contains("--pose-selftest")) { var r = PoseSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: solo vs couples seat occupancy (2026-10-05)
         if (args.Contains("--bugfix-selftest")) // offline: autofollow restore + greet UUID history + webhook cap/retry (2026-10-05)
         {
             var a = AutoFollowSelfTest(); Console.WriteLine(a);
             var g = GreetSelfTest(); Console.WriteLine(g);
             var c = GalatayMcp.Webhook.CapCmd(new[] { "selftest" }); Console.WriteLine(c);
             var r = await GalatayMcp.Webhook.RetrySelfTest(); Console.WriteLine(r);
-            return (a + g + c + r).Contains("FAIL") ? 1 : 0;
+            var p = PoseSelfTest(); Console.WriteLine(p);
+            var all = a + g + c + r + p;
+            // summaries say "0 FAIL" / "0 fail"; only a FAIL line or a non-zero count is a failure
+            return System.Text.RegularExpressions.Regex.IsMatch(all, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|[1-9]\d*\s+fail\b") ? 1 : 0;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--bugfix-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--bugfix-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -1559,7 +1563,7 @@ public static partial class Program
   accept | decline            pending teleport offer (allow-list only)
   dialog <button label>       answer the last script dialog (e.g. AVsitter pose menu)
   touch <object uuid>         touch an object (seat/HUD) so it opens its own menu (NOT the AO HUD: a touch toggles it off)
-  pose [change|selftest]      random solo pose (no male/couples) from the current seat's own menu (AVsitter dialog)
+  pose [change|selftest]      random pose from the seat's AVsitter menu: couples when shared, solo when alone (never male)
   watchdog [selftest]         freeze / heartbeat (60 s) / stale-connection (45 s) watchdog -> clean logout + exit 75 -> supervisor relogin
   offlineim [status|selftest] stored (offline) IMs: fetched at every login, logged [offline, sent ...], sent to the webhook; no auto-actions
   ao [status|selftest]        AO guard: no walking unless the AO override stand/walk is playing (restore = detach+re-attach HUD)

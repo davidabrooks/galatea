@@ -1,6 +1,9 @@
 # Testing Galatea
 
-Automated tests run on every pull request and every push to `main` (GitHub Actions workflow `.github/workflows/ci.yml`).
+Automated tests are meant to run on every pull request and every push to `main` via GitHub Actions.
+
+The workflow file is checked in as [`docs/ci/github-actions-ci.yml`](docs/ci/github-actions-ci.yml). Copy it to `.github/workflows/ci.yml` once the GitHub token has the `workflow` scope (OAuth apps need that scope to create workflow files). Until then, run the suite locally as below.
+
 **Nothing in CI logs in to Second Life or needs secrets.**
 
 ## Quick start (local)

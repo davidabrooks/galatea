@@ -62,15 +62,17 @@ public static partial class Program
     static string Short(string t, int n = 60) => t.Length <= n ? t : t[..n] + "…";
 
     // pure (selftest-covered): may a reply claiming `re` go out? null = yes, else the "skipped: ..." text
-    internal static string ReClaimCheck(IReadOnlyList<InMsg> msgs, IReadOnlyCollection<long> re, string name)
+    // kind/logCmd/reCmd customize IM vs nearby-chat wording ('im' / 'say').
+    internal static string ReClaimCheck(IReadOnlyList<InMsg> msgs, IReadOnlyCollection<long> re, string name,
+                                        string kind = "IM", string logCmd = "imlog", string reCmd = "im --re")
     {
         var unknown = re.Where(id => !msgs.Any(m => m.Id == id)).ToList();
-        if (unknown.Count > 0) return $"skipped: message id(s) {string.Join(",", unknown)} are not IMs from {name} on record (see 'imlog {name}'); nothing sent.";
+        if (unknown.Count > 0) return $"skipped: message id(s) {string.Join(",", unknown)} are not {kind}s from {name} on record (see '{logCmd}'); nothing sent.";
         var done = msgs.Where(m => re.Contains(m.Id) && m.AnsweredAt != null).ToList();
         if (done.Count == 0) return null;
         var open = msgs.Where(m => m.AnsweredAt == null).ToList();
         return $"skipped: already answered {name}'s message(s) " + string.Join("; ", done.Select(m => $"{m.Id} '{Short(m.Text, 40)}' at {PT(m.AnsweredAt!.Value)} by: '{Short(m.AnsweredBy ?? "", 80)}'")) +
-               (open.Count == 0 ? ". Nothing from them is unanswered; nothing sent." : $". Still unanswered: {string.Join("; ", open.Select(m => $"{m.Id} '{Short(m.Text, 60)}'"))} - reply to only those with 'im --re <ids>'; nothing sent.");
+               (open.Count == 0 ? ". Nothing from them is unanswered; nothing sent." : $". Still unanswered: {string.Join("; ", open.Select(m => $"{m.Id} '{Short(m.Text, 60)}'"))} - reply to only those with '{reCmd} <ids>'; nothing sent.");
     }
     // pure: mark answered (explicit ids, or every message received up to `upTo` for a plain 'im')
     internal static void MarkAnswered(IEnumerable<InMsg> msgs, IReadOnlyCollection<long> re, DateTimeOffset now, string text, DateTimeOffset? upTo)

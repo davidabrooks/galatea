@@ -19,7 +19,7 @@
 // - Reply lease (2026-10-04, David: two overlapping routine runs both answered Ryan's 'it was yummy'). After a POST that carries
 //   IMs from an avatar, that avatar's NEW lines are held (not POSTed, so no second concurrent run) until I send them an IM or
 //   GT_WEBHOOK_LEASE_S (default 60 s) passes; then ONE POST carries the held lines, minus lines already answered with
-//   'im --re <msg_id>'. Every IM event carries msg_id (for 'im --re'). 'webhook lease [<s>]', 'webhook lease selftest'.
+//   'im --re <msg_id>' / 'say --re <msg_id>'. Every IM and local_chat event carries msg_id. 'webhook lease [<s>]', 'webhook lease selftest'.
 // - Bounded retry (2026-10-05): up to 4 attempts with backoff (0/2/5/15 s) on 400/408/429/5xx and transport errors.
 //   Same JSON body (same msg_ids) is resent — no duplicate events. Final failure appends the body to the failed log
 //   (with the HTTP status / error). Response body is logged (truncated). The key is never logged.
@@ -103,7 +103,7 @@ public static class Webhook
     {
         public string my_last_im_to_sender { get; init; } // dedupe hint: my last outgoing IM to this avatar (ISO time), null = none known
         public bool? answered_after { get; init; }         // true = that IM was sent after this event arrived
-        public long? msg_id { get; init; }                 // incoming IM id, for 'im --re <msg_id>' (claim-and-send)
+        public long? msg_id { get; init; }                 // incoming IM / local_chat id, for 'im --re' / 'say --re' (claim-and-send)
         public string parcel { get; init; }                // voice: parcel name where the utterance was heard
         public string context { get; init; }               // voice name-mode: prior ~30 s of other speakers
         public string channel { get; init; }               // voice: "voice" (medium) or the session channel label
@@ -339,9 +339,11 @@ public static class Webhook
                     if (due.Count == 0 || now - lastPost < MinInterval) continue;
                     batch = new List<Ev>();
                     foreach (var k in due) { batch.AddRange(convs[k].Evs); convs.Remove(k); }
-                    // held lines already answered with 'im --re' are not POSTed again (they stay in poll_events)
-                    int answered = batch.RemoveAll(ev => ev.type == "im" && ev.msg_id is long mid && Core.AnsweredExplicitly(ev.from_id, mid));
-                    if (answered > 0) LogLocal($"lease: {answered} held line(s) already answered with 'im --re'; not POSTed");
+                    // held lines already answered with 'im --re' / 'say --re' are not POSTed again (they stay in poll_events)
+                    int answered = batch.RemoveAll(ev => ev.msg_id is long mid && (
+                        (ev.type == "im" && Core.AnsweredExplicitly(ev.from_id, mid)) ||
+                        (ev.type == "local_chat" && Core.ChatAnsweredExplicitly(ev.from_id, mid))));
+                    if (answered > 0) LogLocal($"lease: {answered} held line(s) already answered with 'im --re'/'say --re'; not POSTed");
                     foreach (var ev in batch.Where(ev => ev.type == "im" && !string.IsNullOrEmpty(ev.from_id))) leases[ConvKey("im", ev.from_id)] = (now, ev.from_id); // one run per sender
                     if (batch.Count == 0) continue;
                     nconv = due.Count; overflow = droppedOverflow; droppedOverflow = 0;
@@ -395,6 +397,8 @@ public static class Webhook
         C(!LeaseActive(t, t + S(60), L, null), "no reply at all -> lease ends after 60 s (nothing is stuck)");
         var ev = new Ev("im", "X", "1", "t", "2026-10-04T20:46:01-07:00", null) { msg_id = 42 };
         C(JsonSerializer.Serialize(ev, J).Contains("\"msg_id\":42"), "IM events carry msg_id in the JSON payload");
+        var evc = new Ev("local_chat", "Y", "2", "hi", "2026-10-05T11:56:00-07:00", 3.0) { msg_id = 99 };
+        C(JsonSerializer.Serialize(evc, J).Contains("\"msg_id\":99") && evc.type == "local_chat", "local_chat events carry msg_id for say --re");
         return $"webhook lease selftest: {pass} PASS, {fail} FAIL (pure checks; nothing POSTed)\n" + sb.ToString().TrimEnd();
     }
 

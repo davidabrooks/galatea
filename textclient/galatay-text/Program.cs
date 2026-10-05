@@ -224,7 +224,8 @@ public static partial class Program
             pw = null;
             return pw == null ? 0 : 1;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Contains("--worn-selftest")) { var r = WornSelfTest(); Console.WriteLine(r); return r.Contains("FAIL") ? 1 : 0; } // offline, no login
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -498,7 +499,7 @@ public static partial class Program
                 Log("teleport", $"{e.Status}: {e.Message}");
         };
         client.Self.AvatarSitResponse += (s, e) => Log("sit", $"sit response for object {e.ObjectID} (autopilot={e.Autopilot})");
-        client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = Set360(); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); } };
+        client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = RecoverAfterRegionChange(); _ = Set360(); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); } };
         client.Network.Disconnected += (s, e) =>
         {
             Log("disconnect", $"{e.Reason}: {e.Message}");

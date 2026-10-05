@@ -373,9 +373,7 @@ public static partial class Program
         var sim = client.Network.CurrentSim; uint me = client.Self.LocalID;
         if (sim == null || me == 0 || wanted <= 0) return 0;
         int before = TrackedAttachments().Count;
-        var ids = new List<uint>();
-        for (uint id = me + 1; id <= me + (uint)span; id++)
-            if (!sim.ObjectsPrimitives.ContainsKey(id) && !attTable.ContainsKey(id)) ids.Add(id);
+        var ids = UnknownLocalIds(me, span, id => sim.ObjectsPrimitives.ContainsKey(id) || attTable.ContainsKey(id));
         for (int k = 0; k < ids.Count; k += 200) client.Objects.RequestObjects(sim, ids.Skip(k).Take(200).ToList());
         var t0 = DateTime.Now;
         while ((DateTime.Now - t0).TotalMilliseconds < waitMs && TrackedAttachments().Count - before < wanted) await Task.Delay(250);
@@ -383,6 +381,56 @@ public static partial class Program
         attLastRecovery = $"{DateTime.Now:HH:mm:ss} re-requested {ids.Count} unknown LocalIDs {me + 1}..{me + (uint)span}, recovered {got} of {wanted} missing attachment(s)";
         Log("attach", attLastRecovery);
         return got;
+    }
+
+    // (2026-10-04, after teleport) The destination sim gives our avatar and every attachment NEW LocalIDs, and after a fast
+    // teleport most of those attachment updates never reach us (they arrive while the old region is still current, or are
+    // lost: SL sends them unreliable), so 'worn' showed 1 of 11 and the AO guard thought Martha was gone. Same idea as the
+    // reference viewer's cache-miss pass after a region change: ask the sim for the LocalIDs right after our avatar that we
+    // have never received (read-only RequestMultipleObjects). The sim answers for objects it never sent us.
+    static DateTime attLastAutoRecover = DateTime.MinValue;
+    // ids the sim lists on our avatar (AvatarAppearance) that we hold no prim for; zero ids (list still filling) are skipped
+    static int SimListMissing(IEnumerable<UUID> simList, ICollection<UUID> haveObjIds) =>
+        simList.Count(u => u != UUID.Zero && !haveObjIds.Contains(u));
+    // LocalIDs me+1..me+span that we know nothing about (these are what gets re-requested)
+    static List<uint> UnknownLocalIds(uint me, int span, Func<uint, bool> known)
+    {
+        var ids = new List<uint>();
+        if (me == 0) return ids;
+        for (uint id = me + 1; id <= me + (uint)span; id++) if (!known(id)) ids.Add(id);
+        return ids;
+    }
+    static int AttachmentsMissingNow()
+    {
+        var have = WornPrims().Select(p => p.ID).Concat(TrackedAttachments().Select(r => r.Full)).ToHashSet();
+        int n = simAttList != null && simAttTime > lastSimChange ? SimListMissing(simAttList.Select(x => x.id), have) : 0;
+        return n;
+    }
+    static DateTime lastSimChange = DateTime.MinValue;
+    // after a region change: a few re-request rounds until the sim's own list is covered (HUDs are not in that list,
+    // so one round always runs to also pick up the AO HUD)
+    static async Task RecoverAfterRegionChange()
+    {
+        lastSimChange = DateTime.Now;
+        for (int round = 0; round < 4; round++)
+        {
+            await Task.Delay(round == 0 ? 2500 : 4000);
+            if (!LoggedIn || client.Network.CurrentSim == null) return;
+            int miss = AttachmentsMissingNow();
+            if (round > 0 && miss == 0) break;
+            attLastAutoRecover = DateTime.Now;
+            await RecoverAttachments(Math.Max(miss, 1), 300, 4000);
+        }
+        Log("attach", $"after region change: {WornPrims().Count} attachment(s) known, {AttachmentsMissingNow()} of the sim's list still not received");
+    }
+    // before (re-)attaching an item we think is missing: re-request unknown objects first (once per 20 s); true = it was worn all along
+    static async Task<bool> FoundAfterRecover(UUID item)
+    {
+        if (WornByItem().ContainsKey(item)) return true;
+        if ((DateTime.Now - attLastAutoRecover).TotalSeconds < 20) return false;
+        attLastAutoRecover = DateTime.Now;
+        await RecoverAttachments(1, 300, 4000);
+        return WornByItem().ContainsKey(item);
     }
 
     static string WornSelfTest()
@@ -402,6 +450,15 @@ public static partial class Program
             if (pass) ok++;
             sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  {0} state 0x{1:X2} -> ours #{2}, library #{3} ({4}), expected #{5} {6}", pass ? "PASS" : "FAIL", s, ours, lib, (AttachmentPoint)(byte)lib, pt, nm));
         }
-        return $"worn selftest: {ok}/{cases.Length} passed (decode = ATTACHMENT_ID_FROM_STATE, nibble swap)\n" + sb.ToString().TrimEnd();
+        // after-teleport recovery helpers (zero ids = list still filling; known ids are not re-requested)
+        var a = UUID.Random(); var b = UUID.Random(); var c = UUID.Random();
+        int total = cases.Length + 3;
+        bool t1 = SimListMissing(new[] { a, b, c, UUID.Zero }, new HashSet<UUID> { a }) == 2;
+        bool t2 = SimListMissing(new[] { a }, new HashSet<UUID> { a }) == 0;
+        var u = UnknownLocalIds(1000, 5, id => id == 1002 || id == 1004);
+        bool t3 = u.SequenceEqual(new uint[] { 1001, 1003, 1005 }) && UnknownLocalIds(0, 5, _ => false).Count == 0;
+        foreach (var (pass, nm) in new[] { (t1, "sim list 3 ids + zero, 1 held -> 2 missing"), (t2, "all held -> 0 missing"), (t3, "unknown LocalIDs after me skip known ones") })
+        { if (pass) ok++; sb.AppendLine($"  {(pass ? "PASS" : "FAIL")} after-teleport: {nm}"); }
+        return $"worn selftest: {ok}/{total} passed (decode = ATTACHMENT_ID_FROM_STATE, nibble swap; after-teleport recovery)\n" + sb.ToString().TrimEnd();
     }
 }

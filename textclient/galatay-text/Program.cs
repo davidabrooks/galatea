@@ -226,6 +226,7 @@ public static partial class Program
         }
         if (args.Contains("--worn-selftest")) { var r = WornSelfTest(); Console.WriteLine(r); return r.Contains("FAIL") ? 1 : 0; } // offline, no login
         if (args.Contains("--pose-selftest")) { var r = PoseSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: solo vs couples seat occupancy (2026-10-05)
+        if (args.Contains("--chat-guard-selftest")) { var r = ChatGuardSelfTest().GetAwaiter().GetResult(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--attach-move-selftest")) { var r = AttachMoveSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--detach-cof-selftest")) { var r = DetachCofSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--pose-keeper-selftest")) { var r = PoseKeeperSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
@@ -251,7 +252,7 @@ public static partial class Program
             // summaries say "0 FAIL" / "0 fail"; only a FAIL line or a non-zero count is a failure
             return System.Text.RegularExpressions.Regex.IsMatch(all, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|[1-9]\d*\s+fail\b") ? 1 : 0;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest|--exp-selftest|--voice-selftest|--voice-wake-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest|--exp-selftest|--voice-selftest|--voice-wake-selftest|--chat-guard-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -438,7 +439,8 @@ public static partial class Program
             {
                 double? dist = null;
                 try { if (e.Position != Vector3.Zero) dist = Math.Round(Vector3.Distance(e.Position, client.Self.SimPosition), 1); } catch { }
-                Notify("local_chat", e.FromName, e.SourceID, e.Message, dist);
+                long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
+                Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId);
                 WanderChatIn(e.SourceID, e.FromName, e.Position, false);
                 AutoFollowFromDavid(e.SourceID, e.Message); // "stop following" / "follow me" (AutoFollow.cs)
             }
@@ -1522,7 +1524,10 @@ public static partial class Program
 
     const string Help = @"commands (one per line):
   help | status | where
-  say <text> | shout <text> | whisper <text> | chan <n> <text>
+  say [--re <msg id[,id..]>] [--force] <text> | shout ... | whisper ... | chan <n> <text>
+  say --re <msg id[,id..]> <text>   claim-and-send for nearby chat (msg_id from the webhook / chatlog); refused if any id was already answered
+  chatlog [name] [n=20]   READ-ONLY nearby chat + message ids / answered state (never says)
+  chatguard [selftest]   nearby-chat duplicate / claim-and-send guard (ChatGuard.cs)
   im [--headsup|--force] <First Last|username|uuid|""Name""> <text>   per-recipient guard: 'skipped: ...' if I IMed them < 5 s ago or already answered their latest IM (David: only the 5 s window); --headsup = ONE short 'please wait' note per their latest IM (still 5 s window); --force = manual/David-directed only
   im --re <msg id[,id..]> <to> <text>   claim-and-send: answers exactly those incoming messages (msg_id from the webhook / imlog); refused if any was already answered (names the answer + the open ids)
   imlog <name> [n=20] | im history <name> [n]   READ-ONLY IM history with that avatar + message ids / answered state (never sends)
@@ -1650,11 +1655,31 @@ public static partial class Program
             }
             case "say": case "shout": case "whisper":
             {
-                if (rest.Length == 0) return "usage: say <text>";
+                // claim-and-send for nearby chat (ChatGuard.cs); mirrors 'im --re'
+                bool force = false; var re = new List<long>();
+                while (true)
+                {
+                    if (rest.StartsWith("--force ", StringComparison.OrdinalIgnoreCase)) { force = true; rest = rest[8..].TrimStart(); continue; }
+                    if (rest.StartsWith("--re ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rp = rest[5..].TrimStart().Split(' ', 2); rest = rp.Length > 1 ? rp[1].TrimStart() : "";
+                        foreach (var x in rp[0].Split(',', StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            if (long.TryParse(x, out var v)) re.Add(v);
+                            else return $"usage: {cmd} --re <msg id[,msg id..]> <text>  ('{x}' is not a message id; see 'chatlog'); nothing said";
+                        }
+                        continue;
+                    }
+                    break;
+                }
+                if (rest.Length == 0) return re.Count > 0
+                    ? $"usage: {cmd} --re <msg id[,msg id..]> <text>"
+                    : $"usage: {cmd} [--re <msg ids>] [--force] <text>";
                 var t = cmd == "say" ? ChatType.Normal : cmd == "shout" ? ChatType.Shout : ChatType.Whisper;
                 HeadTurnForSay();   // someone nearby talking with her: a short head turn to them (LookAt.cs)
-                client.Self.Chat(rest, 0, t);
-                Log("me-chat", $"({cmd}) {rest}");
+                var (sent, skip) = ChatGuardedSay(t, rest, force, re);
+                if (!sent) return skip;
+                Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}");
                 return "ok";
             }
             case "chan":
@@ -1769,6 +1794,8 @@ public static partial class Program
             case "ao": return a.Length > 0 && a[0] == "selftest" ? AoSelfTest() : AoStatus();
             case "imguard": return await ImGuardCmd(a);
             case "imlog": return await ImLog(a); // read-only IM history (ImGuard.cs)
+            case "chatguard": return await ChatGuardCmd(a);
+            case "chatlog": return await ChatLog(a); // read-only nearby chat + ids (ChatGuard.cs)
             case "offlineim": return a.Length > 0 && a[0] == "selftest" ? OfflineImSelfTest() : OfflineImStatus();
             case "route": case "routes": case "goto_place": case "overhead": case "snapshot": return await RouteCmds(cmd, rest, a);
             case "offers": return await OffersCmd(a);

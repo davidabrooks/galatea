@@ -57,16 +57,18 @@ Covers `vision/tests` (look mesher args, optional crowd placeholders) and `textc
 | PR(s) | Covered by |
 |------|------------|
 | #33–#37 look / mesher / alpha | `vision/tests`, optional crowd placeholder |
-| #38 wander hold + webhook retry | `--bugfix-selftest` |
+| #38 wander hold + webhook retry | `--bugfix-selftest`, `PrBackfillPureTests` (Webhook.Due/Retriable/CapExempt) |
 | #41 detach COF | `--detach-cof-selftest` |
 | #43 pose keeper | `--pose-keeper-selftest` |
 | #44 follow + doors | `--follow-door-selftest` |
-| #45–#46 experiences / TEMP | `--exp-selftest` |
+| #45–#46 experiences / TEMP | `--exp-selftest`, `PrBackfillPureTests` (DecideScriptQuestion / IsLikelyTempAttach) |
 | #48 Peronaut nav | `--follow-door-selftest` (includes `nav selftest`) |
 | #49–#50 voice wake | `--voice-wake-selftest` |
-| #51–#53 pose / couples / path | `--pose-selftest` |
+| #51–#55 pose / couples / path | `--pose-selftest`, `PrBackfillPureTests` (root/leaf/Magnetize couples) |
 | #54 say --re | `--chat-guard-selftest` |
 | #32 im --re | `--imguard-selftest` |
+
+`PrBackfillPureTests` links the test project to `galatay-text` (`InternalsVisibleTo`) for pure helpers without spawning the binary.
 
 ## What must never run in CI
 

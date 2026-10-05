@@ -18,4 +18,7 @@
     <!-- Built by CI before `dotnet test`; path can be overridden -->
     <None Include=".." />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../galatay-text/GalatayText.csproj" />
+  </ItemGroup>
 </Project>

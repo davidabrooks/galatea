@@ -79,9 +79,11 @@ public static partial class Program
     static readonly Regex VoiceNameRx = new(
         @"\b(?:gal(?:at(?:ay|ai|ae?a?|ea|ia|iya))?|gala\s*t(?:ea|ay|ai|ey)|galla?\s*tay|night[\s\-]?ingales?)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    // Open floor at talks (Shi Wayne etc.): "questions or comments?", "any questions", "anyone want to share", ...
+    // Open floor at talks (Shi Wayne etc.): "questions, comments", "questions or comments?", "any questions", ...
+    // Pair of invite-nouns (any order) joined by comma / and / or / . / spaces; optional anyone/anything/please.
+    // Adjacent-only separators keep "questions about comments in the sutra" from matching.
     static readonly Regex VoiceInviteRx = new(
-        @"\b(?:(?:any|anyone'?s?|anybody'?s?)\s+(?:questions?|comments?|thoughts?|remarks?)(?:\s+or\s+(?:questions?|comments?|thoughts?|remarks?))?|(?:questions?|comments?|thoughts?)\s+or\s+(?:questions?|comments?|thoughts?|remarks?)|anyone\s+(?:want(?:s|ed)?\s+to\s+)?(?:share|speak|comment|ask)|(?:want(?:s|ed)?|like)\s+to\s+(?:share|speak|comment|ask)|open\s+(?:floor|discussion)|(?:questions?|comments?)\s*\??\s*$)",
+        @"\b(?:(?:any|anyone'?s?|anybody'?s?)\s+(?:questions?|comments?|thoughts?|remarks?)(?:\s+or\s+(?:questions?|comments?|thoughts?|remarks?))?|\b(questions?|comments?|thoughts?|remarks?)\b(?:\s*,\s*|\s+(?:and|or)\s+|[.!?]+\s*|\s+)(?!\1\b)\b(questions?|comments?|thoughts?|remarks?)\b(?:\s*,\s*|\s+)?(?:(?:anyone|anything|anybody|please)\??)?|anyone\s+(?:want(?:s|ed)?\s+to\s+)?(?:share|speak|comment|ask)|(?:want(?:s|ed)?|like)\s+to\s+(?:share|speak|comment|ask)|open\s+(?:floor|discussion)|(?:questions?|comments?)\s*\??\s*$)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
 
@@ -618,7 +620,16 @@ public static partial class Program
             C(VoiceIsInvitation("Comments?"), "invitation: comments?");
             C(VoiceIsInvitation("question or comment"), "invitation: STT singular question or comment");
             C(VoiceIsInvitation("any question or comments"), "invitation: any question or comments");
+            C(VoiceIsInvitation("Questions, comments?"), "invitation: Questions, comments?");
+            C(VoiceIsInvitation("questions, comments"), "invitation: questions, comments (Wayne today)");
+            C(VoiceIsInvitation("Questions, comments. Anyone?"), "invitation: Questions, comments. Anyone?");
+            C(VoiceIsInvitation("Questions comments, please"), "invitation: Questions comments, please");
+            C(VoiceIsInvitation("Okay. Questions, comments, anything?"), "invitation: Okay. Questions, comments, anything?");
+            C(VoiceIsInvitation("Questions. Comments."), "invitation: STT Questions. Comments.");
+            C(VoiceIsInvitation("comments, questions"), "invitation: comments, questions (order swapped)");
+            C(VoiceIsInvitation("questions and thoughts"), "invitation: questions and thoughts");
             C(!VoiceIsInvitation("the question of suffering"), "no invitation on 'the question of...'");
+            C(!VoiceIsInvitation("I have some questions about comments in the sutra"), "no invitation on 'questions about comments'");
             C(VoiceNameModeTrigger("Galatea any questions?") == "name", "name wins over invitation when both match");
             C(VoiceNameModeTrigger("questions or comments?") == "invitation", "trigger=invitation");
             C(VoiceNameModeTrigger("hey Galatay") == "name", "trigger=name");

@@ -7,6 +7,7 @@
 //   2026-10-04 (David: render other avatars): also every nearby avatar's attachments ("attached_to" = wearer), shape
 //   (visual params), server bakes (bake-<agent id[:8]>-<name>.j2c) and playing animations ("anims" = uuid@seconds since
 //   each started, from AnimClock; hers in me.anims), and root prim names (for `look at <object>`). All local reads.
+//   2026-10-04 (crowd): EnsureNearbyAttachments nudges the interest list before export so other avatars' prims arrive.
 // Prims are LibreMetaverse's Primitive.GetOSD() plus world_pos/world_rot. Geometry is built offline by
 // vision/scene-mesher (keeps meshing out of this process). Never touches, sends or edits anything.
 using System.Collections.Concurrent;
@@ -34,6 +35,42 @@ public static partial class Program
     };
     static string AnimsOf(UUID av) => AnimClock.TryGetValue(av, out var m)
         ? string.Join(",", m.OrderBy(kv => kv.Value.since).Select(kv => $"{kv.Key}@{(DateTime.Now - kv.Value.since).TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)}")) : "";
+
+
+    // Before a look/export: wait briefly for nearby avatars' attachment prims (ParentID == avatar LocalID).
+    // AvatarAppearance lists expected attachment UUIDs; the interest list may not have delivered them yet in a crowd
+    // (Warehouse 21: 34 avatars in range, only 1 had any attachment prims). Select the avatars and re-anchor the
+    // camera to nudge the sim; read-only. ponytail: best-effort up to 8 s; ceiling = still-missing attachments stay missing
+    static async Task EnsureNearbyAttachments(float radius)
+    {
+        var sim = Sim; var me = client.Self; var myPos = me.SimPosition;
+        var near = sim.ObjectsAvatars.Values.Where(a => a != null && a.LocalID != me.LocalID
+            && Vector3.Distance(PositionHelper.GetAvatarPosition(sim, a), myPos) <= radius).ToList();
+        if (near.Count == 0) return;
+        int Have(Avatar a) => sim.ObjectsPrimitives.Values.Count(p => p != null && p.ParentID == a.LocalID);
+        int Expect(Avatar a) => a.Attachments?.Count ?? 0;
+        var short_ = near.Where(a => Expect(a) > 0 && Have(a) < Expect(a)).ToList();
+        if (short_.Count == 0 && near.All(a => Have(a) > 0)) return;
+        // select avatar objects so the sim prioritizes their children
+        foreach (var chunk in near.Select(a => a.LocalID).Chunk(50))
+            client.Objects.SelectObjects(sim, chunk.ToArray(), true);
+        var mv = client.Self.Movement; var home = mv.Camera.Position; var homeAt = mv.Camera.AtAxis;
+        var t0 = DateTime.UtcNow; int spins = 0;
+        while ((DateTime.UtcNow - t0).TotalSeconds < 8)
+        {
+            short_ = near.Where(a => Expect(a) > 0 && Have(a) < Math.Max(1, Expect(a) / 2)).ToList();
+            int bare = near.Count(a => Have(a) == 0);
+            if (short_.Count == 0 && bare == 0) break;
+            // nudge camera toward the nearest bare/short avatar (interest list), then back
+            var focus = (short_.Count > 0 ? short_ : near.Where(a => Have(a) == 0).DefaultIfEmpty(near[0])).OrderBy(a => Vector3.Distance(PositionHelper.GetAvatarPosition(sim, a), myPos)).First();
+            var fp = PositionHelper.GetAvatarPosition(sim, focus);
+            mv.Camera.LookAt(myPos, fp); mv.SendUpdate(true);
+            await Task.Delay(400); spins++;
+        }
+        mv.Camera.LookAt(home, home + homeAt); mv.SendUpdate(true);
+        int with = near.Count(a => Have(a) > 0);
+        Log("look", $"attachments: {with}/{near.Count} nearby avatars have prims after {spins} nudge(s) in {(DateTime.UtcNow - t0).TotalSeconds:F1} s");
+    }
 
     static async Task<string> SceneExport(string[] a)
     {

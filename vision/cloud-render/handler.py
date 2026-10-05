@@ -80,9 +80,10 @@ def fetch_textures(meta, out, work):
         for t in [t for t in want if t not in near][:len(want) - MAX_TEXTURES]: del want[t]
     if len(want) > MAX_TEXTURES: return f"{len(want)} textures > {MAX_TEXTURES}"
     t = time.time()
-    with cf.ThreadPoolExecutor(8) as ex:
+    workers = max(1, int(os.environ.get("GT_TEX_WORKERS", "8")))
+    with cf.ThreadPoolExecutor(workers) as ex:
         res = list(ex.map(lambda kv: fetch_tex(kv[0], work + "/tex", kv[1]), want.items()))
-    out["textures"] = {"requested": len(want), "ok": sum(1 for r in res if r[1]), "errors": [r for r in res if r[2]][:5], "seconds": round(time.time() - t, 1)}
+    out["textures"] = {"requested": len(want), "ok": sum(1 for r in res if r[1]), "errors": [r for r in res if r[2]][:5], "seconds": round(time.time() - t, 1), "workers": workers}
     return None
 
 def handler(job):

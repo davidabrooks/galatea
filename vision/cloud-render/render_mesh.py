@@ -288,6 +288,51 @@ def terrain():
     m = bpy.data.materials.new("ground"); m.use_nodes = True; m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.24, 0.30, 0.14, 1); me.materials.append(m)
 
 gpu_setup(); views = []
+
+def stand_in(o):
+    """Bake-textured capsule+head for an avatar whose attachments never reached the export (awareness, not polish)."""
+    import os
+    pref = o.get("bake_prefix") or (o.get("agent_id") or "")[:8]
+    def tex(name):
+        path = f"{jobdir}/tex/bake-{pref}-{name}.png" if pref else None
+        if path and os.path.exists(path): return path
+        path = f"{jobdir}/tex/bake-{name}.png"
+        return path if os.path.exists(path) else None
+    obs = []
+    # body capsule from pelvis to neck using bone chain if present
+    bones = o.get("bones") or []
+    z0, z1 = 0.05, 1.4
+    if bones:
+        zs = [b[2] for b in bones] + [b[5] for b in bones]
+        z0, z1 = min(zs), max(zs) - 0.25
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.18, depth=max(0.4, z1 - z0), location=(0, 0, (z0 + z1) / 2))
+    body = bpy.context.object; body.name = f"standin-body-{pref}"
+    # solid clothing colour (not the skin bake): a skin-textured capsule reads as nude
+    mat = bpy.data.materials.new(f"standin-upper-{pref}"); mat.use_nodes = True
+    nt = mat.node_tree; nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial"); bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    nt.links.new(bsdf.outputs[0], out.inputs[0])
+    bsdf.inputs["Base Color"].default_value = (0.22, 0.28, 0.45, 1)  # muted shirt blue
+    body.data.materials.append(mat); obs.append(body)
+    # head sphere at mHead
+    hx, hy, hz = o.get("head") or [0, 0, 1.7]
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.12, location=(hx, hy, hz))
+    head = bpy.context.object; head.name = f"standin-head-{pref}"
+    mat2 = bpy.data.materials.new(f"standin-head-{pref}"); mat2.use_nodes = True
+    nt2 = mat2.node_tree; nt2.nodes.clear()
+    out2 = nt2.nodes.new("ShaderNodeOutputMaterial"); bsdf2 = nt2.nodes.new("ShaderNodeBsdfPrincipled")
+    nt2.links.new(bsdf2.outputs[0], out2.inputs[0])
+    tp2 = tex("head")
+    if tp2:
+        img2 = bpy.data.images.load(tp2); texn2 = nt2.nodes.new("ShaderNodeTexImage"); texn2.image = img2
+        nt2.links.new(texn2.outputs[0], bsdf2.inputs["Base Color"])
+    else:
+        bsdf2.inputs["Base Color"].default_value = (0.55, 0.45, 0.38, 1)
+    head.data.materials.append(mat2); obs.append(head)
+    lo = np.array([-0.2, -0.2, z0]); hi = np.array([0.2, 0.2, hz + 0.12])
+    log("stand-in", o.get("name"), "bake", pref)
+    return lo, hi, obs
+
 if kind == "scene":
     build("scene"); build("far"); terrain(); water()
     g = M["me"]; av = os.environ.get("GT_AV")  # "x,y,yaw_deg": stand/sit her there, on the first surface below
@@ -315,7 +360,12 @@ if kind == "scene":
         return Vector((at[0] + c * local[0] - s_ * local[1], at[1] + s_ * local[0] + c * local[1], at[2] + local[2]))
     heads = {"me": to_world(M["head"], (x, y, z0), yaw) + Vector((0, 0, 0.07))}
     for o, fp in placed:
-        olo, _, oobs = build(o["group"], o.get("bones")); at = (o["pos"][0], o["pos"][1], z0_of(*fp, olo[2]))
+        # attachments missing from the export -> bake-textured stand-in (not a nude mesh body)
+        if o.get("placeholder") or not any(b["group"] == o["group"] and b["ni"] > 0 for b in M["batches"]):
+            olo, _, oobs = stand_in(o)
+        else:
+            olo, _, oobs = build(o["group"], o.get("bones"))
+        at = (o["pos"][0], o["pos"][1], z0_of(*fp, olo[2]))
         for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
         heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])
     if M.get("env"): eep(M["env"])

@@ -3,6 +3,7 @@
 //   on the CPU (Cycles, nice 10) and prints the image path(s). Waits up to GT_LOOK_WAIT_S (75 s, under the 85 s command
 //   reply cap); a longer render keeps going and its paths land in the log as [look]. One look at a time (shared work dir).
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using LibreMetaverse;
 
@@ -36,7 +37,9 @@ public static partial class Program
                     && Vector3.Distance(p.Position, client.Self.SimPosition) <= 32) : null;
                 if (av != null) HeadTurnTo(av.ID, "look at"); else if (ob != null) HeadTurnToPoint(ob.Position, "look at");
             }
-            var ex = await SceneExport(new[] { "export", mode == "self" ? "8" : far ? "96" : "32" });   // far: backdrop beyond 30 m (look.py --far)
+            float er = mode == "self" ? 8 : far ? 96 : 32;
+            if (mode != "self") await EnsureNearbyAttachments(er);   // pull other avatars' attachment ObjectUpdates before export
+            var ex = await SceneExport(new[] { "export", er.ToString(CultureInfo.InvariantCulture) });   // far: backdrop beyond 30 m (look.py --far)
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }
             var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };

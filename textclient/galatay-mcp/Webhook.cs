@@ -16,6 +16,10 @@
 //   avatar, from the [me-im] log) and answered_after (that IM is newer than the event) so the routine can skip answered ones.
 //   Urgent kinds (teleport_offer, friendship_offer, group_invite, group_invite_accepted, region_restart, david_login[_test]) are POSTed at once, bypassing debounce
 //   and min interval. Runtime: 'webhook debounce [<quiet s> [<max s> [<detect s>]]]', 'webhook debounce detect <s>'.
+// - Reply lease (2026-10-04, David: two overlapping routine runs both answered Ryan's 'it was yummy'). After a POST that carries
+//   IMs from an avatar, that avatar's NEW lines are held (not POSTed, so no second concurrent run) until I send them an IM or
+//   GT_WEBHOOK_LEASE_S (default 60 s) passes; then ONE POST carries the held lines, minus lines already answered with
+//   'im --re <msg_id>'. Every IM event carries msg_id (for 'im --re'). 'webhook lease [<s>]', 'webhook lease selftest'.
 // - One try, 8 s timeout, no retry. Failures append the JSON body to the failed log. The key is never logged.
 using System.Net.Http.Headers;
 using System.Text;
@@ -36,6 +40,11 @@ public static class Webhook
     public static TimeSpan Quiet = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_QUIET_S", 20));        // burst: quiet gap before the POST
     public static TimeSpan MaxHold = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MAX_S", 60));        // burst: cap from the first held line
     public static TimeSpan MinInterval = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MIN_INTERVAL_S", 15));
+    public static TimeSpan Lease = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_LEASE_S", 60));        // reply lease per IM sender after a POST
+    static readonly Dictionary<string, (DateTime start, string fromId)> leases = new();         // conv key -> lease (UTC start)
+    // pure (selftest-covered): is the reply lease still held? ends at my first IM to them after the POST, or after `lease`
+    public static bool LeaseActive(DateTime startUtc, DateTime nowUtc, TimeSpan lease, DateTimeOffset? myLastImTo)
+        => nowUtc - startUtc < lease && !(myLastImTo != null && myLastImTo.Value.UtcDateTime >= startUtc);
     public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "group_invite", "group_invite_accepted", "region_restart", "david_login", "david_login_test" };
     public static int DailyCap = (int)Math.Clamp(EnvS("GT_WEBHOOK_DAILY_CAP", 600), 1, 100000);
     const string DavidId = "44ce5a36-c1c7-4a68-ac9a-635ddfff6233";
@@ -65,6 +74,7 @@ public static class Webhook
     {
         public string my_last_im_to_sender { get; init; } // dedupe hint: my last outgoing IM to this avatar (ISO time), null = none known
         public bool? answered_after { get; init; }         // true = that IM was sent after this event arrived
+        public long? msg_id { get; init; }                 // incoming IM id, for 'im --re <msg_id>' (claim-and-send)
     }
 
     // pure (selftest-covered): bypasses the daily cap?
@@ -134,7 +144,7 @@ public static class Webhook
         return $"webhook cap selftest: {pass} PASS, {fail} FAIL (pure checks; nothing POSTed)\n" + sb.ToString().TrimEnd();
     }
 
-    public static void Init() => Core.OnIncoming = c => Enqueue(c.type, c.from, c.from_id, c.text, c.time, c.distance);
+    public static void Init() => Core.OnIncoming = c => Enqueue(c.type, c.from, c.from_id, c.text, c.time, c.distance, c.msg_id);
 
     static void LogLocal(string msg) => Core.Log("webhook", msg);
 
@@ -206,11 +216,11 @@ public static class Webhook
     // ---- debounced batching ------------------------------------------------------
     static string ConvKey(string type, string fromId) => type == "local_chat" ? "local_chat" : $"{type}:{fromId}";
 
-    public static void Enqueue(string type, string from, string fromId, string text, string time, double? distance)
+    public static void Enqueue(string type, string from, string fromId, string text, string time, double? distance, long? msgId = null)
     {
         if (PostOverride == null && !ConfiguredCached()) return; // silent no-op until URL and key exist
         if (text != null && text.Length > MaxTextChars) text = text[..MaxTextChars] + "…";
-        var ev = new Ev(type, from, fromId, text, time, distance);
+        var ev = new Ev(type, from, fromId, text, time, distance) { msg_id = msgId };
         if (UrgentKinds.Contains(type)) { _ = Task.Run(() => PostBatch(new List<Ev> { ev }, 0, urgent: true)); return; }
         var now = DateTime.UtcNow;
         lock (gate)
@@ -245,10 +255,16 @@ public static class Webhook
                 {
                     if (convs.Count == 0) { loopRunning = false; return; }
                     var now = DateTime.UtcNow;
-                    var due = convs.Where(kv => Due(kv.Value.Burst, kv.Value.First, kv.Value.Last, now, Detect, Quiet, MaxHold)).Select(kv => kv.Key).ToList();
+                    foreach (var lk in leases.Where(l => !LeaseActive(l.Value.start, now, Lease, Core.LastMyImTo(l.Value.fromId))).Select(l => l.Key).ToList()) leases.Remove(lk);
+                    var due = convs.Where(kv => !leases.ContainsKey(kv.Key) && Due(kv.Value.Burst, kv.Value.First, kv.Value.Last, now, Detect, Quiet, MaxHold)).Select(kv => kv.Key).ToList();
                     if (due.Count == 0 || now - lastPost < MinInterval) continue;
                     batch = new List<Ev>();
                     foreach (var k in due) { batch.AddRange(convs[k].Evs); convs.Remove(k); }
+                    // held lines already answered with 'im --re' are not POSTed again (they stay in poll_events)
+                    int answered = batch.RemoveAll(ev => ev.type == "im" && ev.msg_id is long mid && Core.AnsweredExplicitly(ev.from_id, mid));
+                    if (answered > 0) LogLocal($"lease: {answered} held line(s) already answered with 'im --re'; not POSTed");
+                    foreach (var ev in batch.Where(ev => ev.type == "im" && !string.IsNullOrEmpty(ev.from_id))) leases[ConvKey("im", ev.from_id)] = (now, ev.from_id); // one run per sender
+                    if (batch.Count == 0) continue;
                     nconv = due.Count; overflow = droppedOverflow; droppedOverflow = 0;
                 }
                 await PostBatch(batch, overflow, urgent: false, nconv);
@@ -282,6 +298,25 @@ public static class Webhook
         if (overflow > 0) LogLocal($"batch overflow: {overflow} extra event(s) not included in webhook body (still in poll_events)");
         var (status, err) = PostOverride != null ? await PostOverride(body) : await Post(body, reReadConfig: true);
         LogLocal(status is >= 200 and < 300 ? $"POST ok ({status}) with {batch.Count} event(s) from {nconv} conversation(s){(urgent ? " [urgent]" : "")}" : $"POST failed ({(status?.ToString() ?? err)}) with {batch.Count} event(s)");
+    }
+
+    public static string LeaseCmd(string[] a)
+    {
+        if (a.Length > 0 && a[0] == "selftest") return LeaseSelfTest();
+        if (a.Length > 0) { if (TryS(a[0], 0, 600, out var v)) { Lease = TimeSpan.FromSeconds(v); LogLocal($"reply lease set to {v} s (runtime; GT_WEBHOOK_LEASE_S for restarts)"); } else return "usage: webhook lease [<0-600 s>] | webhook lease selftest"; }
+        lock (gate) return $"webhook reply lease {Lease.TotalSeconds} s: after a POST with IMs from someone, their new lines wait until I IM them (or the lease ends); held now: {leases.Count} sender(s)";
+    }
+    static string LeaseSelfTest()
+    {
+        var sb = new StringBuilder(); int pass = 0, fail = 0; void C(bool ok, string w) { if (ok) pass++; else fail++; sb.AppendLine($"{(ok ? "PASS" : "FAIL")} {w}"); }
+        var t = DateTime.UtcNow; var L = TimeSpan.FromSeconds(60); TimeSpan S(double x) => TimeSpan.FromSeconds(x);
+        C(LeaseActive(t, t + S(5), L, null), "5 s after the POST, no reply yet -> lease held (new lines wait)");
+        C(LeaseActive(t, t + S(5), L, new DateTimeOffset(t - S(30))), "my IM from BEFORE the POST does not end the lease");
+        C(!LeaseActive(t, t + S(15), L, new DateTimeOffset(t + S(13))), "I replied 13 s after the POST -> lease ends, held lines go out in one POST");
+        C(!LeaseActive(t, t + S(60), L, null), "no reply at all -> lease ends after 60 s (nothing is stuck)");
+        var ev = new Ev("im", "X", "1", "t", "2026-10-04T20:46:01-07:00", null) { msg_id = 42 };
+        C(JsonSerializer.Serialize(ev, J).Contains("\"msg_id\":42"), "IM events carry msg_id in the JSON payload");
+        return $"webhook lease selftest: {pass} PASS, {fail} FAIL (pure checks; nothing POSTed)\n" + sb.ToString().TrimEnd();
     }
 
     static bool TryS(string s, double lo, double hi, out double v) =>
@@ -333,6 +368,7 @@ public static class Webhook
             Check(!Due(true, f, f + S(2), f + S(21), S(4), S(20), S(60)) && Due(true, f, f + S(2), f + S(22), S(4), S(20), S(60)), "Due: burst waits 20 s of quiet after its last line");
             Check(!Due(true, f, f + S(59), f + S(59.9), S(4), S(20), S(60)) && Due(true, f, f + S(59), f + S(60), S(4), S(20), S(60)), "Due: burst capped 60 s after its first line");
         }
+        var l0 = Lease; Lease = TimeSpan.Zero; lock (gate) leases.Clear(); // the reply lease has its own test ('webhook lease selftest')
         Detect = TimeSpan.FromSeconds(1); Quiet = TimeSpan.FromSeconds(2); MaxHold = TimeSpan.FromSeconds(5); MinInterval = TimeSpan.Zero;
         PostOverride = b => { lock (posts) posts.Add(((DateTime.UtcNow - t0).TotalSeconds, b)); return Task.FromResult<(int?, string)>((200, null)); };
         try
@@ -371,7 +407,7 @@ public static class Webhook
             await Task.Delay(1800);
             lock (posts) Check(posts.Count == before + 1 && posts[^1].body.Contains("\"conversations\":2"), "two single-line senders due together -> 1 POST, conversations=2");
         }
-        finally { Detect = d0; Quiet = q0; MaxHold = m0; MinInterval = i0; PostOverride = p0; }
+        finally { Detect = d0; Quiet = q0; MaxHold = m0; MinInterval = i0; PostOverride = p0; Lease = l0; lock (gate) leases.Clear(); }
         lock (posts) foreach (var p in posts) { var line = $"+{p.t:F1}s {p.body}"; sb.AppendLine("  " + (line.Length > 220 ? line[..220] + "…" : line)); }
         return $"debounce selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }

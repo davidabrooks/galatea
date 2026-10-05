@@ -50,14 +50,14 @@ public static partial class Program
     public static readonly ConcurrentQueue<EventItem> Events = new();
     static readonly HashSet<string> NonEvents = new() { "greet-reply", "cmd", "ready", "webhook", "profile", "height", "muted-drop", "mute" };
     // Incoming avatar chat/IM notification (MCP webhook wake-up). Invoked AFTER the event is queued for poll_events.
-    public record IncomingChat(string type, string from, string from_id, string text, string time, double? distance, string region);
+    public record IncomingChat(string type, string from, string from_id, string text, string time, double? distance, string region, long? msg_id = null);
     public static Action<IncomingChat> OnIncoming;
-    static void Notify(string type, string from, UUID fromId, string text, double? dist)
+    static void Notify(string type, string from, UUID fromId, string text, double? dist, long? msgId = null)
     {
         var h = OnIncoming; if (h == null) return;
         // 2026-09-30 token saving (David): while nearby-quiet.txt exists, local chat only wakes the webhook if it is from David or names Galatea
         if (type == "local_chat" && System.IO.File.Exists("/home/box/viewers/textclient/nearby-quiet.txt") && fromId.ToString() != "44ce5a36-c1c7-4a68-ac9a-635ddfff6233" && (text ?? "").IndexOf("galat", StringComparison.OrdinalIgnoreCase) < 0) return;
-        try { h(new IncomingChat(type, from, fromId.ToString(), text, DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), dist, client?.Network?.CurrentSim?.Name)); }
+        try { h(new IncomingChat(type, from, fromId.ToString(), text, DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), dist, client?.Network?.CurrentSim?.Name, msgId)); }
         catch (Exception ex) { Log("webhook", "notify error: " + ex.GetType().Name); }
     }
     public static string RegionName => client?.Network?.CurrentSim?.Name;
@@ -437,7 +437,8 @@ public static partial class Program
                     if (string.IsNullOrEmpty(im.Message)) return;
                     if (SystemImNotice(im)) { Log("im-system", $"{im.FromAgentName} ({im.FromAgentID}): {im.Message}"); return; } // logged only, never to the webhook
                     Log("im", $"{im.FromAgentName} ({im.FromAgentID}){offTag}: {im.Message}");
-                    if (!im.GroupIM && im.FromAgentID != UUID.Zero) NoteImFrom(im.FromAgentID.ToString(), DateTimeOffset.Now); // im guard (ImGuard.cs)
+                    long? msgId = null;
+                    if (!im.GroupIM && im.FromAgentID != UUID.Zero) { NoteImFrom(im.FromAgentID.ToString(), DateTimeOffset.Now); msgId = NoteInbound(im.FromAgentID.ToString(), im.Message); } // im guard + message ids (ImGuard.cs)
                     if (im.FromAgentID != UUID.Zero && im.FromAgentID != client.Self.AgentID && !im.GroupIM && !string.IsNullOrWhiteSpace(im.Message))
                     {
                         double? dist = null;
@@ -449,7 +450,7 @@ public static partial class Program
                                 dist = Math.Round(Vector3.Distance(PositionHelper.GetAvatarPosition(sim, av), client.Self.SimPosition), 1);
                         }
                         catch { }
-                        Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist);
+                        Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist, msgId);
                         if (!offline) AutoFollowFromDavid(im.FromAgentID, im.Message); // AutoFollow.cs
                         if (ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true); // old messages: no wander pause/approach/reply
                     }
@@ -1515,6 +1516,8 @@ public static partial class Program
   help | status | where
   say <text> | shout <text> | whisper <text> | chan <n> <text>
   im [--headsup|--force] <First Last|username|uuid|""Name""> <text>   per-recipient guard: 'skipped: ...' if I IMed them < 5 s ago or already answered their latest IM (David: only the 5 s window); --headsup = ONE short 'please wait' note per their latest IM (still 5 s window); --force = manual/David-directed only
+  im --re <msg id[,id..]> <to> <text>   claim-and-send: answers exactly those incoming messages (msg_id from the webhook / imlog); refused if any was already answered (names the answer + the open ids)
+  imlog <name> [n=20] | im history <name> [n]   READ-ONLY IM history with that avatar + message ids / answered state (never sends)
   imguard [check <name>|selftest]   duplicate-IM guard status / dry run / offline test (ImGuard.cs)
   nearby [radius=20]          avatars + objects (uuid, distance, owner, occupancy)
   avatars | objects [radius=20] [name filter] | find <name filter> (64 m)
@@ -1615,7 +1618,8 @@ public static partial class Program
         if (cmd == "remind") return RemindCmd(a); // works logged out (FriendWatch.cs)
         if (!LoggedIn && cmd != "help" && cmd != "restart") return "not logged in" + (cmd is "status" or "where" ? "" : " (use login)");
         if (cmd is "say" or "shout" or "whisper" || (cmd == "chan" && a.Length > 0 && a[0] == "0")) { var qg = QuietChatGuard(); if (qg != null) { Log("quiet", $"manual {cmd} {qg}"); return qg; } }
-        if (cmd is "say" or "shout" or "whisper" or "chan" or "im") { var rg = RateGuard(); if (rg != null) return rg; WanderOwnChat(); }
+        bool imRead = cmd == "im" && IsImHistoryCmd(a); // read-only, no rate guard (ImGuard.cs)
+        if (cmd is "say" or "shout" or "whisper" or "chan" or "im" && !imRead) { var rg = RateGuard(); if (rg != null) return rg; WanderOwnChat(); }
         switch (cmd)
         {
             case "help": return string.Format(Help, autoLure ? "on" : "off");
@@ -1648,19 +1652,32 @@ public static partial class Program
             }
             case "im":
             {
-                bool force = false, headsup = false;
+                // read-only history: 'im history|log <name> [n]' (21:08 PT: this used to IM the name to 'History Resident')
+                if (IsImHistoryCmd(a)) return await ImLog(a[1..]);
+                bool force = false, headsup = false; var re = new List<long>();
                 while (true)
                 {
                     if (rest.StartsWith("--force ", StringComparison.OrdinalIgnoreCase)) { force = true; rest = rest[8..].TrimStart(); continue; }
                     if (rest.StartsWith("--headsup ", StringComparison.OrdinalIgnoreCase)) { headsup = true; rest = rest[10..].TrimStart(); continue; }
+                    if (rest.StartsWith("--re ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rp = rest[5..].TrimStart().Split(' ', 2); rest = rp.Length > 1 ? rp[1].TrimStart() : "";
+                        foreach (var x in rp[0].Split(',', StringSplitOptions.RemoveEmptyEntries)) { if (long.TryParse(x, out var v)) re.Add(v); else return $"usage: im --re <msg id[,msg id..]> <name|uuid> <text>  ('{x}' is not a message id; see 'imlog <name>'); nothing sent"; }
+                        continue;
+                    }
                     break;
                 }
+                var quoted = rest.TrimStart().StartsWith('"');
                 var (target, text) = SplitTarget(rest);
-                if (target.Length == 0 || text.Length == 0) return "usage: im [--headsup|--force] <name|uuid> <text>";
+                if (target.Length == 0 || text.Length == 0) return "usage: im [--re <msg ids>] [--headsup|--force] <name|uuid> <text>";
+                bool known; lock (nameToId) known = nameToId.ContainsKey(target.Contains(' ') ? target : target + " Resident");
+                try { known = known || Sim.ObjectsAvatars.Values.Any(av => av != null && string.Equals(av.Name, target + " Resident", StringComparison.OrdinalIgnoreCase)); } catch { }
+                var bad = ImTargetCheck(target, quoted, known);
+                if (bad != null) { Log("im-guard", bad); return bad; }
                 var id = await ResolveAvatar(target);
                 if (id == UUID.Zero) return $"could not resolve avatar '{target}'";
                 // per-recipient duplicate guard (ImGuard.cs); also feeds the webhook dedupe hint (my_last_im_to_sender)
-                var (sent, skip) = ImGuardedSend(id.ToString(), NameOf(id), id == DavidId, force, () => client.Self.InstantMessage(id, text), null, headsup);
+                var (sent, skip) = ImGuardedSend(id.ToString(), NameOf(id), id == DavidId, force, () => client.Self.InstantMessage(id, text), null, headsup, re, text);
                 if (!sent) return skip;
                 Log("me-im", $"to {NameOf(id)} ({id}): {text}");
                 return $"sent to {NameOf(id)} ({id})";
@@ -1733,6 +1750,7 @@ public static partial class Program
             case "watchdog": return a.Length > 0 && a[0] == "selftest" ? WatchdogSelfTest() : WatchdogStatus();
             case "ao": return a.Length > 0 && a[0] == "selftest" ? AoSelfTest() : AoStatus();
             case "imguard": return await ImGuardCmd(a);
+            case "imlog": return await ImLog(a); // read-only IM history (ImGuard.cs)
             case "offlineim": return a.Length > 0 && a[0] == "selftest" ? OfflineImSelfTest() : OfflineImStatus();
             case "route": case "routes": case "goto_place": case "overhead": case "snapshot": return await RouteCmds(cmd, rest, a);
             case "offers": return await OffersCmd(a);
@@ -1966,6 +1984,7 @@ public static partial class Program
                 if (a.Length > 0 && a[0].Equals("test", StringComparison.OrdinalIgnoreCase)) return await GalatayMcp.Webhook.Test();
                 if (a.Length > 0 && a[0].Equals("reset-cap", StringComparison.OrdinalIgnoreCase)) return GalatayMcp.Webhook.ResetCap();
                 if (a.Length > 0 && a[0].Equals("cap", StringComparison.OrdinalIgnoreCase)) return GalatayMcp.Webhook.CapCmd(a[1..]);
+                if (a.Length > 0 && a[0].Equals("lease", StringComparison.OrdinalIgnoreCase)) return GalatayMcp.Webhook.LeaseCmd(a[1..]);
                 if (a.Length > 0 && a[0].Equals("debounce", StringComparison.OrdinalIgnoreCase)) return a.Length > 1 && a[1] == "selftest" ? await GalatayMcp.Webhook.DebounceSelfTest() : GalatayMcp.Webhook.DebounceCmd(a[1..]);
                 return GalatayMcp.Webhook.ConfigSummary();
             case "logout": case "quit": case "exit":

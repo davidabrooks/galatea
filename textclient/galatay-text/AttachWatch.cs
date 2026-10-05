@@ -6,6 +6,9 @@
 //   attach-block temporary detaches and AO-restore detach+re-attach KEEP the COF link so the item is re-worn on stand /
 //   after restore. Unexpected self-detach (e.g. unpacker llDetachFromAvatar) drops the stale COF link and logs it.
 // - "attach move <item|obj|name> <dx> <dy> <dz> [hudok]" / "attach pos <...>" : nudge root prim attachment-local position (2026-10-05)
+//   2026-10-05 (rings didn't move for David): RIGGED mesh ignores the attachment position (vertices follow the skeleton), so
+//   attach move now checks every mesh prim's skin block and refuses an all-rigged attachment (add 'force' to send anyway);
+//   attach pos/move also report rigged prims and the owner's modify/move permission from ObjectProperties.
 // - attach-block.txt: items kept OFF while seated (detached before/after every sit, again if re-worn) and re-attached when standing
 // - anim-block.txt: animation ids stopped whenever they start while seated
 // - pose keeper: while seated, if a non-seat animation (re)starts after the seat pose, the seat pose is re-asserted (only anims the seat still sources; drops stale solo/couples copies)
@@ -14,6 +17,7 @@ using System.Globalization;
 using System.Text;
 using LibreMetaverse;
 using LibreMetaverse.Packets;
+using LibreMetaverse.StructuredData;
 
 namespace GalatayText;
 
@@ -408,6 +412,63 @@ public static partial class Program
 
     static float ClampAttachDelta(float v) => Math.Clamp(v, -AttachMoveMaxDelta, AttachMoveMaxDelta);
 
+    // Rigged mesh: the viewer skins each vertex to joints, so the prim's attachment-local position / rotation has NO
+    // visual effect (only the bounding box moves). The sim still accepts the update and echoes it, which is why the
+    // first 'attach move' reported 0 -> 0.005 -> 0.020 while David saw nothing ([BB] LaraX Puffy rings: both prims skinned
+    // to CHEST / LEFT_PEC / RIGHT_PEC). Pure: does a mesh asset's LLSD header declare a non-empty "skin" block?
+    internal static bool? MeshAssetIsRigged(byte[] data)
+    {
+        if (data == null || data.Length < 8) return null;
+        try
+        {
+            using var ms = new MemoryStream(data);
+            if (OSDParser.DeserializeLLSDBinary(ms) is not OSDMap h) return null;
+            if (!h.TryGetValue("skin", out var sk) || sk is not OSDMap sm) return false;
+            return sm.TryGetValue("size", out var sz) && sz.AsInteger() > 0;
+        }
+        catch { return null; }
+    }
+
+    static readonly ConcurrentDictionary<UUID, bool> meshRiggedCache = new();
+
+    // per linkset: mesh prims, rigged mesh prims, mesh prims whose asset could not be fetched/decoded
+    static async Task<(int prims, int mesh, int rigged, int unknown)> AttachRigSummary(Primitive root)
+    {
+        var prims = LinkPrims(root);
+        var meshIds = prims.Where(p => p.Sculpt != null && p.Sculpt.Type == SculptType.Mesh && p.Sculpt.SculptTexture != UUID.Zero)
+                           .Select(p => p.Sculpt.SculptTexture).ToList();
+        await Task.WhenAll(meshIds.Distinct().Where(id => !meshRiggedCache.ContainsKey(id)).Select(async id =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var m = await client.Assets.RequestMeshAsync(id, cts.Token);
+                var r = MeshAssetIsRigged(m?.AssetData);
+                if (r.HasValue) meshRiggedCache[id] = r.Value;
+            }
+            catch { }
+        }));
+        int rigged = 0, unknown = 0;
+        foreach (var id in meshIds)
+            if (!meshRiggedCache.TryGetValue(id, out var r)) unknown++; else if (r) rigged++;
+        return (prims.Count, meshIds.Count, rigged, unknown);
+    }
+
+    // Pure: all prims are rigged mesh -> moving the root cannot change what anyone sees
+    internal static bool AttachAllRigged(int prims, int mesh, int rigged, int unknown) => prims > 0 && mesh == prims && rigged == prims && unknown == 0;
+
+    internal static string FmtRig(int prims, int mesh, int rigged, int unknown) =>
+        mesh == 0 ? "no mesh prims" : $"rigged mesh {rigged}/{prims} prims" + (unknown > 0 ? $" ({unknown} mesh asset(s) unreadable)" : "");
+
+    static string FmtOwnerPerms(Primitive root)
+    {
+        var pr = root.Properties;
+        if (pr == null) return "perms ?";
+        var m = pr.Permissions.OwnerMask;
+        return $"owner perms modify={((m & PermissionMask.Modify) != 0 ? "yes" : "NO")} copy={((m & PermissionMask.Copy) != 0 ? "yes" : "no")} " +
+               $"transfer={((m & PermissionMask.Transfer) != 0 ? "yes" : "no")} (mask 0x{(uint)m:X})";
+    }
+
     static string FmtAttachPos(Vector3 p) =>
         string.Format(CultureInfo.InvariantCulture, "{0:F4},{1:F4},{2:F4}", p.X, p.Y, p.Z);
 
@@ -432,6 +493,15 @@ public static partial class Program
         spec = string.Join(' ', t.Skip(1).Take(t.Count - 4)).Trim();
         if (spec.Length == 0) { err = "attach move: missing attachment filter"; return false; }
         return true;
+    }
+
+    // Pure: remove trailing 'force' flag(s) (may sit before or after 'hudok'); true when present
+    internal static bool StripForceFlag(List<string> t)
+    {
+        bool force = false;
+        for (int i = t.Count - 1; i >= Math.Max(1, t.Count - 2); i--)
+            if (t[i].Equals("force", StringComparison.OrdinalIgnoreCase)) { force = true; t.RemoveAt(i); }
+        return force;
     }
 
     static async Task<(Primitive root, string err)> ResolveOwnAttachmentRoot(string key)
@@ -462,15 +532,19 @@ public static partial class Program
         var (root, err) = await ResolveOwnAttachmentRoot(key);
         if (root == null) return err;
         var item = AttachItemId(root);
-        var kids = LinkPrims(root).Count;
+        var rig = await AttachRigSummary(root);
         return $"'{root.Properties?.Name ?? "?"}' item {item} obj {root.ID} local {root.LocalID} @{root.PrimData.AttachmentPoint} " +
-               $"pos {FmtAttachPos(root.Position)} rot {FmtAttachRot(root.Rotation)} prims {kids} " +
-               $"(attachment-local; Chest +X is typically forward/out from the torso)";
+               $"pos {FmtAttachPos(root.Position)} rot {FmtAttachRot(root.Rotation)} prims {rig.prims} " +
+               $"(attachment-local; Chest +X is typically forward/out from the torso); {FmtRig(rig.prims, rig.mesh, rig.rigged, rig.unknown)}; {FmtOwnerPerms(root)}" +
+               (AttachAllRigged(rig.prims, rig.mesh, rig.rigged, rig.unknown)
+                   ? "\nNOTE: every prim is RIGGED mesh: it follows the skeleton, so 'attach move' cannot change how it looks (use another fitted size/version, or the maker's HUD if it has a fit/offset option)"
+                   : "");
     }
 
     static async Task<string> AttachMoveCmd(string rest)
     {
         var t = Tokenize(rest);
+        bool force = StripForceFlag(t);
         if (!TryParseAttachMoveArgs(t, out var key, out var rawDx, out var rawDy, out var rawDz, out var hudOk, out var perr))
             return perr;
         float dx = ClampAttachDelta(rawDx), dy = ClampAttachDelta(rawDy), dz = ClampAttachDelta(rawDz);
@@ -482,6 +556,12 @@ public static partial class Program
             return $"refused: '{root.Properties?.Name}' is at HUD point {pt}; add 'hudok' to move a HUD (usage: attach move ... dx dy dz hudok)";
         if (dx == 0 && dy == 0 && dz == 0)
             return $"nothing to do: delta is zero after clamp (±{AttachMoveMaxDelta} m/axis)" + (clamped ? $" (raw was {FmtAttachDelta(rawDx, rawDy, rawDz)})" : "");
+        var rig = await AttachRigSummary(root);
+        var rigNote = $"{FmtRig(rig.prims, rig.mesh, rig.rigged, rig.unknown)}; {FmtOwnerPerms(root)}";
+        if (AttachAllRigged(rig.prims, rig.mesh, rig.rigged, rig.unknown) && !force)
+            return $"refused: '{root.Properties?.Name}' is RIGGED mesh ({rigNote}): its vertices follow the skeleton, so moving the attachment " +
+                   "does not change how it looks (the sim would accept and echo the new position, but nobody sees a change). " +
+                   "Use another fitted size/version or the maker's HUD fit option; add 'force' to send the move anyway.";
 
         var sim = client.Network.CurrentSim;
         var item = AttachItemId(root);
@@ -489,6 +569,7 @@ public static partial class Program
         var newPos = oldPos + new Vector3(dx, dy, dz);
         var undo = string.Format(CultureInfo.InvariantCulture, "attach move {0} {1:G} {2:G} {3:G}",
             item != UUID.Zero ? item.ToString() : root.ID.ToString(), -dx, -dy, -dz);
+        if (force && rig.rigged > 0) undo += " force";
         var desc = $"'{root.Properties?.Name ?? "?"}' @{pt} item {item} obj {root.ID} local {root.LocalID}";
         try
         {
@@ -523,9 +604,10 @@ public static partial class Program
         catch { }
 
         var clampNote = clamped ? $" (clamped from {FmtAttachDelta(rawDx, rawDy, rawDz)})" : "";
+        var rigWarn = rig.rigged > 0 ? $"; WARNING {rigNote}: rigged prims will NOT visibly move" : $"; {rigNote}";
         if (!got)
-            return $"attach move sent for {desc}: {FmtAttachPos(oldPos)} + ({FmtAttachDelta(dx, dy, dz)}) -> {FmtAttachPos(newPos)}{clampNote}; sim has not echoed a new position yet (still {FmtAttachPos(seen)}); undo: {undo}";
-        return $"attach move OK {desc}: {FmtAttachPos(oldPos)} -> {FmtAttachPos(seen)} (asked {FmtAttachPos(newPos)}, delta {FmtAttachDelta(dx, dy, dz)}){clampNote}; undo: {undo}";
+            return $"attach move sent for {desc}: {FmtAttachPos(oldPos)} + ({FmtAttachDelta(dx, dy, dz)}) -> {FmtAttachPos(newPos)}{clampNote}; sim has not echoed a new position yet (still {FmtAttachPos(seen)}){rigWarn}; undo: {undo}";
+        return $"attach move OK {desc}: sim echoed {FmtAttachPos(oldPos)} -> {FmtAttachPos(seen)} (asked {FmtAttachPos(newPos)}, delta {FmtAttachDelta(dx, dy, dz)}){clampNote}{rigWarn}; undo: {undo}";
     }
 
     static string AttachMoveSelfTest()
@@ -555,6 +637,23 @@ public static partial class Program
         var undo = string.Format(CultureInfo.InvariantCulture, "attach move {0} {1:G} {2:G} {3:G}",
             "64f6948c-acb3-3a32-9509-3ab1923f2146", -0.05f, 0f, 0f);
         C(undo == "attach move 64f6948c-acb3-3a32-9509-3ab1923f2146 -0.05 0 0", "undo line format");
+        // rigged-mesh detection (2026-10-05: [BB] LaraX Puffy rings are skinned, so position moves were invisible)
+        byte[] Hdr(OSDMap m) => OSDParser.SerializeLLSDBinary(m, false);
+        var rigged = new OSDMap { ["high_lod"] = new OSDMap { ["offset"] = 0, ["size"] = 100 }, ["skin"] = new OSDMap { ["offset"] = 100, ["size"] = 2233 } };
+        var plain = new OSDMap { ["high_lod"] = new OSDMap { ["offset"] = 0, ["size"] = 100 }, ["physics_convex"] = new OSDMap { ["offset"] = 100, ["size"] = 50 } };
+        var emptySkin = new OSDMap { ["high_lod"] = new OSDMap { ["offset"] = 0, ["size"] = 100 }, ["skin"] = new OSDMap { ["offset"] = -1, ["size"] = 0 } };
+        C(MeshAssetIsRigged(Hdr(rigged)) == true, "mesh header with skin block -> rigged");
+        C(MeshAssetIsRigged(Hdr(plain)) == false, "mesh header without skin -> unrigged");
+        C(MeshAssetIsRigged(Hdr(emptySkin)) == false, "skin size 0 -> unrigged");
+        C(MeshAssetIsRigged(null) == null && MeshAssetIsRigged(new byte[] { 1, 2, 3 }) == null, "no/short data -> unknown");
+        C(AttachAllRigged(2, 2, 2, 0), "2/2 rigged mesh prims -> all rigged (refuse)");
+        C(!AttachAllRigged(2, 2, 1, 0), "1/2 rigged -> not all (move + warn)");
+        C(!AttachAllRigged(2, 2, 1, 1), "unknown asset -> not refused");
+        C(!AttachAllRigged(1, 0, 0, 0), "prim (non-mesh) -> movable");
+        var tf = new List<string> { "move", "x", "0.01", "0", "0", "force" }; bool f1 = StripForceFlag(tf);
+        var tf2 = new List<string> { "move", "x", "0.01", "0", "0", "force", "hudok" }; bool f2 = StripForceFlag(tf2);
+        var tf3 = new List<string> { "move", "x", "0.01", "0", "0" }; bool f3 = StripForceFlag(tf3);
+        C(f1 && tf.Count == 5 && f2 && tf2.Count == 6 && tf2[^1] == "hudok" && !f3 && tf3.Count == 5, "force flag stripped (before/after hudok)");
         // Chest +X as outward: avatar_lad Chest default position is +0.15 on X from mChest
         C(true, "Chest +X documented as forward/out (avatar_lad Chest position 0.15 0 -0.1)");
         return $"attach move selftest: {pass} pass, {fail} fail (offline)\n" + string.Join("\n", lines);

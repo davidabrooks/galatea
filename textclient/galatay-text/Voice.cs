@@ -16,12 +16,18 @@
 //   5. voice off / region or parcel-channel change: sidecar stop + POST ProvisionVoiceAccountRequest {logout:true,
 //      viewer_session, voice_server_type}; on a change it reconnects for the new place.
 // Off by default and after every login: Galatea only joins voice when David asks (design doc §4.5).
-// Commands: voice on | voice off | voice status | voice tail [n]       offline check: galatay-text --voice-selftest
+// Wake (2026-10-05): finished transcript lines can POST the chat webhook (type "voice") so the chat routine can reply
+// in local text chat. Modes: voice wake off|name|all (default name = only when a line mentions Galatea/Galatay/Gal/
+// Nightingale, STT-tolerant, plus open floor invitations like "questions or comments?"; name mode includes prior ~30 s as context and marks trigger name|invitation). Debounce ~3 s per speaker
+// batch; rate-limit ~1 wake / 10 s (extras merge). Own lines never wake. Transcription/file logging unchanged.
+// Commands: voice on|off|status|tail [n] | voice wake off|name|all|test|selftest
+// offline: galatay-text --voice-selftest (broker+sidecar) and voice wake selftest (filter/rate/own)
 // ponytail: primary region only (no neighbour-region connections like the LL estate session); ceiling = speakers across
 // a region border are not heard.
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using LibreMetaverse;
@@ -56,6 +62,29 @@ public static partial class Program
     static HttpCapsClient VHttp => client?.HttpCapsClient ?? (vHttpOnly ??= new GridClient()).HttpCapsClient;
     static void VLog(string m) => Log("voice", m);
 
+    // ---- webhook wake (type "voice") -----------------------------------------------------------------
+    public enum VoiceWakeMode { Off, Name, All }
+    public static VoiceWakeMode VWakeMode = VoiceWakeMode.Name; // default: only when a line mentions me
+    static readonly object vWakeGate = new();
+    sealed record VLine(DateTime At, string Speaker, string SpeakerId, string Text, string Trigger = null);
+    static readonly List<VLine> vRecent = new();   // rolling ~30 s of all others' lines (context)
+    static readonly List<VLine> vPending = new();  // wake-worthy, waiting for debounce / rate limit
+    static DateTime vLastWakeAt = DateTime.MinValue;
+    static int vWakeFlushGen;
+    static Func<DateTime> vNow = () => DateTime.Now; // selftest clock hook
+    public static double VoiceDebounceS = 3;
+    public static double VoiceMinWakeS = 10;
+    public static double VoiceContextS = 30;
+    // Galatea / Galatay / Gal / Nightingale, tolerant of common STT splits/misspellings
+    static readonly Regex VoiceNameRx = new(
+        @"\b(?:gal(?:at(?:ay|ai|ae?a?|ea|ia|iya))?|gala\s*t(?:ea|ay|ai|ey)|galla?\s*tay|night[\s\-]?ingales?)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Open floor at talks (Shi Wayne etc.): "questions or comments?", "any questions", "anyone want to share", ...
+    static readonly Regex VoiceInviteRx = new(
+        @"\b(?:(?:any|anyone'?s?|anybody'?s?)\s+(?:questions?|comments?|thoughts?|remarks?)(?:\s+or\s+(?:questions?|comments?|thoughts?|remarks?))?|(?:questions?|comments?|thoughts?)\s+or\s+(?:questions?|comments?|thoughts?|remarks?)|anyone\s+(?:want(?:s|ed)?\s+to\s+)?(?:share|speak|comment|ask)|(?:want(?:s|ed)?|like)\s+to\s+(?:share|speak|comment|ask)|open\s+(?:floor|discussion)|(?:questions?|comments?)\s*\??\s*$)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+
     static async Task<string> VoiceCmd(string[] a)
     {
         var sub = a.Length > 0 ? a[0].ToLowerInvariant() : "status";
@@ -74,8 +103,37 @@ public static partial class Program
                 return had ? "voice off (left the channel; the sidecar finishes transcribing what it already heard)" : "voice was already off";
             case "status": return VoiceStatus();
             case "tail": return VoiceTail(a.Length > 1 && int.TryParse(a[1], out var n) ? Math.Clamp(n, 1, 200) : 15);
-            default: return "usage: voice on | voice off | voice status | voice tail [n]";
+            case "wake": return VoiceWakeCmd(a.Length > 1 ? a[1..] : Array.Empty<string>());
+            default: return "usage: voice on | voice off | voice status | voice tail [n] | voice wake off|name|all|test|selftest";
         }
+    }
+
+    static string VoiceWakeCmd(string[] a)
+    {
+        var sub = a.Length > 0 ? a[0].ToLowerInvariant() : "";
+        if (sub is "off" or "name" or "all")
+        {
+            VWakeMode = sub switch { "off" => VoiceWakeMode.Off, "all" => VoiceWakeMode.All, _ => VoiceWakeMode.Name };
+            VLog($"wake mode set to {VWakeMode.ToString().ToLowerInvariant()}");
+            return $"voice wake {VWakeMode.ToString().ToLowerInvariant()}" +
+                   (VWakeMode == VoiceWakeMode.Name ? " (mentions of me, or open invitations like questions/comments; prior ~30 s context; trigger=name|invitation)" :
+                    VWakeMode == VoiceWakeMode.All ? " (every utterance, debounced ~3 s / rate-limited ~10 s)" :
+                    " (transcript still written; webhook never woken for voice)");
+        }
+        if (sub == "test")
+        {
+            // synthetic wake for end-to-end checks; clearly marked so the chat routine should not reply
+            var parcel = vCur?.ParcelName ?? "(test)";
+            var channel = vCur?.Channel ?? "voice";
+            Notify("voice", "VoiceWakeTest", UUID.Zero,
+                "[VOICE WAKE TEST — no reply needed] Synthetic voice event to verify the webhook path. Ignore this.",
+                null, null, parcel, null, "voice");
+            return "voice wake test: queued one synthetic type=voice webhook event (text says no reply needed)";
+        }
+        if (sub == "selftest") return VoiceWakeSelfTest();
+        if (sub.Length == 0)
+            return $"voice wake {VWakeMode.ToString().ToLowerInvariant()} (off|name|all; default name). Debounce {VoiceDebounceS:g} s, min interval {VoiceMinWakeS:g} s, context {VoiceContextS:g} s in name mode.";
+        return "usage: voice wake off|name|all|test|selftest";
     }
 
     // ---- session start / stop ---------------------------------------------------------------------------
@@ -196,7 +254,7 @@ public static partial class Program
                         if (UUID.TryParse((string)m["id"], out var id)) _ = Task.Run(() => VoiceName(s, id));
                         break;
                     case "line":
-                        s.Lines++; s.LastLine = $"{m["time"]} {m["speaker"]}: {m["text"]}";
+                        VoiceHandleLine(s, m);
                         break;
                     case "error": if (!s.Stopped) VoiceFail(s, "sidecar: " + (string)m["msg"]); break;
                 }
@@ -346,6 +404,7 @@ public static partial class Program
     static string VoiceStatus()
     {
         var sb = new StringBuilder($"voice {(vWanted ? "ON (listen-only, mic never sent)" : "off")}: {VoiceStatusLine()}");
+        sb.Append($"\n  wake: {VWakeMode.ToString().ToLowerInvariant()} (off|name|all; name = mention me or open invitation; debounce {VoiceDebounceS:g} s, min {VoiceMinWakeS:g} s)");
         if (vNote.Length > 0 && vCur != null) sb.Append($"\n  note: {vNote}");
         try
         {
@@ -376,6 +435,308 @@ public static partial class Program
         var lines = File.ReadAllLines(f).Where(l => l.StartsWith("- ") || l.StartsWith("## ")).ToList();
         return $"{f} (last {Math.Min(n, lines.Count)} of {lines.Count(l => l.StartsWith("- "))} lines):\n" + string.Join("\n", lines.TakeLast(n));
     }
+
+    // ---- webhook wake from transcript lines --------------------------------------------------------------
+    // pure: does this STT text mention Galatea / Galatay / Gal / Nightingale (tolerant of common misspellings)?
+    public static bool VoiceMentionsMe(string text) =>
+        !string.IsNullOrWhiteSpace(text) && VoiceNameRx.IsMatch(text);
+
+    // pure: open invitation to the group (Buddha Center floor, etc.), STT-tolerant
+    public static bool VoiceIsInvitation(string text) =>
+        !string.IsNullOrWhiteSpace(text) && VoiceInviteRx.IsMatch(text);
+
+    // pure: why would name-mode wake on this line? "name", "invitation", or null (no wake)
+    // Name wins when both match (someone said "Galatea, any questions?").
+    public static string VoiceNameModeTrigger(string text)
+    {
+        if (VoiceMentionsMe(text)) return "name";
+        if (VoiceIsInvitation(text)) return "invitation";
+        return null;
+    }
+
+    // pure: is this line from Galatea herself? (she has no mic; still filter defensively)
+    public static bool VoiceIsOwn(string speaker, string speakerId, UUID? selfId, string selfName, string selfDisplay)
+    {
+        if (selfId is UUID sid && sid != UUID.Zero && UUID.TryParse(speakerId, out var id) && id == sid) return true;
+        if (string.IsNullOrWhiteSpace(speaker)) return false;
+        var sp = speaker.Trim();
+        foreach (var n in new[] { selfName, selfDisplay, "Galatay Resident", "Galatea Nightingale", "Galatay", "Galatea" })
+        {
+            if (string.IsNullOrWhiteSpace(n)) continue;
+            if (sp.Equals(n, StringComparison.OrdinalIgnoreCase)) return true;
+            if (sp.StartsWith(n + " ", StringComparison.OrdinalIgnoreCase)) return true;
+            if (sp.EndsWith(" / " + n, StringComparison.OrdinalIgnoreCase) || sp.EndsWith("/ " + n, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    static bool VoiceIsOwnLive(string speaker, string speakerId)
+    {
+        var self = client?.Self;
+        return VoiceIsOwn(speaker, speakerId, self?.AgentID, self == null ? null : $"{self.FirstName} {self.LastName}", null);
+    }
+
+    static void VoiceHandleLine(VSess s, JsonNode m)
+    {
+        var text = ((string)m?["text"] ?? "").Trim();
+        var speaker = ((string)m?["speaker"] ?? "(unattributed)").Trim();
+        var speakerId = ((string)m?["speaker_id"] ?? "").Trim();
+        var timeStr = (string)m?["time"] ?? vNow().ToString("HH:mm:ss");
+        if (text.Length == 0) return;
+        s.Lines++; s.LastLine = $"{timeStr} {speaker}: {text}";
+        VoiceNoteLine(speaker, speakerId, text, s.ParcelName, s.Channel);
+    }
+
+    // testable entry: record a line and maybe schedule a wake (transcript logging stays in the sidecar)
+    public static void VoiceNoteLine(string speaker, string speakerId, string text, string parcel = null, string channel = null)
+    {
+        var at = vNow();
+        var own = VoiceIsOwnLive(speaker, speakerId);
+        lock (vWakeGate)
+        {
+            if (!own)
+            {
+                vRecent.Add(new VLine(at, speaker, speakerId ?? "", text));
+                var cut = at.AddSeconds(-(VoiceContextS + 5));
+                vRecent.RemoveAll(x => x.At < cut);
+            }
+        }
+        if (own) { VLog($"line (own, not waking): {speaker}: {text}"); return; }
+        if (VWakeMode == VoiceWakeMode.Off) return;
+        string trigger = null;
+        if (VWakeMode == VoiceWakeMode.All) trigger = "all";
+        else if (VWakeMode == VoiceWakeMode.Name) trigger = VoiceNameModeTrigger(text);
+        if (trigger == null) return;
+        lock (vWakeGate) vPending.Add(new VLine(at, speaker, speakerId ?? "", text, trigger));
+        var gen = Interlocked.Increment(ref vWakeFlushGen);
+        var parcelCap = parcel; var channelCap = channel;
+        _ = Task.Run(() => VoiceWakeFlushAfterDebounce(gen, parcelCap, channelCap));
+    }
+
+    static async Task VoiceWakeFlushAfterDebounce(int gen, string parcel, string channel)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(VoiceDebounceS));
+            if (gen != Volatile.Read(ref vWakeFlushGen)) return;
+            while (true)
+            {
+                TimeSpan wait;
+                lock (vWakeGate)
+                {
+                    var since = vNow() - vLastWakeAt;
+                    wait = since.TotalSeconds >= VoiceMinWakeS ? TimeSpan.Zero : TimeSpan.FromSeconds(VoiceMinWakeS - since.TotalSeconds);
+                }
+                if (wait <= TimeSpan.Zero) break;
+                await Task.Delay(wait);
+                if (gen != Volatile.Read(ref vWakeFlushGen)) return;
+            }
+            VoiceWakeFlush(parcel, channel);
+        }
+        catch (Exception ex) { VLog("wake flush error: " + ex.GetBaseException().Message); }
+    }
+
+    static string VoiceFmtLines(IReadOnlyList<VLine> list, string primarySpeaker)
+    {
+        if (list == null || list.Count == 0) return null;
+        if (list.Count == 1 && list[0].Speaker == primarySpeaker) return list[0].Text;
+        return string.Join("\n", list.Select(l => $"{l.Speaker}: {l.Text}"));
+    }
+
+
+    static void VoiceWakeFlush(string parcel, string channel)
+    {
+        List<VLine> batch; List<VLine> context;
+        lock (vWakeGate)
+        {
+            if (vPending.Count == 0) return;
+            batch = vPending.ToList();
+            vPending.Clear();
+            vLastWakeAt = vNow();
+            var batchKeys = new HashSet<(DateTime, string, string)>(batch.Select(b => (b.At, b.Speaker, b.Text)));
+            var since = vLastWakeAt.AddSeconds(-VoiceContextS);
+            context = vRecent.Where(r => r.At >= since && !batchKeys.Contains((r.At, r.Speaker, r.Text))).ToList();
+        }
+        var primary = batch[0];
+        // Prefer an invitation or name line as primary when present (name over invitation if both in batch)
+        if (VWakeMode == VoiceWakeMode.Name)
+        {
+            var named = batch.FirstOrDefault(b => b.Trigger == "name" || VoiceMentionsMe(b.Text));
+            var invited = batch.FirstOrDefault(b => b.Trigger == "invitation" || VoiceIsInvitation(b.Text));
+            if (named != null) primary = named;
+            else if (invited != null) primary = invited;
+        }
+        var trigger = primary.Trigger
+            ?? (VWakeMode == VoiceWakeMode.All ? "all" : VoiceNameModeTrigger(primary.Text) ?? "name");
+        // If the batch mixed name + invitation, mark name (more specific address)
+        if (batch.Any(b => (b.Trigger ?? VoiceNameModeTrigger(b.Text)) == "name")) trigger = "name";
+        else if (batch.Any(b => (b.Trigger ?? VoiceNameModeTrigger(b.Text)) == "invitation")) trigger = "invitation";
+        var text = VoiceFmtLines(batch, primary.Speaker);
+        // context for name-mode wakes (mention or invitation) so she can reply relevantly
+        var ctx = VWakeMode == VoiceWakeMode.Name ? VoiceFmtLines(context, primary.Speaker) : null;
+        UUID.TryParse(string.IsNullOrEmpty(primary.SpeakerId) ? null : primary.SpeakerId, out var fromId);
+        Notify("voice", primary.Speaker, fromId, text, null, null, parcel, ctx, channel ?? "voice", trigger);
+        VLog($"wake ({VWakeMode.ToString().ToLowerInvariant()}/{trigger}): {batch.Count} line(s) from {primary.Speaker}" + (ctx != null ? " (+ context)" : ""));
+    }
+
+    public static void VoiceWakeReset()
+    {
+        lock (vWakeGate) { vRecent.Clear(); vPending.Clear(); vLastWakeAt = DateTime.MinValue; }
+        Interlocked.Increment(ref vWakeFlushGen);
+        VWakeMode = VoiceWakeMode.Name;
+        VoiceDebounceS = 3; VoiceMinWakeS = 10; VoiceContextS = 30;
+        vNow = () => DateTime.Now;
+    }
+
+    static string VoiceWakeSelfTest()
+    {
+        var sb = new StringBuilder(); int fail = 0;
+        void C(bool ok, string what) { sb.AppendLine((ok ? "ok   " : "FAIL ") + what); if (!ok) fail++; }
+        void Sleep(double s) => Task.Delay(TimeSpan.FromSeconds(s)).GetAwaiter().GetResult();
+        var keepMode = VWakeMode; var keepDeb = VoiceDebounceS; var keepMin = VoiceMinWakeS; var keepCtx = VoiceContextS; var keepNow = vNow;
+        var posted = new List<string>();
+        var keepPost = GalatayMcp.Webhook.PostOverride;
+        var keepDetect = GalatayMcp.Webhook.Detect; var keepQuiet = GalatayMcp.Webhook.Quiet;
+        var keepMaxHold = GalatayMcp.Webhook.MaxHold; var keepMinWh = GalatayMcp.Webhook.MinInterval;
+        try
+        {
+            VoiceWakeReset();
+            C(VoiceMentionsMe("Hey Galatea, can you hear me?"), "mentions Galatea");
+            C(VoiceMentionsMe("galatay are you there"), "mentions galatay");
+            C(VoiceMentionsMe("thanks Gal"), "mentions Gal as a word");
+            C(VoiceMentionsMe("David Nightingale is here"), "mentions Nightingale");
+            C(VoiceMentionsMe("gala tea come sit"), "STT split gala tea");
+            C(VoiceMentionsMe("hey galatai"), "STT galatai");
+            C(!VoiceMentionsMe("welcome everyone to the talk"), "no false positive on plain lecture line");
+            C(!VoiceMentionsMe("the galaxy is vast"), "no match inside galaxy");
+            C(!VoiceMentionsMe(""), "empty text");
+
+            C(VoiceIsInvitation("questions or comments?"), "invitation: questions or comments");
+            C(VoiceIsInvitation("Any questions"), "invitation: any questions");
+            C(VoiceIsInvitation("any thoughts?"), "invitation: any thoughts");
+            C(VoiceIsInvitation("anyone want to share"), "invitation: anyone want to share");
+            C(VoiceIsInvitation("Comments?"), "invitation: comments?");
+            C(VoiceIsInvitation("question or comment"), "invitation: STT singular question or comment");
+            C(VoiceIsInvitation("any question or comments"), "invitation: any question or comments");
+            C(!VoiceIsInvitation("the question of suffering"), "no invitation on 'the question of...'");
+            C(VoiceNameModeTrigger("Galatea any questions?") == "name", "name wins over invitation when both match");
+            C(VoiceNameModeTrigger("questions or comments?") == "invitation", "trigger=invitation");
+            C(VoiceNameModeTrigger("hey Galatay") == "name", "trigger=name");
+            C(VoiceNameModeTrigger("Bodhidharma came west") == null, "no trigger on plain lecture");
+
+            var me = UUID.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+            C(VoiceIsOwn("Galatay Resident", me.ToString(), me, "Galatay Resident", "Galatea Nightingale"), "own by UUID");
+            C(VoiceIsOwn("Galatea Nightingale", "", me, "Galatay Resident", "Galatea Nightingale"), "own by display name");
+            C(!VoiceIsOwn("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", me, "Galatay Resident", "Galatea Nightingale"), "David is not own");
+
+            GalatayMcp.Webhook.PostOverride = async body => { lock (posted) posted.Add(body); await Task.CompletedTask; return (200, null); };
+            GalatayMcp.Webhook.Init();
+            GalatayMcp.Webhook.Detect = TimeSpan.FromMilliseconds(50);
+            GalatayMcp.Webhook.Quiet = TimeSpan.FromMilliseconds(80);
+            GalatayMcp.Webhook.MaxHold = TimeSpan.FromMilliseconds(200);
+            GalatayMcp.Webhook.MinInterval = TimeSpan.FromMilliseconds(50);
+
+            // all mode: batches nearby lines into one POST
+            posted.Clear();
+            VoiceWakeReset(); VoiceDebounceS = 0.2; VoiceMinWakeS = 0.5;
+            var t0 = DateTime.Now; var clock = t0; vNow = () => clock;
+            VWakeMode = VoiceWakeMode.All;
+            VoiceNoteLine("Shi Wayne", "11111111-1111-1111-1111-111111111111", "welcome to the history of Buddhism", "Sangha", "parcel voice");
+            clock = clock.AddSeconds(1);
+            VoiceNoteLine("Shi Wayne", "11111111-1111-1111-1111-111111111111", "Bodhidharma came from the west", "Sangha", "parcel voice");
+            var deadline = DateTime.UtcNow.AddSeconds(6);
+            while (posted.Count == 0 && DateTime.UtcNow < deadline) { clock = DateTime.Now; Sleep(0.05); }
+            C(posted.Count >= 1, $"all-mode produces a webhook POST ({posted.Count})");
+            if (posted.Count >= 1)
+            {
+                var body = posted[0];
+                C(body.Contains("\"type\":\"voice\"") || body.Contains("\"kind\":\"voice\""), "payload marked voice");
+                C(body.Contains("Bodhidharma") || body.Contains("welcome to the history"), "batched text present");
+                C(body.Contains("parcel voice"), "channel field present");
+            }
+
+            // name mode: no mention -> no wake; mention -> wake with context
+            posted.Clear();
+            VoiceWakeReset(); VoiceDebounceS = 0.2; VoiceMinWakeS = 0.5; VoiceContextS = 30;
+            clock = DateTime.Now; vNow = () => clock;
+            VWakeMode = VoiceWakeMode.Name;
+            VoiceNoteLine("Shi Wayne", "11111111-1111-1111-1111-111111111111", "today we study Bodhidharma", "Sangha", "parcel voice");
+            clock = clock.AddSeconds(2);
+            VoiceNoteLine("Visitor", "22222222-2222-2222-2222-222222222222", "interesting point about zen", "Sangha", "parcel voice");
+            clock = clock.AddSeconds(2);
+            Sleep(0.6);
+            C(posted.Count == 0, "name mode: no wake without a mention");
+            VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", "Galatea what do you think?", "Sangha", "parcel voice");
+            deadline = DateTime.UtcNow.AddSeconds(6);
+            while (posted.Count == 0 && DateTime.UtcNow < deadline) { clock = DateTime.Now; Sleep(0.05); }
+            C(posted.Count >= 1, $"name mode wakes on mention ({posted.Count})");
+            if (posted.Count >= 1)
+            {
+                var body = posted[0];
+                C(body.Contains("Galatea what do you think"), "mention text in event");
+                C(body.Contains("\"context\":") && (body.Contains("Bodhidharma") || body.Contains("interesting point")), "prior ~30 s context included");
+                C(body.Contains("\"trigger\":\"name\""), "trigger=name on mention wake");
+            }
+
+            // name mode: open invitation wakes with context + trigger=invitation
+            posted.Clear();
+            VoiceWakeReset(); VoiceDebounceS = 0.2; VoiceMinWakeS = 0.5; VoiceContextS = 30;
+            clock = DateTime.Now; vNow = () => clock;
+            VWakeMode = VoiceWakeMode.Name;
+            VoiceNoteLine("Shi Wayne", "11111111-1111-1111-1111-111111111111", "Bodhidharma sat facing a wall for nine years", "Sangha", "parcel voice");
+            clock = clock.AddSeconds(3);
+            VoiceNoteLine("Shi Wayne", "11111111-1111-1111-1111-111111111111", "questions or comments?", "Sangha", "parcel voice");
+            deadline = DateTime.UtcNow.AddSeconds(6);
+            while (posted.Count == 0 && DateTime.UtcNow < deadline) { clock = DateTime.Now; Sleep(0.05); }
+            C(posted.Count >= 1, $"name mode wakes on invitation ({posted.Count})");
+            if (posted.Count >= 1)
+            {
+                var body = posted[0];
+                C(body.Contains("questions or comments"), "invitation text in event");
+                C(body.Contains("\"trigger\":\"invitation\""), "trigger=invitation on open floor");
+                C(body.Contains("\"context\":") && body.Contains("Bodhidharma"), "invitation includes prior context");
+            }
+
+            // rate limit
+            posted.Clear();
+            VoiceWakeReset(); VoiceDebounceS = 0.15; VoiceMinWakeS = 1.0;
+            clock = DateTime.Now; vNow = () => clock;
+            VWakeMode = VoiceWakeMode.All;
+            VoiceNoteLine("A", "11111111-1111-1111-1111-111111111111", "first", "P", "voice");
+            deadline = DateTime.UtcNow.AddSeconds(4);
+            while (posted.Count < 1 && DateTime.UtcNow < deadline) { clock = DateTime.Now; Sleep(0.05); }
+            var n1 = posted.Count;
+            C(n1 >= 1, "first wake posted");
+            VoiceNoteLine("A", "11111111-1111-1111-1111-111111111111", "second soon", "P", "voice");
+            Sleep(0.3);
+            C(posted.Count == n1, "rate limit holds the second wake briefly");
+            deadline = DateTime.UtcNow.AddSeconds(5);
+            while (posted.Count < n1 + 1 && DateTime.UtcNow < deadline) { clock = DateTime.Now; Sleep(0.05); }
+            C(posted.Count >= n1 + 1, $"second wake after min interval ({posted.Count})");
+
+            // off
+            posted.Clear();
+            VoiceWakeReset(); VoiceDebounceS = 0.15;
+            clock = DateTime.Now; vNow = () => clock;
+            VWakeMode = VoiceWakeMode.Off;
+            VoiceNoteLine("A", "11111111-1111-1111-1111-111111111111", "Galatea hello", "P", "voice");
+            Sleep(0.5);
+            C(posted.Count == 0, "wake off never POSTs");
+        }
+        catch (Exception ex) { C(false, "exception: " + ex); }
+        finally
+        {
+            GalatayMcp.Webhook.PostOverride = keepPost;
+            GalatayMcp.Webhook.Detect = keepDetect; GalatayMcp.Webhook.Quiet = keepQuiet;
+            GalatayMcp.Webhook.MaxHold = keepMaxHold; GalatayMcp.Webhook.MinInterval = keepMinWh;
+            vNow = keepNow;
+            VoiceDebounceS = keepDeb; VoiceMinWakeS = keepMin; VoiceContextS = keepCtx;
+            VoiceWakeReset();
+            VWakeMode = keepMode;
+        }
+        return sb.ToString().TrimEnd() + $"\nvoice wake selftest: {fail} FAIL";
+    }
+
 
     // ---- offline selftest: real broker code + real sidecar against fake_voice_server.py (no SL login) -----------
     static async Task<string> VoiceSelfTest()

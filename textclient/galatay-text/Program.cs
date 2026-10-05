@@ -50,14 +50,14 @@ public static partial class Program
     public static readonly ConcurrentQueue<EventItem> Events = new();
     static readonly HashSet<string> NonEvents = new() { "greet-reply", "cmd", "ready", "webhook", "profile", "height", "muted-drop", "mute", "voice-sc" };
     // Incoming avatar chat/IM notification (MCP webhook wake-up). Invoked AFTER the event is queued for poll_events.
-    public record IncomingChat(string type, string from, string from_id, string text, string time, double? distance, string region, long? msg_id = null);
+    public record IncomingChat(string type, string from, string from_id, string text, string time, double? distance, string region, long? msg_id = null, string parcel = null, string context = null, string channel = null, string trigger = null);
     public static Action<IncomingChat> OnIncoming;
-    static void Notify(string type, string from, UUID fromId, string text, double? dist, long? msgId = null)
+    static void Notify(string type, string from, UUID fromId, string text, double? dist, long? msgId = null, string parcel = null, string context = null, string channel = null, string trigger = null)
     {
         var h = OnIncoming; if (h == null) return;
         // 2026-09-30 token saving (David): while nearby-quiet.txt exists, local chat only wakes the webhook if it is from David or names Galatea
         if (type == "local_chat" && System.IO.File.Exists("/home/box/viewers/textclient/nearby-quiet.txt") && fromId.ToString() != "44ce5a36-c1c7-4a68-ac9a-635ddfff6233" && (text ?? "").IndexOf("galat", StringComparison.OrdinalIgnoreCase) < 0) return;
-        try { h(new IncomingChat(type, from, fromId.ToString(), text, DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), dist, client?.Network?.CurrentSim?.Name, msgId)); }
+        try { h(new IncomingChat(type, from, fromId.ToString(), text, DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), dist, client?.Network?.CurrentSim?.Name, msgId, parcel, context, channel, trigger)); }
         catch (Exception ex) { Log("webhook", "notify error: " + ex.GetType().Name); }
     }
     public static string RegionName => client?.Network?.CurrentSim?.Name;
@@ -229,6 +229,7 @@ public static partial class Program
         if (args.Contains("--attach-move-selftest")) { var r = AttachMoveSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--detach-cof-selftest")) { var r = DetachCofSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--pose-keeper-selftest")) { var r = PoseKeeperSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--voice-wake-selftest")) { var r = VoiceWakeSelfTest(); Console.WriteLine(r); return r.Contains("FAIL ") || !r.Contains(": 0 FAIL") ? 1 : 0; } // offline: name filter, own-speech, debounce/rate-limit (Voice.cs)
         if (args.Contains("--voice-selftest")) { var r = await VoiceSelfTest(); Console.WriteLine(r); return r.Contains("FAIL ") || !r.Contains(": 0 FAIL") ? 1 : 0; } // offline: voice broker + sidecar vs fake_voice_server.py (Voice.cs)
         if (args.Contains("--exp-selftest")) { var r = ExpSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)
@@ -250,7 +251,7 @@ public static partial class Program
             // summaries say "0 FAIL" / "0 fail"; only a FAIL line or a non-zero count is a failure
             return System.Text.RegularExpressions.Regex.IsMatch(all, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|[1-9]\d*\s+fail\b") ? 1 : 0;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest|--exp-selftest|--voice-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest|--exp-selftest|--voice-selftest|--voice-wake-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -1617,7 +1618,7 @@ public static partial class Program
   outfit plan|create <name> [extra ids]   dry run / create an Outfit folder under My Outfits with links to the original items (COF minus LSL Bridge)
   outfit check                   READ-ONLY: WARNING for COF object links whose items are not attached (stale links re-attach on relog)
   invitem <item uuid>         check that an inventory item exists (FetchItem; never attaches)
-  voice on|off|status|tail [n] LISTEN-ONLY SL voice (WebRTC, the parcel/region channel here) -> local transcript /workspace/secondlife/voice/transcript-<date>.md with speaker names; mic never sent; off after every login (Voice.cs)
+  voice on|off|status|tail [n] | voice wake off|name|all|test|selftest   LISTEN-ONLY SL voice + webhook wake (default wake=name: only when a line mentions me); transcript /workspace/secondlife/voice/transcript-<date>.md; mic never sent; off after every login (Voice.cs)
   logout                      log out cleanly and exit";
 
     static async Task<string> Exec(string line)

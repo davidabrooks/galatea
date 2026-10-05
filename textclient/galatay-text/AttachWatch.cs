@@ -14,7 +14,8 @@
 // - pose keeper: while seated, if a non-seat animation (re)starts after the seat pose, the seat pose is re-asserted.
 //   Kept copies are dropped only when the seat sources a *different* pose (solo<->couples / AVsitter swap), never merely
 //   because our AnimationStart made the source self (that stale-drop sank Galatea through the floor on 2026-10-05).
-//   Default STAND/WALK overlays are stopped while seated; if no seat pose is playing for a few seconds, recover via the seat menu.
+//   Default STAND/WALK overlays are stopped while seated; if no seat pose is playing for ~8 s (and not in the
+//   post-occupancy-change grace), recover via the seat menu — restore last path or solo, NEVER auto-couples.
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -146,7 +147,7 @@ public static partial class Program
     // Seat-off (AO) linger: stop while seated if the anim was ever played from a seat-off attachment, or its source is a remembered seat-off object.
     internal static bool IsSeatOffLingerAnim(bool inSeatOffPlayed, bool srcIsSeatOffObject)
         => inSeatOffPlayed || srcIsSeatOffObject;
-    internal static bool NeedsSeatPoseRecovery(bool seated, int seatSourcedCount, int keptPlayingCount, double missingForSeconds, double graceSeconds = 3.0)
+    internal static bool NeedsSeatPoseRecovery(bool seated, int seatSourcedCount, int keptPlayingCount, double missingForSeconds, double graceSeconds = 8.0)
         => seated && seatSourcedCount == 0 && keptPlayingCount == 0 && missingForSeconds >= graceSeconds;
 
     static bool IsSeatOffAttachmentSource(UUID src)
@@ -484,7 +485,8 @@ public static partial class Program
         }
     }
 
-    // Every ~1 s while seated: stop lingering seat-off/AO/stand overlays; if no seat pose for a few seconds, re-pick via seat menu.
+    // Every ~1 s while seated: stop lingering seat-off/AO/stand overlays; if no seat pose for a few seconds, recover
+    // WITHOUT ever auto-picking couples (restore last path or leave/solo). After alone<->shared, wait for AVsitter.
     static async Task SeatedPoseMaintenanceTick()
     {
         if (client.Self.SittingOn == 0) { seatPoseMissingSince = null; return; }
@@ -493,10 +495,13 @@ public static partial class Program
         var seatSourced = cur.Count(kv => IsSeatSource(kv.Value.src));
         var keptPlaying = cur.Keys.Count(k => keptPose.ContainsKey(k));
         if (seatSourced > 0 || keptPlaying > 0) { seatPoseMissingSince = null; return; }
+        // occupancy just flipped: AVsitter often restarts anims — do not treat a brief gap as "pose lost"
+        if (InSharedFlipGrace(poseSharedChangedAt, DateTime.Now, PoseSharedFlipGraceS))
+        { seatPoseMissingSince = null; return; }
         if ((DateTime.Now - lastSeatPoseMenuAt).TotalSeconds < 8) { seatPoseMissingSince = null; return; }
         if (seatPoseMissingSince == null) seatPoseMissingSince = DateTime.Now;
         double missing = (DateTime.Now - seatPoseMissingSince.Value).TotalSeconds;
-        if (!NeedsSeatPoseRecovery(true, seatSourced, keptPlaying, missing)) return;
+        if (!NeedsSeatPoseRecovery(true, seatSourced, keptPlaying, missing, PoseRecoveryMissingS)) return;
         if ((DateTime.Now - lastPoseRecovery).TotalSeconds < 20) return;
         lastPoseRecovery = DateTime.Now;
         seatPoseMissingSince = null;
@@ -508,9 +513,9 @@ public static partial class Program
             if (p.ParentID != 0 && sim.ObjectsPrimitives.TryGetValue(p.ParentID, out var root) && root != null) p = root;
             if (p.Properties == null) await EnsureProperties(sim, new() { p });
             var name = p.Properties?.Name ?? p.ID.ToString();
-            Log("height", $"pose recovery: no seat pose while seated for {missing:0.#}s; re-selecting via seat menu on '{name}'");
-            using var t = new CancellationTokenSource(30000);
-            var r = await SeatPose(p, name, DateTime.Now.AddSeconds(-20), true, t.Token);
+            Log("height", $"pose recovery: no seat pose while seated for {missing:0.#}s; restoring last path or solo (never couples) on '{name}'");
+            using var cts = new CancellationTokenSource(30000);
+            var r = await SeatPose(p, name, DateTime.Now.AddSeconds(-20), true, cts.Token, explicitCouples: false, recovery: true);
             Log("height", "pose recovery result: " + r);
         }
         catch (Exception ex) { Log("height", "pose recovery error: " + ex.GetBaseException().Message); }
@@ -837,8 +842,9 @@ public static partial class Program
         C(IsDefaultStandOrWalk(Animations.STAND) && IsDefaultStandOrWalk(Animations.STAND_1) && IsDefaultStandOrWalk(Animations.WALK), "default STAND/WALK detected");
         C(!IsDefaultStandOrWalk(Animations.SIT), "SIT is not a stand/walk overlay");
         C(IsSeatOffLingerAnim(true, false) && IsSeatOffLingerAnim(false, true) && !IsSeatOffLingerAnim(false, false), "seat-off linger = played-from-AO or remembered object");
-        C(NeedsSeatPoseRecovery(true, 0, 0, 3.0), "seated, no seat/kept pose for 3s -> recover");
-        C(!NeedsSeatPoseRecovery(true, 0, 0, 2.0), "missing only 2s -> wait");
+        C(NeedsSeatPoseRecovery(true, 0, 0, 8.0), "seated, no seat/kept pose for 8s -> recover");
+        C(!NeedsSeatPoseRecovery(true, 0, 0, 3.0), "missing only 3s -> wait (AVsitter swap grace)");
+        C(!NeedsSeatPoseRecovery(true, 0, 0, 7.0), "missing 7s -> still wait");
         C(!NeedsSeatPoseRecovery(true, 1, 0, 10.0), "seat pose present -> no recover");
         C(!NeedsSeatPoseRecovery(true, 0, 1, 10.0), "kept pose playing -> no recover");
         C(!NeedsSeatPoseRecovery(false, 0, 0, 10.0), "standing -> no recover");

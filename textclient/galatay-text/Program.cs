@@ -1562,7 +1562,7 @@ public static partial class Program
   accept | decline            pending teleport offer (allow-list only)
   dialog <button label>       answer the last script dialog (e.g. AVsitter pose menu)
   touch <object uuid>         touch an object (seat/HUD) so it opens its own menu (NOT the AO HUD: a touch toggles it off)
-  pose [change|selftest]      random pose from the seat's AVsitter menu: couples when shared, solo when alone (never male)
+  pose [change|couples|path A>B>C|selftest]   solo random by default (never auto-couples); 'pose couples' only if David asks; 'pose path' restores an exact menu path
   exp [list|status|refresh|selftest] | exp info|allow|block|forget <id>   Experience Tools: auto-grant land/allowlist (AVsitter); TEMP props in worn; Debit never granted
   watchdog [selftest]         freeze / heartbeat (60 s) / stale-connection (45 s) watchdog -> clean logout + exit 75 -> supervisor relogin
   offlineim [status|selftest] stored (offline) IMs: fetched at every login, logged [offline, sent ...], sent to the webhook; no auto-actions

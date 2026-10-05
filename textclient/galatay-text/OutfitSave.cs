@@ -4,7 +4,9 @@
 // outfit plan <name> [id,id,...]    dry run: links that 'outfit create' would make
 // outfit create <name> [id,id,...]  new folder (type Outfit) under My Outfits + links to the ORIGINAL items of every COF link
 //                                    (minus the Firestorm LSL Bridge and the COF folder link) plus the extra item ids (not worn).
-// Never deletes, never wears, never edits the COF.
+// outfit check                      READ-ONLY: WARNING lines for COF object links whose items are not actually attached
+//                                    (stale links re-attach on relog; seat-off items while seated are noted, not warned).
+// Never deletes, never wears, never edits the COF (check is read-only; detach/wear remove edit COF elsewhere).
 using System.Text;
 using LibreMetaverse;
 
@@ -126,10 +128,59 @@ public static partial class Program
         return (plan, problems, myOutfits, moKids);
     }
 
+    // Pure formatter for outfit check / worn all WARNING lines (offline selftest).
+    internal static string OutfitCheckWarnLine(string name, UUID item, string extraNote = "")
+    {
+        var note = string.IsNullOrWhiteSpace(extraNote) ? "" : " " + extraNote.Trim();
+        return $"WARNING: stale COF object link '{name}' item {item} (not attached){note}";
+    }
+
+    // READ-ONLY: list COF object links that are not currently attached (the relog resurrect bug).
+    static async Task<string> OutfitCheck()
+    {
+        if (!LoggedIn) return "not logged in";
+        using var cts0 = new CancellationTokenSource(60000); var ct = cts0.Token;
+        var root = client.Inventory.Store?.RootFolder;
+        if (root == null) return "inventory root not known yet";
+        var rootKids = await ReadFolderRO(root.UUID, ct);
+        var cof = rootKids.OfType<InventoryFolder>().FirstOrDefault(f => f.PreferredType == FolderType.CurrentOutfit);
+        if (cof == null) return "COF not found";
+        var cofLinks = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>().Where(i => i.ParentUUID == cof.UUID && i.IsLink()).ToList();
+        var targets = new Dictionary<UUID, InventoryItem>();
+        foreach (var l in cofLinks) { var tg = await FetchItemRO(l.AssetUUID, ct); if (tg != null) targets[l.AssetUUID] = tg; }
+        var cofObjLinks = cofLinks.Where(l => targets.TryGetValue(l.AssetUUID, out var tg) ? tg is InventoryObject : l.InventoryType == InventoryType.Object).ToList();
+        var worn = TrackedAttachments().Select(r => r.Item).Concat(WornPrims().Select(AttachItemId)).Where(u => u != UUID.Zero).ToHashSet();
+        // also count sim appearance list + chat inference lightly: if worn all would count it, skip warn
+        var sal = simAttList;
+        if (sal != null)
+            foreach (var x in sal) if (x.id != UUID.Zero) { /* object UUID not item — leave worn as item-based */ }
+        var seatOff = SeatOffItems();
+        bool seated = client.Self.SittingOn != 0;
+        var sb = new StringBuilder();
+        int warn = 0, note = 0;
+        foreach (var l in cofObjLinks.Where(l => !worn.Contains(l.AssetUUID)).OrderBy(l => l.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var tg = targets.GetValueOrDefault(l.AssetUUID) as InventoryObject;
+            var pt = tg != null ? $"last point {tg.AttachPoint}" : "";
+            if (l.Name.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase))
+            { note++; sb.AppendLine($"note: '{l.Name}' item {l.AssetUUID} kept off on purpose (Firestorm bridge)"); continue; }
+            if (seatOff.ContainsKey(l.AssetUUID) && seated)
+            { note++; sb.AppendLine($"note: '{l.Name}' item {l.AssetUUID} seat-off / attach-block (expected while seated; COF kept for stand re-wear)"); continue; }
+            warn++;
+            sb.AppendLine(OutfitCheckWarnLine(l.Name, l.AssetUUID, pt));
+        }
+        if (warn == 0 && note == 0) sb.AppendLine("outfit check OK: every COF object link is attached (or none present)");
+        else if (warn == 0) sb.AppendLine($"outfit check OK: no stale COF object links to warn about ({note} expected-off note(s))");
+        else sb.Insert(0, $"outfit check: {warn} WARNING(s), {note} note(s) — stale COF links re-attach on the next relog; use 'detach <item>' or 'wear remove <item>' to clear them\n");
+        Log("outfit", $"outfit check: {warn} warn, {note} note, COF objects {cofObjLinks.Count}, worn items {worn.Count}");
+        return sb.ToString().TrimEnd();
+    }
+
     static async Task<string> OutfitCmd(string[] a)
     {
         if (!LoggedIn) return "not logged in";
-        if (a.Length < 2 || (a[0] != "plan" && a[0] != "create")) return "usage: outfit plan|create <name> [extra item ids, comma separated]";
+        if (a.Length >= 1 && a[0] == "check") return await OutfitCheck();
+        if (a.Length < 2 || (a[0] != "plan" && a[0] != "create")) return "usage: outfit plan|create <name> [extra item ids, comma separated] | outfit check";
         var name = a[1]; var extra = a.Length > 2 ? a[2].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) : Array.Empty<string>();
         using var cts = new CancellationTokenSource(180000); var ct = cts.Token;
         var (plan, problems, myOutfits, moKids) = await PlanOutfit(extra, ct);

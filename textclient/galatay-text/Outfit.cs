@@ -173,7 +173,21 @@ public static partial class Program
         sb.AppendLine(sal == null ? "(the sim's own attachment list (AvatarAppearance) has not arrived yet)" : $"(the sim's own attachment list, {simAttTime:HH:mm:ss}: {sal.Count} non-HUD attachment(s); every row above without a [bracket] note was received as an object)");
         foreach (var n in inferNotes) sb.AppendLine("(" + n + ")");
         var stale = cofObjLinks.Where(l => !wornItemIds.Contains(l.AssetUUID)).ToList();
-        if (stale.Count > 0) { sb.AppendLine($"COF object links that are NOT attached on the avatar ({stale.Count}) (linked in the Current Outfit folder, but not on her: not received as objects, not in the sim's attachment list, and no chat from them since the last detach):"); foreach (var l in stale) { var t = targets.GetValueOrDefault(l.AssetUUID) as InventoryObject; sb.AppendLine($"  '{l.Name}' item {l.AssetUUID}{(t != null ? $" last point {t.AttachPoint}" : "")}{(l.Name.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase) ? " (kept off in the text client on purpose; Firestorm re-adds it at its own login)" : "")}"); } }
+        if (stale.Count > 0)
+        {
+            sb.AppendLine($"WARNING: COF object links that are NOT attached on the avatar ({stale.Count}) (linked in the Current Outfit folder, but not on her — these re-attach on the next relog unless removed; see also 'outfit check'):");
+            foreach (var l in stale)
+            {
+                var tg = targets.GetValueOrDefault(l.AssetUUID) as InventoryObject;
+                var note = tg != null ? $" last point {tg.AttachPoint}" : "";
+                if (l.Name.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase))
+                    sb.AppendLine($"  '{l.Name}' item {l.AssetUUID}{note} (kept off in the text client on purpose; Firestorm re-adds it at its own login)");
+                else if (SeatOffItems().ContainsKey(l.AssetUUID) && client.Self.SittingOn != 0)
+                    sb.AppendLine($"  '{l.Name}' item {l.AssetUUID}{note} (seat-off / attach-block: expected while seated; COF kept for stand re-wear)");
+                else
+                    sb.AppendLine(OutfitCheckWarnLine(l.Name, l.AssetUUID, note.Trim()));
+            }
+        }
         var otherCof = cofLinks.Where(l => !cofWearLinks.Contains(l) && !cofObjLinks.Contains(l)).ToList();
         if (otherCof.Count > 0) { sb.AppendLine($"other COF entries ({otherCof.Count}):"); foreach (var l in otherCof) sb.AppendLine($"  {l.AssetType}/{l.InventoryType} '{l.Name}' -> {l.AssetUUID} desc '{l.Description}'"); }
         sb.AppendLine($"seated: {(client.Self.SittingOn != 0 ? "yes (seat-off rule may have detached some items)" : "no")}; seat-off rule: {seatAttachState}");

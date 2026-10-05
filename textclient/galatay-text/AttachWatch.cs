@@ -2,6 +2,9 @@
 // - logs every own AvatarAnimation change (start / restart / stop) with its source object (AnimationSourceList)
 // - "worn" lists attachments (incl. HUDs) with item ids, script flag and the animations each is playing
 // - "detach <item>" / "attach <item>" (reversible; recorded in detached-attachments.log)
+// - detach also removes the item's Current Outfit Folder (COF) link(s), like "wear remove" (2026-10-05). Seat-off /
+//   attach-block temporary detaches and AO-restore detach+re-attach KEEP the COF link so the item is re-worn on stand /
+//   after restore. Unexpected self-detach (e.g. unpacker llDetachFromAvatar) drops the stale COF link and logs it.
 // - "attach move <item|obj|name> <dx> <dy> <dz> [hudok]" / "attach pos <...>" : nudge root prim attachment-local position (2026-10-05)
 // - attach-block.txt: items kept OFF while seated (detached before/after every sit, again if re-worn) and re-attached when standing
 // - anim-block.txt: animation ids stopped whenever they start while seated
@@ -188,15 +191,77 @@ public static partial class Program
     }
 
     static readonly System.Collections.Concurrent.ConcurrentDictionary<UUID, DateTime> lastDetachSent = new();
+    // recent DetachItem calls: unexpected KillObject must not double-remove COF, and seat-off must keep the link
+    static readonly ConcurrentDictionary<UUID, (DateTime t, bool keepCof, string why)> detachIntent = new();
+
+    // Pure: which DetachItem "why" strings KEEP the COF link (temporary / will re-attach). Offline selftest uses this.
+    internal static bool KeepCofForDetachWhy(string why)
+    {
+        if (string.IsNullOrEmpty(why)) return false;
+        if (why.Equals("before sit", StringComparison.Ordinal) || why.StartsWith("seated", StringComparison.Ordinal)) return true;
+        // AO restore historically detach+re-attach; keep COF so login/stand still has the HUD
+        if (why.StartsWith("ao restore", StringComparison.OrdinalIgnoreCase)) return true;
+        if (why.StartsWith("ao ", StringComparison.OrdinalIgnoreCase) && why.Contains("restore", StringComparison.OrdinalIgnoreCase)) return true;
+        return false; // "command", "wear remove", "unexpected self-detach", ...
+    }
+
+    // Pure: whether an attachment KillObject that we did not initiate should drop the stale COF link.
+    internal static bool ShouldRemoveCofOnUnexpectedDetach(bool avatarKilledInSamePacket, bool isSeatOffItem, bool currentlySeated,
+        bool hadRecentDetachIntent, bool regionOrLoginGrace, int ownAttachmentsKilledInPacket)
+    {
+        if (avatarKilledInSamePacket) return false; // teleport / region exit often kills the avatar + attachments together
+        if (regionOrLoginGrace) return false;
+        if (ownAttachmentsKilledInPacket >= 5) return false; // mass kill without avatar line still looks like a region leave
+        if (hadRecentDetachIntent) return false; // DetachItem already decided keep vs remove
+        if (isSeatOffItem && currentlySeated) return false; // attach-block: keep link for stand re-wear
+        return true;
+    }
+
     static string DetachItem(UUID item, string why)
     {
         var p = WornPrims().FirstOrDefault(x => AttachItemId(x) == item);
         var desc = p == null ? "(not currently worn)" : $"'{p.Properties?.Name ?? "?"}' @{p.PrimData.AttachmentPoint} obj {p.ID}";
-        try { File.AppendAllText(DetachLog, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} detach item {item} {desc} point={(p == null ? "?" : ((int)p.PrimData.AttachmentPoint).ToString())} ({why}); re-attach: text-galatay.sh cmd \"attach {item}\"\n"); } catch { }
+        bool keepCof = KeepCofForDetachWhy(why);
+        detachIntent[item] = (DateTime.Now, keepCof, why);
+        try { File.AppendAllText(DetachLog, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} detach item {item} {desc} point={(p == null ? "?" : ((int)p.PrimData.AttachmentPoint).ToString())} ({why}){(keepCof ? " [COF kept]" : " [COF remove]")}; re-attach: text-galatay.sh cmd \"attach {item}\"\n"); } catch { }
         client.Appearance.Detach(item);
         lastDetachSent[item] = DateTime.Now; // worn all: a chat before this no longer proves the item is attached
-        Log("height", $"detached item {item} {desc} ({why})");
-        return $"detach sent for item {item} {desc}";
+        Log("height", $"detached item {item} {desc} ({why}){(keepCof ? "; COF link kept" : "; COF link will be removed")}");
+        return $"detach sent for item {item} {desc}" + (keepCof ? " (COF link kept)" : "");
+    }
+
+    // detach command / wear remove: send Detach then remove COF link(s) unless KeepCofForDetachWhy.
+    static async Task<string> DetachItemAsync(UUID item, string why)
+    {
+        var msg = DetachItem(item, why);
+        if (KeepCofForDetachWhy(why)) return msg;
+        using var t = new CancellationTokenSource(30000);
+        var cof = await RemoveCofLinksForItem(item, why, t.Token);
+        return msg + "; " + cof;
+    }
+
+    // KillObject of one of our attachments: drop stale COF when an unpacker (etc.) detaches itself.
+    static void NoteOwnAttachmentKilled(UUID item, uint local, bool avatarKilledInSamePacket, int ownAttachmentsKilledInPacket)
+    {
+        if (item == UUID.Zero) return;
+        bool recent = detachIntent.TryGetValue(item, out var di) && (DateTime.Now - di.t).TotalSeconds < 60;
+        bool seatOff = false; try { seatOff = SeatOffItems().ContainsKey(item); } catch { }
+        bool seated = false; try { seated = client?.Self?.SittingOn != 0; } catch { }
+        bool grace = (attTrackStart != DateTime.MinValue && (DateTime.Now - attTrackStart).TotalSeconds < 45)
+                     || (lastSimChange != DateTime.MinValue && (DateTime.Now - lastSimChange).TotalSeconds < 45);
+        if (!ShouldRemoveCofOnUnexpectedDetach(avatarKilledInSamePacket, seatOff, seated, recent, grace, ownAttachmentsKilledInPacket))
+            return;
+        Log("wear", $"unexpected self-detach of item {item} local {local}; removing stale COF link");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var t = new CancellationTokenSource(30000);
+                var r = await RemoveCofLinksForItem(item, "unexpected self-detach", t.Token);
+                Log("wear", $"unexpected self-detach COF cleanup for {item}: {r}");
+            }
+            catch (Exception ex) { Log("wear", $"unexpected self-detach COF cleanup for {item} FAILED: {ex.GetBaseException().Message}"); }
+        });
     }
 
     static async Task<string> AttachItem(UUID item, string pointArg)
@@ -495,12 +560,36 @@ public static partial class Program
         return $"attach move selftest: {pass} pass, {fail} fail (offline)\n" + string.Join("\n", lines);
     }
 
+    static string DetachCofSelfTest()
+    {
+        var lines = new List<string>(); int pass = 0, fail = 0;
+        void C(bool ok, string name) { if (ok) pass++; else fail++; lines.Add($"{(ok ? "PASS" : "FAIL")} {name}"); }
+        C(!KeepCofForDetachWhy("command"), "detach command removes COF");
+        C(!KeepCofForDetachWhy("wear remove"), "wear remove removes COF");
+        C(!KeepCofForDetachWhy("unexpected self-detach"), "unexpected self-detach removes COF");
+        C(KeepCofForDetachWhy("before sit"), "before sit keeps COF");
+        C(KeepCofForDetachWhy("seated"), "seated keeps COF");
+        C(KeepCofForDetachWhy("seated; it was re-worn"), "seated re-worn keeps COF");
+        C(KeepCofForDetachWhy("ao restore"), "ao restore keeps COF");
+        C(KeepCofForDetachWhy("ao restore: not active after 25 s"), "ao restore why keeps COF");
+        C(!KeepCofForDetachWhy(""), "empty why removes COF");
+        C(!ShouldRemoveCofOnUnexpectedDetach(avatarKilledInSamePacket: true, isSeatOffItem: false, currentlySeated: false, hadRecentDetachIntent: false, regionOrLoginGrace: false, ownAttachmentsKilledInPacket: 1), "avatar killed same packet -> keep");
+        C(!ShouldRemoveCofOnUnexpectedDetach(false, false, false, true, false, 1), "recent DetachItem intent -> skip (already handled)");
+        C(!ShouldRemoveCofOnUnexpectedDetach(false, true, true, false, false, 1), "seat-off while seated -> keep");
+        C(ShouldRemoveCofOnUnexpectedDetach(false, true, false, false, false, 1), "seat-off while standing unexpected -> remove");
+        C(!ShouldRemoveCofOnUnexpectedDetach(false, false, false, false, true, 1), "region/login grace -> keep");
+        C(!ShouldRemoveCofOnUnexpectedDetach(false, false, false, false, false, 5), "mass kill (>=5) -> keep");
+        C(ShouldRemoveCofOnUnexpectedDetach(false, false, false, false, false, 1), "lone unexpected unpacker detach -> remove");
+        C(OutfitCheckWarnLine("Top", new UUID("aa265665-7a17-34f6-b423-66d336262ed2"), "last point Chest").StartsWith("WARNING:"), "outfit check WARN line format");
+        return $"detach COF selftest: {pass} pass, {fail} fail (offline)\n" + string.Join("\n", lines);
+    }
+
     static async Task<string> AttachCmds(string cmd, string[] a, string rest = "")
     {
         switch (cmd)
         {
             case "worn": if (a.Length > 0 && a[0] == "all") return await WornAll(); if (a.Length > 0 && a[0] == "raw") return WornRaw(); if (a.Length > 0 && a[0] == "selftest") return WornSelfTest(); if (a.Length > 0 && a[0] == "scan") return WornScan(); if (a.Length > 0 && a[0] == "probe") return await WornProbe(); if (a.Length > 0 && a[0] == "recover") { var n = await RecoverAttachments(99, 160, 8000); return $"worn recover: {attLastRecovery}"; } return await WornList(a.Length > 0 && a[0] == "scripts"); // 'worn all': Outfit.cs (read-only)
-            case "detach": return a.Length == 1 && UUID.TryParse(a[0], out var d) ? DetachItem(d, "command") : "usage: detach <inventory item id>  (see 'worn')";
+            case "detach": return a.Length == 1 && UUID.TryParse(a[0], out var d) ? await DetachItemAsync(d, "command") : "usage: detach <inventory item id>  (see 'worn'; removes COF link unless seat-off)";
             case "attach":
                 if (a.Length >= 1 && a[0].Equals("move", StringComparison.OrdinalIgnoreCase)) return await AttachMoveCmd(rest);
                 if (a.Length >= 1 && a[0].Equals("pos", StringComparison.OrdinalIgnoreCase)) return await AttachPosCmd(rest);

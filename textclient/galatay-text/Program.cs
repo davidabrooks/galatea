@@ -227,7 +227,8 @@ public static partial class Program
         if (args.Contains("--worn-selftest")) { var r = WornSelfTest(); Console.WriteLine(r); return r.Contains("FAIL") ? 1 : 0; } // offline, no login
         if (args.Contains("--pose-selftest")) { var r = PoseSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: solo vs couples seat occupancy (2026-10-05)
         if (args.Contains("--attach-move-selftest")) { var r = AttachMoveSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
-        if (args.Contains("--bugfix-selftest")) // offline: autofollow restore + greet UUID history + webhook cap/retry + attach move (2026-10-05)
+        if (args.Contains("--detach-cof-selftest")) { var r = DetachCofSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+fail\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--bugfix-selftest")) // offline: autofollow + greet + webhook + pose + attach move + detach COF (2026-10-05)
         {
             var a = AutoFollowSelfTest(); Console.WriteLine(a);
             var g = GreetSelfTest(); Console.WriteLine(g);
@@ -235,11 +236,12 @@ public static partial class Program
             var r = await GalatayMcp.Webhook.RetrySelfTest(); Console.WriteLine(r);
             var p = PoseSelfTest(); Console.WriteLine(p);
             var m = AttachMoveSelfTest(); Console.WriteLine(m);
-            var all = a + g + c + r + p + m;
+            var d = DetachCofSelfTest(); Console.WriteLine(d);
+            var all = a + g + c + r + p + m + d;
             // summaries say "0 FAIL" / "0 fail"; only a FAIL line or a non-zero count is a failure
             return System.Text.RegularExpressions.Regex.IsMatch(all, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b|[1-9]\d*\s+fail\b") ? 1 : 0;
         }
-        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--attach-move-selftest|--bugfix-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
+        if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
@@ -1542,7 +1544,7 @@ public static partial class Program
   rebake | anim [list|stop <uuid>|start <uuid>] | sitguard [on|off]
   worn [scripts]              attachments incl. HUDs: item id, scripted, animations each plays (scripts = list contents)
   worn all                    READ-ONLY: body parts + clothing (wearables/COF), attachments + HUDs (points, COF links), My Outfits (Outfit.cs)
-  detach <item> | attach <item> [point]   reversible; logged; attach-block.txt items are off while seated, re-worn on stand
+  detach <item> | attach <item> [point]   reversible; logged; detach also removes COF link(s) (seat-off/AO-restore keep COF); attach-block.txt items off while seated, re-worn on stand
   attach move <item|obj|name> <dx> <dy> <dz> [hudok]   nudge worn attachment root by metres in attachment-local frame (±0.1 m/axis; HUD needs hudok); logged with undo
   attach pos <item|obj|name>   print worn attachment root local position + rotation (quote names with spaces)
   walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | walk_status | walk_stop   walking navigation (never teleports; add --fly to allow the stuck fly hop once)
@@ -1620,6 +1622,7 @@ public static partial class Program
   rez <item> | take <object>  rez her own Object item 1.5 m in front of her / take her own object back into Objects
   offer allow <object name> [min] | offer status | offer off   accept task-inventory offers ONLY from her own object with that name (default 5 min, one offer)
   outfit plan|create <name> [extra ids]   dry run / create an Outfit folder under My Outfits with links to the original items (COF minus LSL Bridge)
+  outfit check                   READ-ONLY: WARNING for COF object links whose items are not attached (stale links re-attach on relog)
   invitem <item uuid>         check that an inventory item exists (FetchItem; never attaches)
   logout                      log out cleanly and exit";
 

@@ -1,8 +1,9 @@
 // AttachTrack.cs (2026-09-26 12:20, David: make 'worn all' reliable).
-// READ-ONLY. Keeps its own table of Galatay's attachments straight from the raw object packets
+// Keeps its own table of Galatay's attachments straight from the raw object packets
 // (ObjectUpdate, ObjectUpdateCompressed, ObjectUpdateCached, KillObject), independent of what
 // LibreMetaverse keeps in sim.ObjectsPrimitives. 'worn raw' dumps it; 'worn selftest' checks the
-// attach-point decoding. It never sends anything to the sim.
+// attach-point decoding. Mostly read-only; KillObject of an unexpected self-detach may remove a
+// stale COF link (NoteOwnAttachmentKilled in AttachWatch.cs).
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -238,12 +239,20 @@ public static partial class Program
             var p = (KillObjectPacket)e.Packet;
             if (e.Simulator != client.Network.CurrentSim) return;
             var now = DateTime.Now;
+            var killedIds = p.ObjectData.Select(b => b.ID).ToHashSet();
+            bool avatarKilled = killedIds.Any(id => selfLocalIds.ContainsKey(id) || id == (client?.Self?.LocalID ?? 0));
+            // own attachment roots in this packet (for unexpected self-detach COF cleanup)
+            var ownKilled = new List<(uint local, UUID item)>();
             foreach (var b in p.ObjectData)
             {
                 if (attTable.TryGetValue(b.ID, out var r))
                 {
-                    bool self; lock (r) { r.Killed = now; self = IsSelfParent(r.Parent); }
-                    if (self) Log("attach", string.Format(CultureInfo.InvariantCulture, "killed local {0} {1} point #{2} item {3} (detached or derezzed)", b.ID, r.Full, AttachPointFromState(r.State), r.Item));
+                    bool self; UUID item; lock (r) { r.Killed = now; self = IsSelfParent(r.Parent); item = r.Item; }
+                    if (self)
+                    {
+                        Log("attach", string.Format(CultureInfo.InvariantCulture, "killed local {0} {1} point #{2} item {3} (detached or derezzed)", b.ID, r.Full, AttachPointFromState(r.State), item));
+                        ownKilled.Add((b.ID, item));
+                    }
                 }
                 else
                 {
@@ -257,6 +266,8 @@ public static partial class Program
                     Log("attach", $"KillObject for OUR avatar local {b.ID} (current {client.Self.LocalID}); the library would also drop {n} attachment root(s) parented to it");
                 }
             }
+            foreach (var (local, item) in ownKilled)
+                NoteOwnAttachmentKilled(item, local, avatarKilled, ownKilled.Count);
         }
         catch { }
     }

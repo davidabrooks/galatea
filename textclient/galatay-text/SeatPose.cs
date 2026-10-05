@@ -32,6 +32,8 @@ public static partial class Program
     static string wLastPose = "-";
     static List<string> wLastPosePath = new(); // last AVsitter menu path we pressed/restored
     static List<string> wLastSoloPosePath = new(); // last non-couples path on this seat (for David-left restore)
+    // Leaf pose name -> came from a couples menu path (Magnetize under Couples PG*, etc.)
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> poseLeafFromCouples = new(StringComparer.OrdinalIgnoreCase);
     static bool? poseSeatShared; // last seen shared-seat state while seated (any other sitter)
     static bool poseDavidOnSeat; // David Nightingale specifically on this seat with me
     static DateTime poseSharedChangedAt = DateTime.MinValue; // alone<->shared flip (recovery grace)
@@ -55,6 +57,50 @@ public static partial class Program
     public static bool PosePathIsCouples(IReadOnlyList<string> path) =>
         path != null && path.Any(PoseIsCouplesNamed);
 
+    // Remember whether a leaf pose was reached via a couples menu (for recovery after David leaves).
+    static void NotePoseLeafMenu(IReadOnlyList<string> path)
+    {
+        if (path == null || path.Count == 0) return;
+        var leaf = PoseBare(path[^1]);
+        if (string.IsNullOrEmpty(leaf)) return;
+        poseLeafFromCouples[leaf] = PosePathIsCouples(path);
+    }
+
+    // pure: is this on-screen pose name from a couples menu / couples-named?
+    public static bool PoseLeafIsCouples(string name, IReadOnlyList<string> lastPath = null)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        if (PoseIsCouplesNamed(name)) return true;
+        if (PosePathIsCouples(lastPath)) return true;
+        return poseLeafFromCouples.TryGetValue(PoseBare(name), out var c) && c;
+    }
+
+    // pure: find index of want button in labels (trim / bare match)
+    public static int PoseFindButton(IReadOnlyList<string> labels, string want)
+    {
+        if (labels == null || string.IsNullOrEmpty(want)) return -1;
+        var w = want.Trim();
+        for (int i = 0; i < labels.Count; i++)
+        {
+            var b = labels[i] ?? "";
+            if (string.Equals(b.Trim(), w, StringComparison.OrdinalIgnoreCase)) return i;
+            if (string.Equals(PoseBare(b), PoseBare(w), StringComparison.OrdinalIgnoreCase)) return i;
+        }
+        return -1;
+    }
+
+    // pure: if the open menu already contains the path's final leaf, start at that leaf only;
+    // else if it contains some later step, start from the first matching step; else 0 (full path from root).
+    public static int PosePathStartIndex(IReadOnlyList<string> labels, IReadOnlyList<string> want)
+    {
+        if (labels == null || want == null || want.Count == 0) return 0;
+        // Prefer the final leaf when present (submenu reopened on Solo Couch* with Cross legs visible)
+        if (PoseFindButton(labels, want[^1]) >= 0) return want.Count - 1;
+        for (int i = 0; i < want.Count; i++)
+            if (PoseFindButton(labels, want[i]) >= 0) return i;
+        return 0;
+    }
+
     // pure: sitter name list from Sitters() includes David Nightingale?
     public static bool SitterListHasDavid(IEnumerable<string> names) =>
         names != null && names.Any(n => n != null && n != "ME"
@@ -67,9 +113,19 @@ public static partial class Program
         if (client?.Self?.SittingOn != 0)
         {
             var cur = PoseCurrent(e.Message);
-            if (!string.IsNullOrEmpty(cur) && wLastPosePath.Count > 0
-                && !string.Equals(wLastPosePath[^1], cur, StringComparison.OrdinalIgnoreCase))
-                wLastPosePath[^1] = cur;
+            if (!string.IsNullOrEmpty(cur))
+            {
+                // Couples submenu (sibling names like Together) or known couples path → remember this leaf
+                bool couplesMenu = (e.ButtonLabels != null && e.ButtonLabels.Any(PoseIsCouplesNamed))
+                    || PosePathIsCouples(wLastPosePath);
+                if (couplesMenu) poseLeafFromCouples[PoseBare(cur)] = true;
+                else if (e.ButtonLabels != null && e.ButtonLabels.Any(PoseIsSoloMenu)
+                         && !e.ButtonLabels.Any(PoseIsCouplesNamed))
+                    poseLeafFromCouples[PoseBare(cur)] = false;
+                if (wLastPosePath.Count > 0
+                    && !string.Equals(wLastPosePath[^1], cur, StringComparison.OrdinalIgnoreCase))
+                    wLastPosePath[^1] = cur;
+            }
         }
     }
     static string PoseCurrent(string msg)
@@ -266,9 +322,25 @@ public static partial class Program
         var path = new List<string>(); string current = PoseCurrent(d.Message); bool inCouples = false;
         if (recovery && !string.IsNullOrEmpty(current))
         {
-            if (wLastPosePath.Count == 0) wLastPosePath = new List<string> { current };
-            var m = $"'{seatName}': recovery — seat already shows [{current}]; leaving it (no couples auto-pick)";
-            WLog("POSE " + m); return m;
+            // Couples leaf after David left must be replaced (Magnetize etc. are not PoseIsCouplesNamed by text alone)
+            if (PoseLeafIsCouples(current, wLastPosePath))
+            {
+                WLog($"POSE '{seatName}': recovery — seat shows couples [{current}]; replacing with solo (not leaving it)");
+                if (wLastSoloPosePath.Count > 0)
+                {
+                    var rest = await SeatPosePath(seat, seatName, wLastSoloPosePath.ToList(), ct);
+                    if (rest.Contains("restored") || rest.Contains("already") || rest.Contains("chose"))
+                    { WLog("POSE recovery couples->solo: " + rest); return rest; }
+                    WLog("POSE recovery couples->solo path failed (" + rest + "); picking PG solo");
+                }
+                preferPgSolo = true; // fall through to PickPoseButton with preferPgSolo
+            }
+            else
+            {
+                if (wLastPosePath.Count == 0) wLastPosePath = new List<string> { current };
+                var m = $"'{seatName}': recovery — seat already shows [{current}]; leaving it (no couples auto-pick)";
+                WLog("POSE " + m); return m;
+            }
         }
         for (int depth = 0; depth < 3; depth++)
         {
@@ -296,6 +368,7 @@ public static partial class Program
             if (!sub)
             {
                 wLastPosePath = path.ToList();
+                NotePoseLeafMenu(path);
                 if (!PosePathIsCouples(path)) wLastSoloPosePath = path.ToList();
                 var tag = recovery ? " (recovery)" : change ? " (mid-sit change)" : "";
                 var mode = couplesMode ? " [couples/explicit]" : " [solo]";
@@ -310,15 +383,18 @@ public static partial class Program
         return "too deep";
     }
 
-    // True when this dialog looks like the AVsitter pose *category* root (Solo*/Couples* siblings),
-    // not a seat-select / role picker (F|M|sitter) and not a deep pose leaf.
-    static bool PoseMenuLooksLikeRoot(IReadOnlyList<string> labels)
+    // True when this dialog looks like the AVsitter pose *category* root (Solo* + Couples* siblings).
+    // Solo* submenu alone (Solo Adult* / Solo Couch* / Solo Pouf*) is NOT the root — BACK further.
+    public static bool PoseMenuLooksLikeRoot(IReadOnlyList<string> labels)
     {
         if (labels == null || labels.Count == 0) return false;
         bool hasSolo = labels.Any(PoseIsSoloMenu);
         bool hasCouples = labels.Any(PoseIsCouplesNamed);
-        int stars = labels.Count(b => (b ?? "").TrimEnd().EndsWith("*") && !PoseIsControl(b));
-        return (hasSolo && hasCouples) || (hasSolo && stars >= 3);
+        if (hasSolo && hasCouples) return true;
+        // Several category * menus that are not all solo-named (e.g. Clean* + Solo* + Adult*)
+        var cats = labels.Where(b => (b ?? "").TrimEnd().EndsWith("*") && !PoseIsControl(b)).ToList();
+        if (cats.Count >= 3 && cats.Any(PoseIsSoloMenu) && cats.Any(b => !PoseIsSoloMenu(b))) return true;
+        return false;
     }
 
     // Seat-select / role menus (AVsitter™ seat select): bare F + M role buttons, sitter names — not pose categories.
@@ -383,7 +459,8 @@ public static partial class Program
         return d;
     }
 
-    // Press an exact AVsitter menu path from the ROOT (backs out first). e.g. Solo* > Solo Couch* > Cross legs
+    // Press an exact AVsitter menu path. If the open menu already has the final leaf (e.g. Cross legs on Solo Couch*),
+    // press it directly. Otherwise BACK to the real category root, then walk the path.
     static async Task<string> SeatPosePath(Primitive seat, string seatName, List<string> want, CancellationToken ct)
     {
         if (want == null || want.Count == 0) return "empty path";
@@ -391,9 +468,15 @@ public static partial class Program
         var t0 = DateTime.Now; client.Self.Touch(seat.LocalID);
         var d = await WaitSeatDialog(seat, t0, 5000, ct);
         if (d == null) return $"'{seatName}': no pose menu for path restore";
-        d = await SeatPoseBackToRoot(seat, d, ct);
+        int start = PosePathStartIndex(d.ButtonLabels, want);
+        if (start == 0 && PoseFindButton(d.ButtonLabels, want[0]) < 0)
+            d = await SeatPoseBackToRoot(seat, d, ct);
+        // Re-evaluate after backing out
+        start = PosePathStartIndex(d.ButtonLabels, want);
         var path = new List<string>();
-        for (int i = 0; i < want.Count; i++)
+        // If we skip prefix steps, keep them in the recorded path for wLastPosePath
+        for (int pfx = 0; pfx < start; pfx++) path.Add(want[pfx].Trim());
+        for (int i = start; i < want.Count; i++)
         {
             if (client.Self.SittingOn == 0) return "aborted (stood)";
             var wantBtn = want[i].Trim();
@@ -401,10 +484,10 @@ public static partial class Program
             if (i == want.Count - 1 && current != null && string.Equals(current, PoseBare(wantBtn), StringComparison.OrdinalIgnoreCase))
             {
                 wLastPosePath = want.Select(x => x.Trim()).ToList();
+                NotePoseLeafMenu(wLastPosePath);
                 return $"'{seatName}': already [{current}] (path {string.Join(" > ", want)})";
             }
-            int idx = d.ButtonLabels.FindIndex(b => string.Equals(b.Trim(), wantBtn, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(PoseBare(b), PoseBare(wantBtn), StringComparison.OrdinalIgnoreCase));
+            int idx = PoseFindButton(d.ButtonLabels, wantBtn);
             if (idx < 0) return $"'{seatName}': path step '{wantBtn}' not in menu [{string.Join(" | ", d.ButtonLabels)}] (at {string.Join(" > ", path)})";
             var pick = d.ButtonLabels[idx];
             bool sub = pick.TrimEnd().EndsWith("*");
@@ -415,6 +498,7 @@ public static partial class Program
             if (i == want.Count - 1 && !sub)
             {
                 wLastPosePath = path.ToList();
+                NotePoseLeafMenu(path);
                 if (!PosePathIsCouples(path)) wLastSoloPosePath = path.ToList();
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", path)} (restored)";
                 var m = $"'{seatName}' {seat.ID}: restored {string.Join(" > ", path)}";
@@ -426,6 +510,7 @@ public static partial class Program
             {
                 var cur = PoseCurrent(d.Message);
                 wLastPosePath = path.ToList();
+                NotePoseLeafMenu(path);
                 return $"'{seatName}': restored path to menu showing [{cur ?? "?"}] via {string.Join(" > ", path)}";
             }
         }
@@ -586,10 +671,35 @@ public static partial class Program
             var root = new List<string> { "[ SWAP ]*", "Clean*", "[ADJUST]", "F+F2*", "FFM*", "MMF*", "Solo*", "Couples PG*", "Adult M+F*", "[BACK]" };
             var seatSel = new List<string> { "M2", "  ", "[ADJUST]", "F", "M", "⊘SophieJeanne" };
             var leaf = new List<string> { "[ADJUST]", "[<<]", "[>>]", "Forever", "Together", "[BACK]" };
-            bool r = PoseMenuLooksLikeRoot(root) && !PoseMenuLooksLikeRoot(seatSel) && !PoseMenuLooksLikeRoot(leaf);
+            var soloSub = new List<string> { "Solo Adult*", "[ SWAP ]*", "[ADJUST]", "[BACK]", "Solo Couch*", "Solo Pouf*" };
+            bool r = PoseMenuLooksLikeRoot(root) && !PoseMenuLooksLikeRoot(seatSel) && !PoseMenuLooksLikeRoot(leaf)
+                  && !PoseMenuLooksLikeRoot(soloSub); // Solo* submenu must not stop BACK (#53 follow-up 13:53)
             bool s = PoseMenuLooksLikeSeatSelect(seatSel) && !PoseMenuLooksLikeSeatSelect(root);
             if (r && s) pass++; else fail++;
-            lines.Add($"{(r && s ? "PASS" : "FAIL")} PoseMenuLooksLikeRoot vs seat-select (do not BACK off root)");
+            lines.Add($"{(r && s ? "PASS" : "FAIL")} PoseMenuLooksLikeRoot vs seat-select (do not BACK off root / Solo* submenu)");
+        }
+        {
+            // Path restore: Solo Couch* menu already has Cross legs — start at leaf, do not require Solo*
+            var couch = new List<string> { "[ADJUST]", "[<<]", "[>>]", "Hang out", "Relaxing", "Sexy sit", "Meh", "Backlean", "Pretty", "[BACK]", "Cross legs", "Contemplate" };
+            var want = new[] { "Solo*", "Solo Couch*", "Cross legs" };
+            bool startLeaf = PosePathStartIndex(couch, want) == 2 && PoseFindButton(couch, "Cross legs") >= 0;
+            bool startRoot = PosePathStartIndex(new List<string> { "Solo*", "Couples PG*", "Clean*" }, want) == 0;
+            if (startLeaf && startRoot) pass++; else fail++;
+            lines.Add($"{(startLeaf && startRoot ? "PASS" : "FAIL")} PosePathStartIndex: leaf on open submenu vs full path from root");
+        }
+        {
+            // Couples leaf tracking: Magnetize under Couples PG* must not be "left" after David leaves
+            poseLeafFromCouples.Clear();
+            NotePoseLeafMenu(new[] { "Couples PG*", "Cuddles*", "Magnetize" });
+            NotePoseLeafMenu(new[] { "Solo*", "Solo Couch*", "Cross legs" });
+            bool mag = PoseLeafIsCouples("Magnetize", null) && PoseLeafIsCouples("Magnetize", new[] { "Couples PG*", "Cuddles*", "Magnetize" });
+            bool cross = !PoseLeafIsCouples("Cross legs", new[] { "Solo*", "Solo Couch*", "Cross legs" });
+            bool together = PoseLeafIsCouples("Together", null) == false && PoseLeafIsCouples("Together", new[] { "Couples PG*", "Cuddles*", "Together" });
+            // Together is couples-named by regex too
+            bool togetherNamed = PoseIsCouplesNamed("Together");
+            if (mag && cross && togetherNamed) pass++; else fail++;
+            lines.Add($"{(mag && cross && togetherNamed ? "PASS" : "FAIL")} PoseLeafIsCouples: Magnetize from Couples PG path; Cross legs solo");
+            poseLeafFromCouples.Clear();
         }
         var cur = PoseCurrent("AVsitter™2.1\n\n [Onlegs 4]"); bool c = cur == "Onlegs 4"; if (c) pass++; else fail++;
         lines.Add($"{(c ? "PASS" : "FAIL")} current pose parsed from the menu text: '{cur}'");

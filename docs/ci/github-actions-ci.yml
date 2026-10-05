@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  csharp:
+    name: C# selftests (xUnit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout galatea
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Setup LibreMetaverse (patched, no SL login)
+        run: bash scripts/ci-setup-libremetaverse.sh
+
+      - name: Build text client + MCP
+        run: bash textclient/build-all.sh
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_NOLOGO: "1"
+
+      - name: xUnit — wrap offline --*-selftest
+        run: |
+          export GALATAY_TEXT_EXE="$PWD/textclient/app-staging/galatay-text"
+          chmod +x "$GALATAY_TEXT_EXE" || true
+          dotnet test textclient/GalatayText.Tests/GalatayText.Tests.csproj -c Release --logger "trx;LogFileName=csharp.trx"
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+      - name: Upload C# test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharp-trx
+          path: "**/TestResults/*.trx"
+          if-no-files-found: ignore
+
+  python:
+    name: Python (vision + voice light)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install light CI deps (no faster-whisper)
+        run: pip install -r requirements-ci.txt
+
+      - name: pytest vision + voice (skip heavy / model downloads)
+        run: pytest -q

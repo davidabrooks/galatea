@@ -4,3 +4,9 @@ obj/
 *.log
 webhook-url.txt
 __pycache__/
+# LibreMetaverse is checked out by CI / scripts/ci-setup-libremetaverse.sh (not vendored)
+textclient/src-libremetaverse/
+textclient/app-staging/
+textclient/mcp-app-staging/
+linden/
+textclient/sl-texture-vision/

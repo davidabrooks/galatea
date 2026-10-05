@@ -1,0 +1,94 @@
+diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
+index 3a6efc9..64b4065 100644
+--- a/LibreMetaverse/Appearance/AppearanceManager.cs
++++ b/LibreMetaverse/Appearance/AppearanceManager.cs
+@@ -2741,6 +2741,45 @@ namespace LibreMetaverse
+                 }
+             }
+ 
++            // (galatay 2026-09-26) FolderContentsAsync(followLinks) returns each link AND its target: drop duplicate items
++            int before = blocks.Count;
++            blocks = blocks.GroupBy(b => b.ItemID).Select(g => g.First()).ToList();
++            int dupes = before - blocks.Count, skipped = 0;
++            var excl = Client.Settings.Agent.OutfitSendExclude;
++            var excluded = excl == null ? new List<string>() : blocks.Where(b => excl(b.ItemID, Utils.BytesToString(b.Name))).Select(b => Utils.BytesToString(b.Name)).ToList();
++            if (excl != null) blocks = blocks.Where(b => !excl(b.ItemID, Utils.BytesToString(b.Name))).ToList();
++            var settleMs = Client.Settings.Agent.OutfitSendSkipAttachedSettleMs;
++            if (settleMs > 0)
++            {
++                // wait until the number of our attachment roots is > 0 and has not changed for 4 s (max settleMs), then skip what is already on
++                HashSet<UUID> AttachedItems()
++                {
++                    var sim = Client.Network.CurrentSim; var me = Client.Self.LocalID; var set = new HashSet<UUID>();
++                    if (sim == null || me == 0) return set;
++                    foreach (var p in sim.ObjectsPrimitives.Values)
++                    {
++                        if (p == null || p.ParentID != me || p.NameValues == null) continue;
++                        foreach (var nv in p.NameValues)
++                            if (nv.Name == "AttachItemID" && UUID.TryParse(nv.Value?.ToString(), out var u)) set.Add(u);
++                    }
++                    return set;
++                }
++                var t0 = DateTime.UtcNow; int last = -1; var stable = DateTime.UtcNow;
++                while ((DateTime.UtcNow - t0).TotalMilliseconds < settleMs)
++                {
++                    int n = AttachedItems().Count;
++                    if (n != last) { last = n; stable = DateTime.UtcNow; }
++                    else if (n > 0 && (DateTime.UtcNow - stable).TotalSeconds >= 4) break; // a steady 0 is 'not arrived yet', not 'settled'
++                    await Task.Delay(500, cancellationToken).ConfigureAwait(false);
++                }
++                var have = AttachedItems();
++                skipped = blocks.Count(b => have.Contains(b.ItemID));
++                blocks = blocks.Where(b => !have.Contains(b.ItemID)).ToList();
++            }
++            Logger.Info($"Outfit send: {blocks.Count} attachment(s) to add ({dupes} duplicate(s) removed, {skipped} already attached skipped, kept off: {(excluded.Count == 0 ? "none" : string.Join("; ", excluded))}): " +
++                string.Join("; ", blocks.Select(b => Utils.BytesToString(b.Name))) + $"; FirstDetachAll={Client.Settings.Agent.OutfitSendDetachAll}", Client);
++            if (blocks.Count == 0 && !Client.Settings.Agent.OutfitSendDetachAll) return;
++
+             var attachmentsPacket = new RezMultipleAttachmentsFromInvPacket
+             {
+                 AgentData =
+@@ -2751,7 +2790,7 @@ namespace LibreMetaverse
+                 HeaderData =
+                 {
+                     CompoundMsgID = UUID.Random(),
+-                    FirstDetachAll = true,
++                    FirstDetachAll = Client.Settings.Agent.OutfitSendDetachAll,
+                     TotalObjects = (byte)blocks.Count
+                 },
+                 ObjectData = blocks.ToArray()
+@@ -3297,7 +3336,12 @@ namespace LibreMetaverse
+                                 shouldSend = v > _lastSentOutfitCOFVersion;
+                                 if (shouldSend) _lastSentOutfitCOFVersion = v;
+                             }
+-                            if (shouldSend)
++                            if (shouldSend && !Client.Settings.Agent.SendOutfitAfterBake)
++                                Logger.Info($"Outfit re-send after server bake SKIPPED (Settings.Agent.SendOutfitAfterBake=false, COF v{_lastSentOutfitCOFVersion}); sim attachments left as they are", Client);
++                            else if (shouldSend && Client.Settings.Agent.OutfitSendSkipAttachedSettleMs > 0)
++                                // settle wait inside: run detached so a later appearance pass cannot cancel it half-way
++                                _ = Task.Run(async () => { try { await SendOutfitToCurrentSimulatorAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception ex) { Logger.Warn("Outfit send (add-missing) failed: " + ex.Message, Client); } });
++                            else if (shouldSend)
+                                 await SendOutfitToCurrentSimulatorAsync(cancellationToken).ConfigureAwait(false);
+                             else
+                                 Logger.Debug($"Skipping duplicate outfit send (already sent for COF v{_lastSentOutfitCOFVersion})", Client);
+diff --git a/LibreMetaverse/Settings/AgentSettings.cs b/LibreMetaverse/Settings/AgentSettings.cs
+index 9df488f..118103c 100644
+--- a/LibreMetaverse/Settings/AgentSettings.cs
++++ b/LibreMetaverse/Settings/AgentSettings.cs
+@@ -5,6 +5,16 @@ namespace LibreMetaverse
+         public bool SendUpdates = true;
+         public bool SendUpdatesRegularly = true;
+         public bool SendAppearance = true;
++        /// <summary>(galatay 2026-09-26) After a server bake, re-send the COF attachments with RezMultipleAttachmentsFromInv.
++        /// false = never (leave the sim's attachments exactly as they are).</summary>
++        public bool SendOutfitAfterBake = true;
++        /// <summary>(galatay 2026-09-26) When the outfit IS re-sent: ask the sim to detach everything first (legacy behaviour).</summary>
++        public bool OutfitSendDetachAll = true;
++        /// <summary>(galatay 2026-09-26) When the outfit IS re-sent: first wait until our attachments stop arriving
++        /// (up to this many ms), then only send COF objects that are not already attached.</summary>
++        public int OutfitSendSkipAttachedSettleMs = 0;
++        /// <summary>(galatay 2026-09-26) COF objects (item id, name) never to (re)attach in the outfit send, e.g. the Firestorm LSL Bridge.</summary>
++        public System.Func<UUID, string, bool>? OutfitSendExclude = null;
+         public bool SendThrottle = true;
+         public bool DisableUpdateDuplicateCheck = true;
+         public bool MultipleSims = false;

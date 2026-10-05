@@ -176,6 +176,8 @@ public static partial class Program
     static async Task<string> AttachItem(UUID item, string pointArg)
     {
         if (item == RetiredAwpAo) { Log("height", "attach REFUSED: retired AWP AO (Martha is the AO now)"); return "refused: the retired AWP AO HUD is never re-attached (Martha is the AO)"; }
+        // after a teleport the client may simply not have received the attachment yet: look again before adding a second copy
+        if (await FoundAfterRecover(item)) { Log("height", $"attach skipped: item {item} is already worn (found after re-requesting objects)"); return $"already worn: item {item} (found after re-requesting objects; nothing attached)"; }
         using var t = new CancellationTokenSource(20000);
         var inv = await client.Inventory.FetchItemAsync(item, client.Self.AgentID, t.Token);
         if (inv == null) return "item not returned by inventory fetch within 20 s (not found or inventory not loaded yet)";

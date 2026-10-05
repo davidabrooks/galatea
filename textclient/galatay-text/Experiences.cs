@@ -56,6 +56,9 @@ public static partial class Program
                 await RefreshExperiencePrefs();
                 await ResolveAvsitterId();
                 await RefreshRegionExperiences();
+                await Task.Delay(8000); // inventory/COF usually present by then
+                var scrubN = ScrubFalseTempAttaches();
+                if (scrubN > 0) Log("exp", $"bootstrap TEMP scrub cleared {scrubN} false-positive(s)");
             }
             catch (Exception ex) { Log("exp", "bootstrap error: " + ex.GetBaseException().Message); }
         });
@@ -279,20 +282,75 @@ public static partial class Program
     }
 
     // ---- temp attachments -------------------------------------------------
+    // Pure (offline selftest): when is an attachment a llAttachToAvatarTemp prop?
+    // Real outfit items (in COF / inventory) are NEVER temp. Login races where inventory
+    // is not ready must not mark missing-from-inv as TEMP (10:49:17 LaraX Petite Add-on false positive).
+    // Definitive temp: AttachItemID == object UUID (Dutchie coffeemug). Experience-grant window
+    // only marks temp when item id is zero, or inventory is ready and the item is truly absent (and not in COF).
+    internal static bool IsLikelyTempAttach(UUID fullId, UUID itemId, bool recentExpGrant,
+        bool inventoryReady, bool itemInInventory, bool itemInCof, bool isSeatOffItem)
+    {
+        if (fullId == UUID.Zero) return false;
+        if (itemInCof) return false;
+        if (itemInInventory) return false;
+        if (isSeatOffItem) return false;
+        if (itemId != UUID.Zero && itemId == fullId) return true; // classic temp: item id == object id
+        if (!recentExpGrant) return false;
+        if (itemId == UUID.Zero) return true;
+        if (!inventoryReady) return false; // do not guess during login / inventory fetch
+        return !itemInInventory && !itemInCof;
+    }
+
+    static bool InventoryStoreReady()
+    {
+        try
+        {
+            var store = client.Inventory?.Store;
+            if (store?.RootFolder == null) return false;
+            return store.Count > 20; // login streams attachments before COF; need a meaningful store
+        }
+        catch { return false; }
+    }
+
+    static bool ItemInInventoryStore(UUID itemId)
+    {
+        if (itemId == UUID.Zero) return false;
+        try { return client.Inventory?.Store != null && client.Inventory.Store.Contains(itemId); } catch { return false; }
+    }
+
+    // Best-effort sync COF membership from the inventory store (no network).
+    static bool ItemInCofStore(UUID itemId)
+    {
+        if (itemId == UUID.Zero) return false;
+        try
+        {
+            var store = client.Inventory?.Store; if (store?.RootFolder == null) return false;
+            InventoryFolder cof = null;
+            foreach (var k in store.GetContents(store.RootFolder.UUID))
+                if (k is InventoryFolder f && f.PreferredType == FolderType.CurrentOutfit) { cof = f; break; }
+            if (cof == null) return false;
+            foreach (var k in store.GetContents(cof.UUID))
+            {
+                if (k is InventoryItem link && link.IsLink() && link.AssetUUID == itemId) return true;
+                if (k is InventoryItem it && it.UUID == itemId) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
     // Called from AttachTrack when a new attachment on us is seen.
     static void NotePossibleTempAttach(UUID fullId, uint localId, UUID itemId, string via)
     {
         if (fullId == UUID.Zero) return;
-        // Our own attach/wear commands set lastDetachSent / Appearance.Attach — those are not TEMP.
-        // A grant in the last 45 s, or an item id missing from inventory, marks TEMP.
-        bool recentGrant = (DateTime.Now - lastExpGrant).TotalSeconds < 45;
-        bool inInv = false;
-        try { if (itemId != UUID.Zero && client.Inventory.Store != null) inInv = client.Inventory.Store.Contains(itemId); } catch { }
-        bool likelyTemp = recentGrant || itemId == UUID.Zero || (itemId != UUID.Zero && !inInv);
-        if (!likelyTemp) return;
-        // Skip known seat-off / AO item ids and anything already in COF-style wear we initiated.
-        try { if (itemId != UUID.Zero && SeatOffItems().ContainsKey(itemId)) return; } catch { }
-        try { if (lastDetachSent.ContainsKey(itemId)) return; } catch { }
+        try { ScrubFalseTempAttaches(); } catch { }
+        bool recentGrant = lastExpGrant != DateTime.MinValue && (DateTime.Now - lastExpGrant).TotalSeconds < 45;
+        bool invReady = InventoryStoreReady();
+        bool inInv = ItemInInventoryStore(itemId);
+        bool inCof = ItemInCofStore(itemId);
+        bool seatOff = false; try { seatOff = itemId != UUID.Zero && SeatOffItems().ContainsKey(itemId); } catch { }
+        if (!IsLikelyTempAttach(fullId, itemId, recentGrant, invReady, inInv, inCof, seatOff)) return;
+        try { if (itemId != UUID.Zero && lastDetachSent.ContainsKey(itemId)) return; } catch { }
         var name = "?";
         try
         {
@@ -304,9 +362,41 @@ public static partial class Program
         Log("exp", $"TEMP attachment noted '{name}' obj {fullId} item {itemId} local {localId} via {via}");
     }
 
-    static bool IsTempAttach(UUID objId) => tempAttaches.ContainsKey(objId);
-    static bool IsTempAttachItem(UUID itemId) => itemId != UUID.Zero && tempAttaches.Values.Any(t => t.item == itemId);
-    static bool IsTempAttachSource(UUID src) => src != UUID.Zero && tempAttaches.ContainsKey(src);
+    // Drop false positives (login race marked a real outfit item TEMP).
+    static int ScrubFalseTempAttaches()
+    {
+        int n = 0;
+        bool invReady = InventoryStoreReady();
+        bool recentGrant = lastExpGrant != DateTime.MinValue && (DateTime.Now - lastExpGrant).TotalSeconds < 45;
+        foreach (var kv in tempAttaches.ToArray())
+        {
+            var obj = kv.Key; var t = kv.Value;
+            bool inInv = ItemInInventoryStore(t.item);
+            bool inCof = ItemInCofStore(t.item);
+            bool seatOff = false; try { seatOff = t.item != UUID.Zero && SeatOffItems().ContainsKey(t.item); } catch { }
+            if (IsLikelyTempAttach(obj, t.item, recentGrant, invReady, inInv, inCof, seatOff)) continue;
+            if (tempAttaches.TryRemove(obj, out var gone))
+            {
+                n++;
+                Log("exp", $"TEMP false-positive cleared '{gone.name}' obj {obj} item {gone.item} (inInv={inInv} inCof={inCof} invReady={invReady})");
+            }
+        }
+        return n;
+    }
+
+    static bool IsTempAttach(UUID objId)
+    {
+        if (!tempAttaches.ContainsKey(objId)) return false;
+        try { ScrubFalseTempAttaches(); } catch { }
+        return tempAttaches.ContainsKey(objId);
+    }
+    static bool IsTempAttachItem(UUID itemId)
+    {
+        if (itemId == UUID.Zero) return false;
+        try { ScrubFalseTempAttaches(); } catch { }
+        return tempAttaches.Values.Any(t => t.item == itemId);
+    }
+    static bool IsTempAttachSource(UUID src) => src != UUID.Zero && IsTempAttach(src);
 
     static void TempAttachGone(UUID objId)
     {
@@ -314,11 +404,12 @@ public static partial class Program
             Log("exp", $"TEMP attachment gone '{t.name}' obj {objId}");
     }
 
-    // After standing: give the experience a few seconds to detach props, then force-detach leftovers.
+    // After standing: scrub first; only force-detach definitive temps (item==obj); never strip COF/inventory items.
     static async Task CleanupTempAttachesAfterStand()
     {
         await Task.Delay(2500);
         if (client.Self.SittingOn != 0) return; // sat again
+        try { ScrubFalseTempAttaches(); } catch { }
         var left = tempAttaches.ToArray();
         if (left.Length == 0) return;
         var sim = client.Network.CurrentSim;
@@ -327,12 +418,16 @@ public static partial class Program
         foreach (var kv in left)
         {
             var id = kv.Key; var t = kv.Value;
+            if (ItemInCofStore(t.item) || ItemInInventoryStore(t.item))
+            { TempAttachGone(id); continue; }
+            if (t.item != UUID.Zero && t.item != id)
+            { Log("exp", $"TEMP linger skipped (not item==obj): '{t.name}' obj {id} item {t.item}"); TempAttachGone(id); continue; }
             uint local = t.local;
             try
             {
                 var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == id && x.ParentID == client.Self.LocalID);
                 if (p != null) local = p.LocalID;
-                else { TempAttachGone(id); continue; } // already gone
+                else { TempAttachGone(id); continue; }
             }
             catch { }
             if (local != 0) locals.Add(local);
@@ -350,6 +445,7 @@ public static partial class Program
     {
         if (a.Length == 0 || a[0] == "status" || a[0] == "list")
         {
+            try { ScrubFalseTempAttaches(); } catch { }
             await RefreshExperiencePrefs();
             await RefreshRegionExperiences();
             var sb = new StringBuilder();
@@ -408,9 +504,15 @@ public static partial class Program
         if (a[0] == "refresh")
         {
             await RefreshExperiencePrefs(); await ResolveAvsitterId(); await RefreshRegionExperiences();
-            return "experience prefs + region + AVsitter refreshed";
+            var scrubbed = ScrubFalseTempAttaches();
+            return $"experience prefs + region + AVsitter refreshed; TEMP scrub cleared {scrubbed}";
         }
-        return "usage: exp [list|status|refresh|selftest] | exp info <id> | exp allow <id> | exp block <id> | exp forget <id>";
+        if (a[0] == "temp" && a.Length >= 2 && a[1] == "scrub")
+        {
+            var n = ScrubFalseTempAttaches();
+            return $"TEMP scrub: cleared {n} false-positive(s); {tempAttaches.Count} TEMP remaining";
+        }
+        return "usage: exp [list|status|refresh|selftest] | exp info <id> | exp allow <id> | exp block <id> | exp forget <id> | exp temp scrub";
     }
 
     internal static string ExpSelfTest()
@@ -462,6 +564,23 @@ public static partial class Program
         C(g && (p & ScriptPermission.Attach) != 0 && (p & ScriptPermission.Debit) == 0, "408628 experience bitmask (Dutchie coffeemug) -> grant without Debit");
 
         C(!IsTempAttachSource(UUID.Zero), "UUID.Zero is not a temp source");
+
+        // TEMP detection (2026-10-05 10:49:17 LaraX false positive + 10:50 coffeemug)
+        var laraxItem = new UUID("8e530d51-dc1e-32d4-8a7d-d4099be5b1a9");
+        var laraxObj = new UUID("3870bec7-2d54-d220-2446-82a49e851d88");
+        var mug = new UUID("39ad7733-cf44-3106-bbe4-a83a7d5f8339");
+        C(!IsLikelyTempAttach(laraxObj, laraxItem, false, false, false, false, false), "login race: inv not ready, no grant, item!=obj -> NOT temp (LaraX)");
+        C(!IsLikelyTempAttach(laraxObj, laraxItem, false, true, false, false, false), "inv ready, not in inv, no grant, item!=obj -> NOT temp");
+        C(!IsLikelyTempAttach(laraxObj, laraxItem, true, false, false, false, false), "grant but inv not ready, item!=obj -> NOT temp (do not guess)");
+        C(!IsLikelyTempAttach(laraxObj, laraxItem, true, true, true, false, false), "grant but item in inventory -> NOT temp");
+        C(!IsLikelyTempAttach(laraxObj, laraxItem, true, true, false, true, false), "grant but item in COF -> NOT temp");
+        C(IsLikelyTempAttach(laraxObj, laraxItem, true, true, false, false, false), "grant + inv ready + absent from inv/COF + item!=obj -> temp");
+        C(IsLikelyTempAttach(mug, mug, false, false, false, false, false), "coffeemug: item id == object id -> TEMP even without grant");
+        C(IsLikelyTempAttach(mug, mug, true, true, false, false, false), "coffeemug still TEMP with grant");
+        C(!IsLikelyTempAttach(laraxObj, laraxItem, false, true, true, true, false), "outfit item in inv+COF never TEMP");
+        C(IsLikelyTempAttach(UUID.Random(), UUID.Zero, true, true, false, false, false), "grant + zero item id -> TEMP");
+        C(!IsLikelyTempAttach(UUID.Random(), UUID.Zero, false, true, false, false, false), "zero item id without grant -> NOT temp");
+
         return $"exp selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

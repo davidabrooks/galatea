@@ -298,14 +298,20 @@ static class Mesher
         {
             Dictionary<string, (Vector3 Pos, Quaternion Rot)> frames;
             var overrides = new Dictionary<string, Vector3>(); var lockScale = new HashSet<string>();
-            foreach (var (_, _, fm) in rigged.Where(x => x.Item1 == owner))
+            // joint-position overrides: highest mesh-asset UUID wins per joint (SL viewer conflict rule)
+            var ovrFrom = new Dictionary<string, UUID>();
+            foreach (var (_, p0, fm) in rigged.Where(x => x.Item1 == owner))
             {
                 var sk = fm.SkinData;
                 if (sk.AltInverseBindMatrices.Length != sk.JointNames.Length * 16) continue;   // SL ignores a mismatched list
+                var meshId = p0.Sculpt?.SculptTexture ?? UUID.Zero;
                 for (int j = 0; j < sk.JointNames.Length; j++)
                 {
-                    overrides[sk.JointNames[j]] = new Vector3(sk.AltInverseBindMatrices[j * 16 + 12], sk.AltInverseBindMatrices[j * 16 + 13], sk.AltInverseBindMatrices[j * 16 + 14]);
-                    if (sk.LockScaleIfJointPosition) lockScale.Add(sk.JointNames[j]);
+                    var jn = sk.JointNames[j];
+                    var pos = new Vector3(sk.AltInverseBindMatrices[j * 16 + 12], sk.AltInverseBindMatrices[j * 16 + 13], sk.AltInverseBindMatrices[j * 16 + 14]);
+                    if (!ovrFrom.TryGetValue(jn, out var prev) || meshId.CompareTo(prev) > 0)
+                    { overrides[jn] = pos; ovrFrom[jn] = meshId; }
+                    if (sk.LockScaleIfJointPosition) lockScale.Add(jn);
                 }
             }
             // her shape: visual params -> bone/collision-volume position+scale (LibreMetaverse's port of LLPolySkeletalDistortion)
@@ -449,12 +455,15 @@ static class Mesher
         if (only != "scene" && doc.ContainsKey("avatars"))
             foreach (var av in ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id")))
             {
-                var id = av["agent_id"].AsString(); if (!rigged.Any(x => x.Item1 == id) && !unrigged.Any(x => x.Item1 == id)) continue;  // nothing worn in view
+                var id = av["agent_id"].AsString();
+                bool worn = rigged.Any(x => x.Item1 == id) || unrigged.Any(x => x.Item1 == id);
                 string g = "avatar:" + id[..8];
                 var f = await PoseAvatar(id, g, id[..8] + "-", av.ContainsKey("visual_params") ? (OSDMap)av["visual_params"] : null, av.ContainsKey("anims") ? av["anims"].AsString() : null);
                 var ap = av["pos"].AsVector3();
-                others.Add(new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f) });
-                Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}");
+                // placeholder when export held no attachment prims: render_mesh draws a bake-textured stand-in so every
+                // nearby avatar still shows (Warehouse 21: 34 in the export, only 1 had attachments on the wire)
+                others.Add(new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f), placeholder = !worn, bake_prefix = id[..8] });
+                Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}{(worn ? "" : " (no attachments: placeholder)")}");
             }
         var outMeta = new List<object>(); long off = 0;
         using (var bin = new BinaryWriter(File.Create(Path.Combine(dir, "mesh.bin"))))

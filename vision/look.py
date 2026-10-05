@@ -11,6 +11,7 @@ Needs: dotnet + SCENE_MESHER (built scene-mesher), BLENDER, the imgvenv python (
 import json, os, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, f"{HERE}/cloud-render")
 os.environ.setdefault("GT_MAX_TEXTURES", "800")
+os.environ.setdefault("GT_TEX_WORKERS", "24")  # local disk cache; parallel CDN GETs (crowd looks were ~50 s at 8)
 import handler, make_job  # texture fetch (CDN, capped) + bake decode / region sky: same code as the Runpod path
 
 MESHER = os.environ.get("SCENE_MESHER", "/home/box/tools/scene-mesher/SceneMesher.dll")

@@ -1545,8 +1545,8 @@ public static partial class Program
   worn [scripts]              attachments incl. HUDs: item id, scripted, animations each plays (scripts = list contents)
   worn all                    READ-ONLY: body parts + clothing (wearables/COF), attachments + HUDs (points, COF links), My Outfits (Outfit.cs)
   detach <item> | attach <item> [point]   reversible; logged; detach also removes COF link(s) (seat-off/AO-restore keep COF); attach-block.txt items off while seated, re-worn on stand
-  attach move <item|obj|name> <dx> <dy> <dz> [hudok]   nudge worn attachment root by metres in attachment-local frame (±0.1 m/axis; HUD needs hudok); logged with undo
-  attach pos <item|obj|name>   print worn attachment root local position + rotation (quote names with spaces)
+  attach move <item|obj|name> <dx> <dy> <dz> [hudok] [force]   nudge worn attachment root by metres in attachment-local frame (±0.1 m/axis; HUD needs hudok; all-RIGGED mesh refused unless force: rigged mesh follows the skeleton, a move is invisible); logged with undo
+  attach pos <item|obj|name>   print worn attachment root local position + rotation, rigged-mesh prim count, owner modify perms (quote names with spaces)
   walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | walk_status | walk_stop   walking navigation (never teleports; add --fly to allow the stuck fly hop once)
   nav [status|doors|places|reload|selftest] | nav door <name> [touch] | nav plan|to <x,y|place|door|avatar>[;...]   grid planner (routes/_nav-*.json)
   nofly [on|off]   walking never flies (default on)

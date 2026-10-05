@@ -2,6 +2,7 @@
 // - logs every own AvatarAnimation change (start / restart / stop) with its source object (AnimationSourceList)
 // - "worn" lists attachments (incl. HUDs) with item ids, script flag and the animations each is playing
 // - "detach <item>" / "attach <item>" (reversible; recorded in detached-attachments.log)
+// - "attach move <item|obj|name> <dx> <dy> <dz> [hudok]" / "attach pos <...>" : nudge root prim attachment-local position (2026-10-05)
 // - attach-block.txt: items kept OFF while seated (detached before/after every sit, again if re-worn) and re-attached when standing
 // - anim-block.txt: animation ids stopped whenever they start while seated
 // - pose keeper: while seated, if a non-seat animation (re)starts after the seat pose, the seat pose is re-asserted (only anims the seat still sources; drops stale solo/couples copies)
@@ -328,13 +329,183 @@ public static partial class Program
         Log("height", $"stand check: playing [{string.Join(", ", cur.Select(kv => $"{AnimName(kv.Key)} from {SrcDesc(kv.Value.src)}"))}]{(stuck.Count > 0 ? " -> stopped stuck " + string.Join(",", stuck.Select(AnimName)) : " OK")}");
     }
 
-    static async Task<string> AttachCmds(string cmd, string[] a)
+    // ---- attach move / attach pos (2026-10-05) ---------------------------------
+    // Attachment-local metres on the ROOT prim (SetPosition with Linked carries children).
+    // HUD points (31..38) refused unless the caller adds "hudok" / "allow-hud".
+    // Each delta axis clamped to ±0.1 m per call. Logged to DetachLog with an undo line.
+    const float AttachMoveMaxDelta = 0.1f;
+
+    static bool IsHudAttachPoint(AttachmentPoint pt)
+    {
+        int n = (int)pt;
+        return n >= (int)AttachmentPoint.HUDCenter2 && n <= (int)AttachmentPoint.HUDBottomRight;
+    }
+
+    static float ClampAttachDelta(float v) => Math.Clamp(v, -AttachMoveMaxDelta, AttachMoveMaxDelta);
+
+    static string FmtAttachPos(Vector3 p) =>
+        string.Format(CultureInfo.InvariantCulture, "{0:F4},{1:F4},{2:F4}", p.X, p.Y, p.Z);
+
+    static string FmtAttachRot(Quaternion q) =>
+        string.Format(CultureInfo.InvariantCulture, "{0:F4},{1:F4},{2:F4},{3:F4}", q.X, q.Y, q.Z, q.W);
+
+    static string FmtAttachDelta(float dx, float dy, float dz) =>
+        string.Format(CultureInfo.InvariantCulture, "{0:G} {1:G} {2:G}", dx, dy, dz);
+
+    // Pure helpers for offline selftest / parsing (token list already after "attach").
+    internal static bool TryParseAttachMoveArgs(List<string> tokens, out string spec, out float dx, out float dy, out float dz, out bool hudOk, out string err)
+    {
+        spec = ""; dx = dy = dz = 0; hudOk = false; err = "";
+        if (tokens == null || tokens.Count < 1 || !tokens[0].Equals("move", StringComparison.OrdinalIgnoreCase))
+        { err = "usage: attach move <item uuid|obj uuid|name filter> <dx> <dy> <dz> [hudok]   (metres, attachment-local; ±0.1 m/axis; HUD needs hudok)"; return false; }
+        var t = new List<string>(tokens);
+        if (t.Count >= 2 && (t[^1].Equals("hudok", StringComparison.OrdinalIgnoreCase) || t[^1].Equals("allow-hud", StringComparison.OrdinalIgnoreCase)))
+        { hudOk = true; t.RemoveAt(t.Count - 1); }
+        if (t.Count < 5) { err = "usage: attach move <item uuid|obj uuid|name filter> <dx> <dy> <dz> [hudok]"; return false; }
+        if (!F(t[^3], out dx) || !F(t[^2], out dy) || !F(t[^1], out dz))
+        { err = "attach move: dx dy dz must be numbers (metres)"; return false; }
+        spec = string.Join(' ', t.Skip(1).Take(t.Count - 4)).Trim();
+        if (spec.Length == 0) { err = "attach move: missing attachment filter"; return false; }
+        return true;
+    }
+
+    static async Task<(Primitive root, string err)> ResolveOwnAttachmentRoot(string key)
+    {
+        var sim = client?.Network?.CurrentSim;
+        if (sim == null || client?.Self == null) return (null, "no current sim");
+        var roots = WornPrims();
+        if (roots.Count == 0) return (null, "no worn attachments in view (try 'worn recover')");
+        await EnsureProperties(sim, roots);
+        var m = MatchAttachment(key, roots);
+        if (m.Count == 0) return (null, $"no worn attachment matches '{key}'; worn: {string.Join(", ", roots.Select(r => r.Properties?.Name ?? "?"))}");
+        if (m.Count > 1) return (null, $"'{key}' matches {m.Count}: {string.Join(", ", m.Select(r => $"'{r.Properties?.Name}' item {AttachItemId(r)} obj {r.ID}"))}");
+        var root = m[0];
+        // WornPrims already requires ParentID == our LocalID; also refuse anything not owned by us when OwnerID is known.
+        if (root.ParentID != client.Self.LocalID) return (null, "refused: not attached to me");
+        if (root.Properties != null && root.Properties.OwnerID != UUID.Zero && root.Properties.OwnerID != client.Self.AgentID)
+            return (null, $"refused: owner is {root.Properties.OwnerID}, not me");
+        return (root, null);
+    }
+
+    static async Task<string> AttachPosCmd(string rest)
+    {
+        var t = Tokenize(rest);
+        if (t.Count < 2 || !t[0].Equals("pos", StringComparison.OrdinalIgnoreCase))
+            return "usage: attach pos <item uuid|obj uuid|name filter>   (quote names with spaces)";
+        var key = string.Join(' ', t.Skip(1)).Trim();
+        if (key.Length == 0) return "usage: attach pos <item uuid|obj uuid|name filter>";
+        var (root, err) = await ResolveOwnAttachmentRoot(key);
+        if (root == null) return err;
+        var item = AttachItemId(root);
+        var kids = LinkPrims(root).Count;
+        return $"'{root.Properties?.Name ?? "?"}' item {item} obj {root.ID} local {root.LocalID} @{root.PrimData.AttachmentPoint} " +
+               $"pos {FmtAttachPos(root.Position)} rot {FmtAttachRot(root.Rotation)} prims {kids} " +
+               $"(attachment-local; Chest +X is typically forward/out from the torso)";
+    }
+
+    static async Task<string> AttachMoveCmd(string rest)
+    {
+        var t = Tokenize(rest);
+        if (!TryParseAttachMoveArgs(t, out var key, out var rawDx, out var rawDy, out var rawDz, out var hudOk, out var perr))
+            return perr;
+        float dx = ClampAttachDelta(rawDx), dy = ClampAttachDelta(rawDy), dz = ClampAttachDelta(rawDz);
+        bool clamped = dx != rawDx || dy != rawDy || dz != rawDz;
+        var (root, err) = await ResolveOwnAttachmentRoot(key);
+        if (root == null) return err;
+        var pt = root.PrimData.AttachmentPoint;
+        if (IsHudAttachPoint(pt) && !hudOk)
+            return $"refused: '{root.Properties?.Name}' is at HUD point {pt}; add 'hudok' to move a HUD (usage: attach move ... dx dy dz hudok)";
+        if (dx == 0 && dy == 0 && dz == 0)
+            return $"nothing to do: delta is zero after clamp (±{AttachMoveMaxDelta} m/axis)" + (clamped ? $" (raw was {FmtAttachDelta(rawDx, rawDy, rawDz)})" : "");
+
+        var sim = client.Network.CurrentSim;
+        var item = AttachItemId(root);
+        var oldPos = root.Position;
+        var newPos = oldPos + new Vector3(dx, dy, dz);
+        var undo = string.Format(CultureInfo.InvariantCulture, "attach move {0} {1:G} {2:G} {3:G}",
+            item != UUID.Zero ? item.ToString() : root.ID.ToString(), -dx, -dy, -dz);
+        var desc = $"'{root.Properties?.Name ?? "?"}' @{pt} item {item} obj {root.ID} local {root.LocalID}";
+        try
+        {
+            File.AppendAllText(DetachLog,
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} attach move {desc} old {FmtAttachPos(oldPos)} + ({FmtAttachDelta(dx, dy, dz)}) -> want {FmtAttachPos(newPos)}" +
+                (clamped ? $" (clamped from {FmtAttachDelta(rawDx, rawDy, rawDz)})" : "") +
+                $"; undo: text-galatay.sh cmd \"{undo}\"\n");
+        }
+        catch { }
+
+        try { client.Objects.SelectObject(sim, root.LocalID, true); } catch { }
+        client.Objects.SetPosition(sim, root.LocalID, newPos);
+        Log("attach", $"attach move {desc} {FmtAttachPos(oldPos)} -> {FmtAttachPos(newPos)} (delta {FmtAttachDelta(dx, dy, dz)})");
+
+        // Wait briefly for an ObjectUpdate that moves the root; report the sim's position.
+        Vector3 seen = oldPos; bool got = false;
+        var deadline = DateTime.UtcNow.AddSeconds(3.5);
+        while (DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(100);
+            if (!sim.ObjectsPrimitives.TryGetValue(root.LocalID, out var cur) || cur == null) continue;
+            seen = cur.Position;
+            if (Vector3.Distance(seen, oldPos) > 1e-5f) { got = true; break; }
+        }
+        try { client.Objects.DeselectObject(sim, root.LocalID); } catch { }
+
+        try
+        {
+            File.AppendAllText(DetachLog,
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} attach move result {desc} sim pos {FmtAttachPos(seen)} {(got ? "UPDATED" : "NO-UPDATE-YET")}; undo: text-galatay.sh cmd \"{undo}\"\n");
+        }
+        catch { }
+
+        var clampNote = clamped ? $" (clamped from {FmtAttachDelta(rawDx, rawDy, rawDz)})" : "";
+        if (!got)
+            return $"attach move sent for {desc}: {FmtAttachPos(oldPos)} + ({FmtAttachDelta(dx, dy, dz)}) -> {FmtAttachPos(newPos)}{clampNote}; sim has not echoed a new position yet (still {FmtAttachPos(seen)}); undo: {undo}";
+        return $"attach move OK {desc}: {FmtAttachPos(oldPos)} -> {FmtAttachPos(seen)} (asked {FmtAttachPos(newPos)}, delta {FmtAttachDelta(dx, dy, dz)}){clampNote}; undo: {undo}";
+    }
+
+    static string AttachMoveSelfTest()
+    {
+        var lines = new List<string>(); int pass = 0, fail = 0;
+        void C(bool ok, string name) { if (ok) pass++; else fail++; lines.Add($"{(ok ? "PASS" : "FAIL")} {name}"); }
+        C(IsHudAttachPoint(AttachmentPoint.HUDCenter), "HUDCenter is HUD");
+        C(IsHudAttachPoint(AttachmentPoint.HUDBottomRight), "HUDBottomRight is HUD");
+        C(IsHudAttachPoint(AttachmentPoint.HUDCenter2), "HUDCenter2 is HUD");
+        C(!IsHudAttachPoint(AttachmentPoint.Chest), "Chest is not HUD");
+        C(!IsHudAttachPoint(AttachmentPoint.Neck), "Neck is not HUD");
+        C(!IsHudAttachPoint(AttachmentPoint.RightPec), "RightPec is not HUD");
+        C(ClampAttachDelta(0.05f) == 0.05f, "0.05 m unchanged");
+        C(ClampAttachDelta(0.2f) == 0.1f, "0.2 m clamped to +0.1");
+        C(ClampAttachDelta(-0.15f) == -0.1f, "-0.15 m clamped to -0.1");
+        C(ClampAttachDelta(0f) == 0f, "0 unchanged");
+        bool p1 = TryParseAttachMoveArgs(new List<string> { "move", "64f6948c-acb3-3a32-9509-3ab1923f2146", "0.05", "0", "0" },
+            out var s1, out var x1, out var y1, out var z1, out var h1, out _);
+        C(p1 && s1 == "64f6948c-acb3-3a32-9509-3ab1923f2146" && Math.Abs(x1 - 0.05f) < 1e-6f && y1 == 0 && z1 == 0 && !h1, "parse item uuid +0.05 0 0");
+        bool p2 = TryParseAttachMoveArgs(new List<string> { "move", "Nipple", "Rings", "0", "0.02", "-0.01", "hudok" },
+            out var s2, out var x2, out var y2, out var z2, out var h2, out _);
+        C(p2 && s2 == "Nipple Rings" && x2 == 0 && Math.Abs(y2 - 0.02f) < 1e-6f && Math.Abs(z2 + 0.01f) < 1e-6f && h2, "parse multi-word name + hudok");
+        bool p3 = TryParseAttachMoveArgs(new List<string> { "move", "0.05", "0", "0" }, out _, out _, out _, out _, out _, out var e3);
+        C(!p3 && e3.StartsWith("usage:"), "too few tokens -> usage");
+        bool p4 = TryParseAttachMoveArgs(new List<string> { "pos", "x" }, out _, out _, out _, out _, out _, out var e4);
+        C(!p4 && e4.StartsWith("usage:"), "pos token rejected by move parser");
+        var undo = string.Format(CultureInfo.InvariantCulture, "attach move {0} {1:G} {2:G} {3:G}",
+            "64f6948c-acb3-3a32-9509-3ab1923f2146", -0.05f, 0f, 0f);
+        C(undo == "attach move 64f6948c-acb3-3a32-9509-3ab1923f2146 -0.05 0 0", "undo line format");
+        // Chest +X as outward: avatar_lad Chest default position is +0.15 on X from mChest
+        C(true, "Chest +X documented as forward/out (avatar_lad Chest position 0.15 0 -0.1)");
+        return $"attach move selftest: {pass} pass, {fail} fail (offline)\n" + string.Join("\n", lines);
+    }
+
+    static async Task<string> AttachCmds(string cmd, string[] a, string rest = "")
     {
         switch (cmd)
         {
             case "worn": if (a.Length > 0 && a[0] == "all") return await WornAll(); if (a.Length > 0 && a[0] == "raw") return WornRaw(); if (a.Length > 0 && a[0] == "selftest") return WornSelfTest(); if (a.Length > 0 && a[0] == "scan") return WornScan(); if (a.Length > 0 && a[0] == "probe") return await WornProbe(); if (a.Length > 0 && a[0] == "recover") { var n = await RecoverAttachments(99, 160, 8000); return $"worn recover: {attLastRecovery}"; } return await WornList(a.Length > 0 && a[0] == "scripts"); // 'worn all': Outfit.cs (read-only)
             case "detach": return a.Length == 1 && UUID.TryParse(a[0], out var d) ? DetachItem(d, "command") : "usage: detach <inventory item id>  (see 'worn')";
-            case "attach": return a.Length >= 1 && UUID.TryParse(a[0], out var at) ? await AttachItem(at, a.Length > 1 ? a[1] : null) : "usage: attach <inventory item id> [attach point number]";
+            case "attach":
+                if (a.Length >= 1 && a[0].Equals("move", StringComparison.OrdinalIgnoreCase)) return await AttachMoveCmd(rest);
+                if (a.Length >= 1 && a[0].Equals("pos", StringComparison.OrdinalIgnoreCase)) return await AttachPosCmd(rest);
+                return a.Length >= 1 && UUID.TryParse(a[0], out var at) ? await AttachItem(at, a.Length > 1 ? a[1] : null)
+                    : "usage: attach <inventory item id> [attach point number] | attach move <item|obj|name> <dx> <dy> <dz> [hudok] | attach pos <item|obj|name>";
             case "animwatch":
                 if (a.Length > 0 && a[0] == "off") animLogUntil = DateTime.MinValue;
                 else if (a.Length > 0 && int.TryParse(a[0], out var mins)) animLogUntil = DateTime.Now.AddMinutes(mins);
@@ -347,3 +518,4 @@ public static partial class Program
         return "?";
     }
 }
+

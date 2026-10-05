@@ -236,7 +236,7 @@ def sky_backdrop(w, env, night):
     0.85 of it the upper sky read as a darker picture). Diffuse
     lighting still comes from the flat horizon colour it always used, so nothing in the scene changes brightness.
     ponytail: no clouds, sun disc, haze glow or neighbouring regions; ceiling = a clean but plain gradient"""
-    if "zenith" not in env: return
+    if "zenith" not in env or not M.get("backdrop", True): return   # look.py without --far: the flat horizon colour
     nt = w.node_tree; L = nt.links.new; bg = nt.nodes["Background"]
     h = env["horizon"]; z = env["zenith"]; k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
     co = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); L(co.outputs["Generated"], sp.inputs[0])

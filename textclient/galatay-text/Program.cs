@@ -1588,7 +1588,7 @@ public static partial class Program
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
   shape get [filter] | shape set <slider|param id> <0-100>   worn shape sliders; set ONLY on 'Galatea Petite shape - Jani short neck' (backup in shape-backups/, upload + rebake)
   scene export [radius]       READ-ONLY: prims (shapes, sculpt/mesh ids, faces) within radius + my attachments + my bakes -> /workspace/secondlife/vision/export-*/ (SceneExport.cs)
-  look [self|around|at <name>] [fast]  READ-ONLY: scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
+  look [self|around|at <name>] [fast] [far]  READ-ONLY (far: +96 m backdrop): scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
   texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG
   vendor look <name filter> [radius]   nearby objects matching name/hover text (default 20 m): face PNGs + index.json in textures/scan-*/

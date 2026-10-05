@@ -189,6 +189,19 @@ public static partial class Program
             var oldName = string.Join(' ', a[1..^1]);
             return await OutfitRename(oldName, newName);
         }
+        if (a.Length >= 1 && a[0] == "coffix") { using var cc = new CancellationTokenSource(60000); return await CofSyncAddMissing(cc.Token); }
+        if (a.Length >= 1 && (a[0] == "link-remove" || a[0] == "link-add")) return await OutfitLinkEdit(a);
+        if (a.Length >= 2 && a[0] == "huds")
+        {
+            using var hc = new CancellationTokenSource(150000);
+            var hf = await FindOutfitFolder(string.Join(' ', a[1..]), hc.Token);
+            return hf == null ? "no such outfit" : await OutfitClothingHuds(hf, hc.Token);
+        }
+        if (a.Length >= 2 && a[0] == "wear" && !a[^1].Equals("add", StringComparison.OrdinalIgnoreCase))
+        {
+            var nm = string.Join(' ', a[1..].Where(x => !x.Equals("replace", StringComparison.OrdinalIgnoreCase)));
+            return await WearOutfitWithHuds(nm);
+        }
         if (a.Length >= 2 && a[0] == "wear")
         {
             bool replace = true;

@@ -346,6 +346,7 @@ public static partial class Program
     {
         if (item == UUID.Zero) return;
         if (IsTempAttachItem(item)) return; // Experiences.cs: temp props were never in COF
+        if (OutfitChangeActive) { Log("wear", $"attachment {item} local {local} gone during an outfit swap: COF left to the swap"); return; } // OutfitSafe.cs
         bool recent = detachIntent.TryGetValue(item, out var di) && (DateTime.Now - di.t).TotalSeconds < 60;
         bool seatOff = false; try { seatOff = SeatOffItems().ContainsKey(item); } catch { }
         bool seated = false; try { seated = client?.Self?.SittingOn != 0; } catch { }

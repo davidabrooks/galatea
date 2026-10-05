@@ -146,10 +146,14 @@ public static partial class Program
     static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false)
     {
         var ok = new List<string>(); var skipped = new List<string>();
+        bool seatSel = PoseMenuLooksLikeSeatSelect(labels);
         foreach (var raw in labels ?? new())
         {
             var l = raw ?? "";
             if (PoseIsControl(l) || PoseIsMale(l)) { skipped.Add(l); continue; }
+            // Never pick AVsitter seat-select chrome (⊘sitter, bare F/M roles)
+            if (l.TrimStart().StartsWith("⊘") || l.TrimStart().StartsWith("⊘")) { skipped.Add(l); continue; }
+            if (seatSel) { skipped.Add(l); continue; }
             if (couplesMode)
             {
                 if (!inCouplesMenu)
@@ -192,8 +196,11 @@ public static partial class Program
         var sim = Sim; var until = DateTime.Now.AddMilliseconds(ms);
         while (true)
         {
-            var hit = wDialogs.ToArray().Where(d => d.at >= since && DialogFromSeat(d.e, seat, sim)).OrderByDescending(d => d.at).FirstOrDefault();
-            if (hit.e != null) return hit.e;
+            var hits = wDialogs.ToArray().Where(d => d.at >= since && DialogFromSeat(d.e, seat, sim)).OrderByDescending(d => d.at).ToList();
+            // Prefer a real pose menu over AVsitter seat-select (F/M/sitter) when both appear after a touch
+            var pose = hits.FirstOrDefault(d => d.e?.ButtonLabels != null && !PoseMenuLooksLikeSeatSelect(d.e.ButtonLabels));
+            if (pose.e != null) return pose.e;
+            if (hits.Count > 0 && hits[0].e != null) return hits[0].e;
             if (DateTime.Now >= until) return null;
             await Task.Delay(200, ct);
         }
@@ -238,6 +245,23 @@ public static partial class Program
             var t0 = DateTime.Now; client.Self.Touch(seat.LocalID);
             d = await WaitSeatDialog(seat, t0, 5000, ct);
             if (d == null) { var m = $"'{seatName}': no pose menu (none on sit, none after a touch)"; WLog("POSE " + m); return m; }
+        }
+        // Escape AVsitter seat-select (F/M/sitter) — not a pose menu
+        if (PoseMenuLooksLikeSeatSelect(d.ButtonLabels))
+        {
+            int fIdx = d.ButtonLabels.FindIndex(b => PoseBare(b).Equals("F", StringComparison.OrdinalIgnoreCase));
+            if (fIdx >= 0)
+            {
+                var tF = DateTime.Now;
+                client.Self.ReplyToScriptDialog(d.Channel, fIdx, d.ButtonLabels[fIdx], d.ObjectID);
+                var d2 = await WaitSeatDialog(seat, tF, 5000, ct);
+                if (d2 != null) d = d2;
+            }
+            if (PoseMenuLooksLikeSeatSelect(d.ButtonLabels))
+            {
+                var m = $"'{seatName}': seat-select menu only (no pose categories); not picking";
+                WLog("POSE " + m); return m;
+            }
         }
         var path = new List<string>(); string current = PoseCurrent(d.Message); bool inCouples = false;
         if (recovery && !string.IsNullOrEmpty(current))
@@ -286,14 +310,66 @@ public static partial class Program
         return "too deep";
     }
 
-    // Press [BACK] until the top-level menu (AVsitter reopens in the last submenu).
+    // True when this dialog looks like the AVsitter pose *category* root (Solo*/Couples* siblings),
+    // not a seat-select / role picker (F|M|sitter) and not a deep pose leaf.
+    static bool PoseMenuLooksLikeRoot(IReadOnlyList<string> labels)
+    {
+        if (labels == null || labels.Count == 0) return false;
+        bool hasSolo = labels.Any(PoseIsSoloMenu);
+        bool hasCouples = labels.Any(PoseIsCouplesNamed);
+        int stars = labels.Count(b => (b ?? "").TrimEnd().EndsWith("*") && !PoseIsControl(b));
+        return (hasSolo && hasCouples) || (hasSolo && stars >= 3);
+    }
+
+    // Seat-select / role menus (AVsitter™ seat select): bare F + M role buttons, sitter names — not pose categories.
+    // Do not treat "M*" / "Female" pose submenus as seat-select (PoseBare("M*") == "M").
+    static bool PoseMenuLooksLikeSeatSelect(IReadOnlyList<string> labels)
+    {
+        if (labels == null || labels.Count == 0) return false;
+        if (PoseMenuLooksLikeRoot(labels)) return false;
+        int poseCats = labels.Count(b => !PoseIsControl(b) && (PoseIsSoloMenu(b) || PoseIsCouplesNamed(b) || PoseIsAdultMenu(b)));
+        if (poseCats > 0) return false;
+        static bool ExactRole(string raw, string role)
+        {
+            var t = (raw ?? "").Trim();
+            if (t.EndsWith("*")) return false; // M* / F* are pose submenus, not seat-select roles
+            return PoseBare(t).Equals(role, StringComparison.OrdinalIgnoreCase);
+        }
+        bool hasF = labels.Any(b => ExactRole(b, "F"));
+        bool hasM = labels.Any(b => ExactRole(b, "M"));
+        return hasF && hasM; // both role buttons present
+    }
+
+    // Press [BACK] until the top-level pose menu (AVsitter reopens in the last submenu).
+    // Do NOT press [BACK] when already on the category root (it still shows [BACK] — that goes to seat select).
     static async Task<ScriptDialogEventArgs> SeatPoseBackToRoot(Primitive seat, ScriptDialogEventArgs d, CancellationToken ct)
     {
         for (int i = 0; i < 8; i++)
         {
             if (d?.ButtonLabels == null) return d;
+            if (PoseMenuLooksLikeRoot(d.ButtonLabels)) return d; // already at pose root — keep it
+            // Ignore seat-select overlays: re-touch for the pose menu
+            if (PoseMenuLooksLikeSeatSelect(d.ButtonLabels))
+            {
+                var tTouch = DateTime.Now; client.Self.Touch(seat.LocalID);
+                var again = await WaitSeatDialog(seat, tTouch, 5000, ct);
+                if (again == null) return d;
+                d = again;
+                if (PoseMenuLooksLikeRoot(d.ButtonLabels)) return d;
+                // if still seat-select, try pressing F (female role) then continue
+                int fIdx = d.ButtonLabels.FindIndex(b => PoseBare(b).Equals("F", StringComparison.OrdinalIgnoreCase));
+                if (fIdx >= 0)
+                {
+                    var tF = DateTime.Now;
+                    client.Self.ReplyToScriptDialog(d.Channel, fIdx, d.ButtonLabels[fIdx], d.ObjectID);
+                    again = await WaitSeatDialog(seat, tF, 5000, ct);
+                    if (again != null) d = again;
+                    if (PoseMenuLooksLikeRoot(d.ButtonLabels)) return d;
+                }
+                continue;
+            }
             int back = d.ButtonLabels.FindIndex(PoseIsBackButton);
-            if (back < 0) return d; // no [BACK] => already at root (or leaf without back — unlikely at top)
+            if (back < 0) return d; // no [BACK] => treat as root
             var before = string.Join("|", d.ButtonLabels);
             var t1 = DateTime.Now;
             client.Self.ReplyToScriptDialog(d.Channel, back, d.ButtonLabels[back], d.ObjectID);
@@ -302,11 +378,7 @@ public static partial class Program
             var after = string.Join("|", next.ButtonLabels ?? new List<string>());
             d = next;
             if (after == before) return d; // stuck
-            // stop early if this looks like a top menu (Solo*/Couples* siblings, or several category *)
-            bool hasSolo = d.ButtonLabels.Any(PoseIsSoloMenu);
-            bool hasCouples = d.ButtonLabels.Any(PoseIsCouplesNamed);
-            int stars = d.ButtonLabels.Count(b => (b ?? "").TrimEnd().EndsWith("*") && !PoseIsControl(b));
-            if ((hasSolo && hasCouples) || (hasSolo && stars >= 3)) return d;
+            if (PoseMenuLooksLikeRoot(d.ButtonLabels)) return d;
         }
         return d;
     }
@@ -509,6 +581,15 @@ public static partial class Program
             bool hold = DavidChoosesPoses(davidOnSeat: false, explicitCouplesRequest: false) == false;
             if (hold) pass++; else fail++;
             lines.Add($"{(hold ? "PASS" : "FAIL")} Sophie alone: pose/recovery not held back (DavidChooses false)");
+        }
+        {
+            var root = new List<string> { "[ SWAP ]*", "Clean*", "[ADJUST]", "F+F2*", "FFM*", "MMF*", "Solo*", "Couples PG*", "Adult M+F*", "[BACK]" };
+            var seatSel = new List<string> { "M2", "  ", "[ADJUST]", "F", "M", "⊘SophieJeanne" };
+            var leaf = new List<string> { "[ADJUST]", "[<<]", "[>>]", "Forever", "Together", "[BACK]" };
+            bool r = PoseMenuLooksLikeRoot(root) && !PoseMenuLooksLikeRoot(seatSel) && !PoseMenuLooksLikeRoot(leaf);
+            bool s = PoseMenuLooksLikeSeatSelect(seatSel) && !PoseMenuLooksLikeSeatSelect(root);
+            if (r && s) pass++; else fail++;
+            lines.Add($"{(r && s ? "PASS" : "FAIL")} PoseMenuLooksLikeRoot vs seat-select (do not BACK off root)");
         }
         var cur = PoseCurrent("AVsitter™2.1\n\n [Onlegs 4]"); bool c = cur == "Onlegs 4"; if (c) pass++; else fail++;
         lines.Add($"{(c ? "PASS" : "FAIL")} current pose parsed from the menu text: '{cur}'");

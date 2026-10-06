@@ -51,6 +51,22 @@ static class Mesher
     // LOD = 20 M vertices, 5.4 GB peak, the mesher ran out of memory). Hers always Highest.
     // ponytail: by distance, not on-screen size; ceiling = a far avatar under a close-up `look at` gets a coarse outfit
     internal static DetailLevel AvatarLod(float d) => d switch { < 4f => DetailLevel.Highest, < 10f => DetailLevel.High, < 20f => DetailLevel.Medium, _ => DetailLevel.Low };
+    // an avatar the export marks as still loading ("partial": some attachments missing, "bare": none yet, "unknown": no
+    // appearance yet) is a stand-in; "complete" or no field (exports before 2026-10-05) renders as before
+    // a big flat floor slab (two sides >= 8 m, thickness <= 1.5 m, lying flat) reaching within `reach` horizontally of the
+    // focus and within 6 m of its height: kept even when its root is beyond --roots, so the floor doesn't end in sky at
+    // ~30 m (Warehouse 21 courtyard, a skybox: the floor beyond read as pale sky). Only the slab itself, not its linkset.
+    internal static bool GroundSlab(Vector3 pos, Quaternion rot, Vector3 scale, Vector3 focus, float reach)
+    {
+        var ax = new[] { (scale.X, new Vector3(1, 0, 0)), (scale.Y, new Vector3(0, 1, 0)), (scale.Z, new Vector3(0, 0, 1)) }.OrderBy(a => a.Item1).ToArray();
+        if (ax[0].Item1 > 1.5f || ax[1].Item1 < 8f) return false;
+        if (MathF.Abs((ax[0].Item2 * rot).Z) < 0.9f) return false;   // thin axis must point up: a floor, not a wall
+        if (MathF.Abs(pos.Z - focus.Z) > 6f) return false;
+        float half = MathF.Sqrt(ax[1].Item1 * ax[1].Item1 + ax[2].Item1 * ax[2].Item1) / 2;
+        return MathF.Max(0, Vector2.Distance(new Vector2(pos.X, pos.Y), new Vector2(focus.X, focus.Y)) - half) <= reach;
+    }
+
+    internal static bool StandIn(string dressed) => dressed is "partial" or "bare" or "unknown";
     static DetailLevel FarLod(float r, float d) => (r * 2f / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
 
     // drop the rigged-mesh position overrides of joints whose position an animation drives (the SL pose blend wins)
@@ -112,9 +128,23 @@ static class Mesher
     sealed class Batch { public string Group, Tex; public float[] Rgba; public bool Fullbright; public Dictionary<string, object> Mat; public List<float> P = new(), N = new(), T = new(); public List<uint> I = new(); }
     static readonly string[] AlphaModes = { "none", "blend", "mask", "emissive" };   // LegacyMaterial DiffuseAlphaMode
 
+    // CDN assets are immutable per UUID: keep them on disk (SCENE_MESHER_CACHE, default ~/.cache/scene-mesher; "off" = none).
+    // Warehouse 21 (2026-10-05): ~6000 mesh/sculpt/material assets took 15 s to fetch on every look.
+    static readonly string CacheDir = Environment.GetEnvironmentVariable("SCENE_MESHER_CACHE") is { Length: > 0 } c
+        ? (c == "off" ? null : c) : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "scene-mesher");
+    internal static string CachePath(string root, string kind, UUID id) =>
+        root == null || id == UUID.Zero || kind.IndexOfAny(new[] { '/', '\\', '.' }) >= 0 ? null : Path.Combine(root, kind, id.ToString()[..2], id.ToString());
+    static int cacheHits, cacheMisses;
     static async Task<byte[]> Get(string kind, UUID id)
     {
-        try { return await Http.GetByteArrayAsync($"{Cdn}?{kind}_id={id}"); } catch { return null; }
+        var path = CachePath(CacheDir, kind, id);
+        if (path != null && File.Exists(path)) { try { var b = await File.ReadAllBytesAsync(path); if (b.Length > 0) { Interlocked.Increment(ref cacheHits); return b; } } catch { } }
+        byte[] data;
+        try { data = await Http.GetByteArrayAsync($"{Cdn}?{kind}_id={id}"); } catch { return null; }
+        Interlocked.Increment(ref cacheMisses);
+        if (path != null && data is { Length: > 0 })
+            try { Directory.CreateDirectory(Path.GetDirectoryName(path)); var tmp = path + "." + Guid.NewGuid().ToString("N")[..8]; await File.WriteAllBytesAsync(tmp, data); File.Move(tmp, path, true); } catch { }
+        return data;
     }
 
     static async Task<int> Main(string[] args)
@@ -158,6 +188,16 @@ static class Mesher
                 SkinRetarget(bad, bw, out var bsB, out var ibB);
                 ok &= ibB == null && bsB[0] == 20f && bsB[13] == 175f;
             }
+            var fz = new Vector3(100, 100, 2004);
+            ok &= GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 30)          // 50 m away, 45 m half-diagonal
+                  && !GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 4f), fz, 30)          // too thick
+                  && !GroundSlab(new Vector3(150, 100, 2003), Quaternion.CreateFromAxisAngle(1, 0, 0, MathF.PI / 2), new Vector3(64, 64, 0.5f), fz, 30)  // a wall
+                  && !GroundSlab(new Vector3(200, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 30)        // too far
+                  && !GroundSlab(new Vector3(150, 100, 1990), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 30)        // other level
+                  && GroundSlab(new Vector3(150, 100, 2003), Quaternion.CreateFromAxisAngle(0, 1, 0, MathF.PI / 2), new Vector3(0.5f, 64, 64), fz, 30);  // thin X turned up
+            ok &= StandIn("partial") && StandIn("bare") && StandIn("unknown") && !StandIn("complete") && !StandIn(null);
+            ok &= CachePath("/c", "mesh", new UUID("0123abcd-0000-0000-0000-000000000001")) == Path.Combine("/c", "mesh", "01", "0123abcd-0000-0000-0000-000000000001")
+                  && CachePath(null, "mesh", UUID.Random()) == null && CachePath("/c", "../x", UUID.Random()) == null && CachePath("/c", "mesh", UUID.Zero) == null;
             ok &= AvatarLod(2) == DetailLevel.Highest && AvatarLod(6) == DetailLevel.High && AvatarLod(15) == DetailLevel.Medium && AvatarLod(35) == DetailLevel.Low;
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028
@@ -188,12 +228,14 @@ static class Mesher
         var doc = (OSDMap)OSDParser.DeserializeJson(File.ReadAllText(Path.Combine(dir, "scene.json")));
         var me = ((OSDMap)doc["me"])["pos"].AsVector3();
         // avatar-local: undo her rotation around her agent position (z moves into the mesh frame with agentOff in PoseAvatar)
-        Vector3? lookAt = null; var agentOff = new Dictionary<string, float>();  // per avatar owner: mesh z 0 relative to agent z
+        Vector3? lookAt = null; var agentOff = new ConcurrentDictionary<string, float>();  // per avatar owner: mesh z 0 relative to agent z
         if (lookArg is { Length: 3 })
             lookAt = (new Vector3(lookArg[0], lookArg[1], lookArg[2]) - me) * Quaternion.Conjugate(((OSDMap)doc["me"])["rot"].AsQuaternion());
         string only = args.Length > 2 ? args[2] : "all";
         Vector3 focus = me; float focusR = 1e9f;
         if (args.Length > 4) { var c = args[3].Split(',').Select(x => float.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray(); focus = new Vector3(c[0], c[1], c[2]); focusR = float.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture); }
+        var clock = System.Diagnostics.Stopwatch.StartNew(); var phases = new List<string>();
+        void Phase(string name) { phases.Add($"{name} {clock.ElapsedMilliseconds} ms"); clock.Restart(); }
         var mf = new MeshFoundry();
         var batches = new ConcurrentDictionary<string, Batch>();
         var stats = new ConcurrentDictionary<string, int>();
@@ -205,6 +247,10 @@ static class Mesher
         var byLocal = ((OSDArray)doc["prims"]).Cast<OSDMap>().ToDictionary(o => o["localid"].AsUInteger());
         var wearerAt = ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id") && av.ContainsKey("pos"))
             .GroupBy(av => av["agent_id"].AsString()).ToDictionary(g => g.Key, g => g.First()["pos"].AsVector3());
+        // avatars the client saw still loading (export "dressed" != complete, 2026-10-05+): drawn as a neutral stand-in, so
+        // their attachments that did arrive aren't meshed (never a half-dressed body); older exports have no "dressed"
+        var loading = ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id") && StandIn(av.ContainsKey("dressed") ? av["dressed"].AsString() : null))
+            .Select(av => av["agent_id"].AsString()).ToHashSet();
         // range culling per whole linkset (David 2026-10-04: per-prim culling left floating tree fragments): a linkset's
         // bounding sphere (member positions +- half their largest scale) is in if its nearest point is within focusR, and
         // "far" (screen-size LOD, see FarLod; skipped when the whole object is under ~1 m across) when its centre is beyond farR (by the
@@ -213,8 +259,9 @@ static class Mesher
         float Nearest(OSDMap o) { var (c, r) = sphere[RootOf(o, byLocal)]; return MathF.Max(0, Vector3.Distance(c, focus) - r); }
         bool Far(OSDMap o) => Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus) > farR;
         var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => Owner(o) != null
-            ? only != "scene" : only != "avatar" && Nearest(o) <= focusR && (!Far(o) || sphere[RootOf(o, byLocal)].r >= 0.85f)
-              && Vector3.Distance(byLocal[RootOf(o, byLocal)]["world_pos"].AsVector3(), focus) <= rootsR).ToList();
+            ? only != "scene" && !loading.Contains(Owner(o)) : only != "avatar" && Nearest(o) <= focusR && (!Far(o) || sphere[RootOf(o, byLocal)].r >= 0.85f)
+              && (Vector3.Distance(byLocal[RootOf(o, byLocal)]["world_pos"].AsVector3(), focus) <= rootsR
+                  || RootOf(o, byLocal) == o["localid"].AsUInteger() && GroundSlab(o["world_pos"].AsVector3(), o["world_rot"].AsQuaternion(), o["scale"].AsVector3(), focus, focusR))).ToList();
         var lights = new List<object>();
         // the export's TextureEntry JSON drops "face_number" for face 0, so LibreMetaverse would read face 0 as the default
         // face: restore it (the only per-face entry that can lack the key)
@@ -225,18 +272,19 @@ static class Mesher
         var assets = new ConcurrentDictionary<(string, UUID), byte[]>();
         await Parallel.ForEachAsync(prims.Select(Primitive.FromOSD).Where(p => p.Sculpt != null && p.Sculpt.SculptTexture != UUID.Zero)
                 .Select(p => (p.Sculpt.Type == SculptType.Mesh ? "mesh" : "texture", p.Sculpt.SculptTexture)).Distinct(),
-            new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (k, _) => assets[k] = await Get(k.Item1, k.Item2));
+            new ParallelOptions { MaxDegreeOfParallelism = 24 }, async (k, _) => assets[k] = await Get(k.Item1, k.Item2));
         // PBR (GLTF) material assets, per face, from the RenderMaterial extra param the export records
         var pbr = new ConcurrentDictionary<UUID, AssetMaterial>();
         await Parallel.ForEachAsync(prims.Where(o => o.ContainsKey("render_materials")).SelectMany(o => ((OSDMap)o["render_materials"]).Values.Select(v => v.AsUUID())).Distinct(),
             async (id, _) => { var d = await Get("material", id); var m = d == null ? null : new AssetMaterial(id, d); if (m != null && m.Decode()) pbr[id] = m; });
         var legacy = doc.ContainsKey("materials") ? (OSDMap)doc["materials"] : new OSDMap();
-        Console.WriteLine($"assets: {assets.Count(a => a.Value != null)}/{assets.Count} fetched, {pbr.Count} pbr, {legacy.Count} legacy materials");
+        Console.WriteLine($"assets: {assets.Count(a => a.Value != null)}/{assets.Count} fetched ({cacheHits} from the disk cache), {pbr.Count} pbr, {legacy.Count} legacy materials");
+        Phase("fetch");
 
         // one bad prim (odd mesh asset, malformed TE) must not kill a whole crowd render (2026-10-05 Warehouse 21: the look
         // failed with only the Parallel.ForEach frame visible): count it, keep the first error for the log, skip that prim
         int primErrors = 0; string firstPrimError = null;
-        Parallel.ForEach(prims, new ParallelOptions { MaxDegreeOfParallelism = 8 }, o =>
+        Parallel.ForEach(prims, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, o =>
         {
             try { PrimBody(o); }
             catch (Exception ex)
@@ -245,6 +293,7 @@ static class Mesher
                     firstPrimError = $"prim {(o.ContainsKey("id") ? o["id"].AsUUID().ToString() : "?")} '{(o.ContainsKey("name") ? o["name"].AsString() : "")}': {ex.GetType().Name}: {ex.Message} @ {ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}";
             }
         });
+        Phase("prims");
         if (primErrors > 0) { stats["prim_error_skipped"] = primErrors; Console.Error.WriteLine($"warning: {primErrors} prim(s) skipped after errors; first: {firstPrimError}"); }
         void PrimBody(OSDMap o)
         {
@@ -536,9 +585,12 @@ static class Mesher
         animId ??= meMap.ContainsKey("anims") ? meMap["anims"].AsString() : null;   // the client's own animation clock (2026-10-04+)
         var frames = only == "scene" ? null : await PoseAvatar("me", "avatar", "", doc.ContainsKey("visual_params") ? (OSDMap)doc["visual_params"] : null, animId);
         var others = new List<object>();
-        if (only != "scene" && doc.ContainsKey("avatars"))
-            foreach (var av in ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id")))
+        var avList = only == "scene" || !doc.ContainsKey("avatars") ? new List<OSDMap>() : ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id")).ToList();
+        // each avatar poses independently (its own animation fetches, skinning); Emit locks per batch. Was serial: ~8 s for 50.
+        var otherAt = new object[avList.Count];
+        await Parallel.ForEachAsync(Enumerable.Range(0, avList.Count), new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (ai, _) =>
             {
+                var av = avList[ai];
                 var id = av["agent_id"].AsString();
                 bool worn = rigged.Any(x => x.Item1 == id) || unrigged.Any(x => x.Item1 == id);
                 string g = "avatar:" + id[..8];
@@ -546,9 +598,11 @@ static class Mesher
                 var ap = av["pos"].AsVector3();
                 // placeholder when export held no attachment prims: render_mesh draws a bake-textured stand-in so every
                 // nearby avatar still shows (Warehouse 21: 34 in the export, only 1 had attachments on the wire)
-                others.Add(new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f), placeholder = !worn, bake_prefix = id[..8] });
+                otherAt[ai] = new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f), placeholder = !worn, bake_prefix = id[..8], dressed = av.ContainsKey("dressed") ? av["dressed"].AsString() : null };
                 Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}{(worn ? "" : " (no attachments: placeholder)")}");
-            }
+            });
+        others.AddRange(otherAt);
+        Phase("avatars");
         var outMeta = new List<object>(); long off = 0;
         using (var bin = new BinaryWriter(File.Create(Path.Combine(dir, "mesh.bin"))))
             foreach (var b in batches.Values.OrderBy(b => b.Group))
@@ -558,6 +612,8 @@ static class Mesher
                 off += (b.P.Count + b.N.Count + b.T.Count + b.I.Count) * 4L;
             }
         File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, bones = frames == null ? null : Bones(frames), others }));
+        Phase("write");
+        Console.Error.WriteLine("timing: " + string.Join(", ", phases));
         Console.WriteLine($"{batches.Count} batches, {outMeta.Sum(m => ((dynamic)m).nv)} vertices, {off / 1048576.0:F1} MB; " + string.Join(", ", stats.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}")));
         return 0;
     }

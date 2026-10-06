@@ -38,8 +38,11 @@ public static partial class Program
                 if (av != null) HeadTurnTo(av.ID, "look at"); else if (ob != null) HeadTurnToPoint(ob.Position, "look at");
             }
             float er = mode == "self" ? 8 : far ? 96 : 32;
-            if (mode != "self") await EnsureNearbyAttachments(er);   // pull other avatars' attachment ObjectUpdates before export
+            var tWait = sw.Elapsed.TotalSeconds;
+            if (mode != "self") await EnsureNearbyAttachments(er);   // wait for nearby avatars' attachments (stand-ins for the rest)
+            tWait = sw.Elapsed.TotalSeconds - tWait; var tEx = sw.Elapsed.TotalSeconds;
             var ex = await SceneExport(new[] { "export", er.ToString(CultureInfo.InvariantCulture) });   // far: backdrop beyond 30 m (look.py --far)
+            tEx = sw.Elapsed.TotalSeconds - tEx;
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }
             var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
@@ -47,6 +50,8 @@ public static partial class Program
             if (mode == "at") psi.ArgumentList.Add(string.Join(" ", w[1..]));   // argv, never a shell: names can't inject
             if (fast) psi.ArgumentList.Add("--fast");
             if (far) psi.ArgumentList.Add("--far");
+            // the client-side stages, so look.py's timing summary covers the whole look
+            psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
             var pr = Process.Start(psi)!; var outText = new StringBuilder(); var errText = new StringBuilder();
             pr.OutputDataReceived += (_, e) => { if (e.Data != null) lock (outText) outText.AppendLine(e.Data); };
             pr.ErrorDataReceived += (_, e) => { if (e.Data != null) lock (errText) errText.AppendLine(e.Data); };

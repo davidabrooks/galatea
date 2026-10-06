@@ -133,6 +133,11 @@ public static partial class Program
     }
 
     // ---- crowd completeness ----------------------------------------------------------------------------------------------
+    // pure: attachments other viewers will receive, from the AvatarAppearance list (attach point bytes; the 0x80 "add"
+    // bit masked off). HUD points 31-38 are never sent to anyone else, so counting them would leave a HUD wearer
+    // "partial" forever.
+    internal static int ExpectedAttachments(IEnumerable<byte> points) => points.Count(p => (p & 0x7F) is < 31 or > 38);
+    static int ExpectedOf(Avatar a) { lock (a) return a.Attachments == null ? 0 : ExpectedAttachments(a.Attachments.Select(x => x.AttachmentPoint)); }
     // pure: an avatar's attachment state from the sim's own list (expected) and the roots we hold (have).
     internal static string AttachState(int expected, int have) =>
         have == 0 ? (expected == 0 ? "unknown" : "bare") : expected > 0 && have < expected ? "partial" : "complete";
@@ -155,7 +160,7 @@ public static partial class Program
         var sb = new StringBuilder(); var counts = new Dictionary<string, int>();
         foreach (var (av, pos, d) in near)
         {
-            int exp; lock (av) exp = av.Attachments?.Count ?? 0;
+            int exp = ExpectedOf(av);
             int have = roots.GetValueOrDefault(av.LocalID);
             int raw = rawChildren.TryGetValue(av.LocalID, out var rk) ? rk.Count : 0;
             var st = AttachState(exp, have); counts[st] = counts.GetValueOrDefault(st) + 1;
@@ -185,6 +190,20 @@ public static partial class Program
         C(LookAttachWaitDone(Enumerable.Repeat(2, 10).ToArray(), 52, 5000, 500, 25000) == "stalled" && LookAttachWaitDone(new[] { 2, 8, 20 }, 52, 1500, 500, 25000) == null
           && LookAttachWaitDone(new[] { 52 }, 52, 500, 500, 25000) == "complete" && LookAttachWaitDone(new[] { 5, 9 }, 52, 25000, 500, 25000) == "timeout",
           "look attachment wait: complete / stalled (no progress 4 s) / timeout / keep waiting while it grows");
+        C(ExpectedAttachments(new byte[] { 2, 5, 31, 38, 39, 0x80 | 2, 0x80 | 33, 40 }) == 5, "expected attachments: HUD points 31-38 (and 0x80|HUD) not counted");
+        C(LookAttachWaitDone(new[] { 30, 31, 31, 31, 31, 31, 31, 31, 31, 31 }, 50, 5000, 500, 30000, 8000) == null
+          && LookAttachWaitDone(Enumerable.Repeat(31, 18).ToArray(), 50, 9000, 500, 30000, 8000) == "stalled",
+          "look wait: an 8 s stall window keeps waiting at 4.5 s without progress, stops after 8.5 s");
+        var bid = new UUID("0123abcd-0000-0000-0000-000000000001");
+        C(BakeCachePath("/c", bid) == "/c/01/0123abcd-0000-0000-0000-000000000001.j2c" && BakeCachePath("/c", UUID.Zero) == null && BakeCachePath("", bid) == null,
+          "bake cache path: keyed by bake texture id, sharded, none for a zero id or no cache dir");
+        var fz = new Vector3(100, 100, 2004);
+        C(GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32)
+          && !GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 4f), fz, 32)
+          && !GroundSlab(new Vector3(150, 100, 2003), Quaternion.CreateFromAxisAngle(1, 0, 0, MathF.PI / 2), new Vector3(64, 64, 0.5f), fz, 32)
+          && !GroundSlab(new Vector3(200, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32)
+          && !GroundSlab(new Vector3(150, 100, 1990), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32),
+          "ground slab: a big flat floor reaching within r is exported; thick, wall, too far, other level are not");
         C(NoAvatarsLine(false, false).Contains("hasn't arrived") && NoAvatarsLine(true, false).Contains("none on the region map")
           && NoAvatarsLine(false, true) == "(no avatars streamed to me yet)", "no-avatars line: map not received yet is not 'none on the map'");
         return $"crowd selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
@@ -192,11 +211,11 @@ public static partial class Program
 
     // pure: should the pre-look attachment wait stop? samples = avatars-with-attachments count per tick (oldest first).
     // Stop when everyone has some, when there was no progress for 4 s, or at the hard budget. null = keep waiting.
-    internal static string LookAttachWaitDone(IReadOnlyList<int> samples, int total, int elapsedMs, int tickMs, int budgetMs)
+    internal static string LookAttachWaitDone(IReadOnlyList<int> samples, int total, int elapsedMs, int tickMs, int budgetMs, int stallMs = 4000)
     {
         if (samples.Count > 0 && samples[^1] >= total) return "complete";
         if (elapsedMs >= budgetMs) return "timeout";
-        int window = Math.Max(1, 4000 / Math.Max(1, tickMs));
+        int window = Math.Max(1, stallMs / Math.Max(1, tickMs));
         if (samples.Count > window && samples[^1] <= samples[^(window + 1)]) return "stalled";
         return null;
     }

@@ -37,47 +37,64 @@ public static partial class Program
         ? string.Join(",", m.OrderBy(kv => kv.Value.since).Select(kv => $"{kv.Key}@{(DateTime.Now - kv.Value.since).TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)}")) : "";
 
 
-    // Before a look/export: wait briefly for nearby avatars' attachment prims (ParentID == avatar LocalID).
-    // AvatarAppearance lists expected attachment UUIDs; the interest list may not have delivered them yet in a crowd
-    // (Warehouse 21: 34 avatars in range, only 1 had any attachment prims). Select the avatars and re-anchor the
-    // camera to nudge the sim; read-only. ponytail: adaptive wait up to 25 s (stops when no progress for 4 s); ceiling = still-missing attachments stay missing
-    static async Task EnsureNearbyAttachments(float radius)
+    // Before a look/export: wait for nearby avatars to finish loading their attachments (David 2026-10-05: like the orange
+    // clouds in a normal viewer, avatars take a while; wait for everything, with a cap). Complete = every non-HUD
+    // attachment the avatar's appearance lists has its root prim here (ParentID == avatar LocalID). Selects the avatars
+    // and points the camera at the nearest unfinished one to nudge the sim's interest list; read-only. Stops when all are
+    // complete, after GT_LOOK_ATTACH_STALL_S (8) without a newly completed avatar, or at GT_LOOK_ATTACH_WAIT_S (30).
+    // Anyone still loading is drawn as a neutral stand-in (scene-mesher reads "dressed" from the export), never half-dressed.
+    static async Task<string> EnsureNearbyAttachments(float radius)
     {
         var sim = Sim; var me = client.Self; var myPos = me.SimPosition;
         var near = sim.ObjectsAvatars.Values.Where(a => a != null && a.LocalID != me.LocalID
             && Vector3.Distance(PositionHelper.GetAvatarPosition(sim, a), myPos) <= radius).ToList();
-        if (near.Count == 0) return;
-        int Have(Avatar a) => sim.ObjectsPrimitives.Values.Count(p => p != null && p.ParentID == a.LocalID);
-        int Expect(Avatar a) => a.Attachments?.Count ?? 0;
-        var short_ = near.Where(a => Expect(a) > 0 && Have(a) < Expect(a)).ToList();
-        if (short_.Count == 0 && near.All(a => Have(a) > 0)) return;
+        if (near.Count == 0) return "no avatars nearby";
+        string State(Avatar a, Dictionary<uint, int> rc) => AttachState(ExpectedOf(a), rc.GetValueOrDefault(a.LocalID));
+        var rc0 = AttachRootsByAvatar(sim);
+        if (near.All(a => State(a, rc0) == "complete")) return $"all {near.Count} nearby avatars already complete";
         // select avatar objects so the sim prioritizes their children
         foreach (var chunk in near.Select(a => a.LocalID).Chunk(50))
             client.Objects.SelectObjects(sim, chunk.ToArray(), true);
         var mv = client.Self.Movement; var home = mv.Camera.Position; var homeAt = mv.Camera.AtAxis;
-        // the region should be in 360 interest mode (Crowd.cs); re-assert it once if it isn't, then wait while attachments
-        // keep arriving (adaptive: stop when all have some, no progress for 4 s, or 25 s)
         if (!(interestState.TryGetValue(sim.Handle, out var ist) && ist.ok)) _ = Ensure360ForCurrentRegion("look");
-        var t0 = DateTime.UtcNow; int spins = 0; var samples = new List<int>(); string why;
-        const int tick = 500, budget = 25000;
+        int budget = (int)(1000 * (double.TryParse(Env("GT_LOOK_ATTACH_WAIT_S", "30"), NumberStyles.Float, CultureInfo.InvariantCulture, out var bs) ? bs : 30));
+        int stall = (int)(1000 * (double.TryParse(Env("GT_LOOK_ATTACH_STALL_S", "8"), NumberStyles.Float, CultureInfo.InvariantCulture, out var ss) ? ss : 8));
+        var t0 = DateTime.UtcNow; int spins = 0; var samples = new List<int>(); string why; const int tick = 500;
+        Dictionary<uint, int> rc;
         while (true)
         {
-            var rc = AttachRootsByAvatar(sim);
-            int withAny = near.Count(a => rc.ContainsKey(a.LocalID));
-            samples.Add(withAny);
-            why = LookAttachWaitDone(samples, near.Count, (int)(DateTime.UtcNow - t0).TotalMilliseconds, tick, budget);
+            rc = AttachRootsByAvatar(sim);
+            samples.Add(near.Count(a => State(a, rc) == "complete"));
+            why = LookAttachWaitDone(samples, near.Count, (int)(DateTime.UtcNow - t0).TotalMilliseconds, tick, budget, stall);
             if (why != null) break;
-            // nudge camera toward the nearest bare/short avatar (interest list), then back
-            short_ = near.Where(a => Expect(a) > 0 && Have(a) < Math.Max(1, Expect(a) / 2)).ToList();
-            var focus = (short_.Count > 0 ? short_ : near.Where(a => Have(a) == 0).DefaultIfEmpty(near[0])).OrderBy(a => Vector3.Distance(PositionHelper.GetAvatarPosition(sim, a), myPos)).First();
-            var fp = PositionHelper.GetAvatarPosition(sim, focus);
-            mv.Camera.LookAt(myPos, fp); mv.SendUpdate(true);
+            // nudge the camera toward the nearest unfinished avatar (interest list), then back
+            var focus = near.Where(a => State(a, rc) != "complete").DefaultIfEmpty(near[0])
+                .OrderBy(a => Vector3.Distance(PositionHelper.GetAvatarPosition(sim, a), myPos)).First();
+            mv.Camera.LookAt(myPos, PositionHelper.GetAvatarPosition(sim, focus)); mv.SendUpdate(true);
             await Task.Delay(tick); spins++;
         }
         mv.Camera.LookAt(home, home + homeAt); mv.SendUpdate(true);
-        int with = near.Count(a => Have(a) > 0);
-        Log("look", $"attachments: {with}/{near.Count} nearby avatars have prims after {spins} nudge(s) in {(DateTime.UtcNow - t0).TotalSeconds:F1} s ({why})");
+        var by = near.GroupBy(a => State(a, rc)).ToDictionary(g => g.Key, g => g.Count());
+        var msg = $"{by.GetValueOrDefault("complete")}/{near.Count} nearby avatars complete ({by.GetValueOrDefault("partial")} partial, {by.GetValueOrDefault("bare")} bare, {by.GetValueOrDefault("unknown")} unknown) after {(DateTime.UtcNow - t0).TotalSeconds:F1} s, {spins} nudge(s) ({why})";
+        Log("look", "attachments: " + msg);
+        return msg;
     }
+
+    // a big flat floor slab (two sides >= 8 m, <= 1.5 m thick, lying flat, within 6 m of her height) whose edge comes within
+    // r of her although its centre is farther: exported on its own so the floor doesn't end in sky (Warehouse 21, a
+    // skybox). Same rule as scene-mesher's GroundSlab.
+    internal static bool GroundSlab(Vector3 pos, Quaternion rot, Vector3 scale, Vector3 me, float r)
+    {
+        var ax = new[] { (scale.X, new Vector3(1, 0, 0)), (scale.Y, new Vector3(0, 1, 0)), (scale.Z, new Vector3(0, 0, 1)) }.OrderBy(a => a.Item1).ToArray();
+        if (ax[0].Item1 > 1.5f || ax[1].Item1 < 8f) return false;
+        if (MathF.Abs((ax[0].Item2 * rot).Z) < 0.9f) return false;
+        if (MathF.Abs(pos.Z - me.Z) > 6f) return false;
+        float half = MathF.Sqrt(ax[1].Item1 * ax[1].Item1 + ax[2].Item1 * ax[2].Item1) / 2;
+        return MathF.Max(0, Vector2.Distance(new Vector2(pos.X, pos.Y), new Vector2(me.X, me.Y)) - half) <= r;
+    }
+
+    static readonly string BakeCacheDir = Env("GT_BAKE_CACHE", "/workspace/secondlife/vision/bake-cache");
+    internal static string BakeCachePath(string root, UUID id) => string.IsNullOrEmpty(root) || id == UUID.Zero ? null : Path.Combine(root, id.ToString()[..2], id + ".j2c");
 
     static async Task<string> SceneExport(string[] a)
     {
@@ -98,7 +115,7 @@ public static partial class Program
             var root = Root(p); bool attachedToMe = root.ParentID == me.LocalID;
             nearAvs.TryGetValue(root.ParentID, out var wearer);
             if (root.ParentID != 0 && !attachedToMe && wearer.av == null) continue;   // seated-on / far avatars' attachments
-            if (root.ParentID == 0 && Vector3.Distance(root.Position, myPos) > r) continue;
+            if (root.ParentID == 0 && Vector3.Distance(root.Position, myPos) > r && !(p == root && GroundSlab(p.Position, p.Rotation, p.Scale, myPos, r))) continue;
             if (p.PrimData.PCode != PCode.Prim) continue;                 // trees/grass (PCode Tree/Grass) have no volume data
             var o = (OSDMap)p.GetOSD();
             if (p.RenderMaterials is { Count: > 0 } rms) { var m = new OSDMap(); foreach (var (f, id) in rms) m[f.ToString()] = OSD.FromUUID(id); o["render_materials"] = m; }
@@ -125,9 +142,17 @@ public static partial class Program
             {
                 var id = av?.Textures?.GetFace((uint)te)?.TextureID ?? UUID.Zero;
                 if (id == UUID.Zero || id == Primitive.TextureEntry.WHITE_TEXTURE || id.ToString() == "3a367d1c-bef1-6d43-7595-e88c1e3aadb3") continue; // unset / default
-                var tex = await client.Assets.RequestServerBakedImageAsync(av.ID, id, name);
-                if (tex?.AssetData == null) { bakeErr.Add(prefix + name); continue; }
-                File.WriteAllBytes(Path.Combine(dir, $"bake-{prefix}{name}.j2c"), tex.AssetData);
+                // a bake's texture id changes whenever the avatar re-bakes, so the id is a safe cache key (BakeCacheDir)
+                var cached = BakeCachePath(BakeCacheDir, id);
+                byte[] data = cached != null && File.Exists(cached) ? File.ReadAllBytes(cached) : null;
+                if (data is not { Length: > 0 })
+                {
+                    var tex = await client.Assets.RequestServerBakedImageAsync(av.ID, id, name);
+                    data = tex?.AssetData;
+                    if (data == null) { lock (bakeErr) bakeErr.Add(prefix + name); continue; }
+                    if (cached != null) try { Directory.CreateDirectory(Path.GetDirectoryName(cached)!); File.WriteAllBytes(cached + ".tmp", data); File.Move(cached + ".tmp", cached, true); } catch { }
+                }
+                File.WriteAllBytes(Path.Combine(dir, $"bake-{prefix}{name}.j2c"), data);
                 got[name] = OSD.FromUUID(id);
             }
             return got;
@@ -136,12 +161,24 @@ public static partial class Program
         sim.ObjectsAvatars.TryGetValue(me.LocalID, out var self);
         var bakes = self == null ? new OSDMap() : await FetchBakes(self, "");
         var avatars = new OSDArray();
-        foreach (var (av, ap) in nearAvs.Values)
+        // "dressed" (complete / partial / bare / unknown): scene-mesher draws anyone not complete as a neutral stand-in, so
+        // their bakes aren't needed. Bakes fetched in parallel (was one avatar after another: ~40 s for 50 avatars).
+        var rootsBy = AttachRootsByAvatar(sim);
+        var avList = nearAvs.Values.ToList();
+        var dressed = avList.Select(x => (exp: ExpectedOf(x.av), have: rootsBy.GetValueOrDefault(x.av.LocalID))).ToList();
+        var avBakes = new OSDMap[avList.Count];
+        await Parallel.ForEachAsync(Enumerable.Range(0, avList.Count), new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (i, _) =>
+            avBakes[i] = AttachState(dressed[i].exp, dressed[i].have) == "complete" ? await FetchBakes(avList[i].av, avList[i].av.ID.ToString()[..8] + "-") : new OSDMap());
+        for (int i = 0; i < avList.Count; i++)
+        {
+            var (av, ap) = avList[i];
             avatars.Add(new OSDMap
             {
                 ["pos"] = OSD.FromVector3(ap), ["rot"] = OSD.FromQuaternion(av.Rotation), ["agent_id"] = OSD.FromUUID(av.ID), ["name"] = av.Name ?? "",
-                ["local_id"] = (int)av.LocalID, ["visual_params"] = Params(av), ["bakes"] = await FetchBakes(av, av.ID.ToString()[..8] + "-"), ["anims"] = AnimsOf(av.ID),
+                ["local_id"] = (int)av.LocalID, ["visual_params"] = Params(av), ["bakes"] = avBakes[i], ["anims"] = AnimsOf(av.ID),
+                ["dressed"] = AttachState(dressed[i].exp, dressed[i].have), ["attach_expected"] = dressed[i].exp, ["attach_have"] = dressed[i].have,
             });
+        }
         // legacy materials for every face MaterialID we export (alpha mode/cutoff, normal+spec maps)
         var matIds = new HashSet<UUID>(); var gltf = new OSDMap();
         foreach (var p in prims)

@@ -10,7 +10,7 @@ Needs: dotnet + SCENE_MESHER (built scene-mesher), BLENDER, the imgvenv python (
 """
 import json, os, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, f"{HERE}/cloud-render")
-os.environ.setdefault("GT_MAX_TEXTURES", "3000")  # Warehouse 21 crowd: ~1500 scene + ~1100 avatar textures; disk-cached after the first look
+os.environ.setdefault("GT_MAX_TEXTURES", "4000")  # Warehouse 21 crowd: ~3200 scene + avatar textures (3000 dropped ~200 far ones); disk-cached after the first look
 os.environ.setdefault("GT_TEX_WORKERS", "24")  # local disk cache; parallel CDN GETs (crowd looks were ~50 s at 8)
 import handler, make_job  # texture fetch (CDN, capped) + bake decode / region sky: same code as the Runpod path
 
@@ -45,10 +45,90 @@ def bake_keys(meta, doc):
     for b in meta.get("batches", []):
         t = b.get("tex") or ""
         if t.startswith("bake:"): keys.add(t[5:])
-    for o in meta.get("others", []):
-        pref = o.get("bake_prefix") or (o.get("agent_id") or "")[:8]
-        if pref: keys.add(f"{pref}-head")  # stand_in head sphere
-    return keys
+    return keys  # stand-ins are neutral grey (no head bake)
+
+def bake_cache_key(data, cap):
+    """Decoded-bake cache name: content hash of the .j2c + the thumbnail cap (a bake's bytes change when its avatar re-bakes)."""
+    import hashlib
+    return f"{hashlib.sha1(data).hexdigest()[:24]}.{int(cap)}.png"
+
+def place(src, dst):
+    """hard link (same inode and mtime, so the alpha index entry stays valid), else copy"""
+    try:
+        if os.path.lexists(dst): os.remove(dst)
+        os.link(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
+
+def cached_bakes(d, only, cap, work):
+    """bake-<key>.j2c in export d -> work/tex/bake-<key>.png, decoding only bakes not seen before (work/bakecache).
+    Warehouse 21: ~300 bakes for 50 avatars took 12-14 s to decode on every look. -> (written, cache hits)"""
+    import glob, concurrent.futures as cf
+    cache = f"{work}/bakecache"; os.makedirs(cache, exist_ok=True)
+    todo, hits, n = [], 0, 0
+    for f in glob.glob(f"{d}/bake-*.j2c"):
+        k = os.path.basename(f)[5:-4]
+        if only is not None and k not in only or not handler.BAKE_KEY.fullmatch(k): continue
+        data = open(f, "rb").read(); c = f"{cache}/{bake_cache_key(data, cap)}"
+        if os.path.exists(c): place(c, f"{work}/tex/bake-{k}.png"); hits += 1; n += 1
+        else: todo.append((k, data, c))
+    if todo:  # processes: decode + thumbnail + PNG encode hold the GIL long enough that threads managed ~2x on 8 cores
+        with cf.ProcessPoolExecutor(min(8, os.cpu_count() or 4)) as ex:
+            for (k, _, c), ok in zip(todo, ex.map(_decode_bake_to, [(data, c, cap) for _, data, c in todo])):
+                if ok: place(c, f"{work}/tex/bake-{k}.png"); n += 1
+    return n, hits
+
+def _decode_bake_to(args):
+    data, c, cap = args
+    im = make_job.decode_bake_bytes(data, cap)
+    if im is None: return False
+    tmp = f"{c}.{os.getpid()}.tmp.png"; im.convert("RGBA").save(tmp); os.replace(tmp, c)
+    return True
+
+def alpha_from_extrema(lo, hi):
+    """[has cut-out, max alpha] as render_mesh's pixel scan computes them on floats v/255: any texel < 0.98, max"""
+    return [lo < 250, hi / 255.0]
+
+def alpha_stats_png(path):
+    from PIL import Image
+    with Image.open(path) as im:
+        if im.mode not in ("RGBA", "LA", "PA") and "transparency" not in im.info: return [False, 1.0]
+        return alpha_from_extrema(*im.convert("RGBA").getchannel("A").getextrema())
+
+def index_fresh(entry, st):
+    """an alpha-index entry [size, mtime_ns, cut, amax] still describes the file with stat st"""
+    return bool(entry) and entry[0] == st.st_size and entry[1] == st.st_mtime_ns
+
+def write_manifest(work, paths):
+    """work/tex-manifest.json: texture/bake key -> file, file name -> alpha stats (index kept across looks in
+    work/alpha-index.json, so a texture is scanned once ever). render_mesh then never reads pixels in Python."""
+    import concurrent.futures as cf
+    ix_path = f"{work}/alpha-index.json"
+    try: index = json.load(open(ix_path))
+    except (OSError, ValueError): index = {}
+    files = sorted(set(paths.values())); alpha = {}; todo = []
+    for f in files:
+        try: st = os.stat(f)
+        except OSError: continue
+        e = index.get(os.path.basename(f))
+        if index_fresh(e, st): alpha[os.path.basename(f)] = e[2:]
+        else: todo.append((f, st))
+    def one(t):
+        f, st = t
+        try: return os.path.basename(f), [st.st_size, st.st_mtime_ns, *alpha_stats_png(f)]
+        except Exception: return os.path.basename(f), None
+    with cf.ThreadPoolExecutor(min(8, os.cpu_count() or 4)) as ex:
+        for name, e in ex.map(one, todo):
+            if e: index[name] = e; alpha[name] = e[2:]
+    if todo:
+        json.dump(index, open(ix_path + ".tmp", "w")); os.replace(ix_path + ".tmp", ix_path)
+    json.dump({"paths": paths, "alpha": alpha}, open(f"{work}/tex-manifest.json", "w"))
+    return len(todo)
+
+def crowd_summary(others):
+    """mesh.json others -> how many rendered complete vs as stand-ins (still loading, or no attachments in the export)"""
+    stand = [o for o in others if o.get("placeholder")]
+    return {"complete": len(others) - len(stand), "stand_in": len(stand), "stand_in_names": [o.get("name") or o.get("group", "?") for o in stand]}
 
 def main(a):
     fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
@@ -76,10 +156,7 @@ def main(a):
     t = time.time()
     bake_cap = 256 if mode == "around" else (512 if fast else 1024)
     only = bake_keys(meta, doc)
-    n_bake = 0
-    for k, im in make_job.decode_bakes(d, only=only, cap=bake_cap).items():
-        if handler.BAKE_KEY.fullmatch(k):
-            im.convert("RGBA").save(f"{WORK}/tex/bake-{k}.png"); n_bake += 1
+    n_bake, bake_hits = cached_bakes(d, only, bake_cap, WORK)
     times["bakes"] = round(time.time() - t, 1)
     json.dump(meta, open(f"{WORK}/mesh.json", "w"))
     # around: diffuse only, smaller caps (nav: who's there / obstacles — not fabric normal maps)
@@ -90,6 +167,10 @@ def main(a):
     info = {}; err = handler.fetch_textures(meta, info, WORK)
     if err: sys.exit(err)
     times["textures"] = info["textures"]["seconds"]
+    t = time.time()
+    bake_paths = {"bake:" + k: f"{WORK}/tex/bake-{k}.png" for k in only if os.path.exists(f"{WORK}/tex/bake-{k}.png")}
+    n_scanned = write_manifest(WORK, {**info.get("tex_paths", {}), **bake_paths})
+    times["manifest"] = round(time.time() - t, 1)
     view = VIEWS.get(mode)
     if mode == "at":  # an avatar's name (mesh.json "others") or an object's name (scene.json root prims), first substring match
         who = next((o["name"] for o in meta.get("others", []) if target in o["name"].lower()), None)
@@ -121,8 +202,14 @@ def main(a):
         if build is not None: times["build"] = build
         times["render_views"] = rend
     for p in outs: print(p)
-    print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "seconds": times, "total": round(time.time() - t0, 1),
-                      "others": [o["name"] for o in meta.get("others", [])], "textures": info["textures"], "bakes": n_bake}
+    crowd = crowd_summary(meta.get("others", []))
+    if crowd["complete"] + crowd["stand_in"]:
+        print(f"avatars: {crowd['complete']} complete, {crowd['stand_in']} still loading (grey stand-ins)"
+              + (": " + ", ".join(crowd["stand_in_names"][:8]) + (" ..." if crowd["stand_in"] > 8 else "") if crowd["stand_in"] else ""))
+    pre = dict(kv.split("=") for kv in os.environ.get("GT_LOOK_PRE_S", "").split(",") if "=" in kv)  # Look.cs: wait, export
+    for k_, v_ in pre.items(): times["client_" + k_] = float(v_)
+    print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "seconds": times, "total": round(time.time() - t0, 1), "total_with_client": round(time.time() - t0 + sum(float(v_) for v_ in pre.values()), 1),
+                      "others": [o["name"] for o in meta.get("others", [])], "avatars": crowd, "textures": info["textures"], "bakes": n_bake, "bake_cache_hits": bake_hits}
                      | ({"mesh_warnings": mesh_warn} if mesh_warn else {})))
 
 if __name__ == "__main__":

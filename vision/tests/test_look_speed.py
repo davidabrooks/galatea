@@ -58,6 +58,12 @@ def test_crowd_summary_counts_stand_ins():
     assert look.crowd_summary([]) == {"complete": 0, "stand_in": 0, "stand_in_names": []}
 
 
+def test_export_stages_parses_client_substages():
+    t = "prims=1.2(20696),bakes=3.4(260 wanted, 200 cached, 60 fetched, 0 failed),materials=0.1(3916 ids, 3916 cached, 0 fetched),env=0.0,write=0.6"
+    assert look.export_stages(t) == {"prims": 1.2, "bakes": 3.4, "materials": 0.1, "env": 0.0, "write": 0.6}
+    assert look.export_stages("") == {} and look.export_stages(None) == {}
+
+
 if __name__ == "__main__":
     for k, v in list(globals().items()):
         if k.startswith("test_"): v(); print("ok", k)

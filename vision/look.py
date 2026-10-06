@@ -8,7 +8,7 @@ usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
 Prints one image path per line (then a JSON summary line). Read-only: never talks to SL; only CDN asset GETs.
 Needs: dotnet + SCENE_MESHER (built scene-mesher), BLENDER, the imgvenv python (imagecodecs, pillow).
 """
-import json, os, shutil, subprocess, sys, time
+import json, os, re, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, f"{HERE}/cloud-render")
 os.environ.setdefault("GT_MAX_TEXTURES", "4000")  # Warehouse 21 crowd: ~3200 scene + avatar textures (3000 dropped ~200 far ones); disk-cached after the first look
 os.environ.setdefault("GT_TEX_WORKERS", "24")  # local disk cache; parallel CDN GETs (crowd looks were ~50 s at 8)
@@ -125,6 +125,13 @@ def write_manifest(work, paths):
     json.dump({"paths": paths, "alpha": alpha}, open(f"{work}/tex-manifest.json", "w"))
     return len(todo)
 
+def export_stages(text):
+    """Look.cs export sub-stages "prims=1.2(20696),bakes=3.4(...)" -> {"prims": 1.2, ...} (details dropped; not summed into the total)"""
+    out = {}
+    for part in re.findall(r"(\w+)=([0-9.]+)", text or ""):
+        out[part[0]] = float(part[1])
+    return out
+
 def crowd_summary(others):
     """mesh.json others -> how many rendered complete vs as stand-ins (still loading, or no attachments in the export)"""
     stand = [o for o in others if o.get("placeholder")]
@@ -208,6 +215,7 @@ def main(a):
               + (": " + ", ".join(crowd["stand_in_names"][:8]) + (" ..." if crowd["stand_in"] > 8 else "") if crowd["stand_in"] else ""))
     pre = dict(kv.split("=") for kv in os.environ.get("GT_LOOK_PRE_S", "").split(",") if "=" in kv)  # Look.cs: wait, export
     for k_, v_ in pre.items(): times["client_" + k_] = float(v_)
+    if os.environ.get("GT_LOOK_EXPORT_S"): times["client_export_stages"] = export_stages(os.environ["GT_LOOK_EXPORT_S"])
     print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "seconds": times, "total": round(time.time() - t0, 1), "total_with_client": round(time.time() - t0 + sum(float(v_) for v_ in pre.values()), 1),
                       "others": [o["name"] for o in meta.get("others", [])], "avatars": crowd, "textures": info["textures"], "bakes": n_bake, "bake_cache_hits": bake_hits}
                      | ({"mesh_warnings": mesh_warn} if mesh_warn else {})))

@@ -137,16 +137,39 @@ static class Mesher
     // Scentual90's IB 0.1/100 pieces it was written for skin correctly without it (re-checked 2026-10-06 on export
     // 20261004-225419, with the 10x mPelvis joint override still skipped in PoseAvatar).
     // -> per joint BS * IB * World, null where the joint is unknown or the inverse-bind list is short (SL drops such bindings)
-    internal static float[][] SkinPalette(MeshSkinData sk, IReadOnlyDictionary<string, float[]> world)
+    // bindShape false: IB * World only, the part the SL viewer's GPU skinning applies to normals (see SkinVertex)
+    internal static float[][] SkinPalette(MeshSkinData sk, IReadOnlyDictionary<string, float[]> world, bool bindShape = true)
     {
         var jm = new float[sk.JointNames.Length][];
         if (sk.InverseBindMatrices == null || sk.InverseBindMatrices.Length < sk.JointNames.Length * 16) return jm;
         for (int j = 0; j < jm.Length; j++)
             if (world.TryGetValue(sk.JointNames[j], out var w))
-                jm[j] = Skeleton.Mul(Skeleton.Mul(sk.BindShapeMatrix, sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)]), w);
+            {
+                var ib = sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)];
+                jm[j] = Skeleton.Mul(bindShape ? Skeleton.Mul(sk.BindShapeMatrix, ib) : ib, w);
+            }
         return jm;
     }
-    // pure (CI: --skin-selftest): SenorJames' shoe and body feet (their real foot inverse binds, centimetre rigs that place
+
+    // One rigged vertex, as the SL viewer skins it: the position by BindShape * mat_j (SkinPalette); the normal first by
+    // the inverse-transpose of BindShape (LL's mat_normal when it fills the rigged vertex buffer), normalised, then by
+    // IB_j * World_j like the position (LL's skinned shaders). A body's bind shape scales its axes very unevenly (the
+    // asset's unit cube -> a 1.8 m tall avatar); taking the normal through BindShape itself tilted every curved normal
+    // toward the long (z) axis: the stomach below the navel faced the floor and Cycles drew it as a dark smudge under
+    // every top (2026-10-06). jm = SkinPalette(sk, w), jn = SkinPalette(sk, w, false), bsInv = Invert(BindShape).
+    internal static (Vector3, Vector3) SkinVertex(float[][] jm, float[][] jn, float[] bs, float[] bsInv, Vector3 pos, Vector3 normal,
+        IEnumerable<(int Joint, float Weight)> weights)
+    {
+        var nb = Vector3.Normalize(XformNormal(bsInv, normal));
+        Vector3 ps = Vector3.Zero, ns = Vector3.Zero; float tw = 0;
+        foreach (var (j, wt) in weights ?? Array.Empty<(int, float)>())
+        {
+            if (wt <= 0 || j < 0 || j >= jm.Length || jm[j] == null || jn[j] == null) continue;
+            ps += Xform(jm[j], pos, 1) * wt; ns += Xform(jn[j], nb, 0) * wt; tw += wt;
+        }
+        return tw > 0 ? (ps / tw, Vector3.Normalize(ns)) : (Xform(bs, pos, 1), nb);
+    }
+    // pure (CI: --skin-selftest): normals through a stretched bind shape stay perpendicular (see SkinVertex); SenorJames' shoe and body feet (their real foot inverse binds, centimetre rigs that place
     // the foot 8.5 cm apart) both land on the skeleton's foot; a Scentual90-style IB 0.1 / BS 25 hand keeps its creator's
     // wrist and its size (no pancake); unknown joints and short inverse-bind lists give no binding
     internal static bool SkinSelftest()
@@ -177,6 +200,22 @@ static class Mesher
               && Near(Xform(hm[0], (wc + new Vector3(0.2f, 0, 0)) / 25f, 1), wrist + new Vector3(0.02f, 0, 0));
         var shortIb = new MeshSkinData { JointNames = new[] { "mWristLeft", "mFootLeft" }, BindShapeMatrix = M(1, 1, 1, 0, 0, 0), InverseBindMatrices = M(1, 1, 1, 0, 0, 0) };
         ok &= SkinPalette(shortIb, hw).All(m => m == null);
+        // normals: a body-like bind shape (x, y 0.5, z 2: the asset's unit cube stretched tall) and a surface sloping 45 deg
+        // in asset space (the belly under the navel). Stretched, that surface is steep, so its normal is mostly horizontal
+        // (2, 0, -0.5); through BindShape itself it came out facing the floor (0.5, 0, -2). Two-joint blends agree, a 90 deg
+        // joint turn turns it, and an unrigged prim scaled the same way gets the same normal.
+        var tall = M(0.5f, 0.5f, 2, 0, 0, 0); var eye = M(1, 1, 1, 0, 0, 0);
+        var body = new MeshSkinData { JointNames = new[] { "mTorso", "mPelvis" }, BindShapeMatrix = tall, InverseBindMatrices = eye.Concat(eye).ToArray() };
+        var turn = new[] { 0f, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };   // row-vector 90 deg about z: x -> y
+        var bw = new Dictionary<string, float[]> { ["mTorso"] = eye, ["mPelvis"] = eye };
+        var tw = new Dictionary<string, float[]> { ["mTorso"] = turn, ["mPelvis"] = turn };
+        var n0 = Vector3.Normalize(new Vector3(1, 0, -1)); var want = Vector3.Normalize(new Vector3(2, 0, -0.5f)); var bsInv = Skeleton.Invert(tall);
+        var (_, n1) = SkinVertex(SkinPalette(body, bw), SkinPalette(body, bw, false), tall, bsInv, Vector3.Zero, n0, new[] { (0, 1f) });
+        var (_, n2) = SkinVertex(SkinPalette(body, bw), SkinPalette(body, bw, false), tall, bsInv, Vector3.Zero, n0, new[] { (0, 0.5f), (1, 0.5f) });
+        var (_, n3) = SkinVertex(SkinPalette(body, tw), SkinPalette(body, tw, false), tall, bsInv, Vector3.Zero, n0, new[] { (0, 1f) });
+        var (_, n4) = SkinVertex(SkinPalette(body, bw), SkinPalette(body, bw, false), tall, bsInv, Vector3.Zero, n0, null);
+        ok &= Near(n1, want) && Near(n2, want) && Near(n3, new Vector3(0, want.X, want.Z)) && Near(n4, want)
+              && Near(PrimNormal(n0, new Vector3(0.5f, 0.5f, 2), Quaternion.Identity), want);
         return ok;
     }
 
@@ -463,7 +502,7 @@ static class Mesher
                     for (int vi = 0; vi < verts.Count; vi++)
                     {
                         var v = verts[vi];
-                        var (wp, wn) = pose != null ? pose(v, wts != null && vi < wts.Count ? wts[vi] : null) : (v.Position * p.Scale * rot + pos, Vector3.Normalize(v.Normal * rot));
+                        var (wp, wn) = pose != null ? pose(v, wts != null && vi < wts.Count ? wts[vi] : null) : (v.Position * p.Scale * rot + pos, PrimNormal(v.Normal, p.Scale, rot));
                         b.P.Add(wp.X); b.P.Add(wp.Y); b.P.Add(wp.Z); b.N.Add(wn.X); b.N.Add(wn.Y); b.N.Add(wn.Z);
                         // mesh-asset UVs are GL-style (v up from the image's bottom row; the SL viewer decodes J2C bottom row
                         // first) and Blender samples the same way, so they pass through. Flipping them turned every mesh texture upside
@@ -601,19 +640,11 @@ static class Mesher
             foreach (var (_, p, fm) in rigged.Where(x => x.Item1 == owner))
             {
                 var sk = fm.SkinData; var bs = sk.BindShapeMatrix;
-                var jm = SkinPalette(sk, world);
+                var jm = SkinPalette(sk, world); var jn = SkinPalette(sk, world, false); var bsInv = Skeleton.Invert(bs);
                 if (jm.Any(m => m == null)) Count("rigged_unknown_joint");
-                Emit(p, fm, group, bakePrefix, (v, w) =>
-                {
-                    if (w == null) return (Xform(bs, v.Position, 1), Vector3.Normalize(Xform(bs, v.Normal, 0)));
-                    var x = w.Value; Vector3 ps = Vector3.Zero, ns = Vector3.Zero; float tw = 0;
-                    foreach (var (j, wt) in new[] { (x.Joint0, x.Weight0), (x.Joint1, x.Weight1), (x.Joint2, x.Weight2), (x.Joint3, x.Weight3) })
-                    {
-                        if (wt <= 0 || j < 0 || j >= jm.Length || jm[j] == null) continue;
-                        ps += Xform(jm[j], v.Position, 1) * wt; ns += Xform(jm[j], v.Normal, 0) * wt; tw += wt;
-                    }
-                    return tw > 0 ? (ps / tw, Vector3.Normalize(ns)) : (Xform(bs, v.Position, 1), v.Normal);
-                }, Vector3.Zero, Quaternion.Identity, byLocal[p.LocalID]);
+                Emit(p, fm, group, bakePrefix, (v, w) => SkinVertex(jm, jn, bs, bsInv, v.Position, v.Normal, w is VertexWeight x
+                    ? new[] { (x.Joint0, x.Weight0), (x.Joint1, x.Weight1), (x.Joint2, x.Weight2), (x.Joint3, x.Weight3) } : null),
+                    Vector3.Zero, Quaternion.Identity, byLocal[p.LocalID]);
             }
             return frames;
         }
@@ -741,4 +772,10 @@ static class Mesher
     // row-vector convention (as LibreMetaverse's MeshSkinData): [x y z w] * M
     static Vector3 Xform(float[] m, Vector3 v, float w) =>
         new(v.X * m[0] + v.Y * m[4] + v.Z * m[8] + w * m[12], v.X * m[1] + v.Y * m[5] + v.Z * m[9] + w * m[13], v.X * m[2] + v.Y * m[6] + v.Z * m[10] + w * m[14]);
+    // an unrigged prim's normal: its scale is a non-uniform map too, so the normal takes 1/scale (as the bind shape above)
+    static Vector3 PrimNormal(Vector3 n, Vector3 scale, Quaternion rot) =>
+        Vector3.Normalize(new Vector3(n.X / MathF.Max(scale.X, 1e-4f), n.Y / MathF.Max(scale.Y, 1e-4f), n.Z / MathF.Max(scale.Z, 1e-4f)) * rot);
+    // a normal through the linear map whose inverse is inv: n * transpose(inv) (keeps it perpendicular to the mapped surface)
+    static Vector3 XformNormal(float[] inv, Vector3 n) =>
+        new(n.X * inv[0] + n.Y * inv[1] + n.Z * inv[2], n.X * inv[4] + n.Y * inv[5] + n.Z * inv[6], n.X * inv[8] + n.Y * inv[9] + n.Z * inv[10]);
 }

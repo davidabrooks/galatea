@@ -31,7 +31,7 @@ jobs:
           DOTNET_CLI_TELEMETRY_OPTOUT: "1"
           DOTNET_NOLOGO: "1"
 
-      - name: scene-mesher — build + pure selftests (--lod: attachment LOD past placeholders; --skin: SL skinning palette)
+      - name: scene-mesher — build + pure selftests (--lod-selftest attachment LOD, --skin-selftest SL skinning palette)
         run: |
           dotnet build vision/scene-mesher/SceneMesher.csproj -c Release -o "$RUNNER_TEMP/mesher" -p:LMV="$PWD/textclient/src-libremetaverse" --nologo -v q
           dotnet "$RUNNER_TEMP/mesher/SceneMesher.dll" --lod-selftest

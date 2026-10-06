@@ -52,6 +52,7 @@ public static partial class Program
             if (far) psi.ArgumentList.Add("--far");
             // the client-side stages, so look.py's timing summary covers the whole look
             psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
+            psi.Environment["GT_LOOK_EXPORT_S"] = lastExportStages;   // export sub-stages, e.g. prims=1.2(20696),bakes=3.4(...)
             var pr = Process.Start(psi)!; var outText = new StringBuilder(); var errText = new StringBuilder();
             pr.OutputDataReceived += (_, e) => { if (e.Data != null) lock (outText) outText.AppendLine(e.Data); };
             pr.ErrorDataReceived += (_, e) => { if (e.Data != null) lock (errText) errText.AppendLine(e.Data); };

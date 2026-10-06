@@ -67,7 +67,8 @@ public static partial class Program
         {
             rc = AttachRootsByAvatar(sim);
             samples.Add(near.Sum(a => Math.Min(rc.GetValueOrDefault(a.LocalID), ExpectedOf(a))));
-            why = LookAttachWaitDone(samples, near.Sum(a => ExpectedOf(a)), (int)(DateTime.UtcNow - t0).TotalMilliseconds, tick, budget, stall);
+            why = LookAttachWaitDone(samples, near.Sum(a => ExpectedOf(a)), (int)(DateTime.UtcNow - t0).TotalMilliseconds, tick, budget,
+                LookStallMs(near.Count(a => State(a, rc) != "complete"), near.Count, stall));
             if (why != null) break;
             // nudge the camera toward the nearest unfinished avatar (interest list), then back
             var focus = near.Where(a => State(a, rc) != "complete").DefaultIfEmpty(near[0])
@@ -98,11 +99,88 @@ public static partial class Program
     static readonly string BakeCacheDir = Env("GT_BAKE_CACHE", "/workspace/secondlife/vision/bake-cache");
     internal static string BakeCachePath(string root, UUID id) => string.IsNullOrEmpty(root) || id == UUID.Zero ? null : Path.Combine(root, id.ToString()[..2], id + ".j2c");
 
+    // stall window for the look's attachment wait: the full window while many avatars are unfinished, 3 s when only a few
+    // stragglers remain (W21 22:12: 59/61 complete, and the 10 s window was the whole wait - some never finish: the sim
+    // lists an attachment it never sends)
+    internal static int LookStallMs(int incomplete, int total, int baseMs) =>
+        incomplete <= Math.Max(2, total / 20) ? Math.Min(baseMs, 3000) : baseMs;
+
+    // BOM: an attachment face showing one of these ids shows the wearer's server bake of that channel (as scene-mesher maps them)
+    static readonly Dictionary<UUID, string> BakeRefs = new()
+    {
+        [new UUID("5a9f4a74-30f2-821c-b88d-70499d3e7183")] = "head", [new UUID("ae2de45c-d252-50b8-5c6e-19f39ce79317")] = "upper",
+        [new UUID("24daea5f-0539-cfcf-047f-fbc40b2786ba")] = "lower", [new UUID("52cc6bb6-2ee5-e632-d3ad-50197b1dcb8a")] = "eyes",
+        [new UUID("43529ce8-7faa-ad92-165a-bc4078371687")] = "skirt", [new UUID("09aac1fb-6bce-0bee-7d44-caac6dbb6c63")] = "hair",
+        [new UUID("ff62763f-d60a-9855-890b-0c96f8f8cd98")] = "leftarm", [new UUID("8e915e25-31d1-cc95-ae08-d58a47488251")] = "leftleg",
+        [new UUID("9742065b-19b5-297c-858a-29711d539043")] = "aux1", [new UUID("03642e83-2bd1-4eb9-34b4-4c47ed586d2d")] = "aux2",
+        [new UUID("edd51b77-fc10-ce7a-4b3d-011dfc349e4f")] = "aux3",
+    };
+    // another avatar's bake channels worth fetching: the system body's (head/upper/lower/eyes) plus any its attachments show.
+    // W21: 60 avatars x 11 channels were fetched, but skirt/hair/aux2 were never drawn and arms/legs/aux3 once each.
+    internal static HashSet<string> BakesNeeded(IEnumerable<UUID> attachmentTextures)
+    {
+        var need = new HashSet<string> { "head", "upper", "lower", "eyes" };
+        foreach (var t in attachmentTextures) if (BakeRefs.TryGetValue(t, out var n)) need.Add(n);
+        return need;
+    }
+    static IEnumerable<UUID> FaceTextureIds(Primitive p)
+    {
+        var te = p.Textures; if (te == null) yield break;
+        if (te.DefaultTexture != null) yield return te.DefaultTexture.TextureID;
+        foreach (var f in te.FaceTextures) if (f != null) yield return f.TextureID;
+    }
+
+    // legacy materials by id (an id names fixed content), kept on disk: W21 exports asked the RenderMaterials cap for ~3,900
+    // ids in 50-id requests one after another on every look
+    static readonly string MaterialCacheFile = Env("GT_MATERIAL_CACHE", "/workspace/secondlife/vision/material-cache.json");
+    static ConcurrentDictionary<string, OSD> matCache;
+    static readonly object matCacheSave = new();
+    static ConcurrentDictionary<string, OSD> MatCache()
+    {
+        if (matCache != null) return matCache;
+        var d = new ConcurrentDictionary<string, OSD>();
+        try { if (File.Exists(MaterialCacheFile) && OSDParser.DeserializeJson(File.ReadAllText(MaterialCacheFile)) is OSDMap m) foreach (KeyValuePair<string, OSD> kv in m) d[kv.Key] = kv.Value; } catch { }
+        return matCache = d;
+    }
+    static void SaveMatCache()
+    {
+        lock (matCacheSave)
+        {
+            var m = new OSDMap(); foreach (var kv in MatCache()) m[kv.Key] = kv.Value;
+            try { File.WriteAllText(MaterialCacheFile + ".tmp", OSDParser.SerializeJsonString(m)); File.Move(MaterialCacheFile + ".tmp", MaterialCacheFile, true); } catch { }
+        }
+    }
+    static OSDMap MaterialOsd(LibreMetaverse.Materials.LegacyMaterial m) => new()
+    {
+        ["alpha_mode"] = (int)m.DiffuseAlphaMode, ["alpha_cutoff"] = (int)m.AlphaMaskCutoff,
+        ["normal"] = OSD.FromUUID(m.NormalMap), ["normal_rep"] = OSD.FromVector3(new Vector3((float)m.NormalMapRepeatX, (float)m.NormalMapRepeatY, (float)m.NormalMapRotation)),
+        ["normal_off"] = OSD.FromVector2(new Vector2((float)m.NormalMapOffsetX, (float)m.NormalMapOffsetY)),
+        ["spec"] = OSD.FromUUID(m.SpecularMap), ["spec_rep"] = OSD.FromVector3(new Vector3((float)m.SpecularMapRepeatX, (float)m.SpecularMapRepeatY, (float)m.SpecularMapRotation)),
+        ["spec_off"] = OSD.FromVector2(new Vector2((float)m.SpecularMapOffsetX, (float)m.SpecularMapOffsetY)),
+        ["spec_color"] = OSD.FromColor4(m.SpecularColor), ["spec_exp"] = (int)m.SpecularExponent, ["env"] = (int)m.EnvironmentIntensity,
+    };
+
+    // the region environment changes rarely; reused for 10 min per region
+    static (ulong handle, DateTime t, OSD env) envCache;
+
+    // scene.json written as it is built: {"prims":[ one prim at a time ], <rest of the document>} - the old single
+    // SerializeJsonString held the whole ~30 MB document as OSD + UTF-8 buffer + UTF-16 string at once (W21: 20k prims,
+    // client at 688 of 768 MB). Same JSON as SerializeJsonString(doc with the prims array), keys in another order.
+    internal static void WriteJsonPrimsThenRest(Stream s, Action<Stream> writePrims, OSDMap restDoc)
+    {
+        s.Write(System.Text.Encoding.UTF8.GetBytes("{\"prims\":["));
+        writePrims(s);                                        // comma-separated prim objects
+        var rest = OSDParser.SerializeJsonString(restDoc);    // "{...}"
+        s.Write(System.Text.Encoding.UTF8.GetBytes(rest.Length > 2 ? "]," + rest[1..] : "]}"));
+    }
+
     static async Task<string> SceneExport(string[] a)
     {
         float r = 48;
         if (a.Length > 1 && (!float.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out r) || r <= 0 || r > 128))
             return "usage: scene export [radius 1-128]";
+        var sw = System.Diagnostics.Stopwatch.StartNew(); var stages = new List<string>();
+        void Stage(string name, string detail = "") { stages.Add($"{name}={sw.Elapsed.TotalSeconds:F1}{detail}"); sw.Restart(); }
         var sim = Sim; var me = client.Self;
         var myPos = me.SimPosition;
         var prims = sim.ObjectsPrimitives.Values.Where(p => p != null).ToList();
@@ -111,116 +189,160 @@ public static partial class Program
 
         var nearAvs = sim.ObjectsAvatars.Values.Where(x => x != null && x.LocalID != me.LocalID)
             .Select(x => (av: x, pos: PositionHelper.GetAvatarPosition(sim, x))).Where(x => Vector3.Distance(x.pos, myPos) <= r).ToDictionary(x => x.av.LocalID);
-        var outPrims = new OSDArray(); int mine = 0, theirs = 0;
-        foreach (var p in prims)
-        {
-            var root = Root(p); bool attachedToMe = root.ParentID == me.LocalID;
-            nearAvs.TryGetValue(root.ParentID, out var wearer);
-            if (root.ParentID != 0 && !attachedToMe && wearer.av == null) continue;   // seated-on / far avatars' attachments
-            if (root.ParentID == 0 && Vector3.Distance(root.Position, myPos) > r && !(p == root && GroundSlab(p.Position, p.Rotation, p.Scale, myPos, r))) continue;
-            if (p.PrimData.PCode != PCode.Prim) continue;                 // trees/grass (PCode Tree/Grass) have no volume data
-            var o = (OSDMap)p.GetOSD();
-            if (p.RenderMaterials is { Count: > 0 } rms) { var m = new OSDMap(); foreach (var (f, id) in rms) m[f.ToString()] = OSD.FromUUID(id); o["render_materials"] = m; }
-            if (attachedToMe) { o["attached_to_me"] = true; o["attach_point"] = (int)root.PrimData.AttachmentPoint; mine++; }
-            else if (wearer.av != null) { o["attached_to"] = OSD.FromUUID(wearer.av.ID); o["attach_point"] = (int)root.PrimData.AttachmentPoint; theirs++; }
-            else
-            {
-                var wp = p == root ? p.Position : root.Position + p.Position * root.Rotation;
-                var wr = p == root ? p.Rotation : root.Rotation * p.Rotation;   // Hamilton order: local, then root
-                o["world_pos"] = OSD.FromVector3(wp); o["world_rot"] = OSD.FromQuaternion(wr);
-                if (p == root && !string.IsNullOrEmpty(p.Properties?.Name)) o["name"] = p.Properties.Name;
-            }
-            outPrims.Add(o);
-        }
-
         var dir = $"/workspace/secondlife/vision/export-{DateTime.Now:yyyyMMdd-HHmmss}";
         Directory.CreateDirectory(dir);
-        var bakeErr = new List<string>();
-        // an avatar's server-side bakes (appearance service) as raw .j2c; file prefix "" for her, "<agent id[:8]>-" for others
-        async Task<OSDMap> FetchBakes(Avatar av, string prefix)
+        var scenePath = Path.Combine(dir, "scene.json");
+        var primPart = Path.Combine(dir, "prims.part");
+        int nPrims = 0, mine = 0, theirs = 0;
+        var matIds = new HashSet<UUID>(); var gltf = new OSDMap();
+        var wornTex = new Dictionary<uint, HashSet<UUID>>();   // wearer LocalID -> texture ids on its attachments
+        using (var part = new FileStream(primPart, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
         {
-            var got = new OSDMap();
-            foreach (var (te, name) in Bakes)
+            foreach (var p in prims)
             {
-                var id = av?.Textures?.GetFace((uint)te)?.TextureID ?? UUID.Zero;
-                if (id == UUID.Zero || id == Primitive.TextureEntry.WHITE_TEXTURE || id.ToString() == "3a367d1c-bef1-6d43-7595-e88c1e3aadb3") continue; // unset / default
-                // a bake's texture id changes whenever the avatar re-bakes, so the id is a safe cache key (BakeCacheDir)
-                var cached = BakeCachePath(BakeCacheDir, id);
-                byte[] data = cached != null && File.Exists(cached) ? File.ReadAllBytes(cached) : null;
-                if (data is not { Length: > 0 })
+                var root = Root(p); bool attachedToMe = root.ParentID == me.LocalID;
+                nearAvs.TryGetValue(root.ParentID, out var wearer);
+                if (root.ParentID != 0 && !attachedToMe && wearer.av == null) continue;   // seated-on / far avatars' attachments
+                if (root.ParentID == 0 && Vector3.Distance(root.Position, myPos) > r && !(p == root && GroundSlab(p.Position, p.Rotation, p.Scale, myPos, r))) continue;
+                if (p.PrimData.PCode != PCode.Prim) continue;                 // trees/grass (PCode Tree/Grass) have no volume data
+                var o = (OSDMap)p.GetOSD();
+                if (p.RenderMaterials is { Count: > 0 } rms) { var m = new OSDMap(); foreach (var (f, id) in rms) m[f.ToString()] = OSD.FromUUID(id); o["render_materials"] = m; }
+                if (attachedToMe) { o["attached_to_me"] = true; o["attach_point"] = (int)root.PrimData.AttachmentPoint; mine++; }
+                else if (wearer.av != null)
                 {
-                    var tex = await client.Assets.RequestServerBakedImageAsync(av.ID, id, name);
-                    data = tex?.AssetData;
-                    if (data == null) { lock (bakeErr) bakeErr.Add(prefix + name); continue; }
-                    if (cached != null) try { Directory.CreateDirectory(Path.GetDirectoryName(cached)!); File.WriteAllBytes(cached + ".tmp", data); File.Move(cached + ".tmp", cached, true); } catch { }
+                    o["attached_to"] = OSD.FromUUID(wearer.av.ID); o["attach_point"] = (int)root.PrimData.AttachmentPoint; theirs++;
+                    if (!wornTex.TryGetValue(wearer.av.LocalID, out var ts)) wornTex[wearer.av.LocalID] = ts = new HashSet<UUID>();
+                    foreach (var t in FaceTextureIds(p)) ts.Add(t);
                 }
-                File.WriteAllBytes(Path.Combine(dir, $"bake-{prefix}{name}.j2c"), data);
-                got[name] = OSD.FromUUID(id);
+                else
+                {
+                    var wp = p == root ? p.Position : root.Position + p.Position * root.Rotation;
+                    var wr = p == root ? p.Rotation : root.Rotation * p.Rotation;   // Hamilton order: local, then root
+                    o["world_pos"] = OSD.FromVector3(wp); o["world_rot"] = OSD.FromQuaternion(wr);
+                    if (p == root && !string.IsNullOrEmpty(p.Properties?.Name)) o["name"] = p.Properties.Name;
+                }
+                // legacy materials and GLTF overrides of exported prims only (was: every prim in the region)
+                var te = p.Textures;
+                if (te != null) foreach (var f in te.FaceTextures.Append(te.DefaultTexture)) if (f != null && f.MaterialID != UUID.Zero) matIds.Add(f.MaterialID);
+                if (sim.GLTFMaterialOverrides.TryGetValue(p.LocalID, out var ov) && ov.FaceOverrides.Count > 0)
+                {
+                    var faces = new OSDMap();
+                    foreach (var (face, m) in ov.FaceOverrides) faces[face.ToString()] = GltfOsd(m);
+                    gltf[p.LocalID.ToString()] = faces;
+                }
+                if (nPrims++ > 0) part.WriteByte((byte)',');
+                var bytes = System.Text.Encoding.UTF8.GetBytes(OSDParser.SerializeJsonString(o)); part.Write(bytes, 0, bytes.Length);
             }
-            return got;
+        }
+        Stage("prims", $"({nPrims})");
+
+        var bakeErr = new ConcurrentBag<string>(); int bakeCached = 0, bakeFetched = 0;
+        // one bake (server-side, appearance service) as raw .j2c: bake-<prefix><name>.j2c; prefix "" for her, "<agent id[:8]>-" for others
+        async Task<(string name, UUID id)?> FetchBake(Avatar av, int te, string name, string prefix)
+        {
+            var id = av?.Textures?.GetFace((uint)te)?.TextureID ?? UUID.Zero;
+            if (id == UUID.Zero || id == Primitive.TextureEntry.WHITE_TEXTURE || id.ToString() == "3a367d1c-bef1-6d43-7595-e88c1e3aadb3") return null; // unset / default
+            // a bake's texture id changes whenever the avatar re-bakes, so the id is a safe cache key (BakeCacheDir)
+            var cached = BakeCachePath(BakeCacheDir, id);
+            byte[] data = cached != null && File.Exists(cached) ? File.ReadAllBytes(cached) : null;
+            if (data is { Length: > 0 }) Interlocked.Increment(ref bakeCached);
+            else
+            {
+                var tex = await client.Assets.RequestServerBakedImageAsync(av.ID, id, name);
+                data = tex?.AssetData;
+                if (data == null) { bakeErr.Add(prefix + name); return null; }
+                Interlocked.Increment(ref bakeFetched);
+                if (cached != null) try { Directory.CreateDirectory(Path.GetDirectoryName(cached)!); File.WriteAllBytes(cached + ".tmp", data); File.Move(cached + ".tmp", cached, true); } catch { }
+            }
+            await File.WriteAllBytesAsync(Path.Combine(dir, $"bake-{prefix}{name}.j2c"), data);
+            return (name, id);
         }
         static OSDMap Params(Avatar av) { var m = new OSDMap(); try { foreach (var (id, v) in av.DecodeVisualParams()) m[id.ToString()] = v; } catch { } return m; }
         sim.ObjectsAvatars.TryGetValue(me.LocalID, out var self);
-        var bakes = self == null ? new OSDMap() : await FetchBakes(self, "");
-        var avatars = new OSDArray();
         // "dressed" (complete / partial / bare / unknown): scene-mesher draws anyone not complete as a neutral stand-in, so
-        // their bakes aren't needed. Bakes fetched in parallel (was one avatar after another: ~40 s for 50 avatars).
+        // their bakes aren't needed. Every needed bake of every avatar (hers: all channels) fetched 16 at a time (was 8 avatars
+        // at a time, each avatar's 11 channels one after another: ~55 s cold for 51 avatars).
         var rootsBy = AttachRootsByAvatar(sim);
         var avList = nearAvs.Values.ToList();
         var dressed = avList.Select(x => (exp: ExpectedOf(x.av), have: rootsBy.GetValueOrDefault(x.av.LocalID))).ToList();
-        var avBakes = new OSDMap[avList.Count];
-        await Parallel.ForEachAsync(Enumerable.Range(0, avList.Count), new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (i, _) =>
-            avBakes[i] = AttachState(dressed[i].exp, dressed[i].have) == "complete" ? await FetchBakes(avList[i].av, avList[i].av.ID.ToString()[..8] + "-") : new OSDMap());
+        var jobs = new List<(int who, int te, string name)>();   // who: -1 = her
+        if (self != null) foreach (var (te, name) in Bakes) jobs.Add((-1, te, name));
+        for (int i = 0; i < avList.Count; i++)
+        {
+            if (AttachState(dressed[i].exp, dressed[i].have) != "complete") continue;
+            var need = BakesNeeded(wornTex.TryGetValue(avList[i].av.LocalID, out var ts) ? ts : Enumerable.Empty<UUID>());
+            foreach (var (te, name) in Bakes) if (need.Contains(name)) jobs.Add((i, te, name));
+        }
+        var got = new ConcurrentDictionary<int, ConcurrentDictionary<string, UUID>>();
+        await Parallel.ForEachAsync(jobs, new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (j, _) =>
+        {
+            var av = j.who < 0 ? self : avList[j.who].av;
+            var res = await FetchBake(av, j.te, j.name, j.who < 0 ? "" : av.ID.ToString()[..8] + "-");
+            if (res is { } x) got.GetOrAdd(j.who, _ => new())[x.name] = x.id;
+        });
+        OSDMap BakeMap(int who) { var m = new OSDMap(); if (got.TryGetValue(who, out var d)) foreach (var (te, name) in Bakes) if (d.TryGetValue(name, out var id)) m[name] = OSD.FromUUID(id); return m; }
+        var bakes = BakeMap(-1);
+        var avatars = new OSDArray();
         for (int i = 0; i < avList.Count; i++)
         {
             var (av, ap) = avList[i];
             avatars.Add(new OSDMap
             {
                 ["pos"] = OSD.FromVector3(ap), ["rot"] = OSD.FromQuaternion(av.Rotation), ["agent_id"] = OSD.FromUUID(av.ID), ["name"] = av.Name ?? "",
-                ["local_id"] = (int)av.LocalID, ["visual_params"] = Params(av), ["bakes"] = avBakes[i], ["anims"] = AnimsOf(av.ID),
+                ["local_id"] = (int)av.LocalID, ["visual_params"] = Params(av), ["bakes"] = BakeMap(i), ["anims"] = AnimsOf(av.ID),
                 ["dressed"] = AttachState(dressed[i].exp, dressed[i].have), ["attach_expected"] = dressed[i].exp, ["attach_have"] = dressed[i].have,
             });
         }
-        // legacy materials for every face MaterialID we export (alpha mode/cutoff, normal+spec maps)
-        var matIds = new HashSet<UUID>(); var gltf = new OSDMap();
-        foreach (var p in prims)
+        Stage("bakes", $"({jobs.Count} wanted, {bakeCached} cached, {bakeFetched} fetched, {bakeErr.Count} failed)");
+
+        // legacy materials for every face MaterialID we export (alpha mode/cutoff, normal+spec maps): disk cache, misses
+        // asked 4 requests at a time (the LL viewer posts <=50 ids per request)
+        var mc = MatCache(); var mats = new OSDMap(); var missing = new List<UUID>();
+        foreach (var id in matIds) if (mc.TryGetValue(id.ToString(), out var m)) mats[id.ToString()] = m; else missing.Add(id);
+        int matFetched = 0;
+        if (missing.Count > 0)
         {
-            var te = p.Textures; if (te == null) continue;
-            foreach (var f in te.FaceTextures.Append(te.DefaultTexture)) if (f != null && f.MaterialID != UUID.Zero) matIds.Add(f.MaterialID);
-            if (sim.GLTFMaterialOverrides.TryGetValue(p.LocalID, out var ov) && ov.FaceOverrides.Count > 0)
+            await Parallel.ForEachAsync(missing.Chunk(50), new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (chunk, _) =>
             {
-                var faces = new OSDMap();
-                foreach (var (face, m) in ov.FaceOverrides) faces[face.ToString()] = GltfOsd(m);
-                gltf[p.LocalID.ToString()] = faces;
-            }
+                try { foreach (var m in await client.Objects.RequestMaterialsAsync(sim, chunk)) { mc[m.ID.ToString()] = MaterialOsd(m); Interlocked.Increment(ref matFetched); } }
+                catch (Exception ex) { Log("look", "materials request failed: " + ex.GetBaseException().Message); }
+            });
+            foreach (var id in missing) if (mc.TryGetValue(id.ToString(), out var m)) mats[id.ToString()] = m;
+            if (matFetched > 0) SaveMatCache();
         }
-        var mats = new OSDMap();
-        foreach (var chunk in matIds.Chunk(50))                             // ponytail: the LL viewer posts <=50 ids per request
-            foreach (var m in await client.Objects.RequestMaterialsAsync(sim, chunk))
-                mats[m.ID.ToString()] = new OSDMap
-                {
-                    ["alpha_mode"] = (int)m.DiffuseAlphaMode, ["alpha_cutoff"] = (int)m.AlphaMaskCutoff,
-                    ["normal"] = OSD.FromUUID(m.NormalMap), ["normal_rep"] = OSD.FromVector3(new Vector3((float)m.NormalMapRepeatX, (float)m.NormalMapRepeatY, (float)m.NormalMapRotation)),
-                    ["normal_off"] = OSD.FromVector2(new Vector2((float)m.NormalMapOffsetX, (float)m.NormalMapOffsetY)),
-                    ["spec"] = OSD.FromUUID(m.SpecularMap), ["spec_rep"] = OSD.FromVector3(new Vector3((float)m.SpecularMapRepeatX, (float)m.SpecularMapRepeatY, (float)m.SpecularMapRotation)),
-                    ["spec_off"] = OSD.FromVector2(new Vector2((float)m.SpecularMapOffsetX, (float)m.SpecularMapOffsetY)),
-                    ["spec_color"] = OSD.FromColor4(m.SpecularColor), ["spec_exp"] = (int)m.SpecularExponent, ["env"] = (int)m.EnvironmentIntensity,
-                };
+        Stage("materials", $"({matIds.Count} ids, {matIds.Count - missing.Count} cached, {matFetched} fetched)");
+
         var vparams = self == null ? new OSDMap() : Params(self);
-        OSD env = new OSDMap();
-        try { var e = await client.Environment.GetRegionEnvironmentAsync(); if (e != null) env = e.Serialize(); } catch (Exception ex) { env = $"error: {ex.Message}"; }
+        OSD env;
+        if (envCache.env != null && envCache.handle == sim.Handle && (DateTime.UtcNow - envCache.t).TotalMinutes < 10) env = envCache.env;
+        else
+        {
+            env = new OSDMap();
+            try { var e = await client.Environment.GetRegionEnvironmentAsync(); if (e != null) { env = e.Serialize(); envCache = (sim.Handle, DateTime.UtcNow, env); } }
+            catch (Exception ex) { env = $"error: {ex.Message}"; }
+        }
+        Stage("env");
         var doc = new OSDMap
         {
             ["materials"] = mats, ["gltf_overrides"] = gltf, ["visual_params"] = vparams, ["environment"] = env,
             ["sun_dir"] = OSD.FromVector3(client.Grid.SunDirection),
             ["region"] = sim.Name, ["agent_id"] = OSD.FromUUID(me.AgentID), ["me"] = new OSDMap { ["pos"] = OSD.FromVector3(myPos), ["rot"] = OSD.FromQuaternion(me.SimRotation), ["sitting_on"] = (int)me.SittingOn, ["anims"] = AnimsOf(me.AgentID) },
             ["water_height"] = sim.WaterHeight, ["terrain"] = TerrainGrid(sim),
-            ["radius"] = r, ["prims"] = outPrims, ["bakes"] = bakes, ["avatars"] = avatars, ["exported_at"] = DateTime.Now.ToString("o"),
+            ["radius"] = r, ["bakes"] = bakes, ["avatars"] = avatars, ["exported_at"] = DateTime.Now.ToString("o"),
         };
-        File.WriteAllText(Path.Combine(dir, "scene.json"), OSDParser.SerializeJsonString(doc));
-        return $"exported {outPrims.Count} prims, {mats.Count}/{matIds.Count} materials, {gltf.Count} gltf-override prims, {vparams.Count} visual params ({mine} on my attachments), {avatars.Count} avatar(s) ({theirs} prims on their attachments), bakes {string.Join(",", bakes.Keys)}" +
-               (bakeErr.Count > 0 ? $" (failed: {string.Join(",", bakeErr)})" : "") + $"\n{dir}/scene.json";
+        using (var fs = new FileStream(scenePath + ".tmp", FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
+        {
+            WriteJsonPrimsThenRest(fs, st => { using var pp = File.OpenRead(primPart); pp.CopyTo(st); }, doc);
+        }
+        File.Move(scenePath + ".tmp", scenePath, true); File.Delete(primPart);
+        Stage("write");
+        var stageLine = string.Join(",", stages);
+        Log("look", "export stages (s): " + stageLine);
+        lastExportStages = stageLine;
+        return $"exported {nPrims} prims, {mats.Count}/{matIds.Count} materials, {gltf.Count} gltf-override prims, {vparams.Count} visual params ({mine} on my attachments), {avatars.Count} avatar(s) ({theirs} prims on their attachments), bakes {string.Join(",", bakes.Keys)}" +
+               (bakeErr.Count > 0 ? $" (failed: {string.Join(",", bakeErr)})" : "") + $" [stages {stageLine}]\n{scenePath}";
     }
+    static string lastExportStages = "";
 
     // the region heightmap every 4 m (65 x 65, x/y 0..256; the last row/column reads 255) for the renderer's ground and
     // shoreline (2026-10-04); a point without land-patch data is null

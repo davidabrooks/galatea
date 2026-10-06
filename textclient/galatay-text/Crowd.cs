@@ -11,6 +11,7 @@ using System.Globalization;
 using System.Text;
 using LibreMetaverse;
 using LibreMetaverse.Messages.Linden;
+using LibreMetaverse.StructuredData;
 
 namespace GalatayText;
 
@@ -206,6 +207,23 @@ public static partial class Program
         C(BakeCachePath("/c", bid) == "/c/01/0123abcd-0000-0000-0000-000000000001.j2c" && BakeCachePath("/c", UUID.Zero) == null && BakeCachePath("", bid) == null,
           "bake cache path: keyed by bake texture id, sharded, none for a zero id or no cache dir");
         C(ObjectDiskCache.SelfTest(out var ocWhy), "object disk cache: file and block round trip " + ocWhy);
+        C(LookStallMs(2, 61, 10000) == 3000 && LookStallMs(3, 61, 10000) == 3000 && LookStallMs(4, 61, 10000) == 10000
+          && LookStallMs(2, 10, 10000) == 3000 && LookStallMs(3, 10, 10000) == 10000 && LookStallMs(0, 0, 2000) == 2000,
+          "look wait: 3 s stall window once only a few stragglers remain (max(2, 5%)), full window otherwise");
+        var bn = BakesNeeded(new[] { new UUID("9742065b-19b5-297c-858a-29711d539043"), UUID.Random(), new UUID("5a9f4a74-30f2-821c-b88d-70499d3e7183") });
+        C(bn.SetEquals(new[] { "head", "upper", "lower", "eyes", "aux1" }) && BakesNeeded(Array.Empty<UUID>()).Count == 4,
+          "bakes needed: system body channels + channels the avatar's attachments show");
+        {
+            var prim1 = new OSDMap { ["id"] = OSD.FromUUID(UUID.Random()), ["scale"] = OSD.FromVector3(new Vector3(1, 2, 3)), ["phantom"] = false, ["name"] = "a" };
+            var prim2 = new OSDMap { ["id"] = OSD.FromUUID(UUID.Random()), ["textures"] = new OSDArray { OSD.FromInteger(0), OSD.FromReal(1.5) }, ["n"] = 0 };
+            var rest = new OSDMap { ["region"] = "R", ["radius"] = 32.0, ["avatars"] = new OSDArray { new OSDMap { ["name"] = "x", ["local_id"] = 7 } }, ["materials"] = new OSDMap() };
+            var full = new OSDMap(); full["prims"] = new OSDArray { prim1, prim2 }; foreach (KeyValuePair<string, OSD> kv in rest) full[kv.Key] = kv.Value;
+            var ms = new MemoryStream();
+            WriteJsonPrimsThenRest(ms, st => { st.Write(System.Text.Encoding.UTF8.GetBytes(OSDParser.SerializeJsonString(prim1))); st.WriteByte((byte)','); st.Write(System.Text.Encoding.UTF8.GetBytes(OSDParser.SerializeJsonString(prim2))); }, rest);
+            var streamed = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Encoding.UTF8.GetString(ms.ToArray()));
+            var whole = System.Text.Json.Nodes.JsonNode.Parse(OSDParser.SerializeJsonString(full));
+            C(System.Text.Json.Nodes.JsonNode.DeepEquals(streamed, whole), "scene.json streamed prim by prim = the whole-document serialization");
+        }
         var fz = new Vector3(100, 100, 2004);
         C(GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32)
           && !GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 4f), fz, 32)

@@ -513,6 +513,18 @@ public static partial class Program
         C(HudTextureOptions(hudB).Count == 2, "Pink Cream Pie tx swatches");
         C(OutfitGroup("DOUX - Yadira Hairstyle [M/BRUNETTE]") == "hair" && OutfitGroup("/ HEAD / lel evox / CEYLON 4.0") == "head" && OutfitGroup("Maitreya Mesh Body - LaraX Petite Add-on V1.1") == null, "groups");
         C(ClothingHudNameRx.IsMatch("<HUD> Spicy Bikini") && ClothingHudNameRx.IsMatch("[HUD - Essential] Beth Tube Top :: Pink Cream Pie") && !ClothingHudNameRx.IsMatch("VISTA ANIMATIONS *HUD 6.3*MARTHA STS BENTO AO-V1.7"), "clothing HUD names, AO excluded");
+        // PR #63 follow-up: the shipped top -> HUD map (routes/_clothing-huds.json) maps each of the 3 tops to its own HUD
+        var rd = FindRoutesDirForTest();
+        if (rd != null && File.Exists(Path.Combine(rd, "_clothing-huds.json")))
+        {
+            var real = ParseClothingHudMap(File.ReadAllText(Path.Combine(rd, "_clothing-huds.json")));
+            C(real.Count == 3 && real.Values.Distinct().Count() == 3 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops, 3 distinct HUDs, no AO ({real.Count})");
+            C(real.TryGetValue(new UUID("5c8487b7-0db2-34fd-a81b-fe2709c98021"), out var beth) && beth == new UUID("6899891e-79d1-3a31-93ab-fac14a3bd75e"), "Beth tube top -> Beth Tube Top HUD");
+            C(real.TryGetValue(new UUID("aa265665-7a17-34f6-b423-66d336262ed2"), out var arts) && arts == new UUID("cb0dc6c4-545c-3be6-8351-e049094315a7"), "ARTi'S strapless top -> ARTi'S HUD");
+            C(real.TryGetValue(new UUID("90d3e432-c8d1-3f2c-b800-6e88ed678c27"), out var tee) && tee == new UUID("a2591928-d005-3af2-9b02-a04c9e5f93e7"), "TETRA Chill T-Shirt -> Chill T-Shirt HUD");
+        }
+        else C(false, "routes/_clothing-huds.json not found for the map test");
+        C(ParseClothingHudMap("{\"note\":\"x\"}").Count == 0 && ParseClothingHudMap("{\"tops\":[{\"clothing\":\"not-a-uuid\",\"hud\":\"" + U(12) + "\"}]}").Count == 0, "map without tops / with a bad uuid -> empty, no crash");
         return $"outfit-safe selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

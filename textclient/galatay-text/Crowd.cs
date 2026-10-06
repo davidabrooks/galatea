@@ -4,7 +4,9 @@
 //   Set360() ran at SimChanged, before the new region's caps existed, so the 360 POST silently went nowhere after a
 //   teleport. Now: per region, wait for the InterestList cap, POST 360, verify, log [interest], retry; 'interest' shows it.
 // - Coarse locations: 'avatars' also counts avatars the sim reports on the map but has not streamed yet, so she never says
-//   "no avatars" at a busy spot just after arriving (the Sunday-night public-spot reports).
+//   "no avatars" at a busy spot just after arriving (the Sunday-night public-spot reports). Neighbor regions' map
+//   entries get their names requested on arrival too (2026-10-06: the first 'avatars' after someone appeared across a
+//   border listed a bare UUID, because names were only looked up when the list was printed).
 // - 'crowd': per avatar, attachments the sim lists (AvatarAppearance) vs attachment roots actually received.
 using System.Collections.Concurrent;
 using System.Globalization;
@@ -96,12 +98,21 @@ public static partial class Program
             if (e.Simulator != client.Network.CurrentSim) return;
             coarseSim = e.Simulator; coarseNow = e.Positions;
             // names for map-only avatars (UUIDNameReply -> Remember), so `avatars` doesn't list bare UUIDs
-            var unknown = e.NewEntries.Where(id => id != client.Self.AgentID && NameOf(id) == id.ToString()).ToList();
-            if (unknown.Count > 0) try { client.Avatars.RequestAvatarNames(unknown); } catch { }
+            RequestCoarseNames(e.NewEntries);
         };
         // the new region's first map update can land before SimChanged fires: keep it rather than wiping it
         client.Network.SimChanged += (s, e) => { rawChildren.Clear(); if (coarseSim != client.Network.CurrentSim) coarseNow = new Dictionary<UUID, Vector3>(); };
     }
+
+    // names for map-only avatars, current region and neighbors alike (UUIDNameReply -> Remember)
+    static void RequestCoarseNames(IEnumerable<UUID> newEntries)
+    {
+        var unknown = CoarseNamesToRequest(newEntries, client.Self.AgentID, id => NameOf(id) != id.ToString());
+        if (unknown.Count > 0) try { client.Avatars.RequestAvatarNames(unknown); } catch { }
+    }
+    // pure: which new map entries need a name lookup (not me, not zero, not known yet, each once, at most 40 per update)
+    internal static List<UUID> CoarseNamesToRequest(IEnumerable<UUID> newEntries, UUID me, Func<UUID, bool> known) =>
+        newEntries.Where(id => id != me && id != UUID.Zero && !known(id)).Distinct().Take(40).ToList();
 
     static bool CoarseReceived => client.Network.CurrentSim != null && coarseSim == client.Network.CurrentSim;
 
@@ -136,7 +147,7 @@ public static partial class Program
         // neighbor regions' maps (Neighbors.cs): avatars across a border not streamed to her, in this region's frame
         var nbCoarse = new Dictionary<UUID, Vector3>(); var nbRegion = new Dictionary<UUID, string>();
         foreach (var (ns, off) in ViewSims().Skip(1))
-            if (coarseBy.TryGetValue(ns.Handle, out var cm))
+            if (SimGeo.Adjacent(sim.Handle, ns.Handle) && coarseBy.TryGetValue(ns.Handle, out var cm))   // not regions a teleport left behind (128 km away)
                 foreach (var (id, p) in cm) if (!nbCoarse.ContainsKey(id)) { nbCoarse[id] = p.Z >= 1020f ? new Vector3(p.X + off.X, p.Y + off.Y, p.Z) : p + off; nbRegion[id] = ns.Name; }
         var nbOnly = CoarseOnly(nbCoarse, streamed, client.Self.AgentID, client.Self.SimPosition).Where(x => !coarseNow.ContainsKey(x.id)).ToList();
         if (nbOnly.Count > 0)
@@ -262,6 +273,14 @@ public static partial class Program
           && !GroundSlab(new Vector3(200, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32)
           && !GroundSlab(new Vector3(150, 100, 1990), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32),
           "ground slab: a big flat floor reaching within r is exported; thick, wall, too far, other level are not");
+        {
+            var k = UUID.Random();
+            var req = CoarseNamesToRequest(new[] { me, a, k, a, UUID.Zero }, me, id => id == k);
+            C(req.Count == 1 && req[0] == a && CoarseNamesToRequest(Enumerable.Range(0, 60).Select(_ => UUID.Random()), me, _ => false).Count == 40,
+              "map names: request unknown ones once, never me / zero / known, at most 40 per update");
+        }
+        C(MapTag(0, 0, 99) == "map  none yet" && MapTag(0, 5, 1.2) == "map   0, 1s ago" && MapTag(83, 40, 0.4) == "map  83, 0s ago",
+          "regions map column: 'none yet' when the region never sent a map update, else count and age");
         C(NoAvatarsLine(false, false).Contains("hasn't arrived") && NoAvatarsLine(true, false).Contains("none on the region map")
           && NoAvatarsLine(false, true) == "(no avatars streamed to me yet)", "no-avatars line: map not received yet is not 'none on the map'");
         return $"crowd selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();

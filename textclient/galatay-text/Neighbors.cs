@@ -179,6 +179,12 @@ public static partial class Program
     }
     // per region handle: the latest coarse (map) avatar positions, region-local
     static readonly ConcurrentDictionary<ulong, IReadOnlyDictionary<UUID, Vector3>> coarseBy = new();
+    // per region: CoarseLocationUpdate packets seen (raw, before the library decodes them) and when the last one came,
+    // so 'regions' can tell "nobody on the map" from "this region never sent a map update"
+    static readonly ConcurrentDictionary<Simulator, (int n, DateTime last)> coarsePk = new();
+    // pure: the map column of 'regions'
+    internal static string MapTag(int count, int packets, double ageS) =>
+        packets == 0 ? "map  none yet" : string.Format(CultureInfo.InvariantCulture, "map {0,3}, {1:F0}s ago", count, ageS);
 
     static Simulator[] SimsSnapshot()
     {
@@ -307,7 +313,7 @@ public static partial class Program
             if (cur != null && e.Simulator != cur && e.Simulator.Handle != 0)
                 Log("regions", $"neighbor connected: {e.Simulator.Name} ({SimGeo.Dir(cur.Handle, e.Simulator.Handle)}) {e.Simulator.IPEndPoint}");
         };
-        client.Network.SimDisconnected += (s, e) => { if (e.Simulator != null) { coarseBy.TryRemove(e.Simulator.Handle, out _); droppedBy.TryRemove(e.Simulator.Handle, out _); Log("regions", $"region disconnected: {e.Simulator.Name}"); } };
+        client.Network.SimDisconnected += (s, e) => { if (e.Simulator != null) { coarseBy.TryRemove(e.Simulator.Handle, out _); coarsePk.TryRemove(e.Simulator, out _); droppedBy.TryRemove(e.Simulator.Handle, out _); Log("regions", $"region disconnected: {e.Simulator.Name}"); } };
         client.Self.TeleportProgress += (s, e) =>
         {
             if (e.Status is TeleportStatus.Start or TeleportStatus.Progress) { teleportActive = true; teleportActiveAt = DateTime.Now; }
@@ -344,7 +350,16 @@ public static partial class Program
                 Log("regions", $"entered {cur.Name}: re-requested {ids.Count} objects dropped by the neighbor cap");
             }
         };
-        client.Grid.CoarseLocationUpdate += (s, e) => { if (e.Simulator != null && e.Simulator.Handle != 0) coarseBy[e.Simulator.Handle] = e.Positions; };
+        client.Network.RegisterCallback(PacketType.CoarseLocationUpdate, (s, e) =>
+        {
+            if (e.Simulator != null) coarsePk.AddOrUpdate(e.Simulator, _ => (1, DateTime.Now), (_, v) => (v.n + 1, DateTime.Now));
+        });
+        client.Grid.CoarseLocationUpdate += (s, e) =>
+        {
+            if (e.Simulator == null || e.Simulator.Handle == 0) return;
+            coarseBy[e.Simulator.Handle] = e.Positions;
+            if (e.Simulator != client.Network.CurrentSim) RequestCoarseNames(e.NewEntries);   // the current region's: HookCoarse
+        };
         HookCrossingTimeline();
     }
 
@@ -487,9 +502,10 @@ public static partial class Program
             var dir = s == cur ? "HERE" : s.Handle == 0 ? "?" : SimGeo.Dir(cur.Handle, s.Handle);
             var dist = s == cur ? 0 : s.Handle == 0 ? -1 : SimGeo.DistToRegion(cur.Handle, s.Handle, me);
             int coarse = coarseBy.TryGetValue(s.Handle, out var c) ? c.Count : 0;
-            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  {0,-4} {1,-24} {2}  {3}  objects {4,6}  avatars {5,3} (map {6,3})  {7}{8}",
+            var pk = coarsePk.TryGetValue(s, out var pv) ? pv : (0, DateTime.Now);
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  {0,-4} {1,-24} {2}  {3}  objects {4,6}  avatars {5,3} ({6})  {7}{8}",
                 dir, string.IsNullOrEmpty(s.Name) ? "(no handshake yet)" : s.Name, s.Handle == 0 ? "handle ?" : $"{SimGeo.Origin(s.Handle).x / 256},{SimGeo.Origin(s.Handle).y / 256}",
-                dist < 0 ? "    ?" : $"{dist,5:F0} m", s.ObjectsPrimitives.Count, s.ObjectsAvatars.Count, coarse,
+                dist < 0 ? "    ?" : $"{dist,5:F0} m", s.ObjectsPrimitives.Count, s.ObjectsAvatars.Count, MapTag(coarse, pk.Item1, (DateTime.Now - pk.Item2).TotalSeconds),
                 s.Connected ? "connected" : "NOT connected", s.Caps == null ? ", no caps" : ""));
         }
         sb.AppendLine($"crossing: {crossing.State} (crossings {crossing.Crossings}, failures {crossing.Failures}); last: {crossing.Last}");

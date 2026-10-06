@@ -127,31 +127,57 @@ static class Mesher
         foreach (var j in positionAnimated) overrides.Remove(j);
     }
 
-    // Some mesh bodies ship inverse_bind_matrix / bind_shape_matrix factored for a non-1x bind skeleton
-    // (IB diag ~0.1 with BS~25, or IB diag ~100 with BS~0.025 — same BS*IB product). LLSkinningUtil still does
-    // IB * jointWorld on the viewer's 1x joints, so those meshes pancake (Scentual90 2026-10-04). Retarget only those
-    // two factorizations: IB' = inv(default 1x World), BS' = BS * s. Do NOT retarget s≈1 (Galatea) or s≈0 (degenerate
-    // IB on some Bento heads — BS T_y~175, IB diag all zero; multiplying BS by 0 collapsed them to the feet and blew
-    // the avatar height to ~2.7 m). Study-only vs Firestorm LLSkinningUtil.
-    static float InvBindScale(MeshSkinData sk)
+    // Skinning palette exactly as the SL viewer (LLSkinningUtil::initSkinningMatrixPalette: mat_j = InvBind_j * JointWorld_j;
+    // the vertex is v * BindShape * mat_j). BindShape * InvBind is already self-consistent for meshes rigged on a scaled
+    // skeleton (IB diag ~100 with BS ~0.025: a centimetre rig; IB ~0.1 with BS ~25), so no special case is needed.
+    // History: a "1x retarget" (2026-10-04, e29f708/a7b2839) replaced such meshes' InvBind with inv(default skeleton) and
+    // scaled BS. That threw away the creator's bind pose wherever their rig's joints differ from the default: shoes rigged
+    // with the foot 8.5 cm higher sat 9 cm below the body's feet (SenorJames, W21 2026-10-05: skin at the shoe tops), and
+    // Bento hands/fingers came out stretched or bunched (SenorJames, Vorsco, Thoddel, Very Lit; Scentual90's hands too).
+    // Scentual90's IB 0.1/100 pieces it was written for skin correctly without it (re-checked 2026-10-06 on export
+    // 20261004-225419, with the 10x mPelvis joint override still skipped in PoseAvatar).
+    // -> per joint BS * IB * World, null where the joint is unknown or the inverse-bind list is short (SL drops such bindings)
+    internal static float[][] SkinPalette(MeshSkinData sk, IReadOnlyDictionary<string, float[]> world)
     {
-        int i = Array.IndexOf(sk.JointNames, "mPelvis");
-        if (i < 0 || sk.InverseBindMatrices.Length < (i + 1) * 16) return 1f;
-        var m = sk.InverseBindMatrices; int o = i * 16;
-        return (MathF.Abs(m[o]) + MathF.Abs(m[o + 5]) + MathF.Abs(m[o + 10])) / 3f;
+        var jm = new float[sk.JointNames.Length][];
+        if (sk.InverseBindMatrices == null || sk.InverseBindMatrices.Length < sk.JointNames.Length * 16) return jm;
+        for (int j = 0; j < jm.Length; j++)
+            if (world.TryGetValue(sk.JointNames[j], out var w))
+                jm[j] = Skeleton.Mul(Skeleton.Mul(sk.BindShapeMatrix, sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)]), w);
+        return jm;
     }
-    static bool NeedsSkinRetarget(float s) => (s > 0.05f && s < 0.3f) || (s > 3f && s < 300f);  // ~0.1 or ~100 only
-    static void SkinRetarget(MeshSkinData sk, Dictionary<string, float[]> bindWorld, out float[] bs, out float[][] ib)
+    // pure (CI: --skin-selftest): SenorJames' shoe and body feet (their real foot inverse binds, centimetre rigs that place
+    // the foot 8.5 cm apart) both land on the skeleton's foot; a Scentual90-style IB 0.1 / BS 25 hand keeps its creator's
+    // wrist and its size (no pancake); unknown joints and short inverse-bind lists give no binding
+    internal static bool SkinSelftest()
     {
-        bs = sk.BindShapeMatrix; ib = null;
-        float s = InvBindScale(sk);
-        if (!NeedsSkinRetarget(s)) return;
-        bs = (float[])sk.BindShapeMatrix.Clone();
-        for (int k = 0; k < 12; k++) bs[k] *= s;
-        bs[12] *= s; bs[13] *= s; bs[14] *= s;
-        ib = new float[sk.JointNames.Length][];
-        for (int j = 0; j < sk.JointNames.Length; j++)
-            ib[j] = bindWorld.TryGetValue(sk.JointNames[j], out var w) ? Skeleton.Invert(w) : sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)];
+        static float[] M(float sx, float sy, float sz, float tx, float ty, float tz) => new[] { sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, tx, ty, tz, 1 };
+        bool Near(Vector3 a, Vector3 b) => Vector3.Distance(a, b) < 1e-3f;
+        var foot = new Vector3(0.13f, -0.1f, 0.08f);                       // posed mFootLeft (any pose)
+        var world = new Dictionary<string, float[]> { ["mFootLeft"] = M(1, 1, 1, foot.X, foot.Y, foot.Z) };
+        bool ok = true;
+        // (IB translation, BS) from the cached assets: body 1ca3f605, shoe e34d56a1 (IB diag 100)
+        foreach (var (ibT, bs) in new[] { (new Vector3(-0.116f, -0.081f, -0.006f), M(0.025f, 0.025f, 0.025f, 0, 0, 0.01f)),
+                                          (new Vector3(-0.114f, -0.080f, 0.079f), M(0.004f, 0.003f, 0.002f, 0.001f, 0, 0)) })
+        {
+            var sk = new MeshSkinData { JointNames = new[] { "mFootLeft" }, BindShapeMatrix = bs, InverseBindMatrices = M(100, 100, 100, ibT.X, ibT.Y, ibT.Z) };
+            var jm = SkinPalette(sk, world);
+            // the creator's foot joint in bind space is -ibT/100; find the normalised vertex that BS maps there
+            var p = ibT * -0.01f; var v = new Vector3((p.X - bs[12]) / bs[0], (p.Y - bs[13]) / bs[5], (p.Z - bs[14]) / bs[10]);
+            ok &= jm[0] != null && Near(Xform(jm[0], v, 1), foot);
+        }
+        // IB 0.1 / BS 25: creator wrist 5 cm above the default, rig at 10x; a point 2 cm off the wrist stays 2 cm off
+        var wrist = new Vector3(0.0f, 0.62f, 1.36f);
+        var wc = (wrist + new Vector3(0, 0, 0.05f)) * 10f;
+        var hand = new MeshSkinData { JointNames = new[] { "mWristLeft", "mNoSuchJoint" }, BindShapeMatrix = M(25, 25, 25, 0, 0, 0),
+            InverseBindMatrices = M(0.1f, 0.1f, 0.1f, -wc.X * 0.1f, -wc.Y * 0.1f, -wc.Z * 0.1f).Concat(M(1, 1, 1, 0, 0, 0)).ToArray() };
+        var hw = new Dictionary<string, float[]> { ["mWristLeft"] = M(1, 1, 1, wrist.X, wrist.Y, wrist.Z) };
+        var hm = SkinPalette(hand, hw);
+        ok &= hm[0] != null && hm[1] == null && Near(Xform(hm[0], wc / 25f, 1), wrist)
+              && Near(Xform(hm[0], (wc + new Vector3(0.2f, 0, 0)) / 25f, 1), wrist + new Vector3(0.02f, 0, 0));
+        var shortIb = new MeshSkinData { JointNames = new[] { "mWristLeft", "mFootLeft" }, BindShapeMatrix = M(1, 1, 1, 0, 0, 0), InverseBindMatrices = M(1, 1, 1, 0, 0, 0) };
+        ok &= SkinPalette(shortIb, hw).All(m => m == null);
+        return ok;
     }
 
     // collision volumes take their bone's shape-slider scale: in the SL viewer a skeletal param's bone scale delta also goes
@@ -201,6 +227,7 @@ static class Mesher
 
     static async Task<int> Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--skin-selftest") { bool sok = SkinSelftest(); Console.WriteLine(sok ? "skin selftest ok" : "skin selftest FAILED"); return sok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--lod-selftest") { bool lok = LodSelftest(); Console.WriteLine(lok ? "lod selftest ok" : "lod selftest FAILED"); return lok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--selftest")  // default skeleton sanity: pelvis ~1.07 m, head ~1.75 m, arms out (T-pose)
         {
@@ -220,27 +247,7 @@ static class Mesher
             PoseOverrides(ovr, new[] { "mPelvis" });
             var wb = Skeleton.World(ovr, null, null, new Vector3(0, 0.1f, 0.01f));
             ok &= !ovr.ContainsKey("mPelvis") && ovr.ContainsKey("mKneeLeft") && MathF.Abs(wb["mPelvis"][14] - 1.077f) < 0.01f && wb["mHead"][14] < 2f;
-            // skin retarget: IB scale 0.1 -> BS scaled by 0.1, IB' = inv(World); rest pose v*BS'*IB'*W = v*(BS*0.1)
-            {
-                var bw = Skeleton.World(new());
-                var sk = new MeshSkinData {
-                    JointNames = new[] { "mPelvis" },
-                    BindShapeMatrix = new float[] { 25,0,0,0, 0,25,0,0, 0,0,25,0, 0,0,10,1 },
-                    InverseBindMatrices = new float[] { 0.1f,0,0,0, 0,0.1f,0,0, 0,0,0.1f,0, 0,0,-1.067f,1 }
-                };
-                SkinRetarget(sk, bw, out var bsR, out var ibR);
-                ok &= ibR != null && MathF.Abs(bsR[0] - 2.5f) < 1e-4f && MathF.Abs(bsR[14] - 1f) < 1e-4f;
-                var rest = Xform(Skeleton.Mul(Skeleton.Mul(bsR, ibR[0]), bw["mPelvis"]), Vector3.Zero, 1);
-                ok &= MathF.Abs(rest.Z - 1f) < 0.02f;   // BS translation 10*0.1, not floating at z=10
-                // degenerate IB (diag 0) must NOT retarget — BS*=0 would wipe the mesh (Scentual Bento heads)
-                var bad = new MeshSkinData {
-                    JointNames = new[] { "mPelvis" },
-                    BindShapeMatrix = new float[] { 20,0,0,0, 0,25,0,0, 0,0,24,0, 0,175,1,1 },
-                    InverseBindMatrices = new float[] { 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,-1.067f,1 }
-                };
-                SkinRetarget(bad, bw, out var bsB, out var ibB);
-                ok &= ibB == null && bsB[0] == 20f && bsB[13] == 175f;
-            }
+            ok &= SkinSelftest();
             var fz = new Vector3(100, 100, 2004);
             ok &= GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 30)          // 50 m away, 45 m half-diagonal
                   && !GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 4f), fz, 30)          // too thick
@@ -591,19 +598,11 @@ static class Mesher
                 var wr = jf.Rot * apRot * lr; var wp = jf.Pos + (ap.Position + lp * apRot) * jf.Rot;
                 Count("attachment_unrigged"); Emit(p, fm, group, bakePrefix, null, wp, wr, o);
             }
-            var bindWorld = Skeleton.World(new());   // default 1x bind for SkinRetarget (upload-time skeleton)
             foreach (var (_, p, fm) in rigged.Where(x => x.Item1 == owner))
             {
-                var sk = fm.SkinData; SkinRetarget(sk, bindWorld, out var bs, out var ib);
-                var jm = new float[sk.JointNames.Length][];
-                for (int j = 0; j < jm.Length; j++)
-                {
-                    if (!world.TryGetValue(sk.JointNames[j], out var w)) { jm[j] = null; continue; }
-                    var inv = ib != null ? ib[j] : sk.InverseBindMatrices[(j * 16)..(j * 16 + 16)];
-                    jm[j] = Skeleton.Mul(Skeleton.Mul(bs, inv), w);
-                }
+                var sk = fm.SkinData; var bs = sk.BindShapeMatrix;
+                var jm = SkinPalette(sk, world);
                 if (jm.Any(m => m == null)) Count("rigged_unknown_joint");
-                if (ib != null) Count("skin_retarget_1x");
                 Emit(p, fm, group, bakePrefix, (v, w) =>
                 {
                     if (w == null) return (Xform(bs, v.Position, 1), Vector3.Normalize(Xform(bs, v.Normal, 0)));

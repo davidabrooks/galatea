@@ -147,7 +147,7 @@ public static partial class Program
         // neighbor regions' maps (Neighbors.cs): avatars across a border not streamed to her, in this region's frame
         var nbCoarse = new Dictionary<UUID, Vector3>(); var nbRegion = new Dictionary<UUID, string>();
         foreach (var (ns, off) in ViewSims().Skip(1))
-            if (coarseBy.TryGetValue(ns.Handle, out var cm))
+            if (SimGeo.Adjacent(sim.Handle, ns.Handle) && coarseBy.TryGetValue(ns.Handle, out var cm))   // not regions a teleport left behind (128 km away)
                 foreach (var (id, p) in cm) if (!nbCoarse.ContainsKey(id)) { nbCoarse[id] = p.Z >= 1020f ? new Vector3(p.X + off.X, p.Y + off.Y, p.Z) : p + off; nbRegion[id] = ns.Name; }
         var nbOnly = CoarseOnly(nbCoarse, streamed, client.Self.AgentID, client.Self.SimPosition).Where(x => !coarseNow.ContainsKey(x.id)).ToList();
         if (nbOnly.Count > 0)
@@ -279,6 +279,8 @@ public static partial class Program
             C(req.Count == 1 && req[0] == a && CoarseNamesToRequest(Enumerable.Range(0, 60).Select(_ => UUID.Random()), me, _ => false).Count == 40,
               "map names: request unknown ones once, never me / zero / known, at most 40 per update");
         }
+        C(MapTag(0, 0, 99) == "map  none yet" && MapTag(0, 5, 1.2) == "map   0, 1s ago" && MapTag(83, 40, 0.4) == "map  83, 0s ago",
+          "regions map column: 'none yet' when the region never sent a map update, else count and age");
         C(NoAvatarsLine(false, false).Contains("hasn't arrived") && NoAvatarsLine(true, false).Contains("none on the region map")
           && NoAvatarsLine(false, true) == "(no avatars streamed to me yet)", "no-avatars line: map not received yet is not 'none on the map'");
         return $"crowd selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();

@@ -462,7 +462,9 @@ public static partial class Program
                             var missing = items.Where(kv => !worn.ContainsKey(kv.Key)).ToList();
                             // a 'sit' just detached it (detach-before-sit race, 2026-09-25): wait 15 s before treating this as "standing"
                             bool sitInProgress = lastSeatOffDetach.Values.Any(t => (DateTime.Now - t).TotalSeconds < 15);
-                            if (missing.Count > 0 && !sitInProgress && attachTries < 2 && (DateTime.Now - standSince).TotalSeconds >= 1.5 && (DateTime.Now - attachAt).TotalSeconds > 15)
+                            // right after a region change / border crossing her attachments are still arriving: not "missing" (Neighbors.cs)
+                            bool settling = crossing.Grace || (DateTime.Now - lastSimChange).TotalSeconds < 10;
+                            if (missing.Count > 0 && !sitInProgress && !settling && attachTries < 2 && (DateTime.Now - standSince).TotalSeconds >= 1.5 && (DateTime.Now - attachAt).TotalSeconds > 15)
                             {
                                 attachTries++; attachAt = DateTime.Now; standChecked = false;
                                 foreach (var kv in missing)

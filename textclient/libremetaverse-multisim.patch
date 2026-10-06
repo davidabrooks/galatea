@@ -1,0 +1,39 @@
+diff --git a/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs b/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
+index 9bfa7b56..985ba821 100644
+--- a/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
++++ b/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
+@@ -276,6 +276,10 @@ namespace LibreMetaverse
+                 {
+                     crossing.NewSimulator = newSim;
+                     relativePosition = crossing.Position;
++                    // galatea multisim patch: her avatar may already be in the new region's object list (sent while it was
++                    // still a neighbor, before it became current): adopt that local id, or her terse updates there are ignored
++                    foreach (var av in newSim.ObjectsAvatars.Values)
++                        if (av != null && av.ID == AgentID) { localID = av.LocalID; break; }
+                     LastPositionUpdate = Client!.UtcNow;
+                     Movement.Camera.LookDirection(crossing.LookAt);
+ 
+diff --git a/LibreMetaverse/ObjectManager.PacketHandlers.cs b/LibreMetaverse/ObjectManager.PacketHandlers.cs
+index eaa6f4d5..e768d451 100644
+--- a/LibreMetaverse/ObjectManager.PacketHandlers.cs
++++ b/LibreMetaverse/ObjectManager.PacketHandlers.cs
+@@ -631,7 +631,9 @@ namespace LibreMetaverse
+                     }
+ 
+                     #region Update Client.Self
+-                    if (update.LocalID == Client.Self.localID)
++                    // local ids are per region: with neighbor regions connected (MultipleSims) another region's object
++                    // can carry her local id, so only the current region's update is hers (galatea multisim patch)
++                    if (update.LocalID == Client.Self.localID && simulator == Client.Network.CurrentSim)
+                     {
+                         Client.Self.collisionPlane = update.CollisionPlane;
+                         Client.Self.relativePosition = update.Position;
+@@ -1006,7 +1008,7 @@ namespace LibreMetaverse
+             var localIdsToKill = new List<uint>(kill.ObjectData.Length);
+             foreach (var objectToKill in kill.ObjectData)
+             {
+-                if (objectToKill.ID == Client.Self.localID)
++                if (objectToKill.ID == Client.Self.localID && simulator == Client.Network.CurrentSim)
+                 {
+                     continue;
+                 }

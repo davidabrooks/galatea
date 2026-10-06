@@ -121,10 +121,14 @@ public static partial class Program
         var id = followId;
         if (id != fLastId) { fLastId = id; FollowReset(); if (id != UUID.Zero) fLastArriveAt = DateTime.Now; }   // a new follow may settle her once to the standoff
         if (id == UUID.Zero || !LoggedIn || followBusy || client.Self.SittingOn != 0) return;
-        var sim = client.Network.CurrentSim;
-        var av = sim?.ObjectsAvatars.Values.FirstOrDefault(a => a != null && a.ID == id);
-        if (av == null || (av.ParentID != 0 && !sim.ObjectsPrimitives.ContainsKey(av.ParentID))) return;
-        var lp = PositionHelper.GetAvatarPosition(sim, av); var me = client.Self.SimPosition; var now = DateTime.Now;
+        var sim = client.Network.CurrentSim; if (sim == null) return;
+        // mid-crossing (CrossedRegion seen, region not switched yet) positions mix two frames: wait (Neighbors.cs)
+        if (crossing.State == CrossingWatch.Phase.Crossing) return;
+        // the leader may be across a border: found in a neighbor region, position in this region's frame (Neighbors.cs);
+        // the autopilot takes global coordinates, so she walks over the border after him
+        var found = FindAvatarAnySim(id);
+        if (found == null) return;
+        var lp = found.Value.pos; var me = client.Self.SimPosition; var now = DateTime.Now;
         float d = HDist(lp, me); if (MathF.Abs(lp.Z - me.Z) > 3f) d = Vector3.Distance(lp, me);
         fLastD = d;
         if (fLeaderAnchor == null || HDist(lp, fLeaderAnchor.Value) > 0.4f) { fLeaderAnchor = lp; fLeaderStillSince = now; fBackoffs = 0; fTightLogged = false; }
@@ -165,6 +169,12 @@ public static partial class Program
         {
             if (fMode != FMode.Pursue) { fMode = FMode.Pursue; fModeSince = now; fHist.Clear(); fAim = null; FLog($"{followName} is {d:F1} m away: following to {s:F1} m behind{(indoor ? " (indoors)" : "")}"); }
             var step = NavFollowStep(me, T3) ?? T3;   // NavPlan.cs: around furniture / walls / via doors on a nav grid
+            if (SimGeo.NeedsPush(me, step) && !followBusy && (now - fLastPush).TotalSeconds > 8)
+            {   // he is across a border and she is at it: the sim's autopilot stops there; walk over with her own controls (Neighbors.cs)
+                fLastPush = now; followBusy = true; var tok = fBusyCts.Token;
+                _ = Task.Run(async () => { try { await PushAcrossBorder(step, "follow", tok); } catch { } finally { fAim = null; fHist.Clear(); fModeSince = DateTime.Now; followBusy = false; } });
+                return;
+            }
             FollowAim(step, me, now);
             fHist.Enqueue((now, me));
             while (fHist.Count > 0 && (now - fHist.Peek().t).TotalSeconds > 4.2) fHist.Dequeue();
@@ -187,6 +197,7 @@ public static partial class Program
         }
     }
 
+    static DateTime fLastPush = DateTime.MinValue;
     static void FaceLeader(Vector3 lp, Vector3 me) { try { if (HDist(lp, me) > 0.3f) client.Self.Movement.TurnToward(new Vector3(lp.X, lp.Y, me.Z)); } catch { } }
 
     static void FollowAim(Vector3 step, Vector3 me, DateTime now)

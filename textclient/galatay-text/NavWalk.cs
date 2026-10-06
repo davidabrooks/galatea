@@ -57,14 +57,36 @@ public static partial class Program
         var start = client.Self.SimPosition;
         Log("walk", $"leg {label}: {V(start)} -> {V(target)} ({HDist(start, target):F1} m)");
         int recoveries = 0; bool flew = false, doorTried = false;
-        var legStart = DateTime.Now;
+        var legStart = DateTime.Now; var legT0 = DateTime.Now; var lastPush = DateTime.MinValue;
         Vector3 goal = target;
         AutoPilotTo(goal);
         var hist = new Queue<(DateTime t, Vector3 p)>();
+        ulong frame = client.Network.CurrentSim?.Handle ?? 0;   // target/goal are local to this region (Neighbors.cs)
+        if (!SimGeo.InRegion(target)) Log("walk", $"leg {label}: target is across the {SimGeo.ExitBorder(start, target) ?? SimGeo.Dir(frame, SimGeo.HandleAt(frame, target))} border ({V(target)} in {client.Network.CurrentSim?.Name}'s frame)");
         while (true)
         {
             await Task.Delay(500, ct);
+            // border crossing (Neighbors.cs): wait while the region hands her over, then re-express target/goal in the new
+            // region's frame and re-issue the autopilot (the sim-side autopilot does not survive the hand-over)
+            if (crossing.State == CrossingWatch.Phase.Crossing) { hist.Clear(); legStart = legStart.AddSeconds(0.5); walkState = $"leg {label}: crossing a region border"; continue; }
+            var curH = client.Network.CurrentSim?.Handle ?? 0;
+            if (curH != 0 && frame != 0 && curH != frame)
+            {
+                if (!SimGeo.Adjacent(frame, curH)) { client.Self.AutoPilotCancel(); Log("walk", $"leg {label}: region changed to non-adjacent {client.Network.CurrentSim?.Name} (teleport?): stopped"); return false; }
+                var shift = SimGeo.Offset(curH, frame);
+                target += shift; goal += shift; frame = curH; hist.Clear(); legStart = DateTime.Now.AddSeconds(-10);
+                Log("walk", $"leg {label}: crossed into {client.Network.CurrentSim?.Name} at {V(client.Self.SimPosition)}; target now {V(target)}");
+                await Task.Delay(1000, ct);
+                AutoPilotTo(goal);
+                continue;
+            }
             var p = client.Self.SimPosition;
+            if (SimGeo.NeedsPush(p, target) && crossing.State == CrossingWatch.Phase.Idle && (DateTime.Now - lastPush).TotalSeconds > 8)
+            {   // the sim's autopilot stops at the border: cross it with her own controls (Neighbors.cs)
+                lastPush = DateTime.Now; hist.Clear();
+                await PushAcrossBorder(target, $"leg {label}", ct);
+                continue;   // the frame shift above re-aims the autopilot in the new region
+            }
             KeepGrounded();
             if (navTrack && (++trackTick % 3) == 0) Log("navpos", V(p));
             walkState = $"leg {label}: at {V(p)}, {HDist(p, target):F1} m to go";
@@ -73,7 +95,7 @@ public static partial class Program
             {
                 client.Self.AutoPilotCancel();
                 if (flew) { client.Self.Movement.Fly = false; client.Self.Movement.SendUpdate(true); Log("walk", "fly off (landed)"); }
-                Log("walk", $"leg {label}: arrived at {V(p)} in {(DateTime.Now - legStart).TotalSeconds:F0} s{(recoveries > 0 ? $" after {recoveries} recoveries" : "")}");
+                Log("walk", $"leg {label}: arrived at {V(p)} in {(DateTime.Now - legT0).TotalSeconds:F0} s{(recoveries > 0 ? $" after {recoveries} recoveries" : "")}");
                 return true;
             }
             if (goal != target && HDist(p, goal) <= 0.8f) { goal = target; AutoPilotTo(goal); hist.Clear(); continue; } // detour point reached -> resume
@@ -134,6 +156,8 @@ public static partial class Program
         await EnsureStandingForWalk(ct);
         var aoRefuse = await AoGuardBeforeWalk("walk_path", ct);
         if (aoRefuse != null) { Log("walk", "REFUSED - " + aoRefuse); walkState = "refused: " + aoRefuse; return false; }
+        pts = pts.ToList();   // waypoints are local to the region she starts in; re-expressed after a border crossing
+        ulong pf = client.Network.CurrentSim?.Handle ?? 0;
         for (int i = 0; i < pts.Count; i++)
         {
             // split long legs into <= 8 m pieces so the autopilot can't wander far off a bad line
@@ -141,6 +165,13 @@ public static partial class Program
             int n = Math.Max(1, (int)Math.Ceiling(HDist(from, to) / 8f));
             for (int k = 1; k <= n; k++)
             {
+                var ch = client.Network.CurrentSim?.Handle ?? 0;
+                if (ch != 0 && pf != 0 && ch != pf && SimGeo.Adjacent(pf, ch))
+                {   // Neighbors.cs: a leg crossed a border: move every remaining point into the new region's frame
+                    var sh = SimGeo.Offset(ch, pf);
+                    for (int j = 0; j < pts.Count; j++) pts[j] += sh;
+                    from = client.Self.SimPosition; to += sh; pf = ch;
+                }
                 var sub = from + (to - from) * (k / (float)n);
                 bool last = i == pts.Count - 1 && k == n;
                 // Proactive door open on nav grids (same as route walk / nav): touch closed leaves, go through fast
@@ -163,6 +194,20 @@ public static partial class Program
         UUID.TryParse(who, out var id);
         return sim?.ObjectsAvatars.Values.FirstOrDefault(a => a != null && (a.ID == id || string.Equals(a.Name, who, StringComparison.OrdinalIgnoreCase)
             || (a.Name ?? "").StartsWith(who + " ", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    // an avatar by name/uuid in her region or (Neighbors.cs) a connected neighbor: position in the current region's frame
+    static (Avatar av, Vector3 pos)? FindAvatarPos(string who)
+    {
+        var sim = client.Network.CurrentSim; var a = FindAvatar(who);
+        if (a != null && sim != null && (a.ParentID == 0 || sim.ObjectsPrimitives.ContainsKey(a.ParentID))) return (a, PositionHelper.GetAvatarPosition(sim, a));
+        who = who.Trim().Trim('"'); UUID.TryParse(who, out var id);
+        foreach (var (s, off) in ViewSims().Skip(1))
+        {
+            var b = s.ObjectsAvatars.Values.FirstOrDefault(x => x != null && (x.ID == id || string.Equals(x.Name, who, StringComparison.OrdinalIgnoreCase) || (x.Name ?? "").StartsWith(who + " ", StringComparison.OrdinalIgnoreCase)));
+            if (b != null && (b.ParentID == 0 || s.ObjectsPrimitives.ContainsKey(b.ParentID))) return (b, PositionHelper.GetAvatarPosition(s, b) + off);
+        }
+        return a != null && sim != null ? (a, PositionHelper.GetAvatarPosition(sim, a)) : null;
     }
 
     static string StartWalk(string what, Func<CancellationToken, Task<string>> job, bool? fly = null)
@@ -197,7 +242,7 @@ public static partial class Program
     static async Task<string> NavCmds(string cmd, string rest, string[] a)
     {
         bool? flyFlag = null;
-        if (cmd is "walk_path" or "goto_avatar" or "sit_near") { rest = TakeFlyFlag(rest, out flyFlag); a = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries); }
+        if (cmd is "walk_path" or "goto_avatar" or "sit_near" or "walk_to") { rest = TakeFlyFlag(rest, out flyFlag); a = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries); }
         switch (cmd)
         {
             case "walk_status": return walkState;
@@ -221,6 +266,14 @@ public static partial class Program
                 }
                 return sb.ToString();
             }
+            case "walk_to":
+            {   // walk_to [<region>] <x> <y> [z]: teleport-free walk, also into a neighbor region (Neighbors.cs)
+                var (tgt, err) = ParseWalkTo(a);
+                if (err != null) return err;
+                var t = tgt.Value; var me0 = client.Self.SimPosition;
+                return StartWalk($"walk_to {V(t)}{(SimGeo.InRegion(t) ? "" : $" (across the {SimGeo.ExitBorder(me0, t)} border)")} {HDist(me0, t):F0} m",
+                    async ct => await WalkPath(new() { t }, ct) ? $"arrived at {V(client.Self.SimPosition)} in {client.Network.CurrentSim?.Name}" : $"stopped at {V(client.Self.SimPosition)} in {client.Network.CurrentSim?.Name}", flyFlag);
+            }
             case "walk_path":
             {
                 var pts = new List<Vector3>();
@@ -228,7 +281,7 @@ public static partial class Program
                 {
                     var f = seg.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
                     if (f.Length < 2 || !F(f[0], out var x) || !F(f[1], out var y)) return $"bad waypoint '{seg}' (use x,y,z;x,y,z)";
-                    float z = f.Length > 2 && F(f[2], out var zz) ? zz : (Ground(x, y) ?? client.Self.SimPosition.Z);
+                    float z = f.Length > 2 && F(f[2], out var zz) ? zz : (GroundAny(x, y) ?? client.Self.SimPosition.Z);   // x/y may be across a border (Neighbors.cs)
                     pts.Add(new Vector3(x, y, z));
                 }
                 if (pts.Count == 0) return "usage: walk_path x,y,z;x,y,z;...";
@@ -238,11 +291,12 @@ public static partial class Program
             case "sit_near":
             {
                 if (rest.Length == 0) return $"usage: {cmd} <avatar name|uuid>";
-                var av0 = FindAvatar(rest); if (av0 == null) return $"avatar '{rest}' not in view";
-                return StartWalk($"{cmd} {av0.Name}", async ct =>
+                var av0 = FindAvatarPos(rest); if (av0 == null) return $"avatar '{rest}' not in view";
+                return StartWalk($"{cmd} {av0.Value.av.Name}", async ct =>
                 {
-                    var av = FindAvatar(rest); var sim = Sim;
-                    Vector3 apos = PositionHelper.GetAvatarPosition(sim, av);
+                    // the avatar may be across a border (Neighbors.cs): position in this region's frame; the walk crosses over
+                    var hit = FindAvatarPos(rest); if (hit == null) return $"avatar '{rest}' no longer in view";
+                    var (av, apos) = hit.Value; var sim = Sim;
                     Vector3 dest = apos;
                     (Primitive p, float d)? seat = null;
                     if (cmd == "sit_near")
@@ -261,13 +315,13 @@ public static partial class Program
                         if (ng != null && !await NavWalkTo(ng, V2(dest), 1.4f, ct)) return $"could not walk to {av.Name} on nav grid '{ng.Name}' (stopped at {V(client.Self.SimPosition)})";
                         if (ng == null && !await WalkPath(new() { stop }, ct, 1.2f)) return $"could not walk to {av.Name} (stopped at {V(client.Self.SimPosition)})";
                     }
-                    if (cmd == "goto_avatar") return $"next to {av.Name}: {HDist(client.Self.SimPosition, apos):F1} m";
+                    if (cmd == "goto_avatar") return $"next to {av.Name}: {HDist(client.Self.SimPosition, FindAvatarPos(rest)?.pos ?? apos):F1} m{(client.Network.CurrentSim != sim ? $" (now in {client.Network.CurrentSim?.Name})" : "")}";
                     var sit = Sitters(sim);
                     if (sit.ContainsKey(seat.Value.p.LocalID)) { seat = await FindFreeSeatNear(apos, 3f); if (seat == null) return "seat got taken and no other free seat within 3 m"; }
                     var r = await Exec($"sit {seat.Value.p.ID}");
                     await Task.Delay(1500);
                     var aoWorn = SeatOffItems().Keys.Any(k => WornByItem().ContainsKey(k));
-                    return $"{r}; seat {seat.Value.p.ID}; distance to {av.Name} {Vector3.Distance(client.Self.SimPosition, PositionHelper.GetAvatarPosition(sim, FindAvatar(rest) ?? av)):F1} m; seat-off AO worn now: {(aoWorn ? "yes (loop will detach)" : "no")}";
+                    return $"{r}; seat {seat.Value.p.ID}; distance to {av.Name} {Vector3.Distance(client.Self.SimPosition, FindAvatarPos(rest)?.pos ?? apos):F1} m; seat-off AO worn now: {(aoWorn ? "yes (loop will detach)" : "no")}";
                 }, flyFlag);
             }
         }

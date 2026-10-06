@@ -68,6 +68,8 @@ public static partial class Program
         float dist = -1;
         if (av != null && (av.ParentID == 0 || sim.ObjectsPrimitives.ContainsKey(av.ParentID)))
             dist = Vector3.Distance(PositionHelper.GetAvatarPosition(sim, av), client.Self.SimPosition);
+        else if (FindAvatarAnySim(DavidId) is { } nb) { av = nb.av; dist = Vector3.Distance(nb.pos, client.Self.SimPosition); }   // across a border (Neighbors.cs)
+        if (crossing.Grace && afEngaged) { afDavidLastSeen = DateTime.Now; return; }   // mid-crossing: keep following, decide after it settles
         if (av != null) afDavidLastSeen = DateTime.Now;
         bool followingDavid = followId == DavidId;
         bool someoneElse = followId != UUID.Zero && !followingDavid;

@@ -11,6 +11,7 @@ public class SelftestCliTests
     [InlineData("--chat-guard-selftest")]     // PR #54 say --re
     [InlineData("--im-target-selftest")]     // im recipient split: one-word usernames, quotes, uuid, known contacts
     [InlineData("--inv-trash-selftest")]     // inv trash: exact names, ambiguity by uuid, never worn/COF/Trash
+    [InlineData("--neighbor-selftest")]   // neighbor regions: handle/offset math, crossing state machine, neighbor object cap, chat dedupe
     [InlineData("--crowd-selftest")]   // coarse-only avatars, attachment state, 360 retry, look attachment wait
     [InlineData("--friendwatch-selftest")]   // david_login wake rules + event text (no reminder clause when none)
     [InlineData("--imguard-selftest")]        // PR #32 im --re + ImGuard

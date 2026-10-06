@@ -239,6 +239,7 @@ public static partial class Program
         if (args.Contains("--outfit-safe-selftest")) { var r = OutfitSafeSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--im-target-selftest")) { var r = ImTargetSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--inv-trash-selftest")) { var r = InvTrashSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--neighbor-selftest")) { var r = NeighborSelfTest(); Console.WriteLine(r); return r.Contains(" 0 FAIL") ? 0 : 1; } // offline: region grid math, crossing state machine, neighbor cap (Neighbors.cs)
         if (args.Contains("--crowd-selftest")) { var r = CrowdSelfTest(); Console.WriteLine(r); return r.Contains(" 0 FAIL") ? 0 : 1; }
         if (args.Contains("--friendwatch-selftest")) { var r = FriendWatchCmd(new[] { "selftest" }); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--home-seats-selftest")) { var r = HomeSeatsSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
@@ -330,6 +331,7 @@ public static partial class Program
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
         HookQuiet(); // other avatars' ground-sit animations for the session detector (Quiet.cs)
         HookAnimClock(); // every avatar's playing animations + since when, for scene export / look (SceneExport.cs)
+        HookNeighbors(); // neighbor regions (child agents), border crossings (Neighbors.cs)
         string password;
         try { password = ReadPassword(); } catch (Exception ex) { Log("error", "cannot read secrets file: " + ex.GetType().Name); return "FAILED: cannot read secrets file"; }
         if (string.IsNullOrEmpty(password)) { Log("error", "password empty; refusing to log in"); return "FAILED: password empty"; }
@@ -443,6 +445,9 @@ public static partial class Program
         {
             if (e.Type is ChatType.StartTyping or ChatType.StopTyping or ChatType.Debug) return;
             if (string.IsNullOrEmpty(e.Message)) return;
+            // neighbor regions (Neighbors.cs): a line near a border can reach her from two regions; position is local to the sender
+            if (MultiSims && ChatDup(chatSeen, e.SourceID, e.Message, DateTime.Now)) return;
+            var chatPos = ChatPosInCur(client.Network.CurrentSim?.Handle ?? 0, e.Simulator?.Handle ?? 0, e.Position);
             if (e.SourceType == ChatSourceType.Agent) Remember(e.FromName, e.SourceID);
             if (e.SourceType == ChatSourceType.Agent && e.SourceID != client.Self.AgentID && e.Type is ChatType.Normal or ChatType.Whisper) NoteChatPartner(e.SourceID);
             if (e.SourceType == ChatSourceType.Agent ? MutedDrop(e.SourceID, e.FromName, "chat") : MutedDrop(e.OwnerID, NameOf(e.OwnerID), "object chat")) return;
@@ -464,10 +469,10 @@ public static partial class Program
                 && e.Type is ChatType.Normal or ChatType.Whisper or ChatType.Shout && !string.IsNullOrWhiteSpace(e.Message))
             {
                 double? dist = null;
-                try { if (e.Position != Vector3.Zero) dist = Math.Round(Vector3.Distance(e.Position, client.Self.SimPosition), 1); } catch { }
+                try { if (chatPos != Vector3.Zero) dist = Math.Round(Vector3.Distance(chatPos, client.Self.SimPosition), 1); } catch { }
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId);
-                WanderChatIn(e.SourceID, e.FromName, e.Position, false);
+                WanderChatIn(e.SourceID, e.FromName, chatPos, false);
                 AutoFollowFromDavid(e.SourceID, e.Message); // "stop following" / "follow me" (AutoFollow.cs)
             }
         };
@@ -596,6 +601,7 @@ public static partial class Program
             // follow itself runs in FollowLoop (Follow.cs, 250 ms: standoff point, bands, doors)
             try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
             try { CameraAnchorTick(); } catch { }
+            try { NeighborTick(); } catch (Exception ex) { Log("regions", "tick error: " + ex.GetBaseException().Message); } // Neighbors.cs crossing watch + neighbor cap
             try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } // OutfitZones.cs beach/house
             try { await Task.Delay(1000, cts.Token); } catch { }
         }
@@ -664,7 +670,8 @@ public static partial class Program
             following = followId == UUID.Zero ? null : followName,
             auto_accept_lures_from = autoLure ? LureAllow : Array.Empty<string>(),
             pending_lure = pendingLure?.name, queued_events = Events.Count,
-            rss_mb = proc.WorkingSet64 / 1048576, objects_known = sim?.ObjectsPrimitives.Count, avatars_known = sim?.ObjectsAvatars.Count
+            rss_mb = proc.WorkingSet64 / 1048576, objects_known = sim?.ObjectsPrimitives.Count, avatars_known = sim?.ObjectsAvatars.Count,
+            neighbor_regions = ViewSims().Skip(1).Select(v => v.sim.Name).ToArray()
         };
     }
 
@@ -678,21 +685,31 @@ public static partial class Program
             seated_on = t.av.ParentID != 0 ? SeatName(t.av.ParentID) : null
         }).ToList();
         foreach (var t in Avatars()) Remember(t.av.Name, t.av.ID);
-        var roots = sim.ObjectsPrimitives.Values
+        // neighbor regions (Neighbors.cs): avatars and objects across the border, pos in this region's frame + their region
+        foreach (var (a, nsim, p, d) in NeighborAvatars(Math.Max(radius, 64f)))
+        {
+            Remember(a.Name, a.ID);
+            avs.Add(new { name = a.Name, uuid = a.ID.ToString(), distance = (float?)MathF.Round(d, 1), pos = new[] { MathF.Round(p.X, 1), MathF.Round(p.Y, 1), MathF.Round(p.Z, 1) },
+                          seated_on = a.ParentID != 0 ? "(object in " + nsim.Name + ")" : null });
+        }
+        var roots = ViewSims().SelectMany(v => v.sim.ObjectsPrimitives.Values
             .Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim)
-            .Select(p => (p, d: Vector3.Distance(p.Position, me))).Where(t => t.d <= radius)
+            .Select(p => (p, s: v.sim, pos: p.Position + v.off)))
+            .Select(t => (t.p, t.s, t.pos, d: Vector3.Distance(t.pos, me))).Where(t => t.d <= radius)
             .OrderBy(t => t.d).Take(string.IsNullOrEmpty(filter) ? 400 : 3000).ToList();
-        await EnsureProperties(sim, roots.Select(t => t.p).ToList());
-        var sit = Sitters(sim);
+        foreach (var g in roots.GroupBy(t => t.s)) await EnsureProperties(g.Key, g.Select(t => t.p).ToList());
+        var sits = roots.Select(t => t.s).Distinct().ToDictionary(x => x, x => Sitters(x));
         var objs = roots.Where(t => string.IsNullOrEmpty(filter) || (t.p.Properties?.Name ?? "").Contains(filter, StringComparison.OrdinalIgnoreCase))
             .Take(max).Select(t => new
             {
                 name = t.p.Properties?.Name, uuid = t.p.ID.ToString(), distance = MathF.Round(t.d, 1),
-                pos = new[] { MathF.Round(t.p.Position.X, 1), MathF.Round(t.p.Position.Y, 1), MathF.Round(t.p.Position.Z, 1) },
+                pos = new[] { MathF.Round(t.pos.X, 1), MathF.Round(t.pos.Y, 1), MathF.Round(t.pos.Z, 1) },
                 owner = t.p.Properties != null ? NameOf(t.p.Properties.OwnerID) : null,
-                occupied_by = sit.TryGetValue(t.p.LocalID, out var l) ? l : null
+                occupied_by = sits[t.s].TryGetValue(t.p.LocalID, out var l) ? l : null,
+                region = t.s == sim ? null : t.s.Name
             }).ToList();
-        return new { region = sim.Name, me = new[] { me.X, me.Y, me.Z }, avatars = avs, objects = objs };
+        return new { region = sim.Name, me = new[] { me.X, me.Y, me.Z }, avatars = avs, objects = objs,
+                     neighbor_regions = ViewSims().Skip(1).Select(v => new { name = v.sim.Name, dir = SimGeo.Dir(sim.Handle, v.sim.Handle), offset = new[] { v.off.X, v.off.Y } }).ToList() };
     }
 
     public static List<EventItem> DrainEvents(int max)
@@ -1451,22 +1468,24 @@ public static partial class Program
     static async Task<string> Objects(float radius, string filter, int max = 60)
     {
         var sim = Sim; var me = client.Self.SimPosition;
-        var roots = sim.ObjectsPrimitives.Values
+        // current region and (Neighbors.cs) connected neighbors, positions in the current region's frame
+        var roots = ViewSims().SelectMany(v => v.sim.ObjectsPrimitives.Values
             .Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim)
-            .Select(p => (p, pos: p.Position, d: Vector3.Distance(p.Position, me)))
+            .Select(p => (p, s: v.sim, pos: p.Position + v.off)))
+            .Select(t => (t.p, t.s, t.pos, d: Vector3.Distance(t.pos, me)))
             .Where(t => t.d <= radius).OrderBy(t => t.d).Take(string.IsNullOrEmpty(filter) ? 400 : 3000).ToList();
-        await EnsureProperties(sim, roots.Select(t => t.p).ToList());
-        var sit = Sitters(sim);
+        foreach (var g in roots.GroupBy(t => t.s)) await EnsureProperties(g.Key, g.Select(t => t.p).ToList());
+        var sits = roots.Select(t => t.s).Distinct().ToDictionary(x => x, x => Sitters(x));
         var sb = new StringBuilder();
         int n = 0;
-        foreach (var (p, pos, d) in roots)
+        foreach (var (p, s, pos, d) in roots)
         {
             var name = p.Properties?.Name ?? "(name unknown)";
             if (!string.IsNullOrEmpty(filter) && name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
             if (++n > max) { sb.AppendLine($"... (more; narrow with a radius or filter)"); break; }
             var owner = p.Properties != null ? NameOf(p.Properties.OwnerID) : "?";
-            var occ = sit.TryGetValue(p.LocalID, out var l) ? $"  OCCUPIED by {string.Join(", ", l)}" : "";
-            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  owner={3}  at {4}{5}", d, p.ID, name, owner, Fmt(pos), occ));
+            var occ = sits[s].TryGetValue(p.LocalID, out var l) ? $"  OCCUPIED by {string.Join(", ", l)}" : "";
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  owner={3}  at {4}{5}{6}", d, p.ID, name, owner, Fmt(pos), occ, RegionTag(s)));
         }
         if (n == 0) sb.AppendLine("(no objects matched)");
         return sb.ToString();
@@ -1484,8 +1503,14 @@ public static partial class Program
             sb.AppendLine(d < 0 ? $"     ?m  {a.ID}  {a.Name}  (seated on an object not loaded yet){seat}{head}"
                               : string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}{5}", d, a.ID, a.Name, Fmt(p), seat, head));
         }
+        var nb = NeighborAvatars();
+        foreach (var (a, sim, p, d) in nb)
+        {
+            Remember(a.Name, a.ID);
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}  {5}{6}", d, a.ID, a.Name, Fmt(p), RegionTag(sim), FmtAvatarHeading(a.Rotation), a.ParentID != 0 ? "  (seated)" : ""));
+        }
         var coarse = CoarseOnlyLines();
-        if (list.Count == 0) sb.AppendLine(NoAvatarsLine(CoarseReceived, coarse.Length > 0));
+        if (list.Count == 0 && nb.Count == 0) sb.AppendLine(NoAvatarsLine(CoarseReceived, coarse.Length > 0));
         return sb.ToString() + coarse;
     }
 
@@ -1695,7 +1720,8 @@ public static partial class Program
                 return $"connected={client.Network.Connected} region={sim?.Name} pos={Fmt(client.Self.SimPosition)} " +
                        $"sitting_on={(client.Self.SittingOn == 0 ? "-" : SeatName(client.Self.SittingOn))} follow={(followId == UUID.Zero ? "-" : followName)}{(afEngaged ? "(auto)" : "")} autofollow={(AutoFollowOn ? (DateTime.Now < afSnoozeUntil ? "snoozed" : "on") : "off")} " +
                        $"autolure={(autoLure ? "on" : "off")} pending_lure={(pendingLure?.name ?? "-")} uptime={(DateTime.Now - started):hh\\:mm\\:ss} " +
-                       $"rss_mb={proc.WorkingSet64 / 1048576} objects={sim?.ObjectsPrimitives.Count} avatars={sim?.ObjectsAvatars.Count} quiet={QuietFlag()} ao={AoFlag()}";
+                       $"rss_mb={proc.WorkingSet64 / 1048576} objects={sim?.ObjectsPrimitives.Count} avatars={sim?.ObjectsAvatars.Count} quiet={QuietFlag()} ao={AoFlag()}" +
+                       (MultiSims ? $" neighbors={ViewSims().Count - 1}{(crossing.State != CrossingWatch.Phase.Idle ? $" crossing={crossing.State}" : "")}" : "");
             }
             case "say": case "shout": case "whisper":
             {
@@ -1837,8 +1863,9 @@ public static partial class Program
             case "rebake": { try { await client.Appearance.RequestSetAppearance(true); return "appearance update (server bake) requested"; } catch (Exception ex) { return "rebake failed: " + ex.GetBaseException().Message; } }
             case "anim": return AnimCmd(a);
             case "mute": case "unmute": case "mutelist": return await MuteCmds(cmd, rest);
-            case "walk_path": case "goto_avatar": case "sit_near": case "walk_status": case "walk_stop": case "map": case "terrain":
-                if (cmd is "walk_path" or "goto_avatar" or "sit_near" && WanderBlocksManualWalk) return "wander is running: 'wander pause' (or 'wander stop') first";
+            case "regions": case "neighbors": return RegionsCmd(a);   // Neighbors.cs
+            case "walk_path": case "goto_avatar": case "sit_near": case "walk_status": case "walk_stop": case "map": case "terrain": case "walk_to":
+                if (cmd is "walk_path" or "goto_avatar" or "sit_near" or "walk_to" && WanderBlocksManualWalk) return "wander is running: 'wander pause' (or 'wander stop') first";
                 return await NavCmds(cmd, rest, a);
             case "wander": return await WanderCmds(a);
             case "quiet": return QuietCmds(a);
@@ -1914,6 +1941,8 @@ public static partial class Program
                 if (client.Self.SittingOn == 0 && !AoStateNow().active) { AoLog($"moveto REFUSED: {AoStateNow().why}"); return "refused: AO not active (" + AoStateNow().why + "); not walking"; }
                 if (a.Length != 3 || !F(a[0], out var x) || !F(a[1], out var y) || !F(a[2], out var z)) return "usage: moveto <x> <y> <z>  (region-local)";
                 followId = UUID.Zero;
+                if (!SimGeo.InRegion(new Vector3(x, y, z)) && client.Self.SittingOn == 0)   // across a border: walk it with crossing-aware legs (Neighbors.cs)
+                    return await NavCmds("walk_to", $"{x.ToString(CultureInfo.InvariantCulture)} {y.ToString(CultureInfo.InvariantCulture)} {z.ToString(CultureInfo.InvariantCulture)}", new[] { x.ToString(CultureInfo.InvariantCulture), y.ToString(CultureInfo.InvariantCulture), z.ToString(CultureInfo.InvariantCulture) });
                 {   // NavPlan.cs: on a nav grid with the straight line blocked, walk the planned route (walls, doors) instead
                     var me0 = client.Self.SimPosition; var ng = NavGridFor(Sim.Name, me0, new Vector3(x, y, z));
                     if (ng != null && client.Self.SittingOn == 0 && !NavStraightClear(ng, me0, new Vector3(x, y, z)) && !WanderBlocksManualWalk)

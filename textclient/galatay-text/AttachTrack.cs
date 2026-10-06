@@ -47,8 +47,11 @@ public static partial class Program
     // the sim's OWN list of our attachments, from AvatarAppearance.AttachmentBlock for our avatar (authoritative, read-only)
     static List<(UUID id, byte point)> simAttList = null; static DateTime simAttTime; static int simAttPackets; static int simAttCof;
     static readonly ConcurrentDictionary<uint, DateTime> killedUnseen = new();
+    // every child LocalID per parent LocalID seen in raw full/compressed updates (current sim), for 'crowd' (raw vs stored)
+    internal static readonly ConcurrentDictionary<uint, ConcurrentDictionary<uint, byte>> rawChildren = new();
     static void SeenNote(uint local, UUID full, uint parent, byte pcode, string src, bool hasItem)
     {
+        if (parent != 0) rawChildren.GetOrAdd(parent, _ => new()).TryAdd(local, 0);
         if (attTrackStart == DateTime.MinValue) attTrackStart = DateTime.Now;
         if ((DateTime.Now - attTrackStart).TotalSeconds > 120 && !attSeenAll.ContainsKey(local)) return;
         attSeenAll[local] = new SeenRec { Local = local, Full = full, Parent = parent, PCode = pcode, Src = src, T = DateTime.Now, HasItem = hasItem };

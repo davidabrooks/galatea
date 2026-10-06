@@ -25,6 +25,12 @@ VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
 def mesher_args(d, mode, me, far):
     return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + (["96", "--far=30"] if far else ["30", "--roots=32"])
 
+def mesher_error(text):
+    """The exception line itself (a .NET trace's tail is just Parallel.ForEach frames), then the tail."""
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    exc = next((l for l in lines if "Exception" in l and not l.startswith("at ")), "")
+    return ((exc[:300] + " | ") if exc else "") + (text or "")[-300:]
+
 def bake_keys(meta, doc):
     """Exact bake-<key>.j2c keys needed: batch bake: refs + stand-in heads for placeholder others."""
     keys = set()
@@ -51,7 +57,8 @@ def main(a):
         pt = [av["pos"][0], av["pos"][1], av["pos"][2] + 0.7] if av else obj["world_pos"] if obj else None
         if pt: args.append("--look=" + ",".join(str(v) for v in pt))
     r = subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + args, capture_output=True, text=True)
-    if r.returncode: sys.exit("scene-mesher failed: " + (r.stderr or r.stdout)[-400:])
+    if r.returncode: sys.exit("scene-mesher failed: " + mesher_error(r.stderr or r.stdout))
+    mesh_warn = [l for l in (r.stderr or "").splitlines() if l.startswith("warning:")]
     times["mesh"] = round(time.time() - t0, 1)
     meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["backdrop"] = far
     if far: meta["water_height"] = doc.get("water_height")
@@ -105,7 +112,8 @@ def main(a):
         times["render_views"] = rend
     for p in outs: print(p)
     print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "seconds": times, "total": round(time.time() - t0, 1),
-                      "others": [o["name"] for o in meta.get("others", [])], "textures": info["textures"], "bakes": n_bake}))
+                      "others": [o["name"] for o in meta.get("others", [])], "textures": info["textures"], "bakes": n_bake}
+                     | ({"mesh_warnings": mesh_warn} if mesh_warn else {})))
 
 if __name__ == "__main__":
     main(sys.argv[1:])

@@ -40,7 +40,7 @@ public static partial class Program
     // Before a look/export: wait briefly for nearby avatars' attachment prims (ParentID == avatar LocalID).
     // AvatarAppearance lists expected attachment UUIDs; the interest list may not have delivered them yet in a crowd
     // (Warehouse 21: 34 avatars in range, only 1 had any attachment prims). Select the avatars and re-anchor the
-    // camera to nudge the sim; read-only. ponytail: best-effort up to 8 s; ceiling = still-missing attachments stay missing
+    // camera to nudge the sim; read-only. ponytail: adaptive wait up to 25 s (stops when no progress for 4 s); ceiling = still-missing attachments stay missing
     static async Task EnsureNearbyAttachments(float radius)
     {
         var sim = Sim; var me = client.Self; var myPos = me.SimPosition;
@@ -55,21 +55,28 @@ public static partial class Program
         foreach (var chunk in near.Select(a => a.LocalID).Chunk(50))
             client.Objects.SelectObjects(sim, chunk.ToArray(), true);
         var mv = client.Self.Movement; var home = mv.Camera.Position; var homeAt = mv.Camera.AtAxis;
-        var t0 = DateTime.UtcNow; int spins = 0;
-        while ((DateTime.UtcNow - t0).TotalSeconds < 8)
+        // the region should be in 360 interest mode (Crowd.cs); re-assert it once if it isn't, then wait while attachments
+        // keep arriving (adaptive: stop when all have some, no progress for 4 s, or 25 s)
+        if (!(interestState.TryGetValue(sim.Handle, out var ist) && ist.ok)) _ = Ensure360ForCurrentRegion("look");
+        var t0 = DateTime.UtcNow; int spins = 0; var samples = new List<int>(); string why;
+        const int tick = 500, budget = 25000;
+        while (true)
         {
-            short_ = near.Where(a => Expect(a) > 0 && Have(a) < Math.Max(1, Expect(a) / 2)).ToList();
-            int bare = near.Count(a => Have(a) == 0);
-            if (short_.Count == 0 && bare == 0) break;
+            var rc = AttachRootsByAvatar(sim);
+            int withAny = near.Count(a => rc.ContainsKey(a.LocalID));
+            samples.Add(withAny);
+            why = LookAttachWaitDone(samples, near.Count, (int)(DateTime.UtcNow - t0).TotalMilliseconds, tick, budget);
+            if (why != null) break;
             // nudge camera toward the nearest bare/short avatar (interest list), then back
+            short_ = near.Where(a => Expect(a) > 0 && Have(a) < Math.Max(1, Expect(a) / 2)).ToList();
             var focus = (short_.Count > 0 ? short_ : near.Where(a => Have(a) == 0).DefaultIfEmpty(near[0])).OrderBy(a => Vector3.Distance(PositionHelper.GetAvatarPosition(sim, a), myPos)).First();
             var fp = PositionHelper.GetAvatarPosition(sim, focus);
             mv.Camera.LookAt(myPos, fp); mv.SendUpdate(true);
-            await Task.Delay(400); spins++;
+            await Task.Delay(tick); spins++;
         }
         mv.Camera.LookAt(home, home + homeAt); mv.SendUpdate(true);
         int with = near.Count(a => Have(a) > 0);
-        Log("look", $"attachments: {with}/{near.Count} nearby avatars have prims after {spins} nudge(s) in {(DateTime.UtcNow - t0).TotalSeconds:F1} s");
+        Log("look", $"attachments: {with}/{near.Count} nearby avatars have prims after {spins} nudge(s) in {(DateTime.UtcNow - t0).TotalSeconds:F1} s ({why})");
     }
 
     static async Task<string> SceneExport(string[] a)

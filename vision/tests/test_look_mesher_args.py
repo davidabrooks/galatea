@@ -26,3 +26,14 @@ def test_pr29_far_flag_uses_96():
 def test_pr33_self_mode_avatar_only():
     me = [0, 0, 0]
     assert look.mesher_args("d", "self", me, True) == ["d", "12", "avatar"]
+
+
+def test_mesher_error_shows_exception_line_not_only_foreach_frames():
+    trace = ("Unhandled exception. System.AggregateException: One or more errors occurred. "
+             "(Index was outside the bounds of the array.)\n"
+             " ---> System.IndexOutOfRangeException: Index was outside the bounds of the array.\n"
+             "   at Mesher.<>c__DisplayClass.<Main>b__0(OSDMap o)\n" + "   at System.Threading.Tasks.Parallel.ForEach frame\n" * 20)
+    msg = look.mesher_error(trace)
+    assert msg.startswith("Unhandled exception. System.AggregateException")
+    assert "Parallel.ForEach" in msg  # tail still included
+    assert look.mesher_error("plain failure") == "plain failure"

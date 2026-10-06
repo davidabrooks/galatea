@@ -226,7 +226,20 @@ static class Mesher
         var legacy = doc.ContainsKey("materials") ? (OSDMap)doc["materials"] : new OSDMap();
         Console.WriteLine($"assets: {assets.Count(a => a.Value != null)}/{assets.Count} fetched, {pbr.Count} pbr, {legacy.Count} legacy materials");
 
+        // one bad prim (odd mesh asset, malformed TE) must not kill a whole crowd render (2026-10-05 Warehouse 21: the look
+        // failed with only the Parallel.ForEach frame visible): count it, keep the first error for the log, skip that prim
+        int primErrors = 0; string firstPrimError = null;
         Parallel.ForEach(prims, new ParallelOptions { MaxDegreeOfParallelism = 8 }, o =>
+        {
+            try { PrimBody(o); }
+            catch (Exception ex)
+            {
+                if (Interlocked.Increment(ref primErrors) == 1)
+                    firstPrimError = $"prim {(o.ContainsKey("id") ? o["id"].AsUUID().ToString() : "?")} '{(o.ContainsKey("name") ? o["name"].AsString() : "")}': {ex.GetType().Name}: {ex.Message} @ {ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}";
+            }
+        });
+        if (primErrors > 0) { stats["prim_error_skipped"] = primErrors; Console.Error.WriteLine($"warning: {primErrors} prim(s) skipped after errors; first: {firstPrimError}"); }
+        void PrimBody(OSDMap o)
         {
             var p = Primitive.FromOSD(o);
             var owner = Owner(o); bool mine = owner != null;
@@ -270,7 +283,7 @@ static class Mesher
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
             if (mine) { (bind != null ? rigged : unrigged).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
             Emit(p, fm, nav ? $"nav:{p.LocalID}" : far ? "far" : "scene", null, null, pos, rot, o);
-        });
+        }
 
 
         // per-face material: PBR asset > legacy material (alpha mode/cutoff, normal + specular maps) > SL's default

@@ -16,6 +16,7 @@ public class SelftestCliTests
     [InlineData("--front-selftest")]         // front arc + avatar heading helpers
     [InlineData("--bikini-selftest")]        // bikini HUD random among D/W/T textures
     [InlineData("--outfit-zones-selftest")]   // Peronaut beach/house + daily candidates
+    [InlineData("--home-seats-selftest")]     // Peronaut lower-level seats over the path graph (tour 2026-10-05)
     [InlineData("--outfit-safe-selftest")]    // no hair stacking, AO protected, clothing HUD buttons
     [InlineData("--exp-selftest")]            // PR #45/#46 experiences + TEMP
     [InlineData("--worn-selftest")]           // attachment tracking

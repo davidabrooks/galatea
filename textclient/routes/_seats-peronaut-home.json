@@ -2,44 +2,47 @@
   "region": "Peronaut",
   "parcel": "David and Galatea Nightingale",
   "parcel_group": "394073e3-c51a-90d3-3d22-f04ffb35a471",
-  "note": "Sittable items on our Sunrise Suites rental. Upper floor nav grid covers z~29; lower beach/porch verified by walk but not yet in the walkable grid (climb back up is tricky — see problems). Adult=name or theme. Owners: David=ours, Fiona Velvet=rental furnishings.",
+  "note": "Sittable items on our Sunrise Suites rental. Upper floor nav grid covers z~29; the lower level (porch, beach, mooring deck, Burgundy pier) is on the path graph _graph-Peronaut.json from David's tour 2026-10-05. 'group' = several chairs at one spot: pick one at random. 'special': shower (bikini, menu, valve on/off), undress (tub). Always walk to a seat; random solo pose. Owners: David=ours, Fiona Velvet=rental furnishings.",
   "doors": [
     {"id": "patio-1", "uuid": "69c81c48-855a-8721-9f6d-077013622fe0", "pos": [223.92, 68.08, 29.38], "kind": "patio"},
     {"id": "patio-2", "uuid": "f942bf67-2214-625c-9774-2bdbc9530b03", "pos": [232.17, 68.07, 29.38], "kind": "patio"},
     {"id": "side-room-1", "uuid": "2f618f3b-175a-dec7-241e-f5b0b7c72246", "pos": [224.25, 76.03, 29.38], "kind": "side-room"},
     {"id": "side-room-2", "uuid": "c9a6a523-81dd-fadc-331f-4e0147ee2841", "pos": [231.85, 76.03, 29.38], "kind": "side-room"},
-    {"id": "front-double", "panels": [
-      {"id": "front-double-west", "uuid": "22927a8c-b2f0-1299-d837-952bd27b31da", "pos": [226.66, 79.58, 29.39]},
-      {"id": "front-double-east", "uuid": "1b5752e3-7a49-aa75-621f-033b5b61d125", "pos": [229.44, 79.58, 29.39]}
-    ], "kind": "front-double"}
+    {"id": "front-double", "panels": [{"id": "front-double-west", "uuid": "22927a8c-b2f0-1299-d837-952bd27b31da", "pos": [226.66, 79.58, 29.39]}, {"id": "front-double-east", "uuid": "1b5752e3-7a49-aa75-621f-033b5b61d125", "pos": [229.44, 79.58, 29.39]}], "kind": "front-double"}
   ],
   "seats": [
-    {"uuid": "1b9ab440-3b52-b827-2eae-7de92fb69cfb", "name": "Dutchie maledom desk", "pos": [228.1, 71.5, 29.1], "owner": "David Nightingale", "level": "upper", "where": "indoor living", "adult": true, "place": "desk"},
-    {"uuid": "f6844138-499f-0f3e-ba6a-ce601a16eafe", "name": "Lalou - Ultra Sofa v1.1", "pos": [228.0, 65.7, 28.7], "owner": "David Nightingale", "level": "upper", "where": "indoor living", "adult": false, "place": "sofa"},
-    {"uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "name": "BENTO PHYSICS MIRAGE BED 1.0", "pos": [215.7, 75.3, 27.9], "owner": "David Nightingale", "level": "upper", "where": "indoor west wing", "adult": true, "place": "bed"},
-    {"uuid": "53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc", "name": "Dutchie clawfoot bath tub adult", "pos": [239.4, 73.6, 28.8], "owner": "David Nightingale", "level": "upper", "where": "indoor east wing", "adult": true, "place": "tub"},
-    {"uuid": "7beb04ac-b4cc-8e7d-98b2-d5a4683afcbc", "name": "Trompe Loeil - Reiley Net Chair PG", "pos": [230.3, 59.1, 28.8], "owner": "Fiona Velvet", "level": "upper", "where": "outdoor patio", "adult": false, "place": "chairs"},
-    {"uuid": "cab3241e-97e4-4ad6-f795-008180ea2d74", "name": "Trompe Loeil - Reiley Net Chair PG", "pos": [232.3, 58.4, 28.8], "owner": "Fiona Velvet", "level": "upper", "where": "outdoor patio", "adult": false, "place": "chairs"},
-    {"uuid": "178cd94e-72ca-28d5-fb6b-d0b4a7897dad", "name": "Trompe Loeil - Deja Hanging Lounger + Sheepskin PG", "pos": [225.9, 81.8, 29.4], "owner": "Fiona Velvet", "level": "upper", "where": "outdoor front porch", "adult": false, "place": "front"},
-    {"uuid": "c78d42b6-c75c-df84-aa8c-8f78cbd2cb6c", "name": "Nutmeg. Porch Rocking Chair", "pos": [217.1, 82.8, 25.5], "owner": "Fiona Velvet", "level": "lower-porch", "where": "outdoor NW porch (mid height)", "adult": false, "place": null, "nav": "not in upper grid yet"},
-    {"uuid": "e386ff1e-825c-14ec-715d-3dfc2df5e54b", "name": "Nutmeg. Porch Rocking Chair w/Throw", "pos": [217.2, 84.1, 25.5], "owner": "Fiona Velvet", "level": "lower-porch", "where": "outdoor NW porch (mid height)", "adult": false, "place": null, "nav": "not in upper grid yet"},
-    {"uuid": "1f6e8ba6-3ea2-02c3-6e3b-2618f4c1b6aa", "name": "KraftWork Summer Shack . Beach Hammock ADULT", "pos": [231.0, 55.2, 22.2], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": true, "place": "beach", "nav": "reached via front door + right turns / patio edge drop; climb back is hard"},
-    {"uuid": "81f12788-a433-0222-8c30-9eeae62cf80e", "name": "Nerenzo beach chair - adult (right)", "pos": [222.6, 53.7, 20.5], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": true, "place": "beach"},
-    {"uuid": "889748ee-b571-128e-7868-64aafad8f7ab", "name": "Nerenzo beach chair - adult (left)", "pos": [220.8, 54.1, 20.5], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": true, "place": "beach"},
-    {"uuid": "fee00d83-99e1-cd11-1d0a-cf57bf2a0963", "name": "Nerenzo beach chair - parasol", "pos": [221.7, 54.0, 21.9], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": false, "place": "beach"},
-    {"uuid": "9970956b-d6dc-8328-224a-6f527268eb3f", "name": "Nutmeg. Poolside Chair w/Colored Throw PG", "pos": [209.6, 60.7, 21.1], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor west beach/pool", "adult": false, "place": null},
-    {"uuid": "e352f3a5-1c88-1747-b5fb-b9bc703eb2db", "name": "Nutmeg. Poolside Chair w/Colored Throw PG", "pos": [208.7, 59.6, 21.1], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor west beach/pool", "adult": false, "place": null},
-    {"uuid": "a3f619bd-52c2-0e1f-e8c3-7f95375f2ae9", "name": "Nutmeg. Marsh Rowboat White w/Blankets (Swaying)", "pos": [219.3, 60.3, 21.1], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": false, "place": null},
-    {"uuid": "6ddb08d2-f9bd-4118-d602-af6f0386bd28", "name": "Atelier Burgundy . Burgundy Pier . Bench", "pos": [218.0, 44.6, 21.4], "owner": "Fiona Velvet", "level": "lower-pier", "where": "outdoor pier (parcel edge)", "adult": false, "place": null}
+    {"uuid": "1b9ab440-3b52-b827-2eae-7de92fb69cfb", "name": "Dutchie maledom desk", "pos": [228.1, 71.5, 29.1], "owner": "David Nightingale", "level": "upper", "where": "indoor living", "adult": true, "place": "desk", "wander": true},
+    {"uuid": "f6844138-499f-0f3e-ba6a-ce601a16eafe", "name": "Lalou - Ultra Sofa v1.1", "pos": [228.0, 65.7, 28.7], "owner": "David Nightingale", "level": "upper", "where": "indoor living", "adult": false, "place": "sofa", "wander": true},
+    {"uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "name": "BENTO PHYSICS MIRAGE BED 1.0", "pos": [215.7, 75.3, 27.9], "owner": "David Nightingale", "level": "upper", "where": "indoor west wing", "adult": true, "place": "bed", "wander": true},
+    {"uuid": "53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc", "name": "Dutchie clawfoot bath tub adult", "pos": [239.4, 73.6, 28.8], "owner": "David Nightingale", "level": "upper", "where": "indoor east wing", "adult": true, "place": "tub", "special": "undress", "note": "undress before sitting, dress again after (David)", "wander": true},
+    {"uuid": "7beb04ac-b4cc-8e7d-98b2-d5a4683afcbc", "name": "Trompe Loeil - Reiley Net Chair PG", "pos": [230.3, 59.1, 28.8], "owner": "Fiona Velvet", "level": "upper", "where": "outdoor patio", "adult": false, "place": "chairs", "wander": true},
+    {"uuid": "cab3241e-97e4-4ad6-f795-008180ea2d74", "name": "Trompe Loeil - Reiley Net Chair PG", "pos": [232.3, 58.4, 28.8], "owner": "Fiona Velvet", "level": "upper", "where": "outdoor patio", "adult": false, "place": "chairs", "wander": true},
+    {"uuid": "178cd94e-72ca-28d5-fb6b-d0b4a7897dad", "name": "Trompe Loeil - Deja Hanging Lounger + Sheepskin PG", "pos": [225.9, 81.8, 29.4], "owner": "Fiona Velvet", "level": "upper", "where": "outdoor front porch", "adult": false, "place": "front", "wander": true},
+    {"uuid": "c78d42b6-c75c-df84-aa8c-8f78cbd2cb6c", "name": "Nutmeg. Porch Rocking Chair", "pos": [217.1, 82.8, 25.5], "owner": "Fiona Velvet", "level": "lower-porch", "where": "front porch (NW, mid height)", "adult": false, "place": null, "nav": "graph: porch", "group": "porch-rockers", "wander": true},
+    {"uuid": "e386ff1e-825c-14ec-715d-3dfc2df5e54b", "name": "Nutmeg. Porch Rocking Chair w/Throw", "pos": [217.2, 84.1, 25.5], "owner": "Fiona Velvet", "level": "lower-porch", "where": "front porch (NW, mid height)", "adult": false, "place": null, "nav": "graph: porch", "group": "porch-rockers", "wander": true},
+    {"uuid": "1f6e8ba6-3ea2-02c3-6e3b-2618f4c1b6aa", "name": "KraftWork Summer Shack . Beach Hammock ADULT", "pos": [231.0, 55.2, 22.2], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": true, "place": "beach", "nav": "graph: beach-east", "wander": true},
+    {"uuid": "81f12788-a433-0222-8c30-9eeae62cf80e", "name": "Nerenzo beach chair - adult (right)", "pos": [222.6, 53.7, 20.5], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": true, "place": "beach", "group": "nerenzo-chairs", "nav": "graph: beach-chairs", "wander": true},
+    {"uuid": "889748ee-b571-128e-7868-64aafad8f7ab", "name": "Nerenzo beach chair - adult (left)", "pos": [220.8, 54.1, 20.5], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": true, "place": "beach", "group": "nerenzo-chairs", "nav": "graph: beach-chairs", "wander": true},
+    {"uuid": "fee00d83-99e1-cd11-1d0a-cf57bf2a0963", "name": "Nerenzo beach chair - parasol", "pos": [221.7, 54.0, 21.9], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": false, "place": "beach", "wander": false, "note": "parasol of the Nerenzo set, not a seat"},
+    {"uuid": "9970956b-d6dc-8328-224a-6f527268eb3f", "name": "Nutmeg. Poolside Chair w/Colored Throw PG", "pos": [209.6, 60.7, 21.1], "owner": "Fiona Velvet", "level": "lower-beach", "where": "GOOSE Mooring deck (west, up the 3-step stair)", "adult": false, "place": null, "group": "deck-poolside", "nav": "graph: mooring-deck", "wander": true},
+    {"uuid": "e352f3a5-1c88-1747-b5fb-b9bc703eb2db", "name": "Nutmeg. Poolside Chair w/Colored Throw PG", "pos": [208.7, 59.6, 21.1], "owner": "Fiona Velvet", "level": "lower-beach", "where": "GOOSE Mooring deck (west, up the 3-step stair)", "adult": false, "place": null, "group": "deck-poolside", "nav": "graph: mooring-deck", "wander": true},
+    {"uuid": "a3f619bd-52c2-0e1f-e8c3-7f95375f2ae9", "name": "Nutmeg. Marsh Rowboat White w/Blankets (Swaying)", "pos": [219.3, 60.3, 21.1], "owner": "Fiona Velvet", "level": "lower-beach", "where": "outdoor beach", "adult": false, "place": null, "nav": "graph: rowboat", "note": "has poses; random solo pose", "wander": true},
+    {"uuid": "6ddb08d2-f9bd-4118-d602-af6f0386bd28", "name": "Atelier Burgundy . Burgundy Pier . Bench", "pos": [218.0, 44.6, 21.4], "owner": "Fiona Velvet", "level": "lower-pier", "where": "Burgundy pier (first bench)", "adult": false, "place": null, "nav": "graph: pier", "wander": true},
+    {"uuid": "4f86d9a9-97de-3e9e-d1c4-d6ba9a843f1d", "name": "Nutmeg. Outdoor Shower Adult", "pos": [224.8, 56.5, 20.9], "owner": "", "level": "lower-beach", "where": "beach", "adult": true, "place": "beach-chairs", "nav": "graph: beach-chairs", "special": "shower", "menu": ["Single*", ["F1", "F2"]], "touch_child": "fd4c7e59-f20c-c393-1d40-54a4c1f08ecd", "note": "Bikini on (beach). After sitting: Single* then random F1/F2; touch the valve child prim (~1.1 m up the pipe) to start the water, touch it again before standing (David 16:41)", "wander": true},
+    {"uuid": "753e6d7c-5cc0-5ab2-d015-f80b6ef5abf6", "name": "Atelier Burgundy . Burgundy Pier . Bench", "pos": [214.8, 30.5, 23.9], "owner": "", "level": "lower-pier", "where": "Burgundy pier (second bench; David stood at 215.4,30.5,24.7)", "adult": false, "place": "pier-south", "nav": "graph", "wander": true},
+    {"uuid": "90a518f7-e954-b6f1-3d4f-eb0c7ed1449f", "name": "Atelier Burgundy . Burgundy Pier . Bench", "pos": [218.0, 24.4, 23.9], "owner": "", "level": "lower-pier", "where": "Burgundy pier (third bench, south end)", "adult": false, "place": "pier-end", "nav": "graph", "wander": true}
   ],
   "stairs": [
     {"uuid": "7e613106-b75f-5210-2924-641d006934be", "name": "GOOSE - deck stair 6 steps", "pos": [241.9, 62.8, 22.9], "note": "east stairs toward beach"},
     {"uuid": "9d3ca26a-238a-1aa1-cf89-91979b572a59", "name": "GOOSE - deck stair 6 steps", "pos": [240.2, 55.9, 21.1], "note": "east lower stairs"},
-    {"uuid": "5c560cf2-e5e1-f7c2-98fb-80aa794667ec", "name": "GOOSE - deck stair 3 steps", "pos": [214.2, 57.6, 20.1], "note": "west stairs"}
+    {"uuid": "5c560cf2-e5e1-f7c2-98fb-80aa794667ec", "name": "GOOSE - deck stair 3 steps", "pos": [214.2, 57.6, 20.1], "note": "west stairs: beach (by the rowboat) <-> GOOSE Mooring deck 3d06b3e3 (center 210.3,59.3); graph edge deck-stair -> deck-top"}
   ],
   "problems": [
-    "Lower level: reach beach by leaving front-double, turn right (east) around the house, then down the east stairs / patio south edge. Climbing back up the east stairs often drifts off the east edge into the water; David may need to show a reliable up-path.",
-    "Upper nav grid (_nav-peronaut-home.json) is floor_z~28 only; lower seats are catalogued but not on the A* grid yet.",
-    "Nerenzo beach chair table (a81cbe0c) listed nearby but treated as prop/table, not a seat."
+    "Lower-level graph legs come from David's tour positions and her follow trace; the porch walk (front steps -> porch) and beach-sw -> pier-start are interpolated, not walked yet.",
+    "Upper nav grid (_nav-peronaut-home.json) is floor_z~28 only; the lower level uses the path graph (see 'lower_links' there).",
+    "Nerenzo beach chair table (a81cbe0c) and parasol (fee00d83) are props, not seats."
+  ],
+  "skip": [
+    {"what": "multi-seat boat under the Burgundy pier (~217,24)", "why": "David 16:51: leave it alone for now, not in the wander"}
   ]
 }

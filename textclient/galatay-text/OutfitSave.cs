@@ -184,9 +184,12 @@ public static partial class Program
         if (a.Length >= 1 && a[0] == "rename")
         {
             // outfit rename <old...> <new>  — last token is new name; rest is old (supports "Spicy Bikini")
-            if (a.Length < 3) return "usage: outfit rename <old> <new>";
+            // or: outfit rename <old words> | <new words>  (multi-word new names)
+            if (a.Length < 3) return "usage: outfit rename <old> <new> | outfit rename <old words> | <new words>";
             var newName = a[^1];
             var oldName = string.Join(' ', a[1..^1]);
+            var bar = Array.IndexOf(a, "|");
+            if (bar > 1 && bar < a.Length - 1) { oldName = string.Join(' ', a[1..bar]); newName = string.Join(' ', a[(bar + 1)..]); }
             return await OutfitRename(oldName, newName);
         }
         if (a.Length >= 1 && a[0] == "coffix") { using var cc = new CancellationTokenSource(60000); return await CofSyncAddMissing(cc.Token); }

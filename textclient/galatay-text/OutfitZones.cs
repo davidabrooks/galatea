@@ -65,6 +65,13 @@ public static partial class Program
     }
 
     // Pure: beach / house / mid for Peronaut Z. Other regions → null (no auto swap).
+    // Burgundy pier south of the beach (benches z21.4-23.9, deck up to ~z24.7): always beach (Bikini), David 17:00.
+    internal static bool OnPeronautPier(float x, float y, float z) => x >= 210f && x <= 224f && y >= 18f && y <= 49f && z < 26f;
+    internal static string OutfitZoneFor(string region, Vector3 pos, bool currentlyBeach)
+    {
+        if (string.Equals(region, "Peronaut", StringComparison.OrdinalIgnoreCase) && OnPeronautPier(pos.X, pos.Y, pos.Z)) return "beach";
+        return OutfitZoneFor(region, pos.Z, currentlyBeach);
+    }
     internal static string OutfitZoneFor(string region, float z, bool currentlyBeach)
     {
         if (!string.Equals(region, "Peronaut", StringComparison.OrdinalIgnoreCase)) return null;
@@ -98,7 +105,7 @@ public static partial class Program
         beachTickAt = now;
         var sim = client.Network.CurrentSim; if (sim == null) return;
         var z = client.Self.SimPosition.Z;
-        var zone = OutfitZoneFor(sim.Name, z, beachMode);
+        var zone = OutfitZoneFor(sim.Name, client.Self.SimPosition, beachMode);
         if (zone == null || zone == "mid") return;
         if (zone == "beach" && beachMode) return;
         if (zone == "house" && !beachMode) return;
@@ -113,7 +120,7 @@ public static partial class Program
                 if (string.IsNullOrWhiteSpace(remember) || BikiniNameRx.IsMatch(remember))
                 {
                     var folders = await ListOutfitFolders(CancellationToken.None);
-                    remember = DailyOutfitCandidates(folders.Select(f => f.Name), DailyOutfitAllow()).FirstOrDefault() ?? "tubetop";
+                    remember = DailyOutfitCandidates(folders.Select(f => f.Name), DailyOutfitAllow()).FirstOrDefault();
                 }
                 beachRememberedOutfit = remember;
                 beachMode = true; PersistBeachState();
@@ -172,7 +179,8 @@ public static partial class Program
             bool dailyPending = prev != today;
             var region = client.Network.CurrentSim?.Name ?? "";
             var z = client.Self.SimPosition.Z;
-            bool onBeach = OutfitZoneFor(region, z, false) == "beach" || (beachMode && OutfitZoneFor(region, z, true) == "beach");
+            var lpos = client.Self.SimPosition;
+            bool onBeach = OutfitZoneFor(region, lpos, false) == "beach" || (beachMode && OutfitZoneFor(region, lpos, true) == "beach");
             var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null);
             Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT)");
             string pick = null;
@@ -299,6 +307,10 @@ public static partial class Program
         C(OutfitZoneFor("Peronaut", 25f, true) == "beach", "still beach at z25 with hysteresis");
         C(OutfitZoneFor("Peronaut", 28f, true) == "house", "leave beach at z28");
         C(OutfitZoneFor("Naberrie", 21f, false) == null, "other region no zone");
+        C(OutfitZoneFor("Peronaut", new Vector3(215.4f, 30.5f, 24.7f), false) == "beach", "pier deck z24.7 counts as beach (not mid)");
+        C(OutfitZoneFor("Peronaut", new Vector3(218f, 44.6f, 21.4f), false) == "beach", "first pier bench is beach");
+        C(OutfitZoneFor("Peronaut", new Vector3(217.2f, 84.1f, 25.5f), false) == "mid", "front porch z25.5 is not beach");
+        C(OutfitZoneFor("Peronaut", new Vector3(228f, 75f, 29f), true) == "house", "house from beach");
         var c = DailyOutfitCandidates(new[] { "Bikini", "Spicy", "tubetop", "tshirt", "monk", "Bikini" });
         C(c.SequenceEqual(new[] { "monk", "tshirt", "tubetop" }), $"daily candidates ({string.Join(",", c)})");
         C(!c.Any(BikiniNameRx.IsMatch), "Bikini/Spicy excluded");

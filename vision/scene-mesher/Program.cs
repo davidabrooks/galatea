@@ -51,6 +51,58 @@ static class Mesher
     // LOD = 20 M vertices, 5.4 GB peak, the mesher ran out of memory). Hers always Highest.
     // ponytail: by distance, not on-screen size; ceiling = a far avatar under a close-up `look at` gets a coarse outfit
     internal static DetailLevel AvatarLod(float d) => d switch { < 4f => DetailLevel.Highest, < 10f => DetailLevel.High, < 20f => DetailLevel.Medium, _ => DetailLevel.Low };
+    // Mesh bodies, heads and hands ship PLACEHOLDER lower LODs (1-3 triangles per face): the SL viewer picks a rigged mesh's
+    // LOD from the whole avatar's bounding box (llvovolume.cpp calcLOD, plus "LOD inflator" prims), so body makers never
+    // see them. AvatarLod by distance alone chose them (2026-10-05 Warehouse 21: SenorJames at 6.5 m got his body's
+    // medium_lod = 2 triangles per segment -> no forearms or hands, the phone floating in the air). So step up past any LOD
+    // under 1/32 of the high LOD's size, or missing, to the cheapest real one.
+    // ponytail: compressed block sizes from the header, not triangle counts (no extra decode); ceiling = a real but tiny LOD
+    // (<1/32 of high) is drawn one level finer than needed
+    internal static DetailLevel UsableLod(DetailLevel want, long[] sizes)
+    {
+        if (sizes == null || sizes.Length != 4 || sizes[3] <= 0) return want;
+        int l = (int)want;
+        while (l < 3 && (sizes[l] <= 0 || sizes[l] * 32 < sizes[3])) l++;
+        return (DetailLevel)l;
+    }
+    // a mesh asset's compressed LOD block sizes from its LLSD header: [lowest, low, medium, high] (0 = absent); null if unreadable
+    internal static long[] LodSizes(byte[] asset)
+    {
+        try
+        {
+            using var ms = new MemoryStream(asset);
+            if (OSDParser.DeserializeLLSDBinary(ms) is not OSDMap h) return null;
+            return new[] { "lowest_lod", "low_lod", "medium_lod", "high_lod" }
+                .Select(k => h.TryGetValue(k, out var v) && v is OSDMap m && m.ContainsKey("size") ? m["size"].AsLong() : 0L).ToArray();
+        }
+        catch { return null; }
+    }
+    // the avatar-attachment LOD actually decoded: within 16 m (where SL itself draws an average avatar's rigged mesh at high
+    // LOD) AvatarLod stepped past placeholders; beyond, AvatarLod as before.
+    // ponytail: measured at Warehouse 21 (export 232517): within 16 m +1.9 M triangles, +4.7 s per look; stepping the 30 far
+    // avatars too was +4 M triangles, +32 s for figures ~30 px tall; ceiling = a far body with placeholder LODs stays sparse
+    internal static DetailLevel AttachmentLod(float d, long[] sizes) => d <= 16f ? UsableLod(AvatarLod(d), sizes) : AvatarLod(d);
+    // pure (CI: --lod-selftest): placeholder LODs are skipped near, real ones kept, far avatars unchanged, header sizes read
+    internal static bool LodSelftest()
+    {
+        long[] body = { 180, 190, 200, 160000 };            // SenorJames' body segment: 2-triangle placeholders under a real high LOD
+        long[] real = { 8000, 20000, 50000, 160000 };       // a properly made LOD chain
+        long[] hole = { 0, 0, 30000, 120000 };              // lowest/low absent
+        bool ok = UsableLod(DetailLevel.High, body) == DetailLevel.Highest && UsableLod(DetailLevel.Low, body) == DetailLevel.Highest
+               && UsableLod(DetailLevel.High, real) == DetailLevel.High && UsableLod(DetailLevel.Low, real) == DetailLevel.Low
+               && UsableLod(DetailLevel.Low, hole) == DetailLevel.High && UsableLod(DetailLevel.Medium, null) == DetailLevel.Medium
+               && UsableLod(DetailLevel.High, new long[] { 1, 2, 3, 0 }) == DetailLevel.High;
+        ok &= AttachmentLod(6.5f, body) == DetailLevel.Highest && AttachmentLod(11.3f, body) == DetailLevel.Highest   // the two avatars in view
+              && AttachmentLod(25f, body) == DetailLevel.Low && AttachmentLod(25f, real) == DetailLevel.Low && AttachmentLod(6.5f, real) == DetailLevel.High
+              && AttachmentLod(15f, real) == DetailLevel.Medium;
+        var hdr = new OSDMap();
+        string[] keys = { "lowest_lod", "low_lod", "medium_lod", "high_lod" };
+        for (int i = 0; i < 4; i++) hdr[keys[i]] = new OSDMap { ["offset"] = OSD.FromInteger(i * 1000), ["size"] = OSD.FromInteger((int)body[i]) };
+        var bytes = OSDParser.SerializeLLSDBinary(hdr, false).Concat(new byte[200000]).ToArray();
+        var got = LodSizes(bytes);
+        ok &= got != null && got.SequenceEqual(body) && LodSizes(new byte[] { 1, 2, 3 }) == null;
+        return ok;
+    }
     // an avatar the export marks as still loading ("partial": some attachments missing, "bare": none yet, "unknown": no
     // appearance yet) is a stand-in; "complete" or no field (exports before 2026-10-05) renders as before
     // a big flat floor slab (two sides >= 8 m, thickness <= 1.5 m, lying flat) reaching within `reach` horizontally of the
@@ -149,6 +201,7 @@ static class Mesher
 
     static async Task<int> Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--lod-selftest") { bool lok = LodSelftest(); Console.WriteLine(lok ? "lod selftest ok" : "lod selftest FAILED"); return lok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--selftest")  // default skeleton sanity: pelvis ~1.07 m, head ~1.75 m, arms out (T-pose)
         {
             var w = Skeleton.World(new());
@@ -199,6 +252,7 @@ static class Mesher
             ok &= CachePath("/c", "mesh", new UUID("0123abcd-0000-0000-0000-000000000001")) == Path.Combine("/c", "mesh", "01", "0123abcd-0000-0000-0000-000000000001")
                   && CachePath(null, "mesh", UUID.Random()) == null && CachePath("/c", "../x", UUID.Random()) == null && CachePath("/c", "mesh", UUID.Zero) == null;
             ok &= AvatarLod(2) == DetailLevel.Highest && AvatarLod(6) == DetailLevel.High && AvatarLod(15) == DetailLevel.Medium && AvatarLod(35) == DetailLevel.Low;
+            ok &= LodSelftest();
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028
             var lad0 = LindenAvatarDefinition.Load(Path.Combine(AppContext.BaseDirectory, "linden", "character", "avatar_lad.xml"));
@@ -309,15 +363,20 @@ static class Mesher
             // default LOD factor; the lowest LOD of many mesh trees is a handful of loose leaf triangles (floating fragments)
             var farLod = far ? FarLod(sphere[RootOf(o, byLocal)].r, Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus)) : DetailLevel.Low;
             // someone else's attachment: LOD by the wearer's distance (hers stay Highest)
-            DetailLevel? avLod = owner != null && owner != "me" && wearerAt.TryGetValue(owner, out var wp0)
-                ? AvatarLod(Vector3.Distance(wp0, focusR < 1e9f ? focus : me)) : null;
+            float? avDist = owner != null && owner != "me" && wearerAt.TryGetValue(owner, out var wp0)
+                ? Vector3.Distance(wp0, focusR < 1e9f ? focus : me) : null;
+            DetailLevel? avLod = avDist is float ad ? AvatarLod(ad) : null;
             FacetedMesh fm = null; float[] bind = null;
             try
             {
                 if (p.Sculpt?.Type == SculptType.Mesh)
                 {
                     if (assets.TryGetValue(("mesh", p.Sculpt.SculptTexture), out var data) && data != null)
-                        fm = mf.GenerateFacetedMeshMesh(p, data, avLod ?? (far ? farLod : close ? DetailLevel.Highest : DetailLevel.High));
+                    {
+                        var lod = avDist is float ad2 ? AttachmentLod(ad2, LodSizes(data)) : far ? farLod : close ? DetailLevel.Highest : DetailLevel.High;
+                        if (avLod is DetailLevel al && lod != al) Count("attachment_lod_stepped_past_placeholder");
+                        fm = mf.GenerateFacetedMeshMesh(p, data, lod);
+                    }
                     if (fm?.SkinData != null) bind = fm.SkinData.BindShapeMatrix;
                     Count(fm == null ? "mesh_failed" : bind != null ? "mesh_rigged" : "mesh");
                 }

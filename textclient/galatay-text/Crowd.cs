@@ -86,6 +86,9 @@ public static partial class Program
         {
             if (e.Simulator != client.Network.CurrentSim) return;
             coarseSim = e.Simulator; coarseNow = e.Positions;
+            // names for map-only avatars (UUIDNameReply -> Remember), so `avatars` doesn't list bare UUIDs
+            var unknown = e.NewEntries.Where(id => id != client.Self.AgentID && NameOf(id) == id.ToString()).ToList();
+            if (unknown.Count > 0) try { client.Avatars.RequestAvatarNames(unknown); } catch { }
         };
         // the new region's first map update can land before SimChanged fires: keep it rather than wiping it
         client.Network.SimChanged += (s, e) => { rawChildren.Clear(); if (coarseSim != client.Network.CurrentSim) coarseNow = new Dictionary<UUID, Vector3>(); };

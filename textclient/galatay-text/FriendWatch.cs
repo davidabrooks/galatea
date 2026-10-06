@@ -107,10 +107,7 @@ public static partial class Program
             if (!ShouldWake(DateTime.UtcNow, myLoginAt, last, simulated, atMyLogin)) { Log("friendwatch", $"{kind}: debounced (last wake {last.ToLocalTime():HH:mm:ss} PT, < {GreetDebounce.TotalMinutes:F0} min)"); return; }
             lock (fwGate) { lastWake[kind] = DateTime.UtcNow; try { File.WriteAllText(DavidLoginState, JsonSerializer.Serialize(lastWake)); } catch { } }
             var pending = Reminders().Select((r, i) => (n: i + 1, r)).Where(x => x.r.pending).ToList();
-            var text = (simulated ? "SIMULATED TEST (no real login; do NOT IM anyone): " : "") +
-                $"{DavidName} ({DavidAgent}) {(atMyLogin ? "is online" : "came online")} ({source}) at {DateTime.Now:HH:mm} PT. " +
-                (pending.Count == 0 ? "No pending reminders." : $"Pending reminders ({pending.Count}): " + string.Join(" | ", pending.Select(x => $"#{x.n}: {x.r.text}")) +
-                 " (after delivering: 'remind done <n>')");
+            var text = DavidLoginText(simulated, atMyLogin, source, DateTime.Now, pending.Select(x => (x.n, x.r.text)).ToList());
             Log("friendwatch", $"{kind}: waking the chat routine ({pending.Count} pending reminder(s))");
             Notify(kind, DavidName, DavidAgent, text, null);
         });
@@ -169,6 +166,13 @@ public static partial class Program
         }
     }
 
+    // pure (selftest): the david_login event text. With no pending reminders the reminder clause is left out entirely
+    // (David 17:45: a "No pending reminders." line made her tell him "no reminders"; he asked her not to).
+    internal static string DavidLoginText(bool simulated, bool atMyLogin, string source, DateTime nowPt, IReadOnlyList<(int n, string text)> pending) =>
+        (simulated ? "SIMULATED TEST (no real login; do NOT IM anyone): " : "") +
+        $"{DavidName} ({DavidAgent}) {(atMyLogin ? "is online" : "came online")} ({source}) at {nowPt:HH:mm} PT." +
+        (pending == null || pending.Count == 0 ? "" : $" Pending reminders ({pending.Count}): " + string.Join(" | ", pending.Select(x => $"#{x.n}: {x.text}")) + " (after delivering: 'remind done <n>')");
+
     static string FriendWatchCmd(string[] a)
     {
         var sub = a.Length > 0 ? a[0].ToLowerInvariant() : "status";
@@ -184,6 +188,11 @@ public static partial class Program
             C(ShouldWake(t.AddSeconds(15), t, never, false, true), "galatea_login: he was already online at my login -> wake");
             C(!ShouldWake(t.AddSeconds(15), t, t.AddMinutes(-4), false, true), "galatea_login 4 min after the last wake (relog) -> debounced");
             C(GalatayMcp.Webhook.UrgentKinds.Contains("david_login") && GalatayMcp.Webhook.UrgentKinds.Contains("david_login_test"), "david_login(_test) are urgent (immediate, cap-exempt)");
+            var t0 = new DateTime(2026, 10, 5, 17, 45, 0);
+            var none = DavidLoginText(false, false, "friend online", t0, new List<(int, string)>());
+            C(!none.Contains("eminder", StringComparison.OrdinalIgnoreCase) && none.EndsWith("17:45 PT."), "no pending reminders -> no reminder clause at all ('" + none + "')");
+            var some = DavidLoginText(false, true, "galatea_login", t0, new List<(int, string)> { (2, "buy milk") });
+            C(some.Contains("Pending reminders (1): #2: buy milk") && some.Contains("remind done"), "pending reminders are still listed");
             return $"friendwatch selftest: {pass} PASS, {fail} FAIL (pure; nothing sent)\n" + sb.ToString().TrimEnd();
         }
         if (sub == "simulate")

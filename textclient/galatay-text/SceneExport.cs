@@ -160,8 +160,24 @@ public static partial class Program
         ["spec_color"] = OSD.FromColor4(m.SpecularColor), ["spec_exp"] = (int)m.SpecularExponent, ["env"] = (int)m.EnvironmentIntensity,
     };
 
-    // the region environment changes rarely; reused for 10 min per region
-    static (ulong handle, DateTime t, OSD env) envCache;
+    // the environment changes rarely; reused for 10 min per (region, parcel). Fetched for her parcel: its own EEP
+    // setting is what the SL viewer shows there (LLEnvironment::requestParcel), the region's when it has none
+    // (the reply's parcel_id is then -1). Before 2026-10-06 only the region's was fetched.
+    static (ulong handle, int parcel, DateTime t, OSD env) envCache;
+
+    // pure (neighbor selftest)
+    internal static bool EnvCacheHit((ulong handle, int parcel, DateTime t, OSD env) c, ulong handle, int parcel, DateTime now)
+        => c.env != null && c.handle == handle && c.parcel == parcel && (now - c.t).TotalMinutes < 10;
+
+    // her parcel's local id: the parcel map (filled by every ParcelProperties, incl. the one sent on arrival), else
+    // one ParcelProperties request; 0 if unknown
+    static async Task<int> ParcelIdAt(Simulator sim, Vector3 pos)
+    {
+        int ix = Math.Clamp((int)(pos.X / 4), 0, 63), iy = Math.Clamp((int)(pos.Y / 4), 0, 63);
+        try { var id = sim.ParcelMap[iy, ix]; if (id > 0) return id; } catch { }
+        var p = await ParcelAt(sim, pos.X, pos.Y, 3000);
+        return p?.LocalID ?? 0;
+    }
 
     // scene.json written as it is built: {"prims":[ one prim at a time ], <rest of the document>} - the old single
     // SerializeJsonString held the whole ~30 MB document as OSD + UTF-8 buffer + UTF-16 string at once (W21: 20k prims,
@@ -334,15 +350,20 @@ public static partial class Program
         Stage("materials", $"({matIds.Count} ids, {matIds.Count - missing.Count} cached, {matFetched} fetched)");
 
         var vparams = self == null ? new OSDMap() : Params(self);
-        OSD env;
-        if (envCache.env != null && envCache.handle == sim.Handle && (DateTime.UtcNow - envCache.t).TotalMinutes < 10) env = envCache.env;
+        OSD env; var parcelId = await ParcelIdAt(sim, myPos);
+        if (EnvCacheHit(envCache, sim.Handle, parcelId, DateTime.UtcNow)) env = envCache.env;
         else
         {
             env = new OSDMap();
-            try { var e = await client.Environment.GetRegionEnvironmentAsync(); if (e != null) { env = e.Serialize(); envCache = (sim.Handle, DateTime.UtcNow, env); } }
+            try
+            {
+                var e = parcelId > 0 ? await client.Environment.GetParcelEnvironmentAsync(parcelId) : null;
+                e ??= await client.Environment.GetRegionEnvironmentAsync();
+                if (e != null) { env = e.Serialize(); envCache = (sim.Handle, parcelId, DateTime.UtcNow, env); }
+            }
             catch (Exception ex) { env = $"error: {ex.Message}"; }
         }
-        Stage("env");
+        Stage("env", $"(parcel {parcelId})");
         var doc = new OSDMap
         {
             ["materials"] = mats, ["gltf_overrides"] = gltf, ["visual_params"] = vparams, ["environment"] = env,

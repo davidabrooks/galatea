@@ -40,7 +40,13 @@ def has_alpha(image):
     """any texel below 0.98 alpha (the image is loaded anyway; one numpy pass per distinct texture)"""
     return _alpha_stats(image)[0]
 
+MAT_CACHE = {}  # identical SL faces share one material (crowd scenes: ~2900 batches, far fewer distinct looks)
 def material(b):
+    k = json.dumps([b["tex"], b.get("mat"), b["rgba"], b.get("fullbright")], sort_keys=True)
+    if k not in MAT_CACHE: MAT_CACHE[k] = _material(b)
+    return MAT_CACHE[k]
+
+def _material(b):
     """SL face -> Principled BSDF. alpha: none | blend | mask (cutoff) | emissive (alpha = glow mask) | auto (texture alpha)."""
     key = b["tex"]; mat = b.get("mat") or {"alpha": "auto"}; m = bpy.data.materials.new(key[:50]); m.use_nodes = True
     nt = m.node_tree; p = nt.nodes["Principled BSDF"]; r, g, bl, a = b["rgba"]; L = nt.links.new
@@ -153,18 +159,21 @@ def inner_layers(bs, bones, sample=300):
         if os.environ.get("GT_DBG"): log("  batch", M["batches"][k]["tex"][:8], round(M["batches"][k]["rgba"][0], 2), "inward", round(inward, 2), "twin", round(twin / len(pick), 2), "DROP" if k in drop else "")
     return drop
 
-def build(group, bones=None):
+def build(group, bones=None, lining=True):
     lo, hi = np.full(3, 1e9), np.full(3, -1e9); n = 0; obs = []
     mine = [(i, b) for i, b in enumerate(M["batches"]) if b["group"] == group and b["ni"] > 0]
     drop = set()
-    if group.startswith("avatar"):
+    if group.startswith("avatar") and lining:  # a lining's z-fight is invisible at crowd distance (~0.5 s per avatar)
         t = time.time(); drop = inner_layers(mine, bones); log(group, "lining batches dropped", len(drop), "in", round(time.time() - t, 2), "s")
     min_tris = int(os.environ.get("GT_MIN_TRIS", "0"))  # look around: drop dust (nav still sees big obstacles)
     for bi, b in mine:
         if bi in drop: continue
         nv, ni = b["nv"], b["ni"]
-        if min_tris and ni // 3 < min_tris and not b["group"].startswith("avatar"): continue
         P, N, T, I = arrays(b)
+        if min_tris and ni // 3 < min_tris and not b["group"].startswith("avatar"):
+            # dust = few triangles AND small: a 2-triangle floor face (Warehouse 21 courtyard, a skybox) is not dust
+            ext = P.reshape(-1, 3).max(0) - P.reshape(-1, 3).min(0) if nv else np.zeros(3)
+            if float(ext.max()) < 1.0: continue
         me = bpy.data.meshes.new(b["tex"][:40]); nt = ni // 3
         me.vertices.add(nv); me.vertices.foreach_set("co", P)
         me.loops.add(ni); me.loops.foreach_set("vertex_index", I)
@@ -316,6 +325,18 @@ def terrain():
 
 gpu_setup(); views = []
 
+def prim_object(name, shape, r, depth, centre):
+    """Cylinder/sphere mesh with its centre baked into the vertices (the caller sets ob.location to the avatar's feet).
+    bmesh, not bpy.ops.mesh.primitive_*: each op re-evaluates the view layer, ~1 s per stand-in in a 55-avatar scene."""
+    import bmesh
+    bm = bmesh.new()
+    if shape == "cylinder": bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=r, radius2=r, depth=depth)
+    else: bmesh.ops.create_uvsphere(bm, u_segments=24, v_segments=12, radius=r)
+    bmesh.ops.translate(bm, vec=Vector(centre), verts=bm.verts)
+    me = bpy.data.meshes.new(name); bm.to_mesh(me); bm.free()
+    ob = bpy.data.objects.new(name, me); sc.collection.objects.link(ob)
+    return ob
+
 def stand_in(o):
     """Bake-textured capsule+head for an avatar whose attachments never reached the export (awareness, not polish)."""
     import os
@@ -332,8 +353,7 @@ def stand_in(o):
     if bones:
         zs = [b[2] for b in bones] + [b[5] for b in bones]
         z0, z1 = min(zs), max(zs) - 0.25
-    bpy.ops.mesh.primitive_cylinder_add(radius=0.18, depth=max(0.4, z1 - z0), location=(0, 0, (z0 + z1) / 2))
-    body = bpy.context.object; body.name = f"standin-body-{pref}"
+    body = prim_object(f"standin-body-{pref}", "cylinder", 0.18, max(0.4, z1 - z0), (0, 0, (z0 + z1) / 2))
     # solid clothing colour (not the skin bake): a skin-textured capsule reads as nude
     mat = bpy.data.materials.new(f"standin-upper-{pref}"); mat.use_nodes = True
     nt = mat.node_tree; nt.nodes.clear()
@@ -343,8 +363,7 @@ def stand_in(o):
     body.data.materials.append(mat); obs.append(body)
     # head sphere at mHead
     hx, hy, hz = o.get("head") or [0, 0, 1.7]
-    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.12, location=(hx, hy, hz))
-    head = bpy.context.object; head.name = f"standin-head-{pref}"
+    head = prim_object(f"standin-head-{pref}", "sphere", 0.12, 0, (hx, hy, hz))
     mat2 = bpy.data.materials.new(f"standin-head-{pref}"); mat2.use_nodes = True
     nt2 = mat2.node_tree; nt2.nodes.clear()
     out2 = nt2.nodes.new("ShaderNodeOutputMaterial"); bsdf2 = nt2.nodes.new("ShaderNodeBsdfPrincipled")
@@ -391,7 +410,8 @@ if kind == "scene":
         if o.get("placeholder") or not any(b["group"] == o["group"] and b["ni"] > 0 for b in M["batches"]):
             olo, _, oobs = stand_in(o)
         else:
-            olo, _, oobs = build(o["group"], o.get("bones"))
+            near = math.dist(o["pos"][:2], (x, y)) < float(os.environ.get("GT_LINING_M", "8"))
+            olo, _, oobs = build(o["group"], o.get("bones"), lining=near)
         at = (o["pos"][0], o["pos"][1], z0_of(*fp, olo[2]))
         for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
         heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])

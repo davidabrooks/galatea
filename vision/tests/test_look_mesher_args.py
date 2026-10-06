@@ -37,3 +37,9 @@ def test_mesher_error_shows_exception_line_not_only_foreach_frames():
     assert msg.startswith("Unhandled exception. System.AggregateException")
     assert "Parallel.ForEach" in msg  # tail still included
     assert look.mesher_error("plain failure") == "plain failure"
+
+
+def test_mesher_gets_its_own_heap_cap_not_the_clients_512mb():
+    env = look.mesher_env({"DOTNET_GCHeapHardLimit": "0x20000000", "PATH": "/bin"})
+    assert int(env["DOTNET_GCHeapHardLimit"], 16) >= 2 * 1024 ** 3
+    assert env["PATH"] == "/bin" and env["DOTNET_gcServer"] == "0"

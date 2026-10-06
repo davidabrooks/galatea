@@ -81,6 +81,26 @@ def mesh_job(inp, out, work):
         if BAKE_KEY.fullmatch(name): Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA").save(f"{work}/tex/bake-{name}.png")  # alpha = bake cut-outs
     return fetch_textures(meta, out, work)
 
+def crowd_distances(meta):
+    """'avatar:<id8>' group -> metres from her, for other avatars in a crowd mesh (mesh.json 'others' + 'me')."""
+    me = meta.get("me")
+    if not me: return {}
+    return {o["group"]: sum((a - b) ** 2 for a, b in zip(o["pos"], me)) ** 0.5 for o in meta.get("others", []) if o.get("pos") and o.get("group")}
+
+def crowd_cap(dist, av_cap):
+    """Texture size for another avatar's outfit by distance (Warehouse 21: ~2500 crowd textures at full size)."""
+    if dist is None: return av_cap
+    return av_cap if dist < 6 else min(av_cap, 256) if dist < 15 else min(av_cap, 128)
+
+def crowd_drop_order(meta, av_dist, want):
+    """Textures used only by other avatars, farthest wearer first (her own and scene textures never listed)."""
+    nearest = {}
+    for b in meta["batches"]:
+        d = av_dist.get(b["group"]) if b["group"].startswith("avatar:") else -1.0
+        for t in [b["tex"], *(b.get("mat") or {}).values()]:
+            if isinstance(t, str) and t in want: nearest[t] = min(nearest.get(t, 1e9), d if d is not None else -1.0)
+    return [t for t, d in sorted(nearest.items(), key=lambda kv: -kv[1]) if d >= 0]
+
 def fetch_textures(meta, out, work):
     """Every texture the batches reference (CDN, capped), into work/tex; None or an error string."""
     max_tex = int(os.environ.get("GT_MAX_TEXTURES", str(MAX_TEXTURES)))
@@ -88,9 +108,10 @@ def fetch_textures(meta, out, work):
     av_cap = int(os.environ.get("GT_TEX_CAP_AVATAR", "1024"))
     sc_cap = int(os.environ.get("GT_TEX_CAP_SCENE", "512"))
     want = {}
+    av_dist = crowd_distances(meta)
     for b in meta["batches"]:
         mat = b.get("mat") or {}
-        pairs = [(b["tex"], av_cap if b["group"].startswith("avatar") else sc_cap)]
+        pairs = [(b["tex"], crowd_cap(av_dist.get(b["group"]), av_cap) if b["group"].startswith("avatar") else sc_cap)]
         if maps:
             pairs += [(mat.get(k), min(512, sc_cap)) for k in ("normal", "spec", "mr", "emissive_tex")]
         for t, cap in pairs:
@@ -98,6 +119,8 @@ def fetch_textures(meta, out, work):
     near = {t for b in meta["batches"] if b["group"] != "far" for t in [b["tex"], *(b.get("mat") or {}).values()] if isinstance(t, str)}
     if len(want) > max_tex:  # backdrop ("far") textures go first: those faces then show their plain colour
         for t in [t for t in want if t not in near][:len(want) - max_tex]: del want[t]
+    if len(want) > max_tex and av_dist:  # then the farthest other avatars' outfit textures (plain colour), never hers
+        for t in crowd_drop_order(meta, av_dist, want)[:len(want) - max_tex]: del want[t]
     if len(want) > max_tex: return f"{len(want)} textures > {max_tex}"
     t = time.time()
     workers = max(1, int(os.environ.get("GT_TEX_WORKERS", "8")))

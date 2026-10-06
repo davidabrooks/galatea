@@ -35,6 +35,7 @@
     <Compile Include="../galatay-text/AutoFollow.cs" Link="Core/AutoFollow.cs" />
     <Compile Include="../galatay-text/OfferStore.cs" Link="Core/OfferStore.cs" />
     <Compile Include="../galatay-text/ImGuard.cs" Link="Core/ImGuard.cs" />
+    <Compile Include="../galatay-text/ImTarget.cs" Link="Core/ImTarget.cs" />
     <Compile Include="../galatay-text/ChatGuard.cs" Link="Core/ChatGuard.cs" />
     <Compile Include="../galatay-text/Doors.cs" Link="Core/Doors.cs" />
     <Compile Include="../galatay-text/Follow.cs" Link="Core/Follow.cs" />

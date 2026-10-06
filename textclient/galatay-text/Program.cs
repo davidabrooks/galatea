@@ -237,6 +237,7 @@ public static partial class Program
         if (args.Contains("--front-selftest")) { var r = FrontSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--bikini-selftest")) { var r = BikiniSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: HUD texture pick among D/W/T (BikiniOutfit.cs)
         if (args.Contains("--outfit-safe-selftest")) { var r = OutfitSafeSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--im-target-selftest")) { var r = ImTargetSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--home-seats-selftest")) { var r = HomeSeatsSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--outfit-zones-selftest")) { var r = OutfitZonesSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)
@@ -1729,15 +1730,21 @@ public static partial class Program
                     }
                     break;
                 }
-                var quoted = rest.TrimStart().StartsWith('"');
-                var (target, text) = SplitTarget(rest);
-                if (target.Length == 0 || text.Length == 0) return "usage: im [--re <msg ids>] [--headsup|--force] <name|uuid> <text>";
-                bool known; lock (nameToId) known = nameToId.ContainsKey(target.Contains(' ') ? target : target + " Resident");
-                try { known = known || Sim.ObjectsAvatars.Values.Any(av => av != null && string.Equals(av.Name, target + " Resident", StringComparison.OrdinalIgnoreCase)); } catch { }
-                var bad = ImTargetCheck(target, quoted, known);
+                // recipient: quoted name / uuid / known contact decides how many words the name has (ImTarget.cs)
+                var imsp = SplitImTarget(rest, ImNameKnown);
+                var quoted = imsp.Quoted; var target = imsp.Target; var text = imsp.Text;
+                if (target.Length == 0 || text.Length == 0) return "usage: im [--re <msg ids>] [--headsup|--force] <name|\"First Last\"|uuid> <text>";
+                var bad = ImTargetCheck(target, quoted, ImNameKnown(target));
                 if (bad != null) { Log("im-guard", bad); return bad; }
                 var id = await ResolveAvatar(target);
-                if (id == UUID.Zero) return $"could not resolve avatar '{target}'";
+                if (id == UUID.Zero && imsp.AltTarget != null && imsp.AltText.Length > 0)
+                {
+                    // 'First Last' did not resolve: the first word is a one-word username and the rest is the message
+                    var bad1 = ImTargetCheck(imsp.AltTarget, false, ImNameKnown(imsp.AltTarget));
+                    var id1 = bad1 == null ? await ResolveAvatar(imsp.AltTarget) : UUID.Zero;
+                    if (id1 != UUID.Zero) { Log("im-guard", $"'{target}' not found; sending to username '{imsp.AltTarget}' with text '{imsp.AltText}'"); id = id1; target = imsp.AltTarget; text = imsp.AltText; }
+                }
+                if (id == UUID.Zero) return $"could not resolve avatar '{target}'{(imsp.AltTarget != null ? $" (nor '{imsp.AltTarget}')" : "")}; nothing sent. Quote the name (\"First Last\") or use the uuid.";
                 // per-recipient duplicate guard (ImGuard.cs); also feeds the webhook dedupe hint (my_last_im_to_sender)
                 var (sent, skip) = ImGuardedSend(id.ToString(), NameOf(id), id == DavidId, force, () => client.Self.InstantMessage(id, text), null, headsup, re, text);
                 if (!sent) return skip;

@@ -45,6 +45,7 @@
     <Compile Include="../galatay-text/Voice.cs" Link="Core/Voice.cs" />
     <Compile Include="../galatay-text/Outfit.cs" Link="Core/Outfit.cs" />
     <Compile Include="../galatay-text/OutfitSave.cs" Link="Core/OutfitSave.cs" />
+    <Compile Include="../galatay-text/InvTrash.cs" Link="Core/InvTrash.cs" />
     <Compile Include="../galatay-text/BikiniOutfit.cs" Link="Core/BikiniOutfit.cs" />
     <Compile Include="../galatay-text/OutfitZones.cs" Link="Core/OutfitZones.cs" />
     <Compile Include="../galatay-text/OutfitSafe.cs" Link="Core/OutfitSafe.cs" />

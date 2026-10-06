@@ -16,16 +16,17 @@ public static partial class Program
     internal static readonly UUID StraplessTopItem = UUID.Parse("aa265665-7a17-34f6-b423-66d336262ed2");
     internal static readonly UUID JeansItem = UUID.Parse("e14414f9-6fff-38a6-abc6-70dce3f249b9");
 
+    // The Spicy Bikini HUD's own spec: [TEXTURE] buttons D*/W* (colors) and T* (patterns); the shipped
+    // routes/_clothing-huds.json entry wins, this is the fallback when the map is missing.
+    internal static ClothingHudSpec DefaultBikiniHudSpec => new(BikiniHudItem, "<HUD> Spicy Bikini", new() { BikiniTopItem, BikiniPantiesItem }, @"^[DWT]\d+$", null, new());
+    internal static ClothingHudSpec BikiniHudSpec(IEnumerable<ClothingHudSpec> specs) => specs?.FirstOrDefault(s => s.Hud == BikiniHudItem) ?? DefaultBikiniHudSpec;
+
     // Pure: pick among HUD [TEXTURE] buttons (desc D*/W*/T* = color or pattern). Never DETACH / store / social.
-    internal static (int link, uint local, string label)? BikiniPickTexture(IReadOnlyList<(int link, uint local, string name, string desc)> prims, Random rng)
+    // Same generic path as every other clothing HUD (ClothingHuds.cs).
+    internal static (int link, uint local, string label)? BikiniPickTexture(IReadOnlyList<(int link, uint local, string name, string desc)> prims, Random rng, string last = null)
     {
-        var opts = prims.Where(p =>
-            string.Equals(p.name, "[TEXTURE]", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(p.desc)
-            && Regex.IsMatch(p.desc.Trim(), @"^[DWT]\d+$", RegexOptions.IgnoreCase)).ToList();
-        if (opts.Count == 0) return null;
-        var p = opts[rng.Next(opts.Count)];
-        return (p.link, p.local, p.desc.Trim());
+        var p = PickHudOption(HudOptionsFor(prims, DefaultBikiniHudSpec), last, rng);
+        return p == null ? null : (p.Link, p.Local, p.Label);
     }
 
     static async Task<InventoryFolder> FindMyOutfits(CancellationToken ct)
@@ -89,7 +90,8 @@ public static partial class Program
     {
         var hud = await FetchItemRO(BikiniHudItem, ct);
         if (hud == null) return "Spicy Bikini HUD item not found";
-        return await HudRandomize(hud, new List<UUID> { BikiniTopItem, BikiniPantiesItem }, ct); // OutfitSafe.cs: random among all colors/patterns, verify, detach
+        var spec = BikiniHudSpec(LoadClothingHudSpecs());
+        return await HudRandomize(hud, spec.Clothing, ct, spec); // OutfitSafe.cs: random among all colors/patterns (not the last one), verify, detach
     }
 
     static async Task<string> BikiniOn()
@@ -155,6 +157,11 @@ public static partial class Program
         }
         C(seen.SetEquals(new[] { "D6", "W1", "T9", "D38" }), $"random among all D/W/T labels (got {string.Join(",", seen.OrderBy(x => x))})");
         C(BikiniPickTexture(prims.Where(p => p.Item3 != "[TEXTURE]").ToList(), Random.Shared) == null, "no textures -> null");
+        var notLast = new HashSet<string>();
+        for (int i = 0; i < 40; i++) { var p = BikiniPickTexture(prims, new Random(i), "D6"); if (p != null) notLast.Add(p.Value.label); }
+        C(!notLast.Contains("D6") && notLast.Count == 3, "never the previous pick (D6) again");
+        var withC = prims.Append((8, 8u, "[TEXTURE]", "C3")).ToList();
+        C(Enumerable.Range(0, 40).All(i => BikiniPickTexture(withC, new Random(i))?.label != "C3"), "Bikini HUD ignores non-D/W/T codes");
         C(BikiniTopItem != UUID.Zero && BikiniHudItem != UUID.Zero && StraplessTopItem != UUID.Zero, "item UUIDs set");
         return $"bikini selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }

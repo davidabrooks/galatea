@@ -236,6 +236,7 @@ public static partial class Program
         if (args.Contains("--exp-selftest")) { var r = ExpSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--front-selftest")) { var r = FrontSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--bikini-selftest")) { var r = BikiniSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: HUD texture pick among D/W/T (BikiniOutfit.cs)
+        if (args.Contains("--clothing-huds-selftest")) { var r = ClothingHudsSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; } // offline: clothing -> HUD specs, swatch grids, no-repeat random pick (ClothingHuds.cs)
         if (args.Contains("--outfit-safe-selftest")) { var r = OutfitSafeSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--im-target-selftest")) { var r = ImTargetSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--inv-trash-selftest")) { var r = InvTrashSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
@@ -1683,7 +1684,8 @@ public static partial class Program
   outfit plan|create <name> [extra ids]   dry run / create an Outfit folder under My Outfits with links to the original items (COF minus LSL Bridge)
   outfit rename <old> <new>      rename a My Outfits folder (reversible; Spicy Bikini also matches folder named Spicy)
   outfit wear <name> [replace|add]   wear an Outfit folder without stacking (hair/head/body replace, never two hairs; AO untouched) + clothing color HUDs randomized
-  outfit huds <name>             attach each clothing HUD of that outfit, random color/pattern, verify, detach
+  outfit huds <name>             attach each clothing HUD of that outfit, random color/pattern (never the last one), verify, detach
+  outfit hudmap                  READ-ONLY: routes/_clothing-huds.json — each clothing HUD, what it can pick, its last pick
   outfit coffix                  add COF links for worn items that have none (so relog keeps the look)
   outfit link-remove <outfit> <name part> | outfit link-add <outfit> <item uuid>   edit an outfit definition (removed link -> Trash)
   outfit trash <name>[, <name>…] [force] | defaults   move outfit folder(s) to Trash (exact names, comma separated; Bikini + run/daily-outfits.txt refused without force) | outfit untrash <name>

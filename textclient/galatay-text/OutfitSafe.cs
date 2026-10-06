@@ -261,9 +261,10 @@ public static partial class Program
         return null;
     }
 
-    // Attach a clothing HUD, press a random color/pattern, verify on the worn clothing, detach (with a re-check: the
-    // library's after-bake outfit send once re-attached a HUD seconds after it came off).
-    static async Task<string> HudRandomize(InventoryItem hud, List<UUID> clothingItems, CancellationToken ct)
+    // Attach a clothing HUD, press a random color/pattern (spec: ClothingHuds.cs; never the previous pick), wait until the
+    // change shows on the worn clothing, detach (with a re-check: the library's after-bake outfit send once re-attached a
+    // HUD seconds after it came off).
+    static async Task<string> HudRandomize(InventoryItem hud, List<UUID> clothingItems, CancellationToken ct, ClothingHudSpec spec = null)
     {
         if (hud == null) return "no HUD";
         if (hud.UUID == AoItem || hud.UUID == RetiredAwpAo || (hud.Name ?? "").Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)) return $"refused: '{hud.Name}' is the AO";
@@ -272,39 +273,49 @@ public static partial class Program
         if (!wasOn) client.Appearance.Attach(hud, AttachmentPoint.Default, false);
         var root = await WaitWornItem(hud.UUID, 15000, ct);
         if (root == null) return $"'{hud.Name}' did not attach within 15 s";
+        sb.Append($"'{hud.Name}': attached; ");
         await Task.Delay(3000, ct); // HUD scripts: 'HUD ready'
+        // the clothing must be on and rezzed, or a change can never be seen
+        for (int i = 0; i < 20 && SnapshotTextures(clothingItems).Count == 0; i++) await Task.Delay(500, ct);
         var prims = LinkPrims(root); await EnsureProperties(Sim, prims);
         var list = prims.Select((p, i) => (i + 1, p.LocalID, p.Properties?.Name ?? "?", p.Properties?.Description ?? "")).ToList();
-        var opts = HudTextureOptions(list);
+        var opts = HudOptionsFor(list, spec);
         if (opts.Count == 0)
         {
-            // no named buttons (e.g. [ARTi'S] Strapless Top - HUD): log the layout, then try touchable prims / faces, verified on the top
-            Log("hud", $"'{hud.Name}' has no named color buttons; prims: " + string.Join(" | ", prims.Select((p, i) => $"#{i + 1} '{p.Properties?.Name}' desc '{p.Properties?.Description}' faces {HudFaceCount(p)}{((p.Flags & PrimFlags.Touch) != 0 ? " touch" : "")}")));
+            // no mapped / named buttons: log the layout, then try touchable prims / faces, verified on the clothing
+            Log("hud", $"'{hud.Name}' has no mapped color buttons; prims: " + string.Join(" | ", prims.Select((p, i) => $"#{i + 1} '{p.Properties?.Name}' desc '{p.Properties?.Description}' faces {HudFaceCount(p)}{((p.Flags & PrimFlags.Touch) != 0 ? " touch" : "")}")));
             var (ok2, how) = await HudFallbackPress(hud, prims, clothingItems, ct);
-            sb.Append($"'{hud.Name}': {how}; ");
+            sb.Append($"{how}; ");
         }
         else
         {
-            var tried = new HashSet<int>(); bool applied = false;
-            for (int attempt = 0; attempt < 2 && !applied; attempt++)
+            var last = HudLastPick(hud.UUID);
+            var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase); bool applied = false;
+            for (int attempt = 0; attempt < 3 && !applied; attempt++)
             {
-                var pool = opts.Where(o => !tried.Contains(o.link)).ToList(); if (pool.Count == 0) break;
-                var pick = pool[Random.Shared.Next(pool.Count)]; tried.Add(pick.link);
+                var pick = PickHudOption(opts, last, Random.Shared, tried); if (pick == null) break;
+                tried.Add(pick.Label);
+                var target = prims.FirstOrDefault(p => p.LocalID == pick.Local);
+                if (target == null) { sb.Append($"button '{pick.Label}' prim gone; "); continue; }
                 var before = SnapshotTextures(clothingItems);
-                var target = prims.FirstOrDefault(p => p.LocalID == pick.local);
-                if (target == null) break;
-                client.Self.Grab(target.LocalID, Vector3.Zero, Vector3.Zero, Vector3.Zero, 0, Vector3.Zero, Vector3.Zero, Vector3.Zero);
-                client.Self.DeGrab(target.LocalID);
+                if (pick.UsesSt) GrabAt(target, pick.Face, pick.S, pick.T);
+                else
+                {
+                    client.Self.Grab(target.LocalID, Vector3.Zero, Vector3.Zero, Vector3.Zero, 0, Vector3.Zero, Vector3.Zero, Vector3.Zero);
+                    client.Self.DeGrab(target.LocalID);
+                }
                 int changed = 0;
-                for (int i = 0; i < 16 && changed == 0; i++)
+                for (int i = 0; i < 20 && changed == 0; i++) // wait for it to apply (max 10 s)
                 {
                     await Task.Delay(500, ct);
                     var after = SnapshotTextures(clothingItems);
                     changed = after.Count(kv => before.TryGetValue(kv.Key, out var b) && b != kv.Value);
                 }
                 applied = changed > 0;
-                sb.Append($"'{hud.Name}': picked '{pick.label}' (of {opts.Count}) -> {(applied ? $"applied ({changed} prim(s) changed texture)" : "no visible change")}; ");
-                Log("hud", $"'{hud.Name}' pick '{pick.label}' link {pick.link} local {pick.local}: {(applied ? $"applied, {changed} prims changed" : "no change seen")}");
+                if (applied) { await Task.Delay(1000, ct); SaveHudLastPick(hud.UUID, pick.Label); } // let multi-prim pieces finish
+                var how = pick.UsesSt ? $"face {pick.Face} st {pick.S:F3},{pick.T:F3}" : $"link {pick.Link} local {pick.Local}";
+                sb.Append($"picked '{pick.Label}' (of {opts.Count}{(last != null ? $", last was '{last}'" : "")}) -> {(applied ? $"applied ({changed} prim(s) changed texture)" : "no visible change")}; ");
+                Log("hud", $"'{hud.Name}' pick '{pick.Label}' {how}: {(applied ? $"applied, {changed} prims changed" : "no change seen")}");
             }
         }
         // detach + re-check
@@ -319,24 +330,8 @@ public static partial class Program
         return sb.ToString();
     }
 
-    // Explicit top -> color HUD map (routes/_clothing-huds.json, David 17:00): checked before the same-folder lookup.
+    // Explicit clothing -> color HUD specs (routes/_clothing-huds.json, David 17:00; parsing in ClothingHuds.cs): checked before the same-folder lookup.
     static string ClothingHudMapFile => Path.Combine(RouteDir, "_clothing-huds.json"); // property: static init order across partial files
-    internal static Dictionary<UUID, UUID> ParseClothingHudMap(string json)
-    {
-        var d = new Dictionary<UUID, UUID>();
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
-        if (!doc.RootElement.TryGetProperty("tops", out var tops)) return d;
-        foreach (var t in tops.EnumerateArray())
-            if (t.TryGetProperty("clothing", out var c) && t.TryGetProperty("hud", out var h)
-                && UUID.TryParse(c.GetString(), out var ci) && UUID.TryParse(h.GetString(), out var hi) && hi != AoItem && hi != RetiredAwpAo)
-                d[ci] = hi;
-        return d;
-    }
-    static Dictionary<UUID, UUID> LoadClothingHudMap()
-    {
-        try { return File.Exists(ClothingHudMapFile) ? ParseClothingHudMap(File.ReadAllText(ClothingHudMapFile)) : new(); }
-        catch (Exception ex) { Log("hud", "clothing HUD map: " + ex.Message); return new(); }
-    }
 
     static readonly System.Text.RegularExpressions.Regex HudControlRx = new(@"detach|close|minimi|maximi|lock|url|\blm\b|landmark|group|website|help|logo|reset|hide|show|redeliver|update|info|\bon\b|\boff\b|tab|page|next|prev|back|alpha|shine|gloss|mat(erial)?s?\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     static int HudFaceCount(Primitive p) { try { var t = p.Textures; if (t?.FaceTextures == null) return 1; int n = 0; for (int i = 0; i < t.FaceTextures.Length; i++) if (t.FaceTextures[i] != null) n = i + 1; return Math.Max(1, n); } catch { return 1; } }
@@ -387,26 +382,30 @@ public static partial class Program
         return (false, "no named buttons; fallback touches gave no visible change (" + string.Join(", ", notes.Take(4)) + (notes.Count > 4 ? ", ..." : "") + ")");
     }
 
-    static async Task<List<(InventoryItem hud, List<UUID> clothing)>> FindClothingHuds(IEnumerable<InventoryItem> outfitItems, CancellationToken ct)
+    static async Task<List<(InventoryItem hud, List<UUID> clothing, ClothingHudSpec spec)>> FindClothingHuds(IEnumerable<InventoryItem> outfitItems, CancellationToken ct)
     {
-        var res = new List<(InventoryItem, List<UUID>)>();
-        var map = LoadClothingHudMap(); var mapped = new HashSet<UUID>();
-        foreach (var i in outfitItems)
+        var res = new List<(InventoryItem, List<UUID>, ClothingHudSpec)>();
+        var items = outfitItems.ToList();
+        var ids = items.Select(i => i.UUID).ToHashSet(); var mapped = new HashSet<UUID>();
+        foreach (var spec in LoadClothingHudSpecs()) // one HUD once, with every outfit piece it colors (Bikini top + panties)
         {
-            if (!map.TryGetValue(i.UUID, out var hid)) continue;
-            var hud = await FetchItemRO(hid, ct);
-            if (hud == null || hud.IsLink()) { Log("hud", $"mapped HUD {hid} for '{i.Name}' not found in inventory"); continue; }
-            mapped.Add(i.UUID); res.Add((hud, new List<UUID> { i.UUID }));
+            var cloth = spec.Clothing.Where(ids.Contains).ToList();
+            if (cloth.Count == 0) continue;
+            var hud = await FetchItemRO(spec.Hud, ct);
+            if (hud == null || hud.IsLink()) { Log("hud", $"mapped HUD {spec.Hud} '{spec.HudName}' not found in inventory"); continue; }
+            foreach (var c in cloth) mapped.Add(c);
+            res.Add((hud, cloth, spec));
         }
-        var byFolder = outfitItems.Where(i => !mapped.Contains(i.UUID) && (i is InventoryObject || i is InventoryAttachment) && ClothingNameRx.IsMatch(i.Name ?? "")
+        var byFolder = items.Where(i => !mapped.Contains(i.UUID) && (i is InventoryObject || i is InventoryAttachment) && ClothingNameRx.IsMatch(i.Name ?? "")
                                          && OutfitGroup(i.Name) == null && !ClothingHudNameRx.IsMatch(i.Name ?? ""))
                                   .GroupBy(i => i.ParentUUID);
         foreach (var g in byFolder)
         {
             var kids = (await ReadFolderRO(g.Key, ct)).OfType<InventoryItem>().Where(k => k.ParentUUID == g.Key && !k.IsLink()).ToList();
             var huds = kids.Where(k => (k is InventoryObject || k is InventoryAttachment) && ClothingHudNameRx.IsMatch(k.Name ?? "")
-                                      && !(k.Name ?? "").Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)).ToList();
-            foreach (var h in huds.Take(1)) res.Add((h, g.Select(i => i.UUID).ToList()));
+                                      && !(k.Name ?? "").Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)
+                                      && !res.Any(r => r.Item1.UUID == k.UUID)).ToList();
+            foreach (var h in huds.Take(1)) res.Add((h, g.Select(i => i.UUID).ToList(), null));
         }
         return res;
     }
@@ -417,7 +416,7 @@ public static partial class Program
         var huds = await FindClothingHuds(items, ct);
         if (huds.Count == 0) return $"no clothing HUDs found for '{folder.Name}'";
         var sb = new StringBuilder();
-        foreach (var (hud, clothing) in huds) sb.AppendLine("  " + await HudRandomize(hud, clothing, ct));
+        foreach (var (hud, clothing, spec) in huds) sb.AppendLine("  " + await HudRandomize(hud, clothing, ct, spec));
         return sb.ToString().TrimEnd();
     }
 
@@ -518,7 +517,7 @@ public static partial class Program
         if (rd != null && File.Exists(Path.Combine(rd, "_clothing-huds.json")))
         {
             var real = ParseClothingHudMap(File.ReadAllText(Path.Combine(rd, "_clothing-huds.json")));
-            C(real.Count == 3 && real.Values.Distinct().Count() == 3 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops, 3 distinct HUDs, no AO ({real.Count})");
+            C(real.Count == 5 && real.Values.Distinct().Count() == 4 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops + bikini top/panties -> 4 distinct HUDs, no AO ({real.Count})");
             C(real.TryGetValue(new UUID("5c8487b7-0db2-34fd-a81b-fe2709c98021"), out var beth) && beth == new UUID("6899891e-79d1-3a31-93ab-fac14a3bd75e"), "Beth tube top -> Beth Tube Top HUD");
             C(real.TryGetValue(new UUID("aa265665-7a17-34f6-b423-66d336262ed2"), out var arts) && arts == new UUID("cb0dc6c4-545c-3be6-8351-e049094315a7"), "ARTi'S strapless top -> ARTi'S HUD");
             C(real.TryGetValue(new UUID("90d3e432-c8d1-3f2c-b800-6e88ed678c27"), out var tee) && tee == new UUID("a2591928-d005-3af2-9b02-a04c9e5f93e7"), "TETRA Chill T-Shirt -> Chill T-Shirt HUD");

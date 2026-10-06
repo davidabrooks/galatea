@@ -233,6 +233,15 @@ public static partial class Program
     internal static List<string> ParseOutfitNames(string rest) =>
         (rest ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(n => n.Trim('"', '\'')).Where(n => n.Length > 0).ToList();
 
+    // pure (selftest): per requested name -> "trash" / "refused" (kept outfit: Bikini + daily list, unless force) / "not found"
+    // (exact, case-insensitive folder name under My Outfits; never a substring). Blank and repeated names are dropped.
+    internal static List<(string name, string verdict)> PlanOutfitTrash(IEnumerable<string> names, IEnumerable<string> existing, ISet<string> keep, bool force)
+    {
+        var have = existing.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return names.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(n => (n, keep.Contains(n) && !force ? "refused" : have.Contains(n) ? "trash" : "not found")).ToList();
+    }
+
     // Move My Outfits folders to Trash (exact names only; Bikini + the daily outfits refused unless 'force'). Never purges.
     static async Task<string> OutfitTrashNamed(IEnumerable<string> names, bool force = false)
     {
@@ -244,11 +253,11 @@ public static partial class Program
         var kids = (await ReadFolderRO(mo.UUID, ct)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID).ToList();
         var keep = DailyOutfitAllow().Append("Bikini").ToHashSet(StringComparer.OrdinalIgnoreCase);
         var sb = new StringBuilder();
-        foreach (var n in names.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var (n, verdict) in PlanOutfitTrash(names, kids.Select(k => k.Name), keep, force))
         {
-            if (keep.Contains(n) && !force) { sb.AppendLine($"refused: '{n}' is a kept outfit (Bikini / daily list)"); continue; }
-            var f = kids.FirstOrDefault(k => k.Name.Equals(n, StringComparison.OrdinalIgnoreCase));
-            if (f == null) { sb.AppendLine($"not found under My Outfits (exact name): '{n}'"); continue; }
+            if (verdict == "refused") { sb.AppendLine($"refused: '{n}' is a kept outfit (Bikini / daily list)"); continue; }
+            if (verdict == "not found") { sb.AppendLine($"not found under My Outfits (exact name): '{n}'"); continue; }
+            var f = kids.First(k => k.Name.Equals(n, StringComparison.OrdinalIgnoreCase));
             MoveFolderUdp(f, trash);
             Log("outfit", $"moved outfit folder '{f.Name}' {f.UUID} -> Trash (UDP)");
             sb.AppendLine($"trashed outfit folder '{f.Name}' ({f.UUID})");
@@ -323,6 +332,20 @@ public static partial class Program
         C(al.SequenceEqual(new[] { "tshirt", "tubetop" }), $"daily allow-list tubetop+tshirt ({string.Join(",", al)})");
         var pn = ParseOutfitNames("Jiyoo tubetop, jiyoo Tshirt,'Jani tshirt'");
         C(pn.SequenceEqual(new[] { "Jiyoo tubetop", "jiyoo Tshirt", "Jani tshirt" }), "trash names: comma separated, spaces kept");
+        // PR #61 follow-up tests: exact comma names, kept-outfit refusal, daily allow-list
+        C(ParseOutfitNames("Jiyoo tubetop").SequenceEqual(new[] { "Jiyoo tubetop" }), "a space-separated name stays ONE name (never split on spaces)");
+        C(ParseOutfitNames(" , \"PCP Beth Tube Top\" ,, ").SequenceEqual(new[] { "PCP Beth Tube Top" }), "blank entries dropped, quotes stripped");
+        var keep = new HashSet<string>(new[] { "Bikini", "PCP Beth Tube Top" }, StringComparer.OrdinalIgnoreCase);
+        var have = new[] { "Bikini", "PCP Beth Tube Top", "Jiyoo tubetop", "tubetop" };
+        var plan = PlanOutfitTrash(new[] { "bikini", "Jiyoo tubetop", "tube", "Jiyoo Tubetop", "  " }, have, keep, false);
+        C(plan.Count == 3 && plan[0] == ("bikini", "refused"), "kept outfit (Bikini) refused without force, case-insensitive");
+        C(plan[1] == ("Jiyoo tubetop", "trash"), "exact name trashed");
+        C(plan[2] == ("tube", "not found"), "a substring ('tube') never matches 'tubetop'");
+        C(PlanOutfitTrash(new[] { "PCP Beth Tube Top" }, have, keep, true).Single().verdict == "trash", "force trashes a kept outfit");
+        C(PlanOutfitTrash(new[] { "tubetop" }, have, keep, false).Single().verdict == "trash" && !plan.Any(p => p.name == "tubetop"), "'Jiyoo tubetop' never hits 'tubetop'");
+        var al2 = DailyOutfitCandidates(new[] { "Bikini", "PCP BETH TUBE TOP", "TETRA Chill T-Shirt", "ARTi'S Strapless Top" }, new[] { "PCP Beth Tube Top", "TETRA Chill T-Shirt", "Missing Outfit" });
+        C(al2.Count == 2 && !al2.Contains("ARTi'S Strapless Top") && !al2.Any(n => n == "Missing Outfit"), $"daily allow-list: case-insensitive, unlisted excluded, listed-but-unsaved ignored ({string.Join(",", al2)})");
+        C(DailyOutfitCandidates(new[] { "Bikini" }, new[] { "Bikini" }).Count == 0, "Bikini never a daily outfit, even if listed");
         return $"outfit-zones selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

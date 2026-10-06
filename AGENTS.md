@@ -20,6 +20,9 @@ guideline. Only the ideas are adopted; the plugin is not vendored.
 
 ## Leave a trail
 - Non-trivial logic gets **one small runnable check** (a script or test that runs with one command).
+- **Tests in CI:** PRs that change logic checkable offline (parsing, outfit selection, planning, timing rules) add a small,
+  fast, pure CI test; live-only behavior (HUD clicks, render appearance, voice, tuning) is verified in-world instead. Keep CI
+  fast (no network/login), delete tests for removed code.
 - Mark a deliberate corner-cut with a `ponytail:` comment that names its ceiling, i.e. when it stops being good enough:
   `# ponytail: 512 px texture cap; ceiling = blurry close-ups`.
 

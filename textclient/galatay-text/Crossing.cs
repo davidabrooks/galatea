@@ -279,21 +279,22 @@ public static partial class Program
         if (now == false) XMark("arrival_blocked");
         if (now == true) XMark(was == false ? "arrival_cleared" : "arrival_clear");
         var ms = (DateTime.Now - xline.T0).TotalMilliseconds;
-        if (hit != null && was != false) Log("crossing", $"arrival {V(p)} in {sim.Name} (+{ms:F0} ms) overlaps {hit}: walks/follow wait until she is clear, at most {ResumeMinMs} ms");
+        if (hit != null && was != false) Log("crossing", $"arrival {V(p)} in {sim.Name} (+{ms:F0} ms) overlaps {hit}: walks/follow wait until she is clear (at most {ResumeMinMs} ms after the crossing)");
         else if (now == true && was == false) Log("crossing", $"arrival: clear of it at {V(p)} (+{ms:F0} ms): walks/follow go");
     }
 
     static DateTime lastCrossingAt = DateTime.MinValue;
-    // live 2026-10-06 (~90 crossings at the Ahern/Morris/Dore four-corner): driving her (autopilot or her own controls)
-    // within ~1.5 s of a crossing froze her about one Morris -> Ahern crossing in three, always at Ahern <12.4,2.1,39.8>.
-    // That spot is inside a 'half wall' (6.7 x 0.5 x 1.0 m, 45 deg) about 2 m past the border: the old region hands her
-    // over where her walk would carry her, and the new region puts her there even inside a wall (self updates: z 39.0, i.e.
-    // knee-deep, collision plane a wall face). Left alone the physics pushes her out (once with an 18 m/s pop upward);
-    // driven into the wall meanwhile she can stay wedged. At a clear border (Morris/Ahern x 42) walks resumed at her first
-    // update (+0.2 s) froze 0 of 20. So: walks/follow resume at the first self update when that arrival is clear of solid
-    // prims (ArrivalObstacle), and hold the full ResumeMinMs (1.6 s: 0 of 16 + classic 0 of 14 at the wall) when it is not
-    // or is not known yet. The border push lets go at the border (push-through stays a diagnostic switch, off).
-    static int ResumeMinMs = int.TryParse(Env("GT_CROSS_RESUME_MS", "1600"), out var rm) ? rm : 1600;
+    // live 2026-10-06 (Ahern/Morris four-corner): driving her (autopilot or her own controls) right after a crossing froze
+    // her about one Morris -> Ahern crossing in three, always at Ahern <12.4,2.1,39.8>. That spot is inside a 'half wall'
+    // (6.7 x 0.5 x 1.0 m, 45 deg) ~2 m past the border: the old region hands her over where her walk would carry her and
+    // the new region puts her there even inside a wall (self updates: knee-deep, collision plane a wall face). Left alone
+    // the physics pops her out over the wall top at +1.2..1.8 s (Morris's ground slab, arrived 0.4 m sunk: lifted clear at
+    // +0.5..0.7 s); driven into the wall meanwhile she can stay wedged. A fixed 1.6 s hold still froze her once in 8 there.
+    // At a clear border (Morris/Ahern x 42) resuming at her first update (+0.2..0.3 s) froze 0 of 52. So: walks/follow
+    // resume as soon as two self updates in a row show her clear of solid prims (ArrivalObstacle) - at once for a clear
+    // arrival - and at most ResumeMinMs (2.5 s, above the slowest push-out seen) after CrossedRegion.
+    // The border push lets go at the border (push-through stays a diagnostic switch, off).
+    static int ResumeMinMs = int.TryParse(Env("GT_CROSS_RESUME_MS", "2500"), out var rm) ? rm : 2500;
     static bool ArrivalGate = Env("GT_CROSS_GATE", "on") != "off";
     internal static bool CrossingSettling(DateTime now, DateTime crossedAt, int minMs, bool? arrivalClear = null)
         => minMs > 0 && now >= crossedAt && (now - crossedAt).TotalMilliseconds < minMs && arrivalClear != true;

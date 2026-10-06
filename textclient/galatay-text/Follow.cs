@@ -124,8 +124,8 @@ public static partial class Program
         var sim = client.Network.CurrentSim; if (sim == null) return;
         // mid-crossing (CrossedRegion seen, region not switched yet) positions mix two frames: wait (Neighbors.cs)
         if (crossing.State == CrossingWatch.Phase.Crossing) return;
-        // and while the new region settles her (driving her then froze her: Crossing.cs ResumeMinMs)
-        if (CrossingSettling(DateTime.Now, lastCrossingAt, ResumeMinMs)) return;
+        // and while the new region settles her, unless it put her somewhere clear (Crossing.cs ResumeMinMs, ArrivalObstacle)
+        if (CrossingSettling(DateTime.Now, lastCrossingAt, ResumeMinMs, ArrivalClearForGate)) return;
         // the leader may be across a border: found in a neighbor region, position in this region's frame (Neighbors.cs);
         // the autopilot takes global coordinates, so she walks over the border after him
         var found = FindAvatarAnySim(id);

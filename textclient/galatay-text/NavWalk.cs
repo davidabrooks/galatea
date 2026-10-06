@@ -23,6 +23,9 @@ public static partial class Program
     static string V(Vector3 v) => string.Format(CultureInfo.InvariantCulture, "<{0:F1},{1:F1},{2:F1}>", v.X, v.Y, v.Z);
     static float HDist(Vector3 a, Vector3 b) => new Vector2(a.X - b.X, a.Y - b.Y).Length();
 
+    // pure (selftest): how far from a leg end a stalled walk still counts as arrived (the sim autopilot's ~1 m stop distance)
+    internal static float AutopilotStopSlack(float tol) => MathF.Max(tol, 1.3f);
+
     static void AutoPilotTo(Vector3 p)
     {
         Utils.LongToUInts(client.Network.CurrentSim.Handle, out var rx, out var ry);
@@ -110,6 +113,14 @@ public static partial class Program
             if ((DateTime.Now - legStart).TotalSeconds > 90) { client.Self.AutoPilotCancel(); Log("walk", $"leg {label}: timeout at {V(p)}"); return false; }
             if (!stuck) continue;
             hist.Clear();
+            // the sim's autopilot stops about 1 m short of its goal when it starts slow and close (live 12:27: twice exactly
+            // 1.0 m from a leg end just past a border, read as STUCK -> 3-6 s of recovery): that is arrived
+            if (goal == target && HDist(p, target) <= AutopilotStopSlack(tol))
+            {
+                client.Self.AutoPilotCancel();
+                Log("walk", $"leg {label}: arrived at {V(p)} ({HDist(p, target):F1} m short: the autopilot's stop distance) in {(DateTime.Now - legT0).TotalSeconds:F0} s");
+                return true;
+            }
             if (!doorTried && !flew)
             {   // 2026-10-05: stuck near a door/gate -> the door sequence first (Doors.cs DoorUnstick), once per leg
                 doorTried = true; client.Self.AutoPilotCancel();

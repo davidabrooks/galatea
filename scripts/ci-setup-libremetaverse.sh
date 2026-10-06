@@ -28,5 +28,5 @@ apply "$TC/libremetaverse-experienceid.patch"
 apply "$TC/libremetaverse-render.patch"
 apply "$TC/libremetaverse-outfit-send.patch"
 apply "$TC/libremetaverse-object-cache.patch"   # 2026-10-05: on-disk object cache (VOCache-like)
-apply "$TC/libremetaverse-multisim.patch"       # 2026-10-06: neighbor regions: self updates only from the current region; adopt her local id on crossing; fast hand-over (CAM without ack wait, keep child caps, no appearance re-pass)
+apply "$TC/libremetaverse-multisim.patch"       # 2026-10-06: neighbor regions: self updates only from the current region; her local id on crossing (newest entry, terse self-heal, stale copies dropped); fast hand-over (CAM at once on the live child circuit, keep child caps, no appearance re-pass)
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

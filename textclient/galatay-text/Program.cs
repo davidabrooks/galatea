@@ -1473,7 +1473,7 @@ public static partial class Program
                               : string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}{5}", d, a.ID, a.Name, Fmt(p), seat, head));
         }
         var coarse = CoarseOnlyLines();
-        if (list.Count == 0) sb.AppendLine(coarse.Length == 0 ? "(no avatars in view, none on the region map)" : "(no avatars streamed to me yet)");
+        if (list.Count == 0) sb.AppendLine(NoAvatarsLine(CoarseReceived, coarse.Length > 0));
         return sb.ToString() + coarse;
     }
 

@@ -87,8 +87,18 @@ public static partial class Program
             if (e.Simulator != client.Network.CurrentSim) return;
             coarseSim = e.Simulator; coarseNow = e.Positions;
         };
-        client.Network.SimChanged += (s, e) => { rawChildren.Clear(); coarseNow = new Dictionary<UUID, Vector3>(); };
+        // the new region's first map update can land before SimChanged fires: keep it rather than wiping it
+        client.Network.SimChanged += (s, e) => { rawChildren.Clear(); if (coarseSim != client.Network.CurrentSim) coarseNow = new Dictionary<UUID, Vector3>(); };
     }
+
+    static bool CoarseReceived => client.Network.CurrentSim != null && coarseSim == client.Network.CurrentSim;
+
+    // pure: the `avatars` line when nobody is streamed. Right after a teleport the region map's avatar list has not
+    // arrived yet; "none on the region map" then was a false negative (Sunday 2026-10-04: "no avatars at public spots").
+    internal static string NoAvatarsLine(bool coarseReceived, bool coarseOthers) =>
+        coarseOthers ? "(no avatars streamed to me yet)"
+        : coarseReceived ? "(no avatars in view, none on the region map)"
+        : "(no avatars streamed yet, and the region map's avatar list hasn't arrived yet: ask again in a few seconds)";
 
     // pure: avatars on the coarse map that are not streamed as objects yet (and not me), nearest first.
     // Coarse Z is 4 m steps capped at 1020 (Z byte 255 = "above 1020 m"): compare horizontally when either Z is unknown.
@@ -172,6 +182,8 @@ public static partial class Program
         C(LookAttachWaitDone(Enumerable.Repeat(2, 10).ToArray(), 52, 5000, 500, 25000) == "stalled" && LookAttachWaitDone(new[] { 2, 8, 20 }, 52, 1500, 500, 25000) == null
           && LookAttachWaitDone(new[] { 52 }, 52, 500, 500, 25000) == "complete" && LookAttachWaitDone(new[] { 5, 9 }, 52, 25000, 500, 25000) == "timeout",
           "look attachment wait: complete / stalled (no progress 4 s) / timeout / keep waiting while it grows");
+        C(NoAvatarsLine(false, false).Contains("hasn't arrived") && NoAvatarsLine(true, false).Contains("none on the region map")
+          && NoAvatarsLine(false, true) == "(no avatars streamed to me yet)", "no-avatars line: map not received yet is not 'none on the map'");
         return $"crowd selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 

@@ -1,0 +1,8 @@
+{
+  "note": "Top -> its own color/pattern HUD (David 2026-10-05 17:00). Each time an outfit with one of these tops goes on: attach the HUD, press a random color/pattern, verify the texture change on the top, detach. Never the AO. Checked before the same-folder lookup.",
+  "tops": [
+    {"clothing": "5c8487b7-0db2-34fd-a81b-fe2709c98021", "name": "Beth Top :: PetiteX - White :: Pink Cream Pie", "hud": "6899891e-79d1-3a31-93ab-fac14a3bd75e", "hud_name": "[HUD - Essential] Beth Tube Top :: Pink Cream Pie"},
+    {"clothing": "aa265665-7a17-34f6-b423-66d336262ed2", "name": "[ARTi'S] Strapless Top - Lara PetiteX", "hud": "cb0dc6c4-545c-3be6-8351-e049094315a7", "hud_name": "[ARTi'S] Strapless Top - HUD"},
+    {"clothing": "90d3e432-c8d1-3f2c-b800-6e88ed678c27", "name": "TETRA - Chill T-Shirt - LaraX Petite", "hud": "a2591928-d005-3af2-9b02-a04c9e5f93e7", "hud_name": "<HUD> Chill T-Shirt"}
+  ]
+}

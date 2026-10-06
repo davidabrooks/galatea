@@ -394,7 +394,7 @@ public static partial class Program
         {
             var a = g.N[e.a]; var b = g.N[e.b]; var d = new Vector3(b.X - a.X, b.Y - a.Y, 0); float l2 = d.X * d.X + d.Y * d.Y;
             float t = l2 < 1e-6f ? 0 : Math.Clamp(((x.X - a.X) * d.X + (x.Y - a.Y) * d.Y) / l2, 0, 1);
-            var q = Vector3.Lerp(a, b, t); float dist = HDist(q, x);
+            var q = Vector3.Lerp(a, b, t); float dist = GDist(q, x);
             if (dist < bd) { bd = dist; best = q; }
         }
         return (best, bd);
@@ -407,7 +407,7 @@ public static partial class Program
         {
             var a = g.N[g.E[k].a]; var b = g.N[g.E[k].b]; var d = new Vector3(b.X - a.X, b.Y - a.Y, 0); float l2 = d.X * d.X + d.Y * d.Y;
             float t = l2 < 1e-6f ? 0 : Math.Clamp(((to.X - a.X) * d.X + (to.Y - a.Y) * d.Y) / l2, 0, 1);
-            float dist = HDist(Vector3.Lerp(a, b, t), to);
+            float dist = GDist(Vector3.Lerp(a, b, t), to);
             if (dist < bd) { bd = dist; bestE = k; bt = t; }
         }
         if (bestE < 0) return (null, "graph has no edges");
@@ -420,11 +420,11 @@ public static partial class Program
     }
 
 
-    // ---- Peronaut home wander (upper level only; lower beach catalogued but not on the path graph yet) ------
+    // ---- Peronaut home wander (upper floor + lower level over the path graph; seats per routes/_seats-peronaut-home.json) ------
     static async Task HomeWanderLoop(CancellationToken ct)
     {
         var g = LoadGraph(HomeWanderRegion) ?? throw new InvalidOperationException("no path graph for Peronaut");
-        string[] ends = { "front", "chairs", "patio-sw", "living", "home", "patio-east", "east-deck" };
+        string[] ends = { "front", "chairs", "patio-sw", "living", "home", "patio-east", "east-deck", "porch" };
         ends = ends.Where(n => g.Places.ContainsKey(n)).ToArray();
         if (ends.Length == 0) throw new InvalidOperationException("Peronaut graph has no wander places");
         var me0 = client.Self.SimPosition;
@@ -432,6 +432,7 @@ public static partial class Program
         while (!ct.IsCancellationRequested)
         {
             if (!LoggedIn) { await Task.Delay(2000, ct); continue; }
+            if (pendingDressOutfit != null && client.Self.SittingOn == 0) await DressAfterSeatIfPending();
             if (!InPeronaut) { WLog($"left Peronaut (now {client.Network.CurrentSim?.Name ?? "-"}): stopping"); SaveWanderFlag(false, "left Peronaut"); return; }
             if (RestartActive) { wanderResumeAfterRestart = true; WLog("region restart handling active: stopping (resume after the return)"); SaveWanderFlag(true, "restart"); return; }
             MaybeSnapshot();
@@ -544,50 +545,41 @@ public static partial class Program
         WLog("stopped after home recovery: " + res);
     }
 
-    static HashSet<UUID> LoadHomeSeatIds()
-    {
-        var ids = new HashSet<UUID>();
-        try
-        {
-            if (!File.Exists(HomeSeatsFile)) return ids;
-            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(HomeSeatsFile));
-            if (!doc.RootElement.TryGetProperty("seats", out var seats)) return ids;
-            foreach (var s in seats.EnumerateArray())
-            {
-                var level = s.TryGetProperty("level", out var lv) ? lv.GetString() ?? "" : "";
-                if (!level.StartsWith("upper", StringComparison.OrdinalIgnoreCase)) continue; // home wander stays on upper floor
-                if (s.TryGetProperty("uuid", out var u) && UUID.TryParse(u.GetString(), out var id)) ids.Add(id);
-            }
-        }
-        catch (Exception ex) { WLog("home seats file: " + ex.Message); }
-        return ids;
-    }
-
+    // Home seats: every catalogued seat (routes/_seats-peronaut-home.json, any level, reached over the path graph)
+    // plus seat-named objects on the upper floor near the path. Grouped chairs = one spot.
     static async Task<List<SeatCand>> HomeWanderSeats(Graph g, List<string> dbg = null)
     {
         var sim = Sim; var me = client.Self.SimPosition;
-        var prefer = LoadHomeSeatIds();
+        var infos = LoadHomeSeats().Where(i => i.Wander).GroupBy(i => i.Id).ToDictionary(x => x.Key, x => x.First());
+        var skip = LoadHomeSeats().Where(i => !i.Wander).Select(i => i.Id).ToHashSet();
         var allowed = await AllowedParcel(sim);
-        var raw = new List<(Primitive p, Vector3 q, float d)>();
+        var raw = new List<(Primitive p, Vector3 q, float d, bool listed)>();
+        var seen = new HashSet<UUID>();
         foreach (var p in sim.ObjectsPrimitives.Values)
         {
             if (p == null || p.ParentID != 0 || p.PrimData.PCode != PCode.Prim) continue;
-            if (HDist(p.Position, me) > 40f) continue;
-            if (p.Position.Z < 27f || p.Position.Z > 32f) continue; // upper level only
+            bool listed = infos.ContainsKey(p.ID);
+            if (!listed)
+            {
+                if (skip.Contains(p.ID)) continue;
+                if (HDist(p.Position, me) > 40f) continue;
+                if (p.Position.Z < 27f || p.Position.Z > 32f) continue; // uncatalogued: upper level only
+            }
             var (q, d) = NearestOnGraph(g, p.Position);
-            if (d > 14f) continue;
-            raw.Add((p, q, d));
+            if (d > (listed ? 6f : 14f)) { if (listed) dbg?.Add($"  - '{infos[p.ID].Name}' {p.ID} {P3(p.Position)}: {d:F1} m from the path graph"); continue; }
+            raw.Add((p, q, d, listed)); seen.Add(p.ID);
         }
+        foreach (var i in infos.Values.Where(i => !seen.Contains(i.Id) && !raw.Any(r => r.p.ID == i.Id)))
+            if (!sim.ObjectsPrimitives.Values.Any(x => x != null && x.ID == i.Id)) dbg?.Add($"  - '{i.Name}' {i.Id} {P3(i.Pos)}: not in view right now");
         await EnsureProperties(sim, raw.Select(t => t.p).ToList());
-        dbg?.Add($"  ({raw.Count} upper-level root prims near path; prefer {prefer.Count} catalogued seats)");
+        dbg?.Add($"  ({raw.Count} seat prims near the path; {infos.Count} catalogued wander seats)");
         var sit = Sitters(sim);
         var avs = Avatars().Where(t => t.dist >= 0).ToList();
         var now = DateTime.Now;
         var res = new List<SeatCand>();
-        foreach (var (p, q, d) in raw)
+        foreach (var (p, q, d, listed) in raw)
         {
-            var name = p.Properties?.Name ?? "";
-            bool listed = prefer.Contains(p.ID);
+            var name = p.Properties?.Name ?? (listed ? infos[p.ID].Name : "");
             if (!listed && (!HomeSeatRx.IsMatch(name) || WSeatBad.IsMatch(name))) continue;
             void R(string why) => dbg?.Add($"  - '{name}' {p.ID} {P3(p.Position)}: {why}");
             if (Math.Max(p.Scale.X, Math.Max(p.Scale.Y, p.Scale.Z)) > 10f) { R("too big"); continue; }
@@ -595,13 +587,13 @@ public static partial class Program
             if (p.ID == wLastSeat) { R("sat there last time"); continue; }
             bool cool; lock (wSeatFailed) cool = wSeatFailed.TryGetValue(p.ID, out var ft) && (now - ft).TotalMinutes < 30;
             if (cool) { R("failed recently (30 min cooldown)"); continue; }
-            var level = avs.Where(t => Math.Abs(t.pos.Z - p.Position.Z) < 10f).ToList();
+            var level = avs.Where(t => Math.Abs(t.pos.Z - p.Position.Z) < 4f).ToList();
             float quiet = level.Count == 0 ? 999f : level.Min(t => HDist(t.pos, p.Position));
             if (quiet < 3f) { R($"avatar {quiet:F1} m away"); continue; }
-            res.Add(new SeatCand(p, name, HDist(p.Position, me), d, quiet, q));
+            res.Add(new SeatCand(p, name, Vector3.Distance(p.Position, me), d, quiet, q));
         }
         var outp = new List<SeatCand>();
-        foreach (var c in res.OrderBy(c => c.fromMe).Take(24))
+        foreach (var c in res.OrderBy(c => c.fromMe).Take(40))
         {
             var pid = await ParcelAt(sim, c.p.Position);
             if (ParcelOk(pid, allowed)) outp.Add(c);
@@ -613,19 +605,19 @@ public static partial class Program
     static async Task<bool> HomeRandomSit(Graph g, CancellationToken ct)
     {
         var cands = await HomeWanderSeats(g);
-        var quiet = cands.Where(c => c.quiet >= 10f).OrderBy(c => c.fromMe).Take(8).ToList();
-        var pool = quiet.Count > 0 ? quiet : cands.OrderBy(c => c.fromMe).Take(5).ToList();
-        if (pool.Count == 0) { WLog("sit: no free upper-level seat near here (skipping this time)"); return false; }
-        var c = pool[wRnd.Next(pool.Count)];
+        var infos = LoadHomeSeats().GroupBy(i => i.Id).ToDictionary(x => x.Key, x => x.First());
+        var quiet = cands.Where(c => c.quiet >= 10f).ToList();
+        var pool = quiet.Count > 0 ? quiet : cands;
+        if (pool.Count == 0) { WLog("sit: no free home seat right now (skipping this time)"); return false; }
+        // one spot at random (grouped chairs count once), then a random free chair at that spot
+        var spots = pool.GroupBy(c => HomeSeatSpot(c.p.ID, infos)).ToList();
+        var spot = spots[wRnd.Next(spots.Count)].ToList();
+        var c = spot[wRnd.Next(spot.Count)];
+        infos.TryGetValue(c.p.ID, out var info);
         var seatPos = c.p.Position;
-        WLog($"SIT target: '{c.name}' {c.p.ID} at {P3(seatPos)} ({c.fromMe:F0} m from her, {c.fromPath:F1} m from the path; {cands.Count} candidates)");
-        var (pts, err) = GraphRouteTo(g, client.Self.SimPosition, c.pathPt);
+        WLog($"SIT target: '{c.name}' {c.p.ID} at {P3(seatPos)} ({c.fromMe:F0} m from her, {c.fromPath:F1} m from the path; {spots.Count} free spots{(spot.Count > 1 ? $", random pick of {spot.Count} chairs here" : "")}{(info?.Special != null ? ", special " + info.Special : "")})");
+        var (pts, _, _, err) = HomeSeatRoute(g, client.Self.SimPosition, seatPos);
         if (err != null) { MarkSeatFailed(c, "no route: " + err); return false; }
-        if (HDist(c.pathPt, seatPos) > 2.2f)
-        {
-            var dir = new Vector3(c.pathPt.X - seatPos.X, c.pathPt.Y - seatPos.Y, 0); dir = Vector3.Normalize(dir);
-            pts.Add(new Vector3(seatPos.X + dir.X * 1.2f, seatPos.Y + dir.Y * 1.2f, Math.Min(c.pathPt.Z, seatPos.Z)));
-        }
         var poly = new Poly(pts);
         var o = new RouteOpts { Label = $"home wander to seat '{c.name}'", Idle = true };
         var bad = await CheckBounds(poly, o);
@@ -638,36 +630,71 @@ public static partial class Program
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("walk to seat interrupted (" + (wanderPause ?? "cancel") + ")"); return false; }
         finally { wLegHasGoal = false; }
         if (!ok && msg.Contains("AO not active")) { WLog($"PAUSE (ao): {msg}; not sitting"); wanderPause = "ao"; wPausedAt = DateTime.Now; return false; }
-        if (!ok && HDist(client.Self.SimPosition, seatPos) > 10f) { MarkSeatFailed(c, msg); return false; }
-        if (!ok) WLog($"walk to the seat ended {HDist(client.Self.SimPosition, seatPos):F1} m short ({msg}); trying to sit from here");
+        var here = client.Self.SimPosition;
+        // always walk to the seat (no sitting from afar or from another level)
+        if (!ok && (HDist(here, seatPos) > 10f || Math.Abs(here.Z - seatPos.Z) > 3f)) { MarkSeatFailed(c, msg); return false; }
+        if (!ok) WLog($"walk to the seat ended {HDist(here, seatPos):F1} m short ({msg}); trying to sit from here");
         var sim = Sim;
         if (Sitters(sim).ContainsKey(c.p.LocalID)) { MarkSeatFailed(c, "someone sat there first"); return false; }
         if (wanderPause != null) return false;
+        // per-seat outfit rules
+        if (info?.Special == "shower" && !BikiniWorn())
+        {
+            WLog("shower: Bikini first");
+            try { var br = await BikiniOn(); RememberNamedOutfit("Bikini"); WLog("shower bikini: " + br.Replace("\n", " | ")[..Math.Min(300, br.Length)]); }
+            catch (Exception ex) { WLog("shower bikini failed: " + ex.GetBaseException().Message + "; not using the shower"); MarkSeatFailed(c, "bikini failed"); return false; }
+        }
+        if (info?.Special == "undress")
+        {
+            pendingDressOutfit = lastNamedOutfit ?? (beachMode ? "Bikini" : null) ?? DailyOutfitAllow().FirstOrDefault();
+            await UndressForSeat(ct);
+        }
         var sitReq = DateTime.Now;
         var r = await Exec("sit " + c.p.ID);
         await Task.Delay(1000, ct);
-        if (client.Self.SittingOn == 0) { MarkSeatFailed(c, "sit failed: " + r); return false; }
+        if (client.Self.SittingOn == 0) { MarkSeatFailed(c, "sit failed: " + r); await DressAfterSeatIfPending(); return false; }
         wLastSeat = c.p.ID; wSits++;
         var stay = wRnd.Next(120, 241);
         var t0 = DateTime.Now;
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
-        bool menu = false;
-        try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
-        double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
-        while ((DateTime.Now - t0).TotalSeconds < stay && wanderPause == null && client.Self.SittingOn != 0)
+        bool menu = false, waterOn = false;
+        var fixedMenu = HomeSeatMenu(info, wRnd);
+        if (fixedMenu != null)
         {
-            await Task.Delay(1000, ct);
-            if (!changed && (DateTime.Now - t0).TotalSeconds >= changeAt && wanderPause == null && client.Self.SittingOn != 0)
+            try { var pr = await SeatPosePath(c.p, c.name, fixedMenu, ct); WLog($"POSE (seat menu {string.Join(" > ", fixedMenu)}): {pr}"); }
+            catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE menu error: " + ex.GetBaseException().Message); }
+        }
+        else
+        {
+            try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
+        }
+        if (info?.Special == "shower" && info.TouchChild != UUID.Zero && client.Self.SittingOn != 0)
+        { await Task.Delay(1500, ct); waterOn = TouchChildPrim(info.TouchChild, "shower water ON (valve)"); }
+        double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
+        try
+        {
+            while ((DateTime.Now - t0).TotalSeconds < stay && wanderPause == null && client.Self.SittingOn != 0)
             {
-                changed = true;
-                try { await SeatPose(c.p, c.name, DateTime.Now, true, ct); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
+                await Task.Delay(1000, ct);
+                if (!changed && (DateTime.Now - t0).TotalSeconds >= changeAt && wanderPause == null && client.Self.SittingOn != 0)
+                {
+                    changed = true;
+                    try { await SeatPose(c.p, c.name, DateTime.Now, true, ct); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
+                }
             }
+        }
+        finally
+        {
+            // water off before she stands (or whenever this sit ends while still seated)
+            if (waterOn && client.Self.SittingOn != 0) { TouchChildPrim(info.TouchChild, "shower water OFF (valve)"); waterOn = false; try { await Task.Delay(1000); } catch { } }
+            else if (waterOn) WLog("shower: she was stood up before the valve could be turned off");
         }
         var sat = (DateTime.Now - t0).TotalSeconds;
         if (wanderPause != null) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (interrupted: {wanderPause})"; WLog($"sit on '{c.name}' interrupted after {sat:F0} s ({wanderPause})"); return true; }
-        if (client.Self.SittingOn == 0) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (stood up by something else)"; WLog($"no longer seated after {sat:F0} s"); return true; }
+        if (client.Self.SittingOn == 0) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (stood up by something else)"; WLog($"no longer seated after {sat:F0} s"); await DressAfterSeatIfPending(); return true; }
         await EnsureStandingForWalk(ct);
+        await DressAfterSeatIfPending();
         wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s";
         WLog($"STOOD UP from '{c.name}' {c.p.ID} after {sat:F0} s; rejoining the path");
         return true;
@@ -1410,8 +1437,9 @@ public static partial class Program
                 {
                     var g = LoadGraph(HomeWanderRegion); if (g == null) return "no Peronaut path graph";
                     var dbg = new List<string>();
+                    if (a.Length > 1 && a[1].Equals("check", StringComparison.OrdinalIgnoreCase)) return await HomeSeatsCheck(g);
                     var c = await HomeWanderSeats(g, dbg);
-                    return $"{dbg.Count} rejected seat-named objects:\n{string.Join("\n", dbg)}\n{c.Count} candidate upper-level home seats:\n" + string.Join("\n", c.OrderBy(x => x.fromMe).Select(x => $"  '{x.name}' {x.p.ID} {P3(x.p.Position)} me {x.fromMe:F0} m, path {x.fromPath:F1} m, nearest avatar {(x.quiet > 900 ? "-" : x.quiet.ToString("F0", IC))} m"));
+                    return $"{dbg.Count} rejected seat-named objects:\n{string.Join("\n", dbg)}\n{c.Count} candidate home seats (all levels):\n" + string.Join("\n", c.OrderBy(x => x.fromMe).Select(x => $"  '{x.name}' {x.p.ID} {P3(x.p.Position)} me {x.fromMe:F0} m, path {x.fromPath:F1} m, nearest avatar {(x.quiet > 900 ? "-" : x.quiet.ToString("F0", IC))} m"));
                 }
                 var g2 = LoadGraph(HomeSeatRegion); if (g2 == null || !InNaberrie) return "not in Naberrie or Peronaut";
                 var dbg2 = new List<string>();

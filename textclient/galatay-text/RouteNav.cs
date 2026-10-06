@@ -112,9 +112,10 @@ public static partial class Program
         var tmp = RoutePath(name) + ".tmp"; File.WriteAllText(tmp, o.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); File.Move(tmp, RoutePath(name), true);
     }
     sealed class Graph { public List<Vector3> N = new(); public List<(int a, int b, string kind)> E = new(); public Dictionary<string, (int node, string note)> Places = new(StringComparer.OrdinalIgnoreCase); }
-    static Graph LoadGraph(string region)
+    static Graph LoadGraph(string region) => LoadGraphFile(Path.Combine(RouteDir, $"_graph-{region}.json"));
+    static Graph LoadGraphFile(string f)
     {
-        var f = Path.Combine(RouteDir, $"_graph-{region}.json"); if (!File.Exists(f)) return null;
+        if (!File.Exists(f)) return null;
         var j = JsonNode.Parse(File.ReadAllText(f))!; var g = new Graph();
         foreach (var n in j["nodes"]!.AsArray()) g.N.Add(new Vector3((float)n![0]!.GetValue<double>(), (float)n[1]!.GetValue<double>(), (float)n[2]!.GetValue<double>()));
         foreach (var e in j["edges"]!.AsArray()) g.E.Add((e![0]!.GetValue<int>(), e[1]!.GetValue<int>(), (string)e[2] ?? ""));
@@ -130,7 +131,7 @@ public static partial class Program
         {
             var a = g.N[g.E[k].a]; var b = g.N[g.E[k].b]; var d = new Vector3(b.X - a.X, b.Y - a.Y, 0); float l2 = d.X * d.X + d.Y * d.Y;
             float t = l2 < 1e-6f ? 0 : Math.Clamp(((from.X - a.X) * d.X + (from.Y - a.Y) * d.Y) / l2, 0, 1);
-            var q = new Vector3(a.X + d.X * t, a.Y + d.Y * t, 0); float dist = HDist(q, from);
+            var q = Vector3.Lerp(a, b, t); float dist = GDist(q, from); // level-aware (stacked patio/beach)
             if (dist < bestD) { bestD = dist; bestE = k; bestT = t; }
         }
         if (bestE < 0) return (null, "graph has no edges");

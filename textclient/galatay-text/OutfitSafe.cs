@@ -24,7 +24,7 @@ public static partial class Program
     static readonly Regex HeadRx = new(@"/\s*HEAD\s*/|\bEvoX?\s+head\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly Regex MeshBodyRx = new(@"\bMesh\s*Body\b|\bMeshbody\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly Regex ClothingNameRx = new(@"\b(top|shirt|t-shirt|tee|bikini|dress|skirt|jeans|pants|shorts|capris?|panties|bra|jacket|sweater|hoodie|cutoffs|boots|shoes|heels|sandals)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    static readonly Regex ClothingHudNameRx = new(@"^\s*(<HUD>|\[HUD)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex ClothingHudNameRx = new(@"^\s*(<HUD>|\[HUD)|[-:]\s*HUD\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     internal static string OutfitGroup(string name)
     {
@@ -138,11 +138,10 @@ public static partial class Program
             var removeCloth = new List<InventoryItem>();
             foreach (var c in curCloth.Where(c => !tClothIds.Contains(c.ItemID)))
             { var it = await FetchItemRO(c.ItemID, ct); if (it != null) removeCloth.Add(it); }
-            if (removeCloth.Count > 0)
-            {
-                client.Appearance.RemoveFromOutfit(removeCloth);
-                foreach (var it in removeCloth) { await RemoveCofLinksForItem(it.UUID, "outfit swap", ct); sb.AppendLine($"  layer off: '{it.Name}'"); }
-            }
+            // COF links first: the library rebuilds its wearables from the COF after a bake, so a layer whose COF link
+            // survives the removal comes straight back (16:59 'Jiyoo tubetop': 5 layers "off" were all still worn).
+            foreach (var it in removeCloth) { await RemoveCofLinksForItem(it.UUID, "outfit swap", ct); sb.AppendLine($"  layer off: '{it.Name}'"); }
+            if (removeCloth.Count > 0) client.Appearance.RemoveFromOutfit(removeCloth);
             var replacedBody = new List<UUID>();
             foreach (var b in tBody)
             {
@@ -170,7 +169,20 @@ public static partial class Program
                 if (attach.All(have.Contains)) break;
             }
             await Task.Delay(1500, ct);
-            sb.AppendLine("  " + await CofSyncAddMissing(ct));
+            // verify the layers really came off; retry once (COF link + wearable), then report
+            var removedIds = removeCloth.Select(r => r.UUID).ToHashSet();
+            for (int k = 0; k < 2 && removedIds.Count > 0; k++)
+            {
+                List<UUID> back; try { back = client.Appearance.GetWearables().Select(w => w.ItemID).Where(removedIds.Contains).Distinct().ToList(); } catch { back = new(); }
+                if (back.Count == 0) break;
+                var again = removeCloth.Where(r => back.Contains(r.UUID)).ToList();
+                if (k == 1) { sb.AppendLine($"  WARNING layers still worn after retry: {string.Join(", ", again.Select(a => a.Name))}"); break; }
+                foreach (var it in again) await RemoveCofLinksForItem(it.UUID, "outfit swap (retry)", ct);
+                client.Appearance.RemoveFromOutfit(again);
+                sb.AppendLine($"  layer retry off: {string.Join(", ", again.Select(a => "'" + a.Name + "'"))}");
+                await Task.Delay(3000, ct);
+            }
+            sb.AppendLine("  " + await CofSyncAddMissing(ct, removedIds));
             RememberNamedOutfit(folder.Name);
             Log("outfit", $"wore outfit '{folder.Name}' safely: {detach.Count} off, {attach.Count} on, {removeCloth.Count} layers off, {addCloth.Count} layers on, {tBody.Count} body parts");
             return $"wearing outfit '{folder.Name}' ({detach.Count} off, {attach.Count} on, {removeCloth.Count}/{addCloth.Count} layers off/on)\n" + sb.ToString().TrimEnd();
@@ -179,7 +191,7 @@ public static partial class Program
     }
 
     // Add a COF link for every worn attachment / wearable that has none (never removes anything; Firestorm bridge excluded).
-    static async Task<string> CofSyncAddMissing(CancellationToken ct)
+    static async Task<string> CofSyncAddMissing(CancellationToken ct, ICollection<UUID> skip = null)
     {
         var cof = await CofFolder(ct); if (cof == null) return "COF sync: Current Outfit folder not found";
         var links = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>().Where(l => l.ParentUUID == cof.UUID && l.IsLink()).ToList();
@@ -194,6 +206,7 @@ public static partial class Program
         var added = new List<string>();
         foreach (var id in want.Distinct())
         {
+            if (skip != null && skip.Contains(id)) continue; // just taken off: never re-link it
             var it = await FetchItemRO(id, ct); if (it == null || it.IsLink()) continue;
             if (it.Name.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase)) continue;
             if (ClothingHudNameRx.IsMatch(it.Name)) continue; // clothing HUDs are transient
@@ -300,10 +313,37 @@ public static partial class Program
         return sb.ToString();
     }
 
+    // Explicit top -> color HUD map (routes/_clothing-huds.json, David 17:00): checked before the same-folder lookup.
+    static string ClothingHudMapFile => Path.Combine(RouteDir, "_clothing-huds.json"); // property: static init order across partial files
+    internal static Dictionary<UUID, UUID> ParseClothingHudMap(string json)
+    {
+        var d = new Dictionary<UUID, UUID>();
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("tops", out var tops)) return d;
+        foreach (var t in tops.EnumerateArray())
+            if (t.TryGetProperty("clothing", out var c) && t.TryGetProperty("hud", out var h)
+                && UUID.TryParse(c.GetString(), out var ci) && UUID.TryParse(h.GetString(), out var hi) && hi != AoItem && hi != RetiredAwpAo)
+                d[ci] = hi;
+        return d;
+    }
+    static Dictionary<UUID, UUID> LoadClothingHudMap()
+    {
+        try { return File.Exists(ClothingHudMapFile) ? ParseClothingHudMap(File.ReadAllText(ClothingHudMapFile)) : new(); }
+        catch (Exception ex) { Log("hud", "clothing HUD map: " + ex.Message); return new(); }
+    }
+
     static async Task<List<(InventoryItem hud, List<UUID> clothing)>> FindClothingHuds(IEnumerable<InventoryItem> outfitItems, CancellationToken ct)
     {
         var res = new List<(InventoryItem, List<UUID>)>();
-        var byFolder = outfitItems.Where(i => (i is InventoryObject || i is InventoryAttachment) && ClothingNameRx.IsMatch(i.Name ?? "")
+        var map = LoadClothingHudMap(); var mapped = new HashSet<UUID>();
+        foreach (var i in outfitItems)
+        {
+            if (!map.TryGetValue(i.UUID, out var hid)) continue;
+            var hud = await FetchItemRO(hid, ct);
+            if (hud == null || hud.IsLink()) { Log("hud", $"mapped HUD {hid} for '{i.Name}' not found in inventory"); continue; }
+            mapped.Add(i.UUID); res.Add((hud, new List<UUID> { i.UUID }));
+        }
+        var byFolder = outfitItems.Where(i => !mapped.Contains(i.UUID) && (i is InventoryObject || i is InventoryAttachment) && ClothingNameRx.IsMatch(i.Name ?? "")
                                          && OutfitGroup(i.Name) == null && !ClothingHudNameRx.IsMatch(i.Name ?? ""))
                                   .GroupBy(i => i.ParentUUID);
         foreach (var g in byFolder)
@@ -344,6 +384,9 @@ public static partial class Program
     {
         using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
         if (a.Length < 3) return "usage: outfit link-remove <outfit> <name part> | outfit link-add <outfit> <original item uuid>";
+        // multi-word outfit name: outfit link-remove <outfit words> | <name part>
+        var bar = Array.IndexOf(a, "|");
+        if (bar > 1 && bar < a.Length - 1) a = new[] { a[0], string.Join(' ', a[1..bar]) }.Concat(a[(bar + 1)..]).ToArray();
         var folder = await FindOutfitFolder(a[1], ct); if (folder == null) return $"no outfit '{a[1]}'";
         var kids = (await ReadFolderRO(folder.UUID, ct)).OfType<InventoryItem>().Where(k => k.ParentUUID == folder.UUID).ToList();
         if (a[0] == "link-remove")
@@ -390,6 +433,9 @@ public static partial class Program
         C(!p1.detach.Contains(ao), "AO never detached");
         C(!p1.detach.Contains(U(2)) && !p1.attach.Contains(U(2)), "same head kept as is");
         // outfit without hair: keep current hair
+        var hm = ParseClothingHudMap("{\"tops\":[{\"clothing\":\"" + U(11) + "\",\"hud\":\"" + U(12) + "\"},{\"clothing\":\"" + U(13) + "\",\"hud\":\"" + AoItem + "\"}]}");
+        C(hm.Count == 1 && hm[U(11)] == U(12), "clothing HUD map parsed; an AO HUD entry is refused");
+        C(ClothingHudNameRx.IsMatch("[ARTi'S] Strapless Top - HUD") && ClothingHudNameRx.IsMatch("<HUD> Chill T-Shirt") && !ClothingHudNameRx.IsMatch("VISTA ANIMATIONS *HUD 6.3*MARTHA STS BENTO AO-V1.7"), "clothing HUD names (ARTi'S '- HUD' suffix); AO is not one");
         var t2 = new List<TargetObj> { new(U(11), "Beth Top :: PetiteX"), new(U(2), "/ HEAD / lel evox / AVALON 4.0") };
         var p2 = PlanAttachmentSwap(worn, t2, new HashSet<UUID> { ao });
         C(!p2.detach.Contains(U(1)), "no hair in outfit -> current hair stays");

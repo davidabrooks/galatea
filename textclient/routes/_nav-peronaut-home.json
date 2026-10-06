@@ -616,5 +616,80 @@
 "#####################################.....############################################################################################.............###############################################.............#####################################################################################################################################"
 ],
 "note": "rows[0] is the south edge; '.' free, '#' blocked (inflated by radius), 'D' door panel (open it first)",
-"door_note": "5 house doors: patio-1 + patio-2, side-room-1 + side-room-2, front-double (front-double-west + front-double-east panels)"
+"door_note": "5 house doors: patio-1 + patio-2, side-room-1 + side-room-2, front-double (front-double-west + front-double-east panels)",
+  "lower_links": [
+    {
+      "id": "goose-deck-stair-3",
+      "uuid": "5c560cf2-e5e1-f7c2-98fb-80aa794667ec",
+      "from": [
+        215.8,
+        57.7,
+        21.2
+      ],
+      "to": [
+        213.1,
+        57.6,
+        21.8
+      ],
+      "note": "beach (by the rowboat) <-> GOOSE Mooring deck 3d06b3e3 (center 210.3,59.3); David stood on the deck at 213.1,57.6,21.8 (16:43)"
+    },
+    {
+      "id": "burgundy-pier",
+      "points": [
+        [
+          220.0,
+          50.5,
+          21.0
+        ],
+        [
+          216.5,
+          47.1,
+          22.2
+        ],
+        [
+          217.3,
+          44.7,
+          21.8
+        ],
+        [
+          215.4,
+          30.5,
+          24.7
+        ],
+        [
+          216.6,
+          26.0,
+          24.7
+        ]
+      ],
+      "note": "south from the beach: her trace 216.5,47.1 (16:45), David by bench 1 at 217.3,44.7 and bench 2 at 215.4,30.5,24.7; bench 3 at 218,24.4"
+    },
+    {
+      "id": "beach-stairs",
+      "route": "beach-stairs-up.json",
+      "note": "front doors <-> front steps <-> mid walkway (north/east) <-> east GOOSE stairs <-> beach (recorded from David 15:38)"
+    },
+    {
+      "id": "porch-walk",
+      "points": [
+        [
+          228.24,
+          85.86,
+          26.86
+        ],
+        [
+          224.0,
+          85.8,
+          26.6
+        ],
+        [
+          219.5,
+          85.6,
+          26.5
+        ]
+      ],
+      "note": "front steps -> NW porch rocking chairs (her stuck-escape 15:23 at 219.7,84.4 / 219.5,85.6)"
+    }
+  ],
+  "lower_note": "Lower level is not in the grid rows (z~28 only); these links are mirrored as edges in _graph-Peronaut.json, which the home wander uses."
 }

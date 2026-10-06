@@ -11,6 +11,7 @@ public class SelftestCliTests
     [InlineData("--chat-guard-selftest")]     // PR #54 say --re
     [InlineData("--im-target-selftest")]     // im recipient split: one-word usernames, quotes, uuid, known contacts
     [InlineData("--inv-trash-selftest")]     // inv trash: exact names, ambiguity by uuid, never worn/COF/Trash
+    [InlineData("--friendwatch-selftest")]   // david_login wake rules + event text (no reminder clause when none)
     [InlineData("--imguard-selftest")]        // PR #32 im --re + ImGuard
     [InlineData("--attach-move-selftest")]    // PR #40/#42 attach move
     [InlineData("--detach-cof-selftest")]     // PR #41 detach COF

@@ -239,6 +239,7 @@ public static partial class Program
         if (args.Contains("--outfit-safe-selftest")) { var r = OutfitSafeSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--im-target-selftest")) { var r = ImTargetSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--inv-trash-selftest")) { var r = InvTrashSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--friendwatch-selftest")) { var r = FriendWatchCmd(new[] { "selftest" }); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--home-seats-selftest")) { var r = HomeSeatsSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--outfit-zones-selftest")) { var r = OutfitZonesSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--follow-door-selftest")) // offline: follow standoff + door sequence + seat linger (2026-10-05)

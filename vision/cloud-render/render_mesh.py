@@ -306,7 +306,9 @@ def area(loc, target, energy, size):
 def eep(env):
     """Region EEP sky at export time (make_job.py): sun or, below the horizon, moon; sky colour as ambient; SL point lights."""
     sun = Vector(env["sun_dir"]).normalized(); night = sun.z < 0
-    travel = sun if night else -sun   # ponytail: moon taken as opposite the sun; ceiling = real moon_rotation
+    moon = Vector(env.get("moon_dir") or -sun).normalized()   # EEP moon_rotation (older envs: opposite the sun)
+    if moon.z < 0: moon = -sun   # moon down too: keep the old faint light from above
+    travel = -moon if night else -sun
     c = env["sunlight"]; peak = max(max(c), 1e-3)
     bpy.ops.object.light_add(type="SUN"); L = bpy.context.object; L.rotation_euler = travel.to_track_quat("-Z", "Y").to_euler()
     L.data.color = [x / peak for x in c]; L.data.energy = (0.25 * env["moon"] if night else 1.2 * peak)
@@ -333,25 +335,53 @@ def eep(env):
         o = bpy.data.objects.new("sl", d); o.location = l["pos"]; sc.collection.objects.link(o)
     log("eep", "night" if night else "day", "ambient", round(AMB, 4), "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
 
+def sky_seen(env, night):
+    """(horizon, overhead, strength) of the sky the camera sees. Night: the LL viewer's own sky colours (llsky.py
+    night_sky: ~0.03-0.05, faintly blue, for the Linden legacy midnight), at full strength. Day: the EEP horizon
+    colour fading to the blue_density colour scaled to the horizon's brightness (at 0.85 of it the upper sky read as
+    a darker picture); before 2026-10-06 night was this day gradient at 0.35, a flat mid-grey ~3x the viewer's."""
+    ns = env.get("night_sky") if night else None
+    if ns: return ns["horizon"], ns["zenith"], 1.0
+    h = env["horizon"]; z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
+    return h, [min(1.0, c * k) for c in z], 0.35 if night else 1.0
+
 def sky_backdrop(w, env, night):
-    """What the camera (and water reflections) see of the sky: the EEP horizon colour at the horizon fading to the sky's
-    blue_density colour overhead, scaled to the horizon's full brightness (SL's legacy sky model, much simplified; at
-    0.85 of it the upper sky read as a darker picture). Diffuse
-    lighting still comes from the flat horizon colour it always used, so nothing in the scene changes brightness.
-    ponytail: no clouds, sun disc, haze glow or neighbouring regions; ceiling = a clean but plain gradient"""
-    if "zenith" not in env or not M.get("backdrop", True): return   # look.py without --far: the flat horizon colour
+    """What the camera (and water reflections) see of the sky: sky_seen's horizon-to-overhead gradient, and at night
+    the region's stars (star_brightness). Diffuse lighting still comes from the flat horizon colour it always used, so
+    nothing in the scene changes brightness. Without --far the day sky stays the flat horizon colour (#29); the night
+    sky is always drawn (the flat day colour at night was the grey sky in the Ahern 2026-10-06 render).
+    ponytail: no clouds, sun/moon disc, haze glow; stars are a random field, not the viewer's star map"""
+    ns = env.get("night_sky") if night else None
+    if not ns and ("zenith" not in env or not M.get("backdrop", True)): return
     nt = w.node_tree; L = nt.links.new; bg = nt.nodes["Background"]
-    h = env["horizon"]; z = env["zenith"]; k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
+    h, zc, s = sky_seen(env, night)
     co = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); L(co.outputs["Generated"], sp.inputs[0])
     mr = nt.nodes.new("ShaderNodeMapRange"); mr.interpolation_type = "SMOOTHSTEP"; mr.inputs["From Min"].default_value = 0.0; mr.inputs["From Max"].default_value = 0.45
     L(sp.outputs["Z"], mr.inputs["Value"])
     mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; L(mr.outputs["Result"], mx.inputs["Factor"])
-    mx.inputs["A"].default_value = (*h, 1); mx.inputs["B"].default_value = (*[min(1.0, c * k) for c in z], 1)
-    seen = nt.nodes.new("ShaderNodeBackground"); L(mx.outputs["Result"], seen.inputs["Color"]); seen.inputs["Strength"].default_value = bg.inputs["Strength"].default_value
+    mx.inputs["A"].default_value = (*h, 1); mx.inputs["B"].default_value = (*zc, 1)
+    col = mx.outputs["Result"]
+    if ns and ns.get("stars", 0) > 0:
+        # stars: Voronoi cells on the view direction, a point at each cell's centre, random brightness, above the horizon
+        vo = nt.nodes.new("ShaderNodeTexVoronoi"); vo.inputs["Scale"].default_value = 60.0; L(co.outputs["Generated"], vo.inputs["Vector"])
+        pt = nt.nodes.new("ShaderNodeMath"); pt.operation = "LESS_THAN"; pt.inputs[1].default_value = 0.06; L(vo.outputs["Distance"], pt.inputs[0])
+        rb = nt.nodes.new("ShaderNodeSeparateColor"); L(vo.outputs["Color"], rb.inputs[0])
+        pw = nt.nodes.new("ShaderNodeMath"); pw.operation = "POWER"; pw.inputs[1].default_value = 3.0; L(rb.outputs["Red"], pw.inputs[0])
+        st = nt.nodes.new("ShaderNodeMath"); st.operation = "MULTIPLY"; L(pt.outputs[0], st.inputs[0]); L(pw.outputs[0], st.inputs[1])
+        hz = nt.nodes.new("ShaderNodeMapRange"); hz.inputs["From Min"].default_value = 0.02; hz.inputs["From Max"].default_value = 0.15; L(sp.outputs["Z"], hz.inputs["Value"])
+        st2 = nt.nodes.new("ShaderNodeMath"); st2.operation = "MULTIPLY"; L(st.outputs[0], st2.inputs[0]); L(hz.outputs["Result"], st2.inputs[1])
+        st3 = nt.nodes.new("ShaderNodeMath"); st3.operation = "MULTIPLY"; st3.inputs[1].default_value = 0.9 * ns["stars"]; L(st2.outputs[0], st3.inputs[0])
+        ad = nt.nodes.new("ShaderNodeMix"); ad.data_type = "RGBA"; ad.blend_type = "ADD"; ad.inputs["Factor"].default_value = 1.0
+        L(col, ad.inputs["A"]); L(st3.outputs[0], ad.inputs["B"]); col = ad.outputs["Result"]
+    seen = nt.nodes.new("ShaderNodeBackground"); L(col, seen.inputs["Color"]); seen.inputs["Strength"].default_value = s
     lp = nt.nodes.new("ShaderNodeLightPath"); mm = nt.nodes.new("ShaderNodeMath"); mm.operation = "MAXIMUM"
     L(lp.outputs["Is Camera Ray"], mm.inputs[0]); L(lp.outputs["Is Glossy Ray"], mm.inputs[1])
     ms = nt.nodes.new("ShaderNodeMixShader"); L(mm.outputs[0], ms.inputs["Fac"]); L(bg.outputs[0], ms.inputs[1]); L(seen.outputs[0], ms.inputs[2])
     L(ms.outputs[0], nt.nodes["World Output"].inputs["Surface"])
+    # the lighting part is still the flat colour: no world importance map (that map of the gradient/stars doubled the
+    # render, 2.9 -> 6.3 s on the Ahern look); BSDF rays that escape still see the flat colour
+    try: w.cycles.sampling_method = "NONE"
+    except (AttributeError, TypeError): pass
 
 def water():
     """The region's water plane (export: water_height), 4 km across so it meets the sky at the horizon. Shaded without
@@ -364,12 +394,12 @@ def water():
     m = bpy.data.materials.new("water"); m.use_nodes = True; nt = m.node_tree; L = nt.links.new
     for n in list(nt.nodes):
         if n.type != "OUTPUT_MATERIAL": nt.nodes.remove(n)
-    h = env.get("horizon", [0.5, 0.5, 0.6]); z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
-    night = (env.get("sun_dir") or [0, 0, 1])[2] < 0; s = 0.35 if night else 1.0
+    night = (env.get("sun_dir") or [0, 0, 1])[2] < 0
+    h, zc, s = sky_seen({"horizon": [0.5, 0.5, 0.6], **env}, night)
     co = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); L(co.outputs["Reflection"], sp.inputs[0])
     mr = nt.nodes.new("ShaderNodeMapRange"); mr.interpolation_type = "SMOOTHSTEP"; mr.inputs["From Max"].default_value = 0.45; L(sp.outputs["Z"], mr.inputs["Value"])
     sky = nt.nodes.new("ShaderNodeMix"); sky.data_type = "RGBA"; L(mr.outputs["Result"], sky.inputs["Factor"])
-    sky.inputs["A"].default_value = (*h, 1); sky.inputs["B"].default_value = (*[min(1.0, c * k) for c in z], 1)
+    sky.inputs["A"].default_value = (*h, 1); sky.inputs["B"].default_value = (*zc, 1)
     lw = nt.nodes.new("ShaderNodeLayerWeight"); lw.inputs["Blend"].default_value = 0.35
     mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; L(lw.outputs["Fresnel"], mx.inputs["Factor"])
     # sea body = the horizon colour at ~80%, a little bluer (was a near-black (0.02, 0.05, 0.07): the sea fills a third of

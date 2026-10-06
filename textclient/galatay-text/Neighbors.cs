@@ -18,6 +18,7 @@ using System.Globalization;
 using System.Text;
 using LibreMetaverse;
 using LibreMetaverse.Packets;
+using LibreMetaverse.StructuredData;
 
 namespace GalatayText;
 
@@ -544,6 +545,11 @@ public static partial class Program
           "terrain merge: shared border column keeps her region's value, neighbor continues east");
         var (wx0, _, wh) = MergeTerrain(new() { (0, 0, G(20, holes: true)), (-2, 0, G(10)) }, 3);
         C(wx0 == -2 && wh[0, 0] == 10 && wh[1, 3] != null && wh.Cast<float?>().All(v => v != null), "terrain merge: west neighbor (negative origin), holes filled from neighbors");
+
+        // environment cache: per region AND parcel (a parcel EEP override must not reuse the region's sky), 10 min
+        var envT = new DateTime(2026, 10, 6, 16, 27, 0, DateTimeKind.Utc); var envC = (handle: 7UL, parcel: 3, t: envT, env: (OSD)new OSDMap());
+        C(EnvCacheHit(envC, 7, 3, envT.AddMinutes(9)) && !EnvCacheHit(envC, 7, 4, envT.AddMinutes(1)) && !EnvCacheHit(envC, 8, 3, envT.AddMinutes(1))
+          && !EnvCacheHit(envC, 7, 3, envT.AddMinutes(11)) && !EnvCacheHit((7UL, 3, envT, null), 7, 3, envT), "env cache: same region + parcel within 10 min only");
 
         sb.Insert(0, $"neighbor selftest: {pass} pass, {fail} FAIL\n");
         return sb.ToString().TrimEnd();

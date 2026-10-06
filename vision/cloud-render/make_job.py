@@ -3,10 +3,11 @@
 usage: make_job.py <export dir> <terrain.json|-> <renders,comma,separated> out.json [scene camera x,y,z,tx,ty,tz,lens] [avatar x,y,yaw]
 Bakes are 5-channel JPEG 2000 (RGBA + 1 extra): decoded here with imagecodecs (Pillow and LibreMetaverse's CoreJ2K
 mis-read them), RGBA as WebP, max 1024 px. Needs: /home/box/tools/imgvenv (pip: imagecodecs pillow).
-Also adds mesh_json["env"]: the region EEP sky interpolated at export time (sun dir from the simulator).
+Also adds mesh_json["env"]: the region/parcel EEP sky interpolated at export time (llsky.py).
 """
-import base64, datetime, glob, io, json, lzma, os, sys
+import base64, glob, io, json, lzma, os, sys
 import imagecodecs
+import llsky
 from PIL import Image
 
 def decode_bake_bytes(data, cap):
@@ -32,23 +33,8 @@ def decode_bakes(d, only=None, cap=1024, workers=None):
             if im is not None: res[key] = im
     return res
 def eep(doc):
-    """Ground-sky track of the region day cycle at export time (LL: (now + day_offset) % day_length), lerped."""
-    try:
-        e = doc["environment"]["environment"]; dc = e["day_cycle"]
-        at = datetime.datetime.fromisoformat(doc["exported_at"][:26] + doc["exported_at"][-6:]).timestamp()
-        frac = ((at + e["day_offset"]) % e["day_length"]) / e["day_length"]
-        keys = sorted(((k.get("key_keyframe") or 0.0), dc["frames"][k["key_name"]]) for k in dc["tracks"][1])
-    except (KeyError, TypeError, ValueError, IndexError):
-        return None
-    z = lambda v: [x or 0.0 for x in v]  # OSD JSON writes 0 as null
-    i = max(j for j, (t, _) in enumerate(keys) if t <= frac); (t0, a), (t1, b) = keys[i], keys[(i + 1) % len(keys)]
-    w = (frac - t0) / (((t1 - t0) % 1.0) or 1.0)
-    mix = lambda f: [x + (y - x) * w for x, y in zip(z(f(a)), z(f(b)))]
-    hz = lambda f: f.get("legacy_haze", {}).get("blue_horizon", [0.3, 0.4, 0.6])
-    amb = lambda f: f.get("ambient") or f.get("legacy_haze", {}).get("ambient") or [0.25, 0.25, 0.25]  # LL's default when unset
-    return {"frac": frac, "sun_dir": z(doc.get("sun_dir", [0, 0, 1])), "sunlight": mix(lambda f: f["sunlight_color"])[:3],
-            "ambient": mix(amb)[:3], "cloud_shadow": mix(lambda f: [f.get("cloud_shadow") or 0.0])[0],
-            "horizon": mix(hz)[:3], "zenith": mix(lambda f: f.get("legacy_haze", {}).get("blue_density", [0.25, 0.45, 0.76]))[:3], "moon": (a.get("moon_brightness") or 0.0) * (1 - w) + (b.get("moon_brightness") or 0.0) * w}
+    """Ground-sky track of the region (or parcel) day cycle at export time, as the SL viewer computes it: llsky.env_at."""
+    return llsky.env_at(doc)
 if __name__ == "__main__":
     d, terrain, renders, out = sys.argv[1:5]
     meta = json.load(open(f"{d}/mesh.json"))

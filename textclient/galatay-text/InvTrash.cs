@@ -63,12 +63,17 @@ public static partial class Program
         bool complete;
         try
         {
-            using var cts = new CancellationTokenSource(InvFindBudget + TimeSpan.FromSeconds(5));
-            // always a fresh index for a delete (moves since the last scan must not be acted on from a stale view)
-            invPending = null; (_, complete) = await BuildInvIndex(InvFindBudget, cts.Token);
+            // always a fresh index for a delete (moves since the last scan must not be acted on from a stale view);
+            // a big inventory needs more than one 30 s budget, so continue the same scan up to 4 times
+            invPending = null; complete = false;
+            for (int pass = 0; pass < 4 && !complete; pass++)
+            {
+                using var cts = new CancellationTokenSource(InvFindBudget + TimeSpan.FromSeconds(5));
+                (_, complete) = await BuildInvIndex(InvFindBudget, cts.Token);
+            }
         }
         finally { invGate.Release(); }
-        if (!complete) return "inventory index is PARTIAL (not every folder could be read in 30 s); nothing moved. Run 'inv trash' again to continue the scan.";
+        if (!complete) return "inventory index is PARTIAL (not every folder could be read in 2 min); nothing moved. Run 'inv trash' again to continue the scan.";
         List<(string path, InventoryBase node)> snap; lock (invIndex) snap = invIndex.ToList();
         var entries = snap.Select(x => new InvEntry(x.path, x.node.UUID, x.node.Name ?? "", x.node is InventoryFolder, x.node.ParentUUID,
                                                     x.node is InventoryItem ii ? $"{ii.AssetType}{(ii.IsLink() ? " link" : "")}" : "folder")).ToList();

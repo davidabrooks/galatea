@@ -246,8 +246,23 @@ public static partial class Program
                 await Task.Delay(200, ct);
             }
         }
-        finally { mv.AtPos = false; try { mv.SendUpdate(true); } catch { } }
-        for (int i = 0; i < 20 && crossing.State == CrossingWatch.Phase.Crossing; i++) await Task.Delay(250, ct);
+        finally
+        {
+            // fast hand-over (Crossing.cs): keep her walking (controls re-sent to the new region every 100 ms) until it has
+            // her, instead of letting go at the border and standing through the hand-over
+            if (FastCrossing && client.Network.CurrentSim?.Handle != h0)
+            {
+                var t1 = DateTime.Now; var tgt = target + SimGeo.Offset(client.Network.CurrentSim.Handle, h0);
+                try
+                {
+                    while ((DateTime.Now - t1).TotalSeconds < 2 && !xline.Has("movement_complete") && !xline.Has("first_update"))
+                    { mv.TurnToward(new Vector3(tgt.X, tgt.Y, client.Self.SimPosition.Z)); mv.AtPos = true; mv.SendUpdate(true); await Task.Delay(100, ct); }
+                }
+                catch { }
+            }
+            mv.AtPos = false; try { mv.SendUpdate(true); } catch { }
+        }
+        for (int i = 0; i < 20 && crossing.State == CrossingWatch.Phase.Crossing; i++) await Task.Delay(FastCrossing ? 50 : 250, ct);
         bool ok = client.Network.CurrentSim?.Handle != h0;
         Log("walk", $"{label}: {(ok ? $"crossed into {client.Network.CurrentSim?.Name}" : $"still in {cur.Name} at {V(client.Self.SimPosition)} after 6 s")}");
         return ok;
@@ -311,6 +326,8 @@ public static partial class Program
             if (tp || (e.PreviousSimulator != null && e.PreviousSimulator.Handle != 0 && !SimGeo.Adjacent(e.PreviousSimulator.Handle, cur.Handle)))
                 _ = Task.Run(async () => { await Task.Delay(20000); PruneFarRegions("after a teleport"); });
             if (r != null) Log("crossing", $"{r}: now in {cur.Name}{(e.PreviousSimulator != null ? $" (from {e.PreviousSimulator.Name})" : "")}");
+            if (!tp && e.PreviousSimulator != null && e.PreviousSimulator.Handle != 0 && SimGeo.Adjacent(e.PreviousSimulator.Handle, cur.Handle))
+                CrossingEntered(e.PreviousSimulator, cur);   // Crossing.cs: timeline + fast hand-over
             if (droppedBy.TryRemove(cur.Handle, out var dropped) && dropped.Count > 0)
             {   // objects the neighbor cap dropped while she was a child agent here: the region thinks she has them
                 List<uint> ids; lock (dropped) ids = dropped.ToList();
@@ -319,6 +336,7 @@ public static partial class Program
             }
         };
         client.Grid.CoarseLocationUpdate += (s, e) => { if (e.Simulator != null && e.Simulator.Handle != 0) coarseBy[e.Simulator.Handle] = e.Positions; };
+        HookCrossingTimeline();
     }
 
     // called every second from Ticker(): crossing state + neighbor object cap
@@ -329,7 +347,7 @@ public static partial class Program
         var cur = client.Network.CurrentSim; if (cur == null) return;
         if (crossing.State == CrossingWatch.Phase.Idle && cur.AgentMovementComplete)
             preCross = (AoStateNow().active, client.Self.SittingOn != 0, followId, DateTime.Now);
-        if (crossing.State != CrossingWatch.Phase.Idle)
+        if (crossing.State != CrossingWatch.Phase.Idle && !(FastCrossing && xline.Active && crossing.State == CrossingWatch.Phase.Settling))   // fast: Crossing.cs checks every 50 ms
         {
             bool self = cur.ObjectsAvatars.Values.Any(a => a != null && a.ID == client.Self.AgentID);
             bool hud = false; try { hud = AoHudWorn(); } catch { }
@@ -337,6 +355,7 @@ public static partial class Program
             if (r != null)
             {
                 Log("crossing", $"{r}; in {cur.Name} at {V(client.Self.SimPosition)}, AO {AoFlag()}, follow {(followId == UUID.Zero ? "-" : followName)}");
+                if (r.Contains("settled")) XMark("settled");
                 if (r.Contains("STUCK")) _ = Task.Run(CrossingRecover);
             }
         }
@@ -550,6 +569,19 @@ public static partial class Program
         var envT = new DateTime(2026, 10, 6, 16, 27, 0, DateTimeKind.Utc); var envC = (handle: 7UL, parcel: 3, t: envT, env: (OSD)new OSDMap());
         C(EnvCacheHit(envC, 7, 3, envT.AddMinutes(9)) && !EnvCacheHit(envC, 7, 4, envT.AddMinutes(1)) && !EnvCacheHit(envC, 8, 3, envT.AddMinutes(1))
           && !EnvCacheHit(envC, 7, 3, envT.AddMinutes(11)) && !EnvCacheHit((7UL, 3, envT, null), 7, 3, envT), "env cache: same region + parcel within 10 min only");
+
+        // crossing timeline (Crossing.cs): first mark wins, ms after CrossedRegion, movement gap, hand-over pump stop
+        var x0 = new DateTime(2026, 10, 6, 10, 0, 0); var xl = new CrossTimeline();
+        C(!xl.Mark("sim_changed", x0), "timeline: no marks before Start");
+        xl.Start(x0, "Ahern", "Morris", true, x0.AddMilliseconds(-150));
+        xl.Mark("cam_sent", x0.AddMilliseconds(4)); xl.Mark("movement_complete", x0.AddMilliseconds(120));
+        C(!xl.Mark("movement_complete", x0.AddMilliseconds(900)) && xl.Ms("movement_complete") == 120, "timeline: first mark wins (a late duplicate is ignored)");
+        C(!xl.HandoffDone(x0.AddMilliseconds(300)) && xl.HandoffDone(x0.AddMilliseconds(421)), "timeline: AgentUpdate pump runs until AgentMovementComplete + 300 ms");
+        var xl2 = new CrossTimeline(); xl2.Start(x0, "a", "b", true, null);
+        C(!xl2.HandoffDone(x0.AddMilliseconds(2400)) && xl2.HandoffDone(x0.AddMilliseconds(2600)), "timeline: pump stops at 2.5 s without AgentMovementComplete");
+        xl.Mark("moving", x0.AddMilliseconds(250));
+        C(xl.MoveGapMs == 400 && xl.Summary().Contains("cam_sent +4") && xl.Summary().Contains("movement gap 0.40 s"), "timeline: summary + movement gap (last moving update in the old region -> first in the new)");
+        xl.End(); C(!xl.Active && !xl.Mark("settled", x0.AddSeconds(1)), "timeline: ended = no more marks");
 
         sb.Insert(0, $"neighbor selftest: {pass} pass, {fail} FAIL\n");
         return sb.ToString().TrimEnd();

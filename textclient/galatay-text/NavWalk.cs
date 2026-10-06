@@ -27,6 +27,7 @@ public static partial class Program
     {
         Utils.LongToUInts(client.Network.CurrentSim.Handle, out var rx, out var ry);
         client.Self.AutoPilot(p.X + (double)rx, p.Y + (double)ry, p.Z);
+        if (xline.Active && client.Network.CurrentSim?.Name == xline.To) XMark("autopilot_reissued");   // Crossing.cs timeline
     }
 
     static float? Ground(float x, float y)
@@ -65,7 +66,8 @@ public static partial class Program
         if (!SimGeo.InRegion(target)) Log("walk", $"leg {label}: target is across the {SimGeo.ExitBorder(start, target) ?? SimGeo.Dir(frame, SimGeo.HandleAt(frame, target))} border ({V(target)} in {client.Network.CurrentSim?.Name}'s frame)");
         while (true)
         {
-            await Task.Delay(500, ct);
+            if (FastCrossing) await Task.WhenAny(Task.Delay(500, ct), RegionChangedSignal); else await Task.Delay(500, ct);   // Crossing.cs: wake on a region change
+            ct.ThrowIfCancellationRequested();
             // border crossing (Neighbors.cs): wait while the region hands her over, then re-express target/goal in the new
             // region's frame and re-issue the autopilot (the sim-side autopilot does not survive the hand-over)
             if (crossing.State == CrossingWatch.Phase.Crossing) { hist.Clear(); legStart = legStart.AddSeconds(0.5); walkState = $"leg {label}: crossing a region border"; continue; }
@@ -76,7 +78,7 @@ public static partial class Program
                 var shift = SimGeo.Offset(curH, frame);
                 target += shift; goal += shift; frame = curH; hist.Clear(); legStart = DateTime.Now.AddSeconds(-10);
                 Log("walk", $"leg {label}: crossed into {client.Network.CurrentSim?.Name} at {V(client.Self.SimPosition)}; target now {V(target)}");
-                await Task.Delay(1000, ct);
+                await WaitHandedOver(ct);   // Crossing.cs: fast = until the new region has her (was a fixed 1 s)
                 AutoPilotTo(goal);
                 continue;
             }

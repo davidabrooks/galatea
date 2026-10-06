@@ -1,8 +1,45 @@
+diff --git a/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs b/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
+index 463bf575..6f41b1fa 100644
+--- a/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
++++ b/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
+@@ -603,6 +603,7 @@ namespace LibreMetaverse
+         {
+             Packet packet = e.Packet;
+             CrossedRegionPacket crossing = (CrossedRegionPacket)packet;
++            CrossedRegionAtUtc = DateTime.UtcNow; CrossingCapsReused = false;
+             Uri seedCap = new Uri(Utils.BytesToString(crossing.RegionData.SeedCapability));
+             IPEndPoint endPoint = new IPEndPoint(crossing.RegionData.SimIP, crossing.RegionData.SimPort);
+ 
+@@ -1065,6 +1066,7 @@ namespace LibreMetaverse
+         private void CrossedRegionEventHandler(string capsKey, IMessage message, Simulator simulator)
+         {
+             CrossedRegionMessage crossed = (CrossedRegionMessage)message;
++            CrossedRegionAtUtc = DateTime.UtcNow; CrossingCapsReused = false;
+ 
+             IPEndPoint endPoint = new IPEndPoint(crossed.IP, crossed.Port);
+ 
 diff --git a/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs b/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
-index 9bfa7b56..985ba821 100644
+index 9bfa7b56..a154077e 100644
 --- a/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
 +++ b/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
-@@ -276,6 +276,10 @@ namespace LibreMetaverse
+@@ -109,6 +109,16 @@ namespace LibreMetaverse
+         // _currentCrossing is read from monitoring methods without the semaphore — volatile ensures
+         // they always see the latest reference without a torn read.
+         private volatile CrossingInfo? _currentCrossing;
++
++        // galatea multisim patch: fast hand-over switch (CompleteAgentMovement without waiting for the UseCircuitCode ack,
++        // keep the child agent's caps/event queue when the seed is unchanged, no appearance re-pass on a crossing) and
++        // timeline stamps for the client's crossing log
++        public static bool FastCrossing = true;
++        public DateTime CrossedRegionAtUtc { get; private set; }
++        public DateTime CrossingCamSentAtUtc { get; internal set; }
++        public bool CrossingCapsReused { get; internal set; }
++        /// <summary>True from CrossedRegion until the new region is entered (or the crossing failed)</summary>
++        public bool CrossingInProgress { get { var c = _currentCrossing; return c != null && c.State is CrossingState.PreparingCross or CrossingState.Connecting or CrossingState.WaitingForComplete; } }
+         // Single semaphore protects all mutations of _currentCrossing and its State field.
+         // Not held across awaits — acquired briefly, released before any async work begins.
+         private readonly SemaphoreSlim _stateLock = new SemaphoreSlim(1, 1);
+@@ -276,6 +286,10 @@ namespace LibreMetaverse
                  {
                      crossing.NewSimulator = newSim;
                      relativePosition = crossing.Position;
@@ -13,6 +50,41 @@ index 9bfa7b56..985ba821 100644
                      LastPositionUpdate = Client!.UtcNow;
                      Movement.Camera.LookDirection(crossing.LookAt);
  
+diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
+index 64b40651..90e88c31 100644
+--- a/LibreMetaverse/Appearance/AppearanceManager.cs
++++ b/LibreMetaverse/Appearance/AppearanceManager.cs
+@@ -3109,6 +3109,13 @@ namespace LibreMetaverse
+ 
+     private void Network_OnSimChanged(object? sender, SimChangedEventArgs e)
+     {
++        // galatea multisim patch: a border crossing carries her baked appearance and attachments with her (the SL viewer
++        // does not rebake or re-send the outfit on a crossing): keep the appearance state, no new pass
++        if (AgentManager.FastCrossing && Client.Self.CrossingInProgress)
++        {
++            Logger.Info("Region crossing: keeping appearance state (no rebake / outfit re-send)", Client);
++            return;
++        }
+         // Cancel any appearance workflow that was running for the previous sim.
+         // The new sim will trigger a fresh Simulator_OnCapabilitiesReceived and
+         // start a new appearance pass once capabilities are ready.
+diff --git a/LibreMetaverse/NetworkManager.cs b/LibreMetaverse/NetworkManager.cs
+index e0706f79..a01e4d2a 100644
+--- a/LibreMetaverse/NetworkManager.cs
++++ b/LibreMetaverse/NetworkManager.cs
+@@ -733,8 +733,11 @@ namespace LibreMetaverse
+                 Logger.Info($"Moving to another simulator; sending CompleteAgentMovement to {simulator.Name}", Client);
+                 // Move in to this simulator
+                 simulator.handshakeComplete = false;
+-                simulator.UseCircuitCode(true);
++                // galatea multisim patch: the circuit is already up (child agent): don't block on the UseCircuitCode ack
++                // before CompleteAgentMovement (the SL viewer sends no UseCircuitCode at all on a crossing)
++                simulator.UseCircuitCode(!AgentManager.FastCrossing);
+                 Client.Self.CompleteAgentMovement(simulator);
++                Client.Self.CrossingCamSentAtUtc = DateTime.UtcNow;
+ 
+                 // We're already connected to this server, but need to set it to the default
+                 SetCurrentSim(simulator, seedcaps);
 diff --git a/LibreMetaverse/ObjectManager.PacketHandlers.cs b/LibreMetaverse/ObjectManager.PacketHandlers.cs
 index eaa6f4d5..e768d451 100644
 --- a/LibreMetaverse/ObjectManager.PacketHandlers.cs
@@ -37,3 +109,22 @@ index eaa6f4d5..e768d451 100644
                  {
                      continue;
                  }
+diff --git a/LibreMetaverse/Simulator.cs b/LibreMetaverse/Simulator.cs
+index cefd11f2..66bf2d8f 100644
+--- a/LibreMetaverse/Simulator.cs
++++ b/LibreMetaverse/Simulator.cs
+@@ -1063,6 +1063,14 @@ namespace LibreMetaverse
+             if (Caps != null)
+             {
+                 if (Caps._SeedCapsURI == seedcaps && !changedSim) return;
++                // galatea multisim patch: a crossing into a child region with the same seed keeps its caps and running
++                // event queue (LLViewerRegion::setSeedCapability ignores a duplicate seed)
++                if (Caps._SeedCapsURI == seedcaps && AgentManager.FastCrossing && Client?.Self != null)
++                {
++                    Logger.Info($"Seed capability unchanged for {Name}: keeping its caps and event queue", Client);
++                    Client.Self.CrossingCapsReused = true;
++                    return;
++                }
+ 
+                 Logger.Warn("Unexpected change of seed capability", Client);
+                 Caps.Disconnect(true);

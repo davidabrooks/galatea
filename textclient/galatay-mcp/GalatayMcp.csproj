@@ -37,6 +37,7 @@
     <Compile Include="../galatay-text/ImGuard.cs" Link="Core/ImGuard.cs" />
     <Compile Include="../galatay-text/Crowd.cs" Link="Crowd.cs" />
     <Compile Include="../galatay-text/Neighbors.cs" Link="Neighbors.cs" />
+    <Compile Include="../galatay-text/Crossing.cs" Link="Crossing.cs" />
     <Compile Include="../galatay-text/ImTarget.cs" Link="Core/ImTarget.cs" />
     <Compile Include="../galatay-text/ChatGuard.cs" Link="Core/ChatGuard.cs" />
     <Compile Include="../galatay-text/Doors.cs" Link="Core/Doors.cs" />

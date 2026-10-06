@@ -1864,6 +1864,7 @@ public static partial class Program
             case "anim": return AnimCmd(a);
             case "mute": case "unmute": case "mutelist": return await MuteCmds(cmd, rest);
             case "regions": case "neighbors": return RegionsCmd(a);   // Neighbors.cs
+            case "crossing": case "crossings": return CrossingCmd(a);   // Crossing.cs: fast hand-over switch + timelines
             case "walk_path": case "goto_avatar": case "sit_near": case "walk_status": case "walk_stop": case "map": case "terrain": case "walk_to":
                 if (cmd is "walk_path" or "goto_avatar" or "sit_near" or "walk_to" && WanderBlocksManualWalk) return "wander is running: 'wander pause' (or 'wander stop') first";
                 return await NavCmds(cmd, rest, a);

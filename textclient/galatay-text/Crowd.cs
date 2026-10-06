@@ -68,6 +68,14 @@ public static partial class Program
         return sb.ToString().TrimEnd();
     }
 
+    static string FarCmd(string[] a)
+    {
+        var mv = client.Self.Movement;
+        if (a.Length > 0 && float.TryParse(a[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var f) && f >= 16 && f <= 512)
+        { mv.Camera.Far = f; mv.SendUpdate(true); Log("camera", $"draw distance set to {f:F0} m"); }
+        return $"draw distance (Far) {mv.Camera.Far:F0} m";
+    }
+
     static string ThrottleCmd(string[] a)
     {
         var t = client.Throttle;
@@ -169,7 +177,7 @@ public static partial class Program
         var head = $"crowd within {r:F0} m: {near.Count} avatar(s) streamed ({sim.ObjectsAvatars.Count} in region objects, {coarseNow.Count} on the map); " +
                    string.Join(", ", counts.OrderBy(k => k.Key).Select(k => $"{k.Value} {k.Key}")) +
                    $"; objects={sim.ObjectsPrimitives.Count}; interest={(interestState.TryGetValue(sim.Handle, out var s) && s.ok ? "360" : "NOT 360")}";
-        return head + "\n" + sb.ToString().TrimEnd();
+        return head + "\n" + ObjectDiskCache.Stats() + "\n" + sb.ToString().TrimEnd();
     }
 
     internal static string CrowdSelfTest()
@@ -197,6 +205,7 @@ public static partial class Program
         var bid = new UUID("0123abcd-0000-0000-0000-000000000001");
         C(BakeCachePath("/c", bid) == "/c/01/0123abcd-0000-0000-0000-000000000001.j2c" && BakeCachePath("/c", UUID.Zero) == null && BakeCachePath("", bid) == null,
           "bake cache path: keyed by bake texture id, sharded, none for a zero id or no cache dir");
+        C(ObjectDiskCache.SelfTest(out var ocWhy), "object disk cache: file and block round trip " + ocWhy);
         var fz = new Vector3(100, 100, 2004);
         C(GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32)
           && !GroundSlab(new Vector3(150, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 4f), fz, 32)

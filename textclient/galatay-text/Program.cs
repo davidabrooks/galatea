@@ -291,6 +291,16 @@ public static partial class Program
         if (guard != null) { Log("login", "refused: " + guard); return "REFUSED: " + guard; }
         shuttingDown = false;
         client = new GridClient();
+        // GT_HANDSHAKE_FLAGS (hex): RegionHandshakeReply flags; 0x7 = LibreMetaverse's "cache empty, send full updates for everything"
+        if (uint.TryParse(Env("GT_HANDSHAKE_FLAGS", "").Replace("0x", ""), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hsf))
+            client.Settings.World.RegionHandshakeFlags = hsf;
+        // on-disk object cache (VOCache-like, LibreMetaverse ObjectDiskCache): revisits load the scene from disk, so the sim's
+        // object stream carries avatars and their attachments first. GT_OBJECT_CACHE=off disables it.
+        var objCache = Env("GT_OBJECT_CACHE", "/home/box/viewers/textclient/objcache");
+        ObjectDiskCache.Dir = objCache == "off" ? null : objCache;
+        // revisit: hold the requests for objects not in the cache for 30 s after arriving, so attachments stream first
+        ObjectDiskCache.DeferMissesMs = int.TryParse(Env("GT_OBJECT_CACHE_DEFER_MS", "30000"), out var dms) ? dms : 30000;
+        Log("net", $"region handshake flags 0x{client.Settings.World.RegionHandshakeFlags:X}; object cache {(ObjectDiskCache.Enabled ? ObjectDiskCache.Dir : "off")}");
         client.Settings.World.StoreLandPatches = true; // terrain heights for walking (NavWalk.cs)
         client.Settings.Connection.MfaEnabled = true;
         // (2026-09-26 12:58, David) login outfit re-send: off (default) = leave the sim's attachments exactly as they are;
@@ -309,7 +319,8 @@ public static partial class Program
         Log("appearance", $"login outfit send keeps off: {string.Join(", ", keepOff)}");
         Log("appearance", $"login outfit re-send mode: {outfitMode} (SendOutfitAfterBake={client.Settings.Agent.SendOutfitAfterBake}, detach-all={client.Settings.Agent.OutfitSendDetachAll})");
         client.Throttle.Wind = 0; client.Throttle.Cloud = 0;
-        client.Throttle.Land = 200000; client.Throttle.Task = 1338000; // task = object updates; LMV max. Warehouse 21 (2026-10-05): 1000 -> 1338 kbps took 49 -> 89 objects/s client.Throttle.Texture = 50000; client.Throttle.Asset = 100000;
+        client.Throttle.Land = 200000; client.Throttle.Task = 1338000; // task = object updates; LMV max. Warehouse 21 (2026-10-05): 1000 -> 1338 kbps took 49 -> 89 objects/s
+        client.Throttle.Texture = 50000; client.Throttle.Asset = 100000;
         Hook();
         HookAttachWatch(); // own AvatarAnimation watch with sources (AttachWatch.cs)
         HookExperiences(); // Experience perms + temp attaches (Experiences.cs)
@@ -384,6 +395,7 @@ public static partial class Program
         // 2026-09-26: a signal without a stop request (hang monitor's TERM, a stray kill) exits 75 so the supervisor relaunches
         ExitCode = ShutdownExitCode(why, deliberate, ExitCode);
         try { WanderOnShutdown(deliberate); } catch { }
+        try { ObjectDiskCache.SaveAll(); } catch { }
         try { await VoiceShutdown(); } catch { } // leave voice (Voice.cs); the sidecar finishes its transcript on its own
         if (deliberate && ExitOnLogout) MarkDeliberateStop(why); // daemon only: a logout command also keeps her down across a reboot
         Log("logout", $"logging out ({why}{(deliberate ? "; deliberate stop" : "")})");
@@ -1630,6 +1642,7 @@ public static partial class Program
   shape get [filter] | shape set <slider|param id> <0-100>   worn shape sliders; set ONLY on 'Galatea Petite shape - Jani short neck' (backup in shape-backups/, upload + rebake)
   scene export [radius]       READ-ONLY: prims (shapes, sculpt/mesh ids, faces) within radius + my attachments + my bakes -> /workspace/secondlife/vision/export-*/ (SceneExport.cs)
   crowd [radius]             READ-ONLY: per nearby avatar, attachments received vs the sim's list (complete/partial/bare), map-only avatars, interest mode (Crowd.cs)
+  far [metres]               show / set the draw distance the sim streams within (AgentUpdate Far; default 128)
   throttle [task <kbps>]      show / set the UDP object-update throttle (AgentThrottle; max 1338 kbps task)
   interest [status|360|default]   SL interest list mode per region (360 = stream everything around her, not just the camera frustum)
   look [self|around|at <name>] [fast] [far]  READ-ONLY (far: +96 m backdrop): scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
@@ -1768,6 +1781,7 @@ public static partial class Program
             case "avatars": return AvatarList();
             case "crowd": return CrowdCmd(a);
             case "throttle": return ThrottleCmd(a);
+            case "far": return FarCmd(a);
             case "interest": return await InterestCmd(a);
             case "front": return await FrontCmd(rest);
             case "objects":

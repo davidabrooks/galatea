@@ -1,0 +1,310 @@
+diff --git a/LibreMetaverse/NetworkManager.cs b/LibreMetaverse/NetworkManager.cs
+index 47993522..e0706f79 100644
+--- a/LibreMetaverse/NetworkManager.cs
++++ b/LibreMetaverse/NetworkManager.cs
+@@ -1448,8 +1448,11 @@ namespace LibreMetaverse
+                     AgentID = Client.Self.AgentID,
+                     SessionID = Client.Self.SessionID
+                 },
+-                RegionInfo = { Flags = 0x1 | 0x2 | 0x4 } // 0x3 == 
++                // with a kept object cache for this region: ask for cache probes (clear 0x2 "cache empty"), see ObjectDiskCache
++                RegionInfo = { Flags = ObjectDiskCache.Has(simulator.Handle, simulator.ID) ? Client.Settings.World.RegionHandshakeFlags & ~0x2u : Client.Settings.World.RegionHandshakeFlags }
+             };
++            ObjectDiskCache.NoteHandshake(simulator.Handle);
++            ObjectDiskCache.LastHandshake = $"{simulator.Name} handle {simulator.Handle:X} cache id {simulator.ID} flags 0x{reply.RegionInfo.Flags:X}";
+             SendPacket(reply, simulator);
+ 
+             // We're officially connected to this sim
+diff --git a/LibreMetaverse/ObjectDiskCache.cs b/LibreMetaverse/ObjectDiskCache.cs
+new file mode 100644
+index 00000000..d2aa08e9
+--- /dev/null
++++ b/LibreMetaverse/ObjectDiskCache.cs
+@@ -0,0 +1,208 @@
++/*
++ * Galatea patch (2026-10-05): an on-disk object cache like the reference viewer's VOCache.
++ * Full and compressed ObjectUpdate blocks are kept per region (handle + the sim's CacheID); when the region handshake
++ * finds a cache for the region, the reply no longer says "cache empty" (flag 0x2), the sim answers with
++ * ObjectUpdateCached probes (local ID + CRC), and a probe whose CRC matches a kept block is replayed locally instead of
++ * being re-requested. On a revisit the ~15k scene objects of a crowded region then load at once and the sim's object
++ * stream is left to what changed: avatars and their attachments (Warehouse 21: 4 of 56 avatars dressed after 60 s
++ * with every probe re-requested, 13 with none).
++ */
++using System;
++using System.Collections.Generic;
++using System.IO;
++using System.Threading;
++using LibreMetaverse.Packets;
++
++namespace LibreMetaverse
++{
++    public static class ObjectDiskCache
++    {
++        /// <summary>Directory for the cache files; null or empty disables the cache.</summary>
++        public static string? Dir;
++        public static int MaxEntriesPerRegion = 60000;
++        public static string LastHandshake = "";
++        /// <summary>For this long after a region handshake, probes with no kept block are requested only afterwards, so the sim's
++        /// object stream carries avatars' attachments (never cacheable, always sent) first; the scene is mostly replayed from disk.</summary>
++        public static int DeferMissesMs = 0;
++        static readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, DateTime> handshakeAt = new System.Collections.Concurrent.ConcurrentDictionary<ulong, DateTime>();
++        static int deferred;
++        public static void NoteHandshake(ulong handle) => handshakeAt[handle] = DateTime.UtcNow;
++        /// <summary>ms to hold cache-miss requests for this region now (0 = request at once)</summary>
++        public static int DeferFor(ulong handle, DateTime now)
++        {
++            if (DeferMissesMs <= 0 || !handshakeAt.TryGetValue(handle, out var t)) return 0;
++            return Math.Max(0, DeferMissesMs - (int)(now - t).TotalMilliseconds);
++        }
++        public static void NoteDeferred(int n) => Interlocked.Add(ref deferred, n);
++        static int probesSeen;
++
++        sealed class Region
++        {
++            public readonly Dictionary<uint, (uint crc, byte kind, byte[] block)> Map = new Dictionary<uint, (uint, byte, byte[])>();
++            public bool Dirty; public string Path = ""; public int Hits, Misses, Stored, MissAbsent, MissCrcFull, MissCrcComp, HitFull; public List<string> Samples = new List<string>();
++        }
++        static readonly Dictionary<string, Region> regions = new Dictionary<string, Region>();
++        static Timer? saver;
++        public static bool Enabled => !string.IsNullOrEmpty(Dir);
++
++        internal static string Key(ulong handle, UUID cacheId) => $"{handle:X16}-{cacheId}";
++
++        static Region Get(ulong handle, UUID cacheId)
++        {
++            var key = Key(handle, cacheId);
++            lock (regions)
++            {
++                if (regions.TryGetValue(key, out var r)) return r;
++                r = new Region { Path = System.IO.Path.Combine(Dir!, key + ".objcache") };
++                try { Load(r); } catch { r.Map.Clear(); }
++                regions[key] = r;
++                saver ??= new Timer(_ => SaveAll(), null, 20000, 20000);
++                return r;
++            }
++        }
++
++        /// <summary>True when there is a non-empty cache for this region (the handshake then asks for cache probes).</summary>
++        public static bool Has(ulong handle, UUID cacheId)
++        {
++            if (!Enabled || cacheId == UUID.Zero) return false;
++            var r = Get(handle, cacheId);
++            lock (r) return r.Map.Count > 0;
++        }
++
++        /// <summary>CRC of a compressed update block (after FullID, LocalID, PCode, State).</summary>
++        internal static uint CompressedCrc(byte[] data) => data.Length >= 26 ? Utils.BytesToUInt(data, 22) : 0;
++        internal static uint CompressedLocalId(byte[] data) => data.Length >= 20 ? Utils.BytesToUInt(data, 16) : 0;
++
++        public static void StoreFull(Simulator sim, ObjectUpdatePacket.ObjectDataBlock b)
++        {
++            if (!Enabled || sim.ID == UUID.Zero || b.PCode == (byte)PCode.Avatar) return;
++            var bytes = new byte[b.Length]; int i = 0; b.ToBytes(bytes, ref i);
++            Put(sim, b.ID, b.CRC, 1, bytes);
++        }
++
++        public static void StoreCompressed(Simulator sim, ObjectUpdateCompressedPacket.ObjectDataBlock b)
++        {
++            if (!Enabled || sim.ID == UUID.Zero || b.Data == null || b.Data.Length < 26 || b.Data[20] == (byte)PCode.Avatar) return;
++            var bytes = new byte[b.Length]; int i = 0; b.ToBytes(bytes, ref i);
++            Put(sim, CompressedLocalId(b.Data), CompressedCrc(b.Data), 2, bytes);
++        }
++
++        static void Put(Simulator sim, uint localId, uint crc, byte kind, byte[] bytes)
++        {
++            var r = Get(sim.Handle, sim.ID);
++            lock (r)
++            {
++                if (r.Map.Count >= MaxEntriesPerRegion && !r.Map.ContainsKey(localId)) return;
++                r.Map[localId] = (crc, kind, bytes); r.Dirty = true; r.Stored++;
++            }
++        }
++
++        /// <summary>Kept blocks for probes whose CRC matches; returns the probes still to request.</summary>
++        public static List<uint> Lookup(Simulator sim, IEnumerable<(uint id, uint crc)> probes,
++            List<ObjectUpdatePacket.ObjectDataBlock> full, List<ObjectUpdateCompressedPacket.ObjectDataBlock> compressed)
++        {
++            var miss = new List<uint>();
++            if (probes is ICollection<(uint, uint)> pc) Interlocked.Add(ref probesSeen, pc.Count);
++            if (!Enabled || sim.ID == UUID.Zero) { foreach (var p in probes) miss.Add(p.id); return miss; }
++            var r = Get(sim.Handle, sim.ID);
++            lock (r)
++            {
++                foreach (var (id, crc) in probes)
++                {
++                    if (r.Map.TryGetValue(id, out var e0) && e0.crc != crc)
++                    {
++                        if (e0.kind == 1) r.MissCrcFull++; else r.MissCrcComp++;
++                        if (r.Samples.Count < 8) r.Samples.Add($"{id}:k{e0.kind}:{e0.crc}->{crc}");
++                    }
++                    else if (!r.Map.ContainsKey(id)) r.MissAbsent++;
++                    if (r.Map.TryGetValue(id, out var e) && e.crc == crc)
++                    {
++                        int i = 0;
++                        try
++                        {
++                            if (e.kind == 1) full.Add(new ObjectUpdatePacket.ObjectDataBlock(e.block, ref i));
++                            else compressed.Add(new ObjectUpdateCompressedPacket.ObjectDataBlock(e.block, ref i));
++                            r.Hits++; if (e.kind == 1) r.HitFull++; continue;
++                        }
++                        catch { r.Map.Remove(id); }
++                    }
++                    miss.Add(id); r.Misses++;
++                }
++            }
++            return miss;
++        }
++
++        public static string Stats()
++        {
++            lock (regions)
++            {
++                var parts = new List<string>();
++                foreach (var kv in regions) lock (kv.Value) parts.Add($"{kv.Key}: {kv.Value.Map.Count} kept, {kv.Value.Hits} hits, {kv.Value.Misses} misses, {kv.Value.Stored} stored (hits full {kv.Value.HitFull}; misses absent {kv.Value.MissAbsent}, crc full {kv.Value.MissCrcFull}, crc compressed {kv.Value.MissCrcComp}; {string.Join(" ", kv.Value.Samples)})");
++                return (parts.Count == 0 ? "object cache: no regions" : "object cache: " + string.Join("; ", parts)) + $" | probes {probesSeen}, {deferred} miss requests deferred | last handshake: {LastHandshake}";
++            }
++        }
++
++        public static void SaveAll()
++        {
++            List<Region> rs; lock (regions) rs = new List<Region>(regions.Values);
++            foreach (var r in rs) { try { Save(r); } catch { } }
++        }
++
++        const uint Magic = 0x4F424A43; // "OBJC"
++        static void Save(Region r)
++        {
++            byte[][] blocks; uint[] ids; uint[] crcs; byte[] kinds;
++            lock (r)
++            {
++                if (!r.Dirty) return;
++                r.Dirty = false; int n = r.Map.Count; blocks = new byte[n][]; ids = new uint[n]; crcs = new uint[n]; kinds = new byte[n]; int k = 0;
++                foreach (var kv in r.Map) { ids[k] = kv.Key; crcs[k] = kv.Value.crc; kinds[k] = kv.Value.kind; blocks[k] = kv.Value.block; k++; }
++            }
++            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(r.Path)!);
++            var tmp = r.Path + ".tmp";
++            using (var w = new BinaryWriter(File.Create(tmp)))
++            {
++                w.Write(Magic); w.Write(ids.Length);
++                for (int k = 0; k < ids.Length; k++) { w.Write(ids[k]); w.Write(crcs[k]); w.Write(kinds[k]); w.Write(blocks[k].Length); w.Write(blocks[k]); }
++            }
++            File.Move(tmp, r.Path, true);
++        }
++
++        static void Load(Region r)
++        {
++            if (!File.Exists(r.Path)) return;
++            using var rd = new BinaryReader(File.OpenRead(r.Path));
++            if (rd.ReadUInt32() != Magic) return;
++            int n = rd.ReadInt32();
++            for (int k = 0; k < n; k++)
++            {
++                uint id = rd.ReadUInt32(), crc = rd.ReadUInt32(); byte kind = rd.ReadByte(); int len = rd.ReadInt32();
++                if (len < 0 || len > 65536) throw new InvalidDataException("bad block length");
++                r.Map[id] = (crc, kind, rd.ReadBytes(len));
++            }
++        }
++
++        /// <summary>Round trip of the file format and lookups (offline).</summary>
++        public static bool SelfTest(out string why)
++        {
++            why = "";
++            var saveDir = Dir; var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "objcache-selftest-" + Guid.NewGuid().ToString("N"));
++            try
++            {
++                Dir = dir;
++                var data = new byte[40]; Utils.UIntToBytes(1234, data, 16); data[20] = (byte)PCode.Prim; Utils.UIntToBytes(77, data, 22);
++                if (CompressedLocalId(data) != 1234 || CompressedCrc(data) != 77) { why = "compressed header offsets"; return false; }
++                var r = new Region { Path = System.IO.Path.Combine(dir, "t.objcache") };
++                var blk = new ObjectUpdateCompressedPacket.ObjectDataBlock { UpdateFlags = 5, Data = data };
++                var bytes = new byte[blk.Length]; int i = 0; blk.ToBytes(bytes, ref i);
++                r.Map[1234] = (77, 2, bytes); r.Dirty = true; Save(r);
++                var r2 = new Region { Path = r.Path }; Load(r2);
++                if (!r2.Map.TryGetValue(1234, out var e) || e.crc != 77 || e.kind != 2) { why = "file round trip"; return false; }
++                i = 0; var back = new ObjectUpdateCompressedPacket.ObjectDataBlock(e.block, ref i);
++                if (back.UpdateFlags != 5 || back.Data.Length != 40 || CompressedLocalId(back.Data) != 1234) { why = "block round trip"; return false; }
++                return true;
++            }
++            finally { Dir = saveDir; try { Directory.Delete(dir, true); } catch { } }
++        }
++    }
++}
+diff --git a/LibreMetaverse/ObjectManager.PacketHandlers.cs b/LibreMetaverse/ObjectManager.PacketHandlers.cs
+index 9d0160aa..eaa6f4d5 100644
+--- a/LibreMetaverse/ObjectManager.PacketHandlers.cs
++++ b/LibreMetaverse/ObjectManager.PacketHandlers.cs
+@@ -78,6 +78,7 @@ namespace LibreMetaverse
+ 
+             foreach (var block in update.ObjectData)
+             {
++                if (!replayingCache) try { ObjectDiskCache.StoreFull(simulator, block); } catch { }
+                 var objectupdate = new ObjectMovementUpdate();
+                 //Vector4 collisionPlane = Vector4.Zero;
+                 //Vector3 position;
+@@ -676,6 +677,7 @@ namespace LibreMetaverse
+ 
+             foreach (var block in update.ObjectData)
+             {
++                if (!replayingCache) try { ObjectDiskCache.StoreCompressed(simulator, block); } catch { }
+                 var i = 0;
+ 
+                 try
+@@ -925,6 +927,8 @@ namespace LibreMetaverse
+         /// <summary>Process an incoming packet and raise the appropriate events</summary>
+         /// <param name="sender">The sender</param>
+         /// <param name="e">The EventArgs object containing the packet data</param>
++        [ThreadStatic] static bool replayingCache;
++
+         protected void ObjectUpdateCachedHandler(object? sender, PacketReceivedEventArgs e)
+         {
+             if (Client.Settings.World.AlwaysRequestObjects)
+@@ -936,6 +940,36 @@ namespace LibreMetaverse
+                 var update = (ObjectUpdateCachedPacket)packet;
+                 var ids = new List<uint>(update.ObjectData.Length);
+ 
++                if (ObjectDiskCache.Enabled && simulator.ID != UUID.Zero)
++                {
++                    // kept blocks are replayed through the normal handlers; only probes we have no matching block for are requested
++                    var full = new List<ObjectUpdatePacket.ObjectDataBlock>(); var comp = new List<ObjectUpdateCompressedPacket.ObjectDataBlock>();
++                    var probes = new List<(uint, uint)>(update.ObjectData.Length);
++                    foreach (var odb in update.ObjectData) probes.Add((odb.ID, odb.CRC));
++                    var miss = ObjectDiskCache.Lookup(simulator, probes, full, comp);
++                    replayingCache = true;
++                    try
++                    {
++                        if (full.Count > 0)
++                            ObjectUpdateHandler(this, new PacketReceivedEventArgs(new ObjectUpdatePacket { RegionData = { RegionHandle = simulator.Handle, TimeDilation = ushort.MaxValue }, ObjectData = full.ToArray() }, simulator));
++                        if (comp.Count > 0)
++                            ObjectUpdateCompressedHandler(this, new PacketReceivedEventArgs(new ObjectUpdateCompressedPacket { RegionData = { RegionHandle = simulator.Handle, TimeDilation = ushort.MaxValue }, ObjectData = comp.ToArray() }, simulator));
++                    }
++                    catch (Exception ex) { Logger.Warn("object cache replay failed: " + ex.Message); miss = probes.ConvertAll(p => p.Item1); }
++                    finally { replayingCache = false; }
++                    if (miss.Count > 0)
++                    {
++                        var wait = ObjectDiskCache.DeferFor(simulator.Handle, DateTime.UtcNow);
++                        if (wait <= 0) RequestObjects(simulator, miss);
++                        else
++                        {
++                            ObjectDiskCache.NoteDeferred(miss.Count);
++                            _ = System.Threading.Tasks.Task.Delay(wait).ContinueWith(_ => { try { if (simulator.Connected) RequestObjects(simulator, miss); } catch { } });
++                        }
++                    }
++                    return;
++                }
++
+                 // Object caching is implemented when Client.Settings.World.CachePrimitives is true, otherwise request updates for all of these objects
+                 foreach (var odb in update.ObjectData)
+                 {
+diff --git a/LibreMetaverse/Settings/WorldSettings.cs b/LibreMetaverse/Settings/WorldSettings.cs
+index ddf20027..bc2dfb5b 100644
+--- a/LibreMetaverse/Settings/WorldSettings.cs
++++ b/LibreMetaverse/Settings/WorldSettings.cs
+@@ -9,5 +9,8 @@ namespace LibreMetaverse
+         public bool CachePrimitives = false;
+         public bool UseInterpolationTimer = true;
+         public bool StoreLandPatches = false;
++        /// <summary>RegionHandshakeReply flags: 0x1 send all cacheable objects, 0x2 object cache empty (no cache probes; full updates for
++        /// everything), 0x4 supports self appearance</summary>
++        public uint RegionHandshakeFlags = 0x1 | 0x2 | 0x4;
+     }
+ }

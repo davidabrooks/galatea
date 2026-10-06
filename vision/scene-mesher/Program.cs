@@ -47,6 +47,10 @@ static class Mesher
     }
 
     // ponytail: thresholds tuned by eye (0.24 / 0.06 / 0.03 of radius*2/distance), one LOD per linkset where SL picks per prim
+    // other avatars' attachments by the wearer's distance from the focus (2026-10-05 Warehouse 21: ~50 avatars all at Highest
+    // LOD = 20 M vertices, 5.4 GB peak, the mesher ran out of memory). Hers always Highest.
+    // ponytail: by distance, not on-screen size; ceiling = a far avatar under a close-up `look at` gets a coarse outfit
+    internal static DetailLevel AvatarLod(float d) => d switch { < 4f => DetailLevel.Highest, < 10f => DetailLevel.High, < 20f => DetailLevel.Medium, _ => DetailLevel.Low };
     static DetailLevel FarLod(float r, float d) => (r * 2f / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
 
     // drop the rigged-mesh position overrides of joints whose position an animation drives (the SL pose blend wins)
@@ -154,6 +158,7 @@ static class Mesher
                 SkinRetarget(bad, bw, out var bsB, out var ibB);
                 ok &= ibB == null && bsB[0] == 20f && bsB[13] == 175f;
             }
+            ok &= AvatarLod(2) == DetailLevel.Highest && AvatarLod(6) == DetailLevel.High && AvatarLod(15) == DetailLevel.Medium && AvatarLod(35) == DetailLevel.Low;
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028
             var lad0 = LindenAvatarDefinition.Load(Path.Combine(AppContext.BaseDirectory, "linden", "character", "avatar_lad.xml"));
@@ -198,6 +203,8 @@ static class Mesher
         void Count(string k) => stats.AddOrUpdate(k, 1, (_, v) => v + 1);
 
         var byLocal = ((OSDArray)doc["prims"]).Cast<OSDMap>().ToDictionary(o => o["localid"].AsUInteger());
+        var wearerAt = ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id") && av.ContainsKey("pos"))
+            .GroupBy(av => av["agent_id"].AsString()).ToDictionary(g => g.Key, g => g.First()["pos"].AsVector3());
         // range culling per whole linkset (David 2026-10-04: per-prim culling left floating tree fragments): a linkset's
         // bounding sphere (member positions +- half their largest scale) is in if its nearest point is within focusR, and
         // "far" (screen-size LOD, see FarLod; skipped when the whole object is under ~1 m across) when its centre is beyond farR (by the
@@ -226,7 +233,20 @@ static class Mesher
         var legacy = doc.ContainsKey("materials") ? (OSDMap)doc["materials"] : new OSDMap();
         Console.WriteLine($"assets: {assets.Count(a => a.Value != null)}/{assets.Count} fetched, {pbr.Count} pbr, {legacy.Count} legacy materials");
 
+        // one bad prim (odd mesh asset, malformed TE) must not kill a whole crowd render (2026-10-05 Warehouse 21: the look
+        // failed with only the Parallel.ForEach frame visible): count it, keep the first error for the log, skip that prim
+        int primErrors = 0; string firstPrimError = null;
         Parallel.ForEach(prims, new ParallelOptions { MaxDegreeOfParallelism = 8 }, o =>
+        {
+            try { PrimBody(o); }
+            catch (Exception ex)
+            {
+                if (Interlocked.Increment(ref primErrors) == 1)
+                    firstPrimError = $"prim {(o.ContainsKey("id") ? o["id"].AsUUID().ToString() : "?")} '{(o.ContainsKey("name") ? o["name"].AsString() : "")}': {ex.GetType().Name}: {ex.Message} @ {ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}";
+            }
+        });
+        if (primErrors > 0) { stats["prim_error_skipped"] = primErrors; Console.Error.WriteLine($"warning: {primErrors} prim(s) skipped after errors; first: {firstPrimError}"); }
+        void PrimBody(OSDMap o)
         {
             var p = Primitive.FromOSD(o);
             var owner = Owner(o); bool mine = owner != null;
@@ -239,13 +259,16 @@ static class Mesher
             // backdrop LOD from the whole object's on-screen size (radius x LOD factor 2 / distance), like an SL viewer at its
             // default LOD factor; the lowest LOD of many mesh trees is a handful of loose leaf triangles (floating fragments)
             var farLod = far ? FarLod(sphere[RootOf(o, byLocal)].r, Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus)) : DetailLevel.Low;
+            // someone else's attachment: LOD by the wearer's distance (hers stay Highest)
+            DetailLevel? avLod = owner != null && owner != "me" && wearerAt.TryGetValue(owner, out var wp0)
+                ? AvatarLod(Vector3.Distance(wp0, focusR < 1e9f ? focus : me)) : null;
             FacetedMesh fm = null; float[] bind = null;
             try
             {
                 if (p.Sculpt?.Type == SculptType.Mesh)
                 {
                     if (assets.TryGetValue(("mesh", p.Sculpt.SculptTexture), out var data) && data != null)
-                        fm = mf.GenerateFacetedMeshMesh(p, data, far ? farLod : close ? DetailLevel.Highest : DetailLevel.High);
+                        fm = mf.GenerateFacetedMeshMesh(p, data, avLod ?? (far ? farLod : close ? DetailLevel.Highest : DetailLevel.High));
                     if (fm?.SkinData != null) bind = fm.SkinData.BindShapeMatrix;
                     Count(fm == null ? "mesh_failed" : bind != null ? "mesh_rigged" : "mesh");
                 }
@@ -254,11 +277,11 @@ static class Mesher
                     if (assets.TryGetValue(("texture", p.Sculpt.SculptTexture), out var data) && data != null)
                     {
                         var tex = new AssetTexture(UUID.Zero, data);
-                        if (tex.Decode()) fm = mf.GenerateFacetedSculptMesh(p, tex.Image, far ? farLod : DetailLevel.High);
+                        if (tex.Decode()) fm = mf.GenerateFacetedSculptMesh(p, tex.Image, avLod ?? (far ? farLod : DetailLevel.High));
                     }
                     Count(fm == null ? "sculpt_failed" : "sculpt");
                 }
-                else { fm = mf.GenerateFacetedMesh(p, far ? farLod : close ? DetailLevel.Highest : DetailLevel.High); Count(fm == null ? "prim_failed" : "prim"); }
+                else { fm = mf.GenerateFacetedMesh(p, avLod ?? (far ? farLod : close ? DetailLevel.Highest : DetailLevel.High)); Count(fm == null ? "prim_failed" : "prim"); }
             }
             catch { Count("exception"); }
             if (fm == null) return;
@@ -270,7 +293,7 @@ static class Mesher
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
             if (mine) { (bind != null ? rigged : unrigged).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
             Emit(p, fm, nav ? $"nav:{p.LocalID}" : far ? "far" : "scene", null, null, pos, rot, o);
-        });
+        }
 
 
         // per-face material: PBR asset > legacy material (alpha mode/cutoff, normal + specular maps) > SL's default

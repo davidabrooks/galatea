@@ -10,7 +10,7 @@ Needs: dotnet + SCENE_MESHER (built scene-mesher), BLENDER, the imgvenv python (
 """
 import json, os, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, f"{HERE}/cloud-render")
-os.environ.setdefault("GT_MAX_TEXTURES", "800")
+os.environ.setdefault("GT_MAX_TEXTURES", "3000")  # Warehouse 21 crowd: ~1500 scene + ~1100 avatar textures; disk-cached after the first look
 os.environ.setdefault("GT_TEX_WORKERS", "24")  # local disk cache; parallel CDN GETs (crowd looks were ~50 s at 8)
 import handler, make_job  # texture fetch (CDN, capped) + bake decode / region sky: same code as the Runpod path
 
@@ -24,6 +24,20 @@ VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
 
 def mesher_args(d, mode, me, far):
     return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + (["96", "--far=30"] if far else ["30", "--roots=32"])
+
+def mesher_env(base):
+    """The text client runs under a 512 MB .NET heap cap (DOTNET_GCHeapHardLimit) and look.py inherits it; a crowd mesh
+    needs ~2 GB (Warehouse 21, ~50 avatars: out of memory at 512 MB and 1.5 GB, ok at 2 GB). Give the mesher its own 3 GB cap."""
+    env = dict(base)
+    env["DOTNET_GCHeapHardLimit"] = os.environ.get("GT_MESHER_HEAP", "0xC0000000")
+    env["DOTNET_gcServer"] = "0"
+    return env
+
+def mesher_error(text):
+    """The exception line itself (a .NET trace's tail is just Parallel.ForEach frames), then the tail."""
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    exc = next((l for l in lines if "Exception" in l and not l.startswith("at ")), "")
+    return ((exc[:300] + " | ") if exc else "") + (text or "")[-300:]
 
 def bake_keys(meta, doc):
     """Exact bake-<key>.j2c keys needed: batch bake: refs + stand-in heads for placeholder others."""
@@ -50,8 +64,9 @@ def main(a):
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
         pt = [av["pos"][0], av["pos"][1], av["pos"][2] + 0.7] if av else obj["world_pos"] if obj else None
         if pt: args.append("--look=" + ",".join(str(v) for v in pt))
-    r = subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + args, capture_output=True, text=True)
-    if r.returncode: sys.exit("scene-mesher failed: " + (r.stderr or r.stdout)[-400:])
+    r = subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + args, capture_output=True, text=True, env=mesher_env(os.environ))
+    if r.returncode: sys.exit("scene-mesher failed: " + mesher_error(r.stderr or r.stdout))
+    mesh_warn = [l for l in (r.stderr or "").splitlines() if l.startswith("warning:")]
     times["mesh"] = round(time.time() - t0, 1)
     meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["backdrop"] = far
     if far: meta["water_height"] = doc.get("water_height")
@@ -93,8 +108,10 @@ def main(a):
             env.setdefault("GT_NOSKY", "1")
             env.setdefault("GT_DENOISE", "0")
             env.setdefault("GT_MIN_TRIS", "12")  # drop dust; keep chairs/walls/avatars
-        r = subprocess.run(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
-                            f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], capture_output=True, text=True, env=env)
+        for attempt in range(2):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
+            r = subprocess.run(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
+                                f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], capture_output=True, text=True, env=env)
+            if r.returncode >= 0: break
         lines = r.stdout.splitlines()
         got = [l.split()[-1] for l in lines if l.startswith("GT: render seconds")]
         rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
@@ -105,7 +122,8 @@ def main(a):
         times["render_views"] = rend
     for p in outs: print(p)
     print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "seconds": times, "total": round(time.time() - t0, 1),
-                      "others": [o["name"] for o in meta.get("others", [])], "textures": info["textures"], "bakes": n_bake}))
+                      "others": [o["name"] for o in meta.get("others", [])], "textures": info["textures"], "bakes": n_bake}
+                     | ({"mesh_warnings": mesh_warn} if mesh_warn else {})))
 
 if __name__ == "__main__":
     main(sys.argv[1:])

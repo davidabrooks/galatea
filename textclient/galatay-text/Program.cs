@@ -239,6 +239,7 @@ public static partial class Program
         if (args.Contains("--outfit-safe-selftest")) { var r = OutfitSafeSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--im-target-selftest")) { var r = ImTargetSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--inv-trash-selftest")) { var r = InvTrashSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
+        if (args.Contains("--crowd-selftest")) { var r = CrowdSelfTest(); Console.WriteLine(r); return r.Contains(" 0 FAIL") ? 0 : 1; }
         if (args.Contains("--friendwatch-selftest")) { var r = FriendWatchCmd(new[] { "selftest" }); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--home-seats-selftest")) { var r = HomeSeatsSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
         if (args.Contains("--outfit-zones-selftest")) { var r = OutfitZonesSelfTest(); Console.WriteLine(r); return System.Text.RegularExpressions.Regex.IsMatch(r, @"(?m)^FAIL\b|[1-9]\d*\s+FAIL\b") ? 1 : 0; }
@@ -308,12 +309,13 @@ public static partial class Program
         Log("appearance", $"login outfit send keeps off: {string.Join(", ", keepOff)}");
         Log("appearance", $"login outfit re-send mode: {outfitMode} (SendOutfitAfterBake={client.Settings.Agent.SendOutfitAfterBake}, detach-all={client.Settings.Agent.OutfitSendDetachAll})");
         client.Throttle.Wind = 0; client.Throttle.Cloud = 0;
-        client.Throttle.Land = 200000; client.Throttle.Task = 1000000; client.Throttle.Texture = 50000; client.Throttle.Asset = 100000;
+        client.Throttle.Land = 200000; client.Throttle.Task = 1338000; // task = object updates; LMV max. Warehouse 21 (2026-10-05): 1000 -> 1338 kbps took 49 -> 89 objects/s client.Throttle.Texture = 50000; client.Throttle.Asset = 100000;
         Hook();
         HookAttachWatch(); // own AvatarAnimation watch with sources (AttachWatch.cs)
         HookExperiences(); // Experience perms + temp attaches (Experiences.cs)
         HookGroups(); // current-groups cache + JoinGroupReply log (GroupPicks.cs)
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
+        HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
         HookQuiet(); // other avatars' ground-sit animations for the session detector (Quiet.cs)
         HookAnimClock(); // every avatar's playing animations + since when, for scene export / look (SceneExport.cs)
@@ -335,7 +337,7 @@ public static partial class Program
             return "FAILED: " + client.Network.LoginMessage;
         }
         try { File.WriteAllText(LockPath, Environment.ProcessId.ToString()); } catch { }
-        await Set360();
+        await Set360(); _ = Ensure360ForCurrentRegion("login");
         var msg = $"OK in {sw.Elapsed.TotalSeconds:F1}s: region {client.Network.CurrentSim?.Name} pos {Fmt(client.Self.SimPosition)} agent {client.Self.AgentID}";
         Log("login", msg);
         if (tickerTask == null) tickerTask = Task.Run(Ticker);
@@ -543,7 +545,7 @@ public static partial class Program
                 Log("teleport", $"{e.Status}: {e.Message}");
         };
         client.Self.AvatarSitResponse += (s, e) => Log("sit", $"sit response for object {e.ObjectID} (autopilot={e.Autopilot})");
-        client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = RecoverAfterRegionChange(); _ = Set360(); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); } };
+        client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = RecoverAfterRegionChange(); _ = Ensure360ForCurrentRegion("region change"); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); } };
         client.Network.Disconnected += (s, e) =>
         {
             Log("disconnect", $"{e.Reason}: {e.Message}");
@@ -1470,8 +1472,9 @@ public static partial class Program
             sb.AppendLine(d < 0 ? $"     ?m  {a.ID}  {a.Name}  (seated on an object not loaded yet){seat}{head}"
                               : string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}{5}", d, a.ID, a.Name, Fmt(p), seat, head));
         }
-        if (list.Count == 0) sb.AppendLine("(no avatars in view)");
-        return sb.ToString();
+        var coarse = CoarseOnlyLines();
+        if (list.Count == 0) sb.AppendLine(NoAvatarsLine(CoarseReceived, coarse.Length > 0));
+        return sb.ToString() + coarse;
     }
 
     static string SeatName(uint localId)
@@ -1626,6 +1629,9 @@ public static partial class Program
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
   shape get [filter] | shape set <slider|param id> <0-100>   worn shape sliders; set ONLY on 'Galatea Petite shape - Jani short neck' (backup in shape-backups/, upload + rebake)
   scene export [radius]       READ-ONLY: prims (shapes, sculpt/mesh ids, faces) within radius + my attachments + my bakes -> /workspace/secondlife/vision/export-*/ (SceneExport.cs)
+  crowd [radius]             READ-ONLY: per nearby avatar, attachments received vs the sim's list (complete/partial/bare), map-only avatars, interest mode (Crowd.cs)
+  throttle [task <kbps>]      show / set the UDP object-update throttle (AgentThrottle; max 1338 kbps task)
+  interest [status|360|default]   SL interest list mode per region (360 = stream everything around her, not just the camera frustum)
   look [self|around|at <name>] [fast] [far]  READ-ONLY (far: +96 m backdrop): scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
   texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG
@@ -1760,6 +1766,9 @@ public static partial class Program
                 return "AVATARS\n" + AvatarList() + $"OBJECTS within {r} m\n" + await Objects(r, "");
             }
             case "avatars": return AvatarList();
+            case "crowd": return CrowdCmd(a);
+            case "throttle": return ThrottleCmd(a);
+            case "interest": return await InterestCmd(a);
             case "front": return await FrontCmd(rest);
             case "objects":
             {

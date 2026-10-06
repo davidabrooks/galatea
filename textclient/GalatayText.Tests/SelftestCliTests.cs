@@ -10,6 +10,7 @@ public class SelftestCliTests
     [InlineData("--pose-keeper-selftest")]    // PR #43 seated AO / pose recovery
     [InlineData("--chat-guard-selftest")]     // PR #54 say --re
     [InlineData("--im-target-selftest")]     // im recipient split: one-word usernames, quotes, uuid, known contacts
+    [InlineData("--inv-trash-selftest")]     // inv trash: exact names, ambiguity by uuid, never worn/COF/Trash
     [InlineData("--imguard-selftest")]        // PR #32 im --re + ImGuard
     [InlineData("--attach-move-selftest")]    // PR #40/#42 attach move
     [InlineData("--detach-cof-selftest")]     // PR #41 detach COF

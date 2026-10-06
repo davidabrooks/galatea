@@ -27,72 +27,118 @@ def amblit(env):
     t = [lin((x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9) for x in env["ambient"]]
     return 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2]
 AMB = amblit(M.get("env")) if kind == "scene" else 0.0  # face/body portraits have their own studio lights
+# look.py writes tex-manifest.json: the exact file each texture was fetched to for this job (no 5-way exists() search,
+# no bigger cached copy picked over the job's cap) and each file's alpha stats (PIL, cached across looks), so the build
+# never reads image pixels in Python (Warehouse 21: ~11 s for ~3500 images)
+_mf = f"{jobdir}/tex-manifest.json"
+MANIFEST = json.load(open(_mf)) if os.path.exists(_mf) else {}
+TEX_PATHS = MANIFEST.get("paths", {}); ALPHA_SIDECAR = MANIFEST.get("alpha", {})
 ALPHA_CACHE = {}  # name -> (has_cutout, amax)
 def _alpha_stats(image):
     if image.name not in ALPHA_CACHE:
-        if image.channels != 4 or not image.pixels:
+        side = ALPHA_SIDECAR.get(os.path.basename(image.filepath))
+        if side is not None:
+            ALPHA_CACHE[image.name] = (bool(side[0]), float(side[1]))
+        elif image.channels != 4 or not image.pixels:
             ALPHA_CACHE[image.name] = (False, 1.0)
         else:
             a = np.empty(len(image.pixels), np.float32); image.pixels.foreach_get(a)
             aa = a[3::4]; ALPHA_CACHE[image.name] = (float(aa.min()) < 0.98, float(aa.max()) if aa.size else 1.0)
     return ALPHA_CACHE[image.name]
 def has_alpha(image):
-    """any texel below 0.98 alpha (the image is loaded anyway; one numpy pass per distinct texture)"""
+    """any texel below 0.98 alpha (from the manifest; else one numpy pass per distinct texture)"""
     return _alpha_stats(image)[0]
 
-MAT_CACHE = {}  # identical SL faces share one material (crowd scenes: ~2900 batches, far fewer distinct looks)
-def material(b):
-    k = json.dumps([b["tex"], b.get("mat"), b["rgba"], b.get("fullbright")], sort_keys=True)
-    if k not in MAT_CACHE: MAT_CACHE[k] = _material(b)
+_PATHS = {}
+def tex_path(uuid):
+    if not uuid: return None
+    if uuid in TEX_PATHS and os.path.exists(TEX_PATHS[uuid]): return TEX_PATHS[uuid]
+    if uuid not in _PATHS:
+        base = f"{jobdir}/tex/{uuid.replace('bake:', 'bake-')}"
+        _PATHS[uuid] = next((p for p in (base + ".png", *(f"{base}.{c}.png" for c in (1024, 512, 256, 128))) if os.path.exists(p)), None)
+    return _PATHS[uuid]
+_IMAGES = {}
+def load_image(path, data=False):
+    # images.load(check_existing=True) compares against every loaded image: O(n^2) over a crowd's ~3500 textures
+    if path not in _IMAGES: _IMAGES[path] = bpy.data.images.load(path, check_existing=False)
+    if data: _IMAGES[path].colorspace_settings.name = "Non-Color"
+    return _IMAGES[path]
+
+def mat_images(b):
+    """slot -> Blender image for one SL face (diffuse, normal, mr, emissive_tex, spec), as _material reads them"""
+    mat = b.get("mat") or {"alpha": "auto"}; out = {}
+    def put(slot, uuid, data=False):
+        p_ = tex_path(uuid)
+        if p_: out[slot] = load_image(p_, data)
+    put("diffuse", b["tex"]); put("normal", mat.get("normal"), True)
+    if mat.get("pbr"): put("mr", mat.get("mr"), True); put("emissive_tex", mat.get("emissive_tex"))
+    elif "gloss" in mat: put("spec", mat.get("spec"))
+    return out
+
+# Materials: one template per structure (alpha mode, which maps exist, numeric material params, fullbright, cut-out),
+# copied per texture set; the face colour comes from the mesh attribute "sl_tint". Every node/link/socket edit through
+# bpy re-propagates over all node trees in the file (~0.3 ms each at 4000 materials: O(n^2)); Material.copy() doesn't.
+# Warehouse 21: ~17 s of node building -> ~1 s. Also faces that differed only in colour now share a material.
+TEMPLATES = {}; MAT_CACHE = {}
+def material(b, imgs=None):
+    imgs = mat_images(b) if imgs is None else imgs
+    mat = b.get("mat") or {"alpha": "auto"}
+    cut = has_alpha(imgs["diffuse"]) if "diffuse" in imgs else None
+    sig = json.dumps([{k: v for k, v in mat.items() if k not in ("normal", "spec", "mr", "emissive_tex")}, sorted(imgs),
+                      b["rgba"][3] < 0.999, bool(b["fullbright"]), cut], sort_keys=True)
+    k = (sig, tuple(sorted((s_, im.name) for s_, im in imgs.items())))
+    if k not in MAT_CACHE:
+        if sig not in TEMPLATES: TEMPLATES[sig] = _material(b, set(imgs), cut)
+        m = TEMPLATES[sig].copy(); m.name = b["tex"][:50]
+        for s_, im in imgs.items(): m.node_tree.nodes[s_].image = im
+        MAT_CACHE[k] = m
     return MAT_CACHE[k]
 
-def _material(b):
-    """SL face -> Principled BSDF. alpha: none | blend | mask (cutoff) | emissive (alpha = glow mask) | auto (texture alpha)."""
-    key = b["tex"]; mat = b.get("mat") or {"alpha": "auto"}; m = bpy.data.materials.new(key[:50]); m.use_nodes = True
-    nt = m.node_tree; p = nt.nodes["Principled BSDF"]; r, g, bl, a = b["rgba"]; L = nt.links.new
-    def img(uuid, data=False):
-        if not uuid: return None
-        base = f"{jobdir}/tex/{uuid.replace('bake:', 'bake-')}"
-        path = next((p for p in (base + ".png", *(f"{base}.{c}.png" for c in (1024, 512, 256, 128))) if os.path.exists(p)), None)
-        if not path: return None
-        n = nt.nodes.new("ShaderNodeTexImage"); n.image = bpy.data.images.load(path, check_existing=True)
-        if data: n.image.colorspace_settings.name = "Non-Color"
+def _material(b, slots, cut):
+    """SL face -> Principled BSDF template (image nodes named by slot, left empty; colour from the "sl_tint" attribute).
+    alpha: none | blend | mask (cutoff) | emissive (alpha = glow mask) | auto (texture alpha)."""
+    mat = b.get("mat") or {"alpha": "auto"}; m = bpy.data.materials.new("tmpl"); m.use_nodes = True
+    nt = m.node_tree; p = nt.nodes["Principled BSDF"]; a = b["rgba"][3]; L = nt.links.new
+    tint = nt.nodes.new("ShaderNodeAttribute"); tint.attribute_name = "sl_tint"   # per-batch face colour (linear RGBA)
+    def img(slot):
+        if slot not in slots: return None
+        n = nt.nodes.new("ShaderNodeTexImage"); n.name = slot
         return n
     def mul(x, y):
         n = nt.nodes.new("ShaderNodeMath"); n.operation = "MULTIPLY"; L(x, n.inputs[0])
         if isinstance(y, float): n.inputs[1].default_value = y
         else: L(y, n.inputs[1])
         return n.outputs[0]
-    p.inputs["Base Color"].default_value = (r, g, bl, 1); p.inputs["Roughness"].default_value = 0.6
-    alpha = None; it = img(key)
+    L(tint.outputs["Color"], p.inputs["Base Color"]); p.inputs["Roughness"].default_value = 0.6
+    alpha = None; it = img("diffuse")
     if it:
         mix = nt.nodes.new("ShaderNodeMix"); mix.data_type = "RGBA"; mix.blend_type = "MULTIPLY"; mix.inputs["Factor"].default_value = 1
-        L(it.outputs["Color"], mix.inputs["A"]); mix.inputs["B"].default_value = (r, g, bl, 1); L(mix.outputs["Result"], p.inputs["Base Color"])
-        alpha = mul(it.outputs["Alpha"], a) if a < 0.999 else it.outputs["Alpha"]
+        L(it.outputs["Color"], mix.inputs["A"]); L(tint.outputs["Color"], mix.inputs["B"]); L(mix.outputs["Result"], p.inputs["Base Color"])
+        alpha = mul(it.outputs["Alpha"], tint.outputs["Alpha"]) if a < 0.999 else it.outputs["Alpha"]
     mode = mat["alpha"]
     if mode in ("auto", "blend"):
         if alpha is not None: L(alpha, p.inputs["Alpha"])
-        elif a < 0.999: p.inputs["Alpha"].default_value = a
+        elif a < 0.999: L(tint.outputs["Alpha"], p.inputs["Alpha"])
     elif mode == "mask" and alpha is not None:
         gt = nt.nodes.new("ShaderNodeMath"); gt.operation = "GREATER_THAN"; L(alpha, gt.inputs[0]); gt.inputs[1].default_value = mat.get("cutoff", 0.5) - 1e-4
         L(gt.outputs[0], p.inputs["Alpha"])
     elif mode == "emissive" and alpha is not None:
         L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"]); L(alpha, p.inputs["Emission Strength"])
-    nm = img(mat.get("normal"), True)
+    nm = img("normal")
     if nm:
         n = nt.nodes.new("ShaderNodeNormalMap"); L(nm.outputs["Color"], n.inputs["Color"]); L(n.outputs["Normal"], p.inputs["Normal"])
     if mat.get("pbr"):
         p.inputs["Metallic"].default_value = mat["metallic"]; p.inputs["Roughness"].default_value = mat["roughness"]
-        mr = img(mat.get("mr"), True)
+        mr = img("mr")
         if mr:  # glTF: G = roughness, B = metallic
             sep = nt.nodes.new("ShaderNodeSeparateColor"); L(mr.outputs["Color"], sep.inputs["Color"])
             L(mul(sep.outputs["Green"], float(mat["roughness"])), p.inputs["Roughness"]); L(mul(sep.outputs["Blue"], float(mat["metallic"])), p.inputs["Metallic"])
-        e = mat.get("emissive") or [0, 0, 0]; et = img(mat.get("emissive_tex"))
+        e = mat.get("emissive") or [0, 0, 0]; et = img("emissive_tex")
         if max(e) > 0:
             p.inputs["Emission Color"].default_value = (*e, 1); p.inputs["Emission Strength"].default_value = 1
             if et: L(et.outputs["Color"], p.inputs["Emission Color"])
     elif "gloss" in mat:  # legacy: specular colour x spec map; glossiness (exponent/255) -> roughness
-        sc = mat.get("spec_color", [1, 1, 1, 1]); sp = img(mat.get("spec"))
+        sc = mat.get("spec_color", [1, 1, 1, 1]); sp = img("spec")
         p.inputs["Roughness"].default_value = 1 - 0.85 * mat["gloss"]
         p.inputs["Specular Tint"].default_value = (sc[0], sc[1], sc[2], 1)
         if sp:
@@ -102,19 +148,19 @@ def _material(b):
         # ponytail: env intensity only raises specular; no reflection probes; ceiling = shiny SL surfaces look matte
     if b["fullbright"]:
         if p.inputs["Base Color"].links: L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])
-        else: p.inputs["Emission Color"].default_value = (r, g, bl, 1)
+        else: L(tint.outputs["Color"], p.inputs["Emission Color"])
         p.inputs["Emission Strength"].default_value = 0.8
     elif AMB > 0 and mode != "emissive" and not p.inputs["Emission Strength"].links and p.inputs["Emission Strength"].default_value == 0:
         # SL sky ambient: albedo x amblit, as emission so walls and roofs don't shade it (see amblit())
         if p.inputs["Base Color"].links: L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])
-        else: p.inputs["Emission Color"].default_value = (r, g, bl, 1)
+        else: L(tint.outputs["Color"], p.inputs["Emission Color"])
         p.inputs["Emission Strength"].default_value = AMB
     # Opaque clothes must depth-test solid: always-HASHED let body BOM show through jeans/tops (Scentual90).
     if mode in ("none", "emissive"):
         m.blend_method = "OPAQUE"
     elif mode == "mask":
         m.blend_method = "CLIP"; m.alpha_threshold = float(mat.get("cutoff", 0.5))
-    elif it and not has_alpha(it.image):
+    elif it and not cut:
         m.blend_method = "OPAQUE"
     else:
         m.blend_method = "HASHED"
@@ -159,12 +205,31 @@ def inner_layers(bs, bones, sample=300):
         if os.environ.get("GT_DBG"): log("  batch", M["batches"][k]["tex"][:8], round(M["batches"][k]["rgba"][0], 2), "inward", round(inward, 2), "twin", round(twin / len(pick), 2), "DROP" if k in drop else "")
     return drop
 
+# lining decisions per outfit, kept across looks (jobdir/lining-cache.json): whether a batch is a garment's inside is a
+# property of the mesh, not of the pose, so an outfit seen before skips the twin search (~1 s per near avatar)
+_lc = f"{jobdir}/lining-cache.json"
+LINING_CACHE = json.load(open(_lc)) if os.path.exists(_lc) else {}
+def lining_key(group, mine):
+    import hashlib
+    sig = "|".join(sorted(f"{b['tex']}:{b['nv']}:{b['ni']}" for _, b in mine))
+    return group + ":" + hashlib.sha1(sig.encode()).hexdigest()[:16]
+def cached_linings(group, mine, bones):
+    k = lining_key(group, mine)
+    if k in LINING_CACHE:
+        want = set(LINING_CACHE[k]); return {i for i, b in mine if f"{b['tex']}:{b['nv']}:{b['ni']}" in want}
+    drop = inner_layers(mine, bones, sample=120)
+    LINING_CACHE[k] = sorted(f"{M['batches'][i]['tex']}:{M['batches'][i]['nv']}:{M['batches'][i]['ni']}" for i in drop)
+    try:
+        json.dump(LINING_CACHE, open(_lc + ".tmp", "w")); os.replace(_lc + ".tmp", _lc)
+    except OSError: pass
+    return drop
+
 def build(group, bones=None, lining=True):
     lo, hi = np.full(3, 1e9), np.full(3, -1e9); n = 0; obs = []
     mine = [(i, b) for i, b in enumerate(M["batches"]) if b["group"] == group and b["ni"] > 0]
     drop = set()
     if group.startswith("avatar") and lining:  # a lining's z-fight is invisible at crowd distance (~0.5 s per avatar)
-        t = time.time(); drop = inner_layers(mine, bones); log(group, "lining batches dropped", len(drop), "in", round(time.time() - t, 2), "s")
+        t = time.time(); drop = cached_linings(group, mine, bones); log(group, "lining batches dropped", len(drop), "in", round(time.time() - t, 2), "s")
     min_tris = int(os.environ.get("GT_MIN_TRIS", "0"))  # look around: drop dust (nav still sees big obstacles)
     for bi, b in mine:
         if bi in drop: continue
@@ -174,24 +239,26 @@ def build(group, bones=None, lining=True):
             # dust = few triangles AND small: a 2-triangle floor face (Warehouse 21 courtyard, a skybox) is not dust
             ext = P.reshape(-1, 3).max(0) - P.reshape(-1, 3).min(0) if nv else np.zeros(3)
             if float(ext.max()) < 1.0: continue
+        imgs = mat_images(b)
+        tn = imgs.get("diffuse") or next(iter(imgs.values()), None)
+        # blank SL textures (32x32 all-alpha-0, e.g. Scentual f54a0c32 "clothing" layer): skip so they don't
+        # sit as hashed ghosts over BOM skin (decided before any mesh is made: removing objects is slow in a big scene)
+        if tn and _alpha_stats(tn)[1] < 1e-3: continue
         me = bpy.data.meshes.new(b["tex"][:40]); nt = ni // 3
         me.vertices.add(nv); me.vertices.foreach_set("co", P)
         me.loops.add(ni); me.loops.foreach_set("vertex_index", I)
         me.polygons.add(nt); me.polygons.foreach_set("loop_start", np.arange(0, ni, 3, dtype=np.int32)); me.polygons.foreach_set("loop_total", np.full(nt, 3, np.int32))
         me.polygons.foreach_set("use_smooth", np.ones(nt, bool))
         uv = me.uv_layers.new(); uv.data.foreach_set("uv", T.reshape(-1, 2)[I].ravel())
+        tint = me.color_attributes.new("sl_tint", "FLOAT_COLOR", "POINT")   # the face colour (materials are per texture)
+        tint.data.foreach_set("color", np.tile(np.asarray(b["rgba"], np.float32), nv))
         me.update(); me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
-        ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b))
+        ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs))
+        obs.append(ob)
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
         # shadow drew a grey "text" mark beside her nose. The SL viewer's sun shadow map is far too coarse to resolve them.
         # ponytail: decided per texture alpha; ceiling = no hair shadow on her neck
-        tn = next((n for n in me.materials[0].node_tree.nodes if n.type == "TEX_IMAGE" and n.image), None)
-        # blank SL textures (32x32 all-alpha-0, e.g. Scentual f54a0c32 "clothing" layer): skip so they don't
-        # sit as hashed ghosts over BOM skin
-        if tn and _alpha_stats(tn.image)[1] < 1e-3:
-            bpy.data.objects.remove(ob, do_unlink=True); bpy.data.meshes.remove(me); continue
-        obs.append(ob)
-        if group.startswith("avatar") and (b.get("mat") or {}).get("alpha", "auto") in ("auto", "blend") and not b["tex"].startswith("bake:") and tn and has_alpha(tn.image):
+        if group.startswith("avatar") and (b.get("mat") or {}).get("alpha", "auto") in ("auto", "blend") and not b["tex"].startswith("bake:") and tn and has_alpha(tn):
             ob.visible_shadow = False
         # the backdrop is seen and casts sun shadow, but takes no part in the near scene's bounce light or reflections:
         # the near scene lights exactly as before the backdrop (ponytail: no bounce light off far walls; ceiling = a sunlit
@@ -337,47 +404,28 @@ def prim_object(name, shape, r, depth, centre):
     ob = bpy.data.objects.new(name, me); sc.collection.objects.link(ob)
     return ob
 
+STANDIN_MAT = []
 def stand_in(o):
-    """Bake-textured capsule+head for an avatar whose attachments never reached the export (awareness, not polish)."""
-    import os
+    """Neutral grey capsule + head for an avatar still loading (attachments not all arrived; David 2026-10-05: like a
+    normal viewer's orange cloud, never a half-dressed or nude body). One shared clay material, no skin bake."""
     pref = o.get("bake_prefix") or (o.get("agent_id") or "")[:8]
-    def tex(name):
-        path = f"{jobdir}/tex/bake-{pref}-{name}.png" if pref else None
-        if path and os.path.exists(path): return path
-        path = f"{jobdir}/tex/bake-{name}.png"
-        return path if os.path.exists(path) else None
-    obs = []
-    # body capsule from pelvis to neck using bone chain if present
+    if not STANDIN_MAT:
+        m = bpy.data.materials.new("standin"); m.use_nodes = True
+        m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.42, 0.42, 0.45, 1)
+        m.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.8
+        STANDIN_MAT.append(m)
     bones = o.get("bones") or []
     z0, z1 = 0.05, 1.4
     if bones:
         zs = [b[2] for b in bones] + [b[5] for b in bones]
         z0, z1 = min(zs), max(zs) - 0.25
     body = prim_object(f"standin-body-{pref}", "cylinder", 0.18, max(0.4, z1 - z0), (0, 0, (z0 + z1) / 2))
-    # solid clothing colour (not the skin bake): a skin-textured capsule reads as nude
-    mat = bpy.data.materials.new(f"standin-upper-{pref}"); mat.use_nodes = True
-    nt = mat.node_tree; nt.nodes.clear()
-    out = nt.nodes.new("ShaderNodeOutputMaterial"); bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
-    nt.links.new(bsdf.outputs[0], out.inputs[0])
-    bsdf.inputs["Base Color"].default_value = (0.22, 0.28, 0.45, 1)  # muted shirt blue
-    body.data.materials.append(mat); obs.append(body)
-    # head sphere at mHead
     hx, hy, hz = o.get("head") or [0, 0, 1.7]
     head = prim_object(f"standin-head-{pref}", "sphere", 0.12, 0, (hx, hy, hz))
-    mat2 = bpy.data.materials.new(f"standin-head-{pref}"); mat2.use_nodes = True
-    nt2 = mat2.node_tree; nt2.nodes.clear()
-    out2 = nt2.nodes.new("ShaderNodeOutputMaterial"); bsdf2 = nt2.nodes.new("ShaderNodeBsdfPrincipled")
-    nt2.links.new(bsdf2.outputs[0], out2.inputs[0])
-    tp2 = tex("head")
-    if tp2:
-        img2 = bpy.data.images.load(tp2); texn2 = nt2.nodes.new("ShaderNodeTexImage"); texn2.image = img2
-        nt2.links.new(texn2.outputs[0], bsdf2.inputs["Base Color"])
-    else:
-        bsdf2.inputs["Base Color"].default_value = (0.55, 0.45, 0.38, 1)
-    head.data.materials.append(mat2); obs.append(head)
+    for ob in (body, head): ob.data.materials.append(STANDIN_MAT[0])
     lo = np.array([-0.2, -0.2, z0]); hi = np.array([0.2, 0.2, hz + 0.12])
-    log("stand-in", o.get("name"), "bake", pref)
-    return lo, hi, obs
+    log("stand-in", o.get("name"), o.get("dressed") or "no attachments")
+    return lo, hi, [body, head]
 
 if kind == "scene":
     build("scene"); build("far"); terrain(); water()
@@ -468,7 +516,9 @@ log("build seconds", round(time.time() - T0, 1))
 views = views or [None]
 # keep the synced scene (BVH, ~1 GB of images with the backdrop) between the views of one job: each view re-synced it,
 # 2-3 s a view with the backdrop's textures (David 2026-10-04: keep `look around` near its pre-backdrop time)
-sc.render.use_persistent_data = len(views) > 1
+# persistent data saves ~1.5 s a view but segfaulted embree (rtcSetSharedGeometryBuffer) on the 2nd/3rd view in every
+# multi-view crowd run on 2026-10-05, costing a ~40 s retry; off unless GT_PERSIST=1.
+sc.render.use_persistent_data = len(views) > 1 and os.environ.get("GT_PERSIST", "0") == "1"
 for i, v in enumerate(views):
     if i: set_view(v)
     sc.render.filepath = out if len(views) == 1 else out.replace(".jpg", f"-{i}.jpg")

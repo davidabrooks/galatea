@@ -9,6 +9,12 @@ import base64, datetime, glob, io, json, lzma, os, sys
 import imagecodecs
 from PIL import Image
 
+def decode_bake_bytes(data, cap):
+    """one bake .j2c (5-channel: RGBA + a mask) -> RGBA Pillow thumbnail, or None"""
+    a = imagecodecs.jpeg2k_decode(data)
+    if a.ndim == 3 and a.shape[0] > 8:
+        im = Image.fromarray(a[..., :4]); im.thumbnail((cap, cap)); return im
+    return None
 def decode_bakes(d, only=None, cap=1024, workers=None):
     """bake-<key>.j2c -> {key: RGBA Pillow}. only=iterable of keys (or prefixes like 'd2d5be85') to decode;
     None = all. Parallel workers default min(8, cpu). Cap thumbnails for look-around speed."""
@@ -18,11 +24,7 @@ def decode_bakes(d, only=None, cap=1024, workers=None):
         want = set(only)
         files = [f for f in files if os.path.basename(f)[5:-4] in want]
     def one(f):
-        key = os.path.basename(f)[5:-4]
-        a = imagecodecs.jpeg2k_decode(open(f, "rb").read())
-        if a.ndim == 3 and a.shape[0] > 8:
-            im = Image.fromarray(a[..., :4]); im.thumbnail((cap, cap)); return key, im
-        return key, None
+        return os.path.basename(f)[5:-4], decode_bake_bytes(open(f, "rb").read(), cap)
     res = {}
     n = workers or min(8, max(1, (os.cpu_count() or 4)))
     with cf.ThreadPoolExecutor(n) as ex:

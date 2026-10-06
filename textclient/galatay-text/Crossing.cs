@@ -217,10 +217,9 @@ public static partial class Program
         }
     }
 
-    // pure (selftest): her body (three spheres of radius r, 0.4 m below, at and 0.4 m above her position: thighs to chest,
-    // reaching 0.7 m below her position) overlaps a box (center c, rotation rot, full size). Standing, her position is
-    // ~0.85-0.9 m above the floor, so a floor she stands on does not count; one she arrived sunk into does (live: arrivals
-    // come in 0.3-0.9 m low and the region lifts her over ~1 s; driven meanwhile she stuck on Morris's ground slab).
+    // pure (selftest): her body (three spheres of radius r, 0.4 m below, at and 0.4 m above her position: thighs to chest)
+    // overlaps a box (center c, rotation rot, full size). Arrivals come in 0.3-0.9 m low and the region lifts her over ~1 s,
+    // so floors are left out by FloorLike, not by height.
     internal static bool BodyInBox(Vector3 p, Vector3 c, Quaternion rot, Vector3 size, float r = 0.3f)
     {
         var inv = Quaternion.Conjugate(rot); var h = size * 0.5f;
@@ -255,12 +254,20 @@ public static partial class Program
         return res;
     }
 
-    // pure: the first of those her body overlaps at p, or 0.75 m further along her horizontal velocity; null = clear
+    // pure (selftest): a level box at least 1.5 m across both ways is floor - support she stands on or is lifted onto, never
+    // an obstruction, whatever its height against hers (a border onto a raised platform, a cliff, a slab she arrived sunk
+    // into: the region snaps her onto it; live, Morris's 10 x 10 m ground slab lifted her clear by +0.5..0.7 s).
+    // ponytail: a wide solid block (crate, building box) counts as floor too; ceiling = arriving inside a wide solid block
+    // with no top to climb onto would not be held
+    internal static bool FloorLike(Quaternion rot, Vector3 size) => (Vector3.UnitZ * rot).Z >= 0.9f && MathF.Min(size.X, size.Y) >= 1.5f;
+
+    // pure: the first non-floor solid her body overlaps at p, or 0.75 m further along her horizontal velocity; null = clear.
+    // Terrain is never an obstruction (heightfield: the region puts her on top of it).
     internal static string ArrivalObstacle(IEnumerable<(Vector3 c, Quaternion rot, Vector3 size, string what)> solids, Vector3 p, Vector3 v)
     {
         var pts = new List<Vector3> { p };
         var hv = new Vector3(v.X, v.Y, 0); if (hv.Length() > 0.5f) pts.Add(p + Vector3.Normalize(hv) * 0.75f);
-        foreach (var o in solids) foreach (var q in pts) if (BodyInBox(q, o.c, o.rot, o.size)) return o.what;
+        foreach (var o in solids) { if (FloorLike(o.rot, o.size)) continue; foreach (var q in pts) if (BodyInBox(q, o.c, o.rot, o.size)) return o.what; }
         return null;
     }
 

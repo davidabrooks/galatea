@@ -625,7 +625,7 @@ public static partial class Program
             var fc = new Vector3(5f, 5f, 38.8f); var fs = new Vector3(10f, 10f, 0.2f);
             C(!BodyInBox(new Vector3(5f, 5f, 39.76f), fc, Quaternion.Identity, fs), "arrival: standing on a floor prim is not inside it");
             var mc = new Vector3(14.6f, 249.0f, 39.0f); var ms = new Vector3(10f, 10f, 0.8f);   // Morris's ground slab, top 39.4 (live)
-            C(BodyInBox(new Vector3(14.2f, 253.8f, 39.9f), mc, Quaternion.Identity, ms), "arrival: 0.4 m sunk into Morris's ground slab (live arrival, then stuck) is inside it");
+            C(BodyInBox(new Vector3(14.2f, 253.8f, 39.9f), mc, Quaternion.Identity, ms), "arrival: 0.4 m sunk into Morris's ground slab overlaps it (geometry; FloorLike makes it support)");
             C(!BodyInBox(new Vector3(14.3f, 251.9f, 40.25f), mc, Quaternion.Identity, ms), "arrival: walking on that slab (z 40.2-40.3) is not");
             var tl = new CrossTimeline(); tl.Start(new DateTime(2026, 10, 6, 12, 0, 0), "Morris", "Ahern", true, null);
             tl.ArrivalChecked(true); bool? one = tl.ArrivalClear; tl.ArrivalChecked(true);
@@ -637,6 +637,17 @@ public static partial class Program
             C(ArrivalObstacle(solids, new Vector3(12.3f, 1.9f, 39.0f), Vector3.Zero) == "half wall" && ArrivalObstacle(solids, new Vector3(13.0f, 0.3f, 39.8f), Vector3.Zero) == null,
               "arrival: obstacle check over the solids near her");
             C(ArrivalObstacle(solids, new Vector3(13.0f, 0.3f, 39.8f), new Vector3(0f, 2f, 0f)) == "half wall", "arrival: also 0.75 m ahead along her velocity (walking north into the wall)");
+            // Z jumps at a border (David): she departs at z 22; the neighbor's floor is a slab 8 m higher, or 7 m lower
+            var up = new[] { (new Vector3(128f, 5f, 29.5f), Quaternion.Identity, new Vector3(20f, 10f, 1f), "raised platform") };
+            C(ArrivalObstacle(up, new Vector3(128f, 2f, 22.5f), new Vector3(0f, 3f, 0f)) == null, "z jump: arriving 7.5 m under a raised platform (region snaps her up onto it) is clear");
+            C(ArrivalObstacle(up, new Vector3(128f, 2f, 29.6f), new Vector3(0f, 3f, 0f)) == null, "z jump: arriving sunk into the platform's top is clear (floor = support)");
+            var down = new[] { (new Vector3(128f, 5f, 14.5f), Quaternion.Identity, new Vector3(20f, 10f, 1f), "low floor") };
+            C(ArrivalObstacle(down, new Vector3(128f, 2f, 22.9f), new Vector3(0f, 3f, -2f)) == null, "z jump: arriving mid-air 8 m above a lower floor is clear (she falls onto it)");
+            C(ArrivalObstacle(solids.Concat(up), new Vector3(12.3f, 1.9f, 39.0f), Vector3.Zero) == "half wall", "z jump: a wall is still an obstruction next to floors");
+            C(ArrivalObstacle(new[] { (mc, Quaternion.Identity, ms, "Morris slab") }, new Vector3(14.2f, 253.8f, 39.9f), Vector3.Zero) == null, "arrival: sunk 0.4 m into Morris's ground slab is support, not an obstruction");
+            var wallUp = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2);   // a 10 x 0.2 m panel stood on edge = wall
+            C(!FloorLike(wallUp, new Vector3(10f, 10f, 0.2f)) && FloorLike(Quaternion.Identity, new Vector3(10f, 10f, 0.2f)) && !FloorLike(wr, ws), "arrival: floor = level and >= 1.5 m across both ways; a panel on edge or a thin wall is not");
+            C(HDist(new Vector3(10f, 10f, 22f), new Vector3(10.9f, 10.6f, 30f)) <= AutopilotStopSlack(1.0f), "z jump: the leg-end stop check is horizontal (an 8 m step up does not hide an arrival)");
         }
         C(AutopilotStopSlack(1.0f) == 1.3f && AutopilotStopSlack(2f) == 2f, "walk: a stall 1.0-1.3 m from a leg end (the autopilot's stop distance) is arrived, not stuck");
         C(LooksFrozenAfterCrossing(4, 0.0f, 1), "crossing: no move at all through a recovery right after a crossing = frozen");

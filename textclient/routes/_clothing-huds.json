@@ -1,8 +1,26 @@
 {
-  "note": "Top -> its own color/pattern HUD (David 2026-10-05 17:00). Each time an outfit with one of these tops goes on: attach the HUD, press a random color/pattern, verify the texture change on the top, detach. Never the AO. Checked before the same-folder lookup.",
+  "note": "Clothing piece -> its own color/pattern HUD (David 2026-10-05 17:00, generalized from the Spicy Bikini 2026-10-06). Each time an outfit with one of these pieces goes on: attach the HUD, press a random color/pattern (never the same one as last time), verify the texture change on the piece, detach. Never the AO. Checked before the same-folder lookup. Button kinds: named prims (TETRA [TEXTURE] desc C12/P3/D6/W1/T9, Pink Cream Pie 'tx' desc 1m..5m), filtered by 'labels' (regex); or 'grid' = swatches drawn on one face of one prim, pressed by touch ST (s left->right, t bottom->top, 0..1).",
   "tops": [
-    {"clothing": "5c8487b7-0db2-34fd-a81b-fe2709c98021", "name": "Beth Top :: PetiteX - White :: Pink Cream Pie", "hud": "6899891e-79d1-3a31-93ab-fac14a3bd75e", "hud_name": "[HUD - Essential] Beth Tube Top :: Pink Cream Pie"},
-    {"clothing": "aa265665-7a17-34f6-b423-66d336262ed2", "name": "[ARTi'S] Strapless Top - Lara PetiteX", "hud": "cb0dc6c4-545c-3be6-8351-e049094315a7", "hud_name": "[ARTi'S] Strapless Top - HUD"},
-    {"clothing": "90d3e432-c8d1-3f2c-b800-6e88ed678c27", "name": "TETRA - Chill T-Shirt - LaraX Petite", "hud": "a2591928-d005-3af2-9b02-a04c9e5f93e7", "hud_name": "<HUD> Chill T-Shirt"}
+    {"clothing": "d75d9bc6-7954-34c6-a9f4-2d41bb0b034f", "also": ["d0e00864-8b56-3836-891d-ce7b4e1696e2"], "name": "TETRA - Spicy Bikini Top + Panties", "hud": "67c881aa-5adf-3f68-9c5c-0adb67e8e484", "hud_name": "<HUD> Spicy Bikini", "labels": "^[DWT]\\d+$"},
+    {"clothing": "5c8487b7-0db2-34fd-a81b-fe2709c98021", "name": "Beth Top :: PetiteX - White :: Pink Cream Pie", "hud": "6899891e-79d1-3a31-93ab-fac14a3bd75e", "hud_name": "[HUD - Essential] Beth Tube Top :: Pink Cream Pie", "labels": "^tx \\d+m$",
+     "label_names": {"tx 1m": "silver heart", "tx 2m": "black heart", "tx 3m": "gold heart", "tx 4m": "copper heart", "tx 5m": "pink heart"},
+     "comment": "White single-color pack: the 48 fabric swatches on the Essential HUD say FATPACK ONLY and do nothing (tested 2026-10-06); only the 5 metal-heart finishes (tx 1m..5m) change."},
+    {"clothing": "aa265665-7a17-34f6-b423-66d336262ed2", "name": "[ARTi'S] Strapless Top - Lara PetiteX", "hud": "cb0dc6c4-545c-3be6-8351-e049094315a7", "hud_name": "[ARTi'S] Strapless Top - HUD",
+     "comment": "One mesh prim, texture aa4876c2 (512x1024): 84 swatches in 6 columns; sheer/shine/scale rows below are not swatches. ST = (x/512, 1 - y/1024) of the swatch centres.",
+     "grid": {"link": 1, "face": 0, "s": [0.1484, 0.2891, 0.4277, 0.5684, 0.7090, 0.8496],
+       "groups": [
+         {"name": "flower", "t": [0.8955, 0.8486, 0.8027]},
+         {"name": "cotton", "t": [0.7295, 0.6826, 0.6357, 0.5889, 0.5430],
+          "names": ["magenta", "pink", "light aqua", "turquoise", "red", "purple",
+                    "yellow", "cream", "green", "forest green", "mustard", "olive brown",
+                    "royal blue", "lavender", "terracotta", "white", "lilac", "black",
+                    "grey", "teal", "plum", "dark olive", "sand", "blush",
+                    "pale lilac", "sage", "dark green", "dark navy", "dark brown", "rust"]},
+         {"name": "camo", "t": [0.4727, 0.4258, 0.3789]},
+         {"name": "leather", "t": [0.3096], "names": ["navy", "taupe", "slate", "mauve", "rose", "grey"]},
+         {"name": "dirty", "t": [0.2393], "names": ["green", "lilac", "teal", "red", "grey", "brown"]},
+         {"name": "ribbon", "t": [0.1689], "names": ["silver", "grey", "black", "cream", "olive", "brown"]}
+       ]}},
+    {"clothing": "90d3e432-c8d1-3f2c-b800-6e88ed678c27", "name": "TETRA - Chill T-Shirt - LaraX Petite", "hud": "a2591928-d005-3af2-9b02-a04c9e5f93e7", "hud_name": "<HUD> Chill T-Shirt", "labels": "^[CP]\\d+$"}
   ]
 }

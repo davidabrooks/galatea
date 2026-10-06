@@ -192,6 +192,7 @@ public static partial class Program
             if (bar > 1 && bar < a.Length - 1) { oldName = string.Join(' ', a[1..bar]); newName = string.Join(' ', a[(bar + 1)..]); }
             return await OutfitRename(oldName, newName);
         }
+        if (a.Length >= 1 && a[0] == "hudmap") return await ClothingHudMapReport();
         if (a.Length >= 1 && a[0] == "coffix") { using var cc = new CancellationTokenSource(60000); return await CofSyncAddMissing(cc.Token); }
         if (a.Length >= 1 && (a[0] == "link-remove" || a[0] == "link-add")) return await OutfitLinkEdit(a);
         if (a.Length >= 2 && a[0] == "huds")

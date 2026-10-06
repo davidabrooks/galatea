@@ -17,10 +17,10 @@ index 47993522..e0706f79 100644
              // We're officially connected to this sim
 diff --git a/LibreMetaverse/ObjectDiskCache.cs b/LibreMetaverse/ObjectDiskCache.cs
 new file mode 100644
-index 00000000..d2aa08e9
+index 00000000..b07afe17
 --- /dev/null
 +++ b/LibreMetaverse/ObjectDiskCache.cs
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,214 @@
 +/*
 + * Galatea patch (2026-10-05): an on-disk object cache like the reference viewer's VOCache.
 + * Full and compressed ObjectUpdate blocks are kept per region (handle + the sim's CacheID); when the region handshake
@@ -42,7 +42,8 @@ index 00000000..d2aa08e9
 +    {
 +        /// <summary>Directory for the cache files; null or empty disables the cache.</summary>
 +        public static string? Dir;
-+        public static int MaxEntriesPerRegion = 60000;
++        public static int MaxEntriesPerRegion = 40000;
++        public static bool StoreFullBlocks = false;
 +        public static string LastHandshake = "";
 +        /// <summary>For this long after a region handshake, probes with no kept block are requested only afterwards, so the sim's
 +        /// object stream carries avatars' attachments (never cacheable, always sent) first; the scene is mostly replayed from disk.</summary>
@@ -98,7 +99,10 @@ index 00000000..d2aa08e9
 +
 +        public static void StoreFull(Simulator sim, ObjectUpdatePacket.ObjectDataBlock b)
 +        {
-+            if (!Enabled || sim.ID == UUID.Zero || b.PCode == (byte)PCode.Avatar) return;
++            // full updates are what the sim sends for objects it will not probe (avatars' attachments, changing objects):
++            // W21 2026-10-05 gave 35 full-block hits against 17,335 compressed ones, while keeping them (every attachment of
++            // every avatar that came and went) filled the client's 512 MB heap during a look export. Not kept.
++            if (!StoreFullBlocks || !Enabled || sim.ID == UUID.Zero || b.PCode == (byte)PCode.Avatar) return;
 +            var bytes = new byte[b.Length]; int i = 0; b.ToBytes(bytes, ref i);
 +            Put(sim, b.ID, b.CRC, 1, bytes);
 +        }
@@ -201,7 +205,9 @@ index 00000000..d2aa08e9
 +            {
 +                uint id = rd.ReadUInt32(), crc = rd.ReadUInt32(); byte kind = rd.ReadByte(); int len = rd.ReadInt32();
 +                if (len < 0 || len > 65536) throw new InvalidDataException("bad block length");
-+                r.Map[id] = (crc, kind, rd.ReadBytes(len));
++                var blk = rd.ReadBytes(len);
++                if (kind == 1 && !StoreFullBlocks) continue;
++                r.Map[id] = (crc, kind, blk);
 +            }
 +        }
 +

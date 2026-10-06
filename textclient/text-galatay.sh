@@ -27,7 +27,7 @@ export GT_WEBHOOK_BURST_DETECT_S="${GT_WEBHOOK_BURST_DETECT_S:-4}" GT_WEBHOOK_QU
 [[ -f "$BASE/hover.txt" ]] || echo 0 > "$BASE/hover.txt"
 CONSOLE="${GT_CONSOLE:-/workspace/secondlife/textclient.console.log}"
 export DOTNET_ROOT="${DOTNET_ROOT:-/home/box/.dotnet}"
-export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_gcServer=0 DOTNET_GCHeapHardLimit=0x20000000
+export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_gcServer=0 DOTNET_GCHeapHardLimit=0x30000000
 mkdir -p "$RUN" "$(dirname "$GT_LOG")"; chmod 700 "$RUN"
 
 SUPF="$RUN/supervisor.pid"; STOPF="$RUN/stop-requested"; SUPLOG="${GT_SUPLOG:-/workspace/secondlife/textclient.supervisor.log}"

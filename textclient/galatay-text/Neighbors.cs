@@ -344,7 +344,12 @@ public static partial class Program
                 Log("regions", $"entered {cur.Name}: re-requested {ids.Count} objects dropped by the neighbor cap");
             }
         };
-        client.Grid.CoarseLocationUpdate += (s, e) => { if (e.Simulator != null && e.Simulator.Handle != 0) coarseBy[e.Simulator.Handle] = e.Positions; };
+        client.Grid.CoarseLocationUpdate += (s, e) =>
+        {
+            if (e.Simulator == null || e.Simulator.Handle == 0) return;
+            coarseBy[e.Simulator.Handle] = e.Positions;
+            if (e.Simulator != client.Network.CurrentSim) RequestCoarseNames(e.NewEntries);   // the current region's: HookCoarse
+        };
         HookCrossingTimeline();
     }
 

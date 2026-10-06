@@ -74,7 +74,7 @@ public static partial class Program
             {
                 // diagnostics: what the library's own appearance code does with the outfit at login
                 var m = msg?.ToString() ?? "";
-                if (m.Contains("Current Outfit") || m.Contains("outfit send") || m.Contains("Outfit") || m.Contains("bake") || m.Contains("Bake") || m.StartsWith("Wearing ") || m.Contains("server bake") || m.Contains("UpdateAvatarAppearance") || m.Contains("COF v"))
+                if (m.Contains("Current Outfit") || m.Contains("outfit send") || m.Contains("Outfit") || m.Contains("bake") || m.Contains("Bake") || m.StartsWith("Wearing ") || m.StartsWith("Region crossing") || m.StartsWith("Own avatar") || m.StartsWith("Seed capability") || m.Contains("server bake") || m.Contains("UpdateAvatarAppearance") || m.Contains("COF v"))
                     Log("lmvapp", $"{level}: {(m.Length > 250 ? m.Substring(0, 250) + "..." : m).Replace('\n', ' ')}");
                 return;
             }

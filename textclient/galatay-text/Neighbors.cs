@@ -246,8 +246,32 @@ public static partial class Program
                 await Task.Delay(200, ct);
             }
         }
-        finally { mv.AtPos = false; try { mv.SendUpdate(true); } catch { } }
-        for (int i = 0; i < 20 && crossing.State == CrossingWatch.Phase.Crossing; i++) await Task.Delay(250, ct);
+        finally
+        {
+            // push-through (Crossing.cs, diagnostic switch, off by default): keep her walking into the new region. Live it
+            // froze her at the Ahern plaza edge when controls came during the region's arrival settle, so by default she
+            // lets go at the border and the walk resumes after the settle hold (ResumeMinMs)
+            if (FastCrossing && PushThrough && client.Network.CurrentSim?.Handle != h0)
+            {
+                var t1 = DateTime.Now; var tgt = target + SimGeo.Offset(client.Network.CurrentSim.Handle, h0);
+                try
+                {
+                    while ((DateTime.Now - t1).TotalSeconds < 2 && xline.Active && !xline.PushThroughDone(DateTime.Now))
+                    {   // TurnToward also puts the camera on her: only once her position reads in the new frame
+                        // no controls until the new region's first update of her (it has placed her): live, controls sent
+                        // during the arrival froze her at Ahern <12.4,2.1> about one Morris -> Ahern crossing in three
+                        bool placed = xline.Has("first_update");
+                        var sp = client.Self.SimPosition;
+                        if (placed && SimGeo.InRegion(sp)) mv.TurnToward(new Vector3(tgt.X, tgt.Y, sp.Z));
+                        if (placed) { mv.AtPos = true; mv.SendUpdate(true); await Task.Delay(100, ct); }
+                        else { if (mv.AtPos) { mv.AtPos = false; mv.SendUpdate(true); } await Task.Delay(20, ct); }
+                    }
+                }
+                catch { }
+            }
+            mv.AtPos = false; try { mv.SendUpdate(true); } catch { }
+        }
+        for (int i = 0; i < 20 && crossing.State == CrossingWatch.Phase.Crossing; i++) await Task.Delay(FastCrossing ? 50 : 250, ct);
         bool ok = client.Network.CurrentSim?.Handle != h0;
         Log("walk", $"{label}: {(ok ? $"crossed into {client.Network.CurrentSim?.Name}" : $"still in {cur.Name} at {V(client.Self.SimPosition)} after 6 s")}");
         return ok;
@@ -311,6 +335,8 @@ public static partial class Program
             if (tp || (e.PreviousSimulator != null && e.PreviousSimulator.Handle != 0 && !SimGeo.Adjacent(e.PreviousSimulator.Handle, cur.Handle)))
                 _ = Task.Run(async () => { await Task.Delay(20000); PruneFarRegions("after a teleport"); });
             if (r != null) Log("crossing", $"{r}: now in {cur.Name}{(e.PreviousSimulator != null ? $" (from {e.PreviousSimulator.Name})" : "")}");
+            if (!tp && e.PreviousSimulator != null && e.PreviousSimulator.Handle != 0 && SimGeo.Adjacent(e.PreviousSimulator.Handle, cur.Handle))
+                CrossingEntered(e.PreviousSimulator, cur);   // Crossing.cs: timeline + fast hand-over
             if (droppedBy.TryRemove(cur.Handle, out var dropped) && dropped.Count > 0)
             {   // objects the neighbor cap dropped while she was a child agent here: the region thinks she has them
                 List<uint> ids; lock (dropped) ids = dropped.ToList();
@@ -319,6 +345,7 @@ public static partial class Program
             }
         };
         client.Grid.CoarseLocationUpdate += (s, e) => { if (e.Simulator != null && e.Simulator.Handle != 0) coarseBy[e.Simulator.Handle] = e.Positions; };
+        HookCrossingTimeline();
     }
 
     // called every second from Ticker(): crossing state + neighbor object cap
@@ -329,7 +356,7 @@ public static partial class Program
         var cur = client.Network.CurrentSim; if (cur == null) return;
         if (crossing.State == CrossingWatch.Phase.Idle && cur.AgentMovementComplete)
             preCross = (AoStateNow().active, client.Self.SittingOn != 0, followId, DateTime.Now);
-        if (crossing.State != CrossingWatch.Phase.Idle)
+        if (crossing.State != CrossingWatch.Phase.Idle && !(FastCrossing && xline.Active && crossing.State == CrossingWatch.Phase.Settling))   // fast: Crossing.cs checks every 50 ms
         {
             bool self = cur.ObjectsAvatars.Values.Any(a => a != null && a.ID == client.Self.AgentID);
             bool hud = false; try { hud = AoHudWorn(); } catch { }
@@ -337,6 +364,7 @@ public static partial class Program
             if (r != null)
             {
                 Log("crossing", $"{r}; in {cur.Name} at {V(client.Self.SimPosition)}, AO {AoFlag()}, follow {(followId == UUID.Zero ? "-" : followName)}");
+                if (r.Contains("settled")) XMark("settled");
                 if (r.Contains("STUCK")) _ = Task.Run(CrossingRecover);
             }
         }
@@ -550,6 +578,48 @@ public static partial class Program
         var envT = new DateTime(2026, 10, 6, 16, 27, 0, DateTimeKind.Utc); var envC = (handle: 7UL, parcel: 3, t: envT, env: (OSD)new OSDMap());
         C(EnvCacheHit(envC, 7, 3, envT.AddMinutes(9)) && !EnvCacheHit(envC, 7, 4, envT.AddMinutes(1)) && !EnvCacheHit(envC, 8, 3, envT.AddMinutes(1))
           && !EnvCacheHit(envC, 7, 3, envT.AddMinutes(11)) && !EnvCacheHit((7UL, 3, envT, null), 7, 3, envT), "env cache: same region + parcel within 10 min only");
+
+        // crossing timeline (Crossing.cs): first mark wins, ms after CrossedRegion, movement gap, hand-over pump stop
+        var x0 = new DateTime(2026, 10, 6, 10, 0, 0); var xl = new CrossTimeline();
+        C(!xl.Mark("sim_changed", x0), "timeline: no marks before Start");
+        xl.Start(x0, "Ahern", "Morris", true, x0.AddMilliseconds(-150));
+        xl.Mark("cam_sent", x0.AddMilliseconds(4)); xl.Mark("movement_complete", x0.AddMilliseconds(120));
+        C(!xl.Mark("movement_complete", x0.AddMilliseconds(900)) && xl.Ms("movement_complete") == 120, "timeline: first mark wins (a late duplicate is ignored)");
+        C(!xl.HandoffDone(x0.AddMilliseconds(300)) && xl.HandoffDone(x0.AddMilliseconds(421)), "timeline: AgentUpdate pump runs until AgentMovementComplete + 300 ms");
+        var xl2 = new CrossTimeline(); xl2.Start(x0, "a", "b", true, null);
+        C(!xl2.HandoffDone(x0.AddMilliseconds(2400)) && xl2.HandoffDone(x0.AddMilliseconds(2600)), "timeline: pump stops at 2.5 s without AgentMovementComplete");
+        xl.Mark("moving", x0.AddMilliseconds(250));
+        C(xl.MoveGapMs == 400 && xl.Summary().Contains("cam_sent +4") && xl.Summary().Contains("movement gap 0.40 s"), "timeline: summary + movement gap (last moving update in the old region -> first in the new)");
+        var hA = SimGeo.Handle(256000, 256000); var hS = SimGeo.Handle(256000, 255744);   // she walks south into hS
+        {   // her local id on entering a region that still holds copies of her avatar from earlier visits
+            var me = new UUID("11111111-2222-3333-4444-555555555555"); var other = UUID.Random();
+            var avs = new[] { (233139547u, me), (233139988u, me), (233140135u, me), (233140200u, other) };
+            C(AgentManager.PickSelfLocalID(233140135u, avs, me) == 233140135u, "crossing: keeps the local id her full update already set");
+            C(AgentManager.PickSelfLocalID(772676305u, avs, me) == 233140135u, "crossing: else takes her newest avatar entry, not an older copy or someone else");
+            C(AgentManager.PickSelfLocalID(5u, new[] { (9u, other) }, me) == 5u, "crossing: no entry for her yet: keeps the old id until her update arrives");
+        }
+        {   // the border push hands over to the autopilot only once she walks in the new region
+            var tl = new CrossTimeline(); var tz = new DateTime(2026, 10, 6, 10, 0, 0); tl.Start(tz, "Morris", "Ahern", true, tz.AddMilliseconds(-200));
+            tl.Mark("movement_complete", tz.AddMilliseconds(70));
+            C(!tl.PushThroughDone(tz.AddMilliseconds(100)), "crossing: push goes on past AgentMovementComplete");
+            tl.Mark("moving", tz.AddMilliseconds(220));
+            C(!tl.PushThroughDone(tz.AddMilliseconds(500)) && tl.PushThroughDone(tz.AddMilliseconds(620)), "crossing: push ends 400 ms after she moves in the new region");
+            var tl2 = new CrossTimeline(); tl2.Start(tz, "A", "B", true, null);
+            C(tl2.PushThroughDone(tz.AddMilliseconds(1500)), "crossing: push ends after 1.5 s even if she never moves");
+            var smp = new List<(DateTime, Vector3)>();
+            for (int i = 0; i <= 10; i++) smp.Add((tz.AddMilliseconds(i * 100), new Vector3(i < 4 ? 0.1f : 1.2f, 0f, i < 4 ? -2f : 0f)));
+            C(Math.Abs(CrossTimeline.StillSeconds(smp) - 0.4) < 0.01, "crossing: stood-still time counts only horizontal speed below 0.3 m/s");
+        }
+        {   var tc = new DateTime(2026, 10, 6, 11, 0, 0);
+            C(CrossingSettling(tc.AddMilliseconds(900), tc, 1600) && !CrossingSettling(tc.AddMilliseconds(1700), tc, 1600), "crossing: walks/follow hold for 1.6 s after CrossedRegion, then resume");
+            C(!CrossingSettling(tc.AddMilliseconds(100), tc, 0) && !CrossingSettling(tc.AddMilliseconds(-50), tc, 1600), "crossing: no hold when switched off or before the crossing");
+        }
+        C(LooksFrozenAfterCrossing(4, 0.0f, 1), "crossing: no move at all through a recovery right after a crossing = frozen");
+        C(!LooksFrozenAfterCrossing(4, 0.0f, 0), "crossing: first stuck alone is not frozen (could be an obstacle)");
+        C(!LooksFrozenAfterCrossing(4, 0.6f, 1), "crossing: moved during the recovery = not frozen");
+        C(!LooksFrozenAfterCrossing(120, 0.0f, 3), "crossing: long after a crossing = ordinary stuck");
+        C(CameraIntoNewFrame(new Vector3(12.7f, 1.5f, 41f), hA, hS) == new Vector3(12.7f, 257.5f, 41f), "crossing: camera center moved into the new region's frame (south: y + 256)");
+        xl.End(); C(!xl.Active && !xl.Mark("settled", x0.AddSeconds(1)), "timeline: ended = no more marks");
 
         sb.Insert(0, $"neighbor selftest: {pass} pass, {fail} FAIL\n");
         return sb.ToString().TrimEnd();

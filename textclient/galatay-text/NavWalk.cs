@@ -27,6 +27,7 @@ public static partial class Program
     {
         Utils.LongToUInts(client.Network.CurrentSim.Handle, out var rx, out var ry);
         client.Self.AutoPilot(p.X + (double)rx, p.Y + (double)ry, p.Z);
+        if (xline.Active && client.Network.CurrentSim?.Name == xline.To) XMark("autopilot_reissued");   // Crossing.cs timeline
     }
 
     static float? Ground(float x, float y)
@@ -56,7 +57,7 @@ public static partial class Program
     {
         var start = client.Self.SimPosition;
         Log("walk", $"leg {label}: {V(start)} -> {V(target)} ({HDist(start, target):F1} m)");
-        int recoveries = 0; bool flew = false, doorTried = false;
+        int recoveries = 0; bool flew = false, doorTried = false, unfrozeTried = false; Vector3? firstStuckAt = null;
         var legStart = DateTime.Now; var legT0 = DateTime.Now; var lastPush = DateTime.MinValue;
         Vector3 goal = target;
         AutoPilotTo(goal);
@@ -65,7 +66,11 @@ public static partial class Program
         if (!SimGeo.InRegion(target)) Log("walk", $"leg {label}: target is across the {SimGeo.ExitBorder(start, target) ?? SimGeo.Dir(frame, SimGeo.HandleAt(frame, target))} border ({V(target)} in {client.Network.CurrentSim?.Name}'s frame)");
         while (true)
         {
-            await Task.Delay(500, ct);
+            // Crossing.cs (fast): wake on a region change, and don't wait at all when it already happened (a border push
+            // returns right after the new region took her: live 10:04:43, the autopilot came 0.5 s late)
+            if (!FastCrossing) await Task.Delay(500, ct);
+            else if ((client.Network.CurrentSim?.Handle ?? 0) == frame) await Task.WhenAny(Task.Delay(500, ct), RegionChangedSignal);
+            ct.ThrowIfCancellationRequested();
             // border crossing (Neighbors.cs): wait while the region hands her over, then re-express target/goal in the new
             // region's frame and re-issue the autopilot (the sim-side autopilot does not survive the hand-over)
             if (crossing.State == CrossingWatch.Phase.Crossing) { hist.Clear(); legStart = legStart.AddSeconds(0.5); walkState = $"leg {label}: crossing a region border"; continue; }
@@ -76,7 +81,7 @@ public static partial class Program
                 var shift = SimGeo.Offset(curH, frame);
                 target += shift; goal += shift; frame = curH; hist.Clear(); legStart = DateTime.Now.AddSeconds(-10);
                 Log("walk", $"leg {label}: crossed into {client.Network.CurrentSim?.Name} at {V(client.Self.SimPosition)}; target now {V(target)}");
-                await Task.Delay(1000, ct);
+                await WaitHandedOver(ct);   // Crossing.cs: fast = until the new region has her (was a fixed 1 s)
                 AutoPilotTo(goal);
                 continue;
             }
@@ -116,6 +121,17 @@ public static partial class Program
                     if (!dr.Contains("FAILED")) continue;
                 }
             }
+            // frozen by the region right after a crossing (live 10:11:25 and 10:25:13 at Ahern <12.2,2.2>: no move at all,
+            // in any direction, until a teleport or relog): an in-place hop gets the region to take her properly
+            if (!unfrozeTried && LooksFrozenAfterCrossing((DateTime.Now - lastCrossingAt).TotalSeconds, firstStuckAt is Vector3 f0 ? Vector3.Distance(f0, p) : float.MaxValue, recoveries))
+            {
+                unfrozeTried = true; client.Self.AutoPilotCancel();
+                Log("walk", $"leg {label}: frozen at {V(p)} since the crossing {(DateTime.Now - lastCrossingAt).TotalSeconds:F0} s ago -> in-place teleport to unfreeze");
+                var un = await UnfreezeHop(p);
+                Log("walk", $"leg {label}: unfreeze hop: {un}; now at {V(client.Self.SimPosition)}");
+                AutoPilotTo(goal); hist.Clear(); legStart = DateTime.Now; continue;
+            }
+            firstStuckAt ??= p;
             recoveries++;
             var dir = new Vector3(target.X - p.X, target.Y - p.Y, 0); if (dir.Length() < 0.01f) dir = Vector3.UnitX; dir = Vector3.Normalize(dir);
             var side = new Vector3(-dir.Y, dir.X, 0);

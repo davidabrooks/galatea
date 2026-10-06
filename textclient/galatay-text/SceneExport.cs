@@ -41,7 +41,9 @@ public static partial class Program
     // clouds in a normal viewer, avatars take a while; wait for everything, with a cap). Complete = every non-HUD
     // attachment the avatar's appearance lists has its root prim here (ParentID == avatar LocalID). Selects the avatars
     // and points the camera at the nearest unfinished one to nudge the sim's interest list; read-only. Stops when all are
-    // complete, after GT_LOOK_ATTACH_STALL_S (8) without a newly completed avatar, or at GT_LOOK_ATTACH_WAIT_S (30).
+    // complete, after GT_LOOK_ATTACH_STALL_S (10) without a single new attachment arriving, or at GT_LOOK_ATTACH_WAIT_S (45).
+    // (W21 20:37, just after arriving: stopping when no avatar had *finished* for 8 s gave up with 3 of 57 dressed while
+    // attachments were still streaming in; progress now counts attachments.)
     // Anyone still loading is drawn as a neutral stand-in (scene-mesher reads "dressed" from the export), never half-dressed.
     static async Task<string> EnsureNearbyAttachments(float radius)
     {
@@ -57,15 +59,15 @@ public static partial class Program
             client.Objects.SelectObjects(sim, chunk.ToArray(), true);
         var mv = client.Self.Movement; var home = mv.Camera.Position; var homeAt = mv.Camera.AtAxis;
         if (!(interestState.TryGetValue(sim.Handle, out var ist) && ist.ok)) _ = Ensure360ForCurrentRegion("look");
-        int budget = (int)(1000 * (double.TryParse(Env("GT_LOOK_ATTACH_WAIT_S", "30"), NumberStyles.Float, CultureInfo.InvariantCulture, out var bs) ? bs : 30));
-        int stall = (int)(1000 * (double.TryParse(Env("GT_LOOK_ATTACH_STALL_S", "8"), NumberStyles.Float, CultureInfo.InvariantCulture, out var ss) ? ss : 8));
+        int budget = (int)(1000 * (double.TryParse(Env("GT_LOOK_ATTACH_WAIT_S", "45"), NumberStyles.Float, CultureInfo.InvariantCulture, out var bs) ? bs : 45));
+        int stall = (int)(1000 * (double.TryParse(Env("GT_LOOK_ATTACH_STALL_S", "10"), NumberStyles.Float, CultureInfo.InvariantCulture, out var ss) ? ss : 10));
         var t0 = DateTime.UtcNow; int spins = 0; var samples = new List<int>(); string why; const int tick = 500;
         Dictionary<uint, int> rc;
         while (true)
         {
             rc = AttachRootsByAvatar(sim);
-            samples.Add(near.Count(a => State(a, rc) == "complete"));
-            why = LookAttachWaitDone(samples, near.Count, (int)(DateTime.UtcNow - t0).TotalMilliseconds, tick, budget, stall);
+            samples.Add(near.Sum(a => Math.Min(rc.GetValueOrDefault(a.LocalID), ExpectedOf(a))));
+            why = LookAttachWaitDone(samples, near.Sum(a => ExpectedOf(a)), (int)(DateTime.UtcNow - t0).TotalMilliseconds, tick, budget, stall);
             if (why != null) break;
             // nudge the camera toward the nearest unfinished avatar (interest list), then back
             var focus = near.Where(a => State(a, rc) != "complete").DefaultIfEmpty(near[0])

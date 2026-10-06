@@ -27,4 +27,5 @@ apply() {
 apply "$TC/libremetaverse-experienceid.patch"
 apply "$TC/libremetaverse-render.patch"
 apply "$TC/libremetaverse-outfit-send.patch"
+apply "$TC/libremetaverse-object-cache.patch"   # 2026-10-05: on-disk object cache (VOCache-like)
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

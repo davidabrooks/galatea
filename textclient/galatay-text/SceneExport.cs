@@ -183,27 +183,46 @@ public static partial class Program
         void Stage(string name, string detail = "") { stages.Add($"{name}={sw.Elapsed.TotalSeconds:F1}{detail}"); sw.Restart(); }
         var sim = Sim; var me = client.Self;
         var myPos = me.SimPosition;
-        var prims = sim.ObjectsPrimitives.Values.Where(p => p != null).ToList();
-        var byLocal = prims.ToDictionary(p => p.LocalID);
-        Primitive Root(Primitive p) { var q = p; for (int i = 0; i < 8 && q.ParentID != 0 && byLocal.TryGetValue(q.ParentID, out var up); i++) q = up; return q; }
-
-        var nearAvs = sim.ObjectsAvatars.Values.Where(x => x != null && x.LocalID != me.LocalID)
-            .Select(x => (av: x, pos: PositionHelper.GetAvatarPosition(sim, x))).Where(x => Vector3.Distance(x.pos, myPos) <= r).ToDictionary(x => x.av.LocalID);
+        // 2026-10-06 neighbor regions (Neighbors.cs): connected neighbors' prims and avatars within the radius, in this region's
+        // frame (+ the neighbor's offset). Local ids are per region, so a neighbor's localid/parentid are remapped to unique
+        // ids (scene-mesher indexes prims by localid). GT_LOOK_NEIGHBORS=off = this region only.
+        var views = ViewSims(Env("GT_LOOK_NEIGHBORS", "on") != "off");
+        var hereIds = sim.ObjectsAvatars.Values.Where(x => x != null).Select(x => x.ID).ToHashSet();
+        var remap = new Dictionary<(int, uint), uint>(); uint nextId = 0xC0000000;
+        uint Id(int si, uint lid) { if (si == 0 || lid == 0) return lid; if (!remap.TryGetValue((si, lid), out var v)) remap[(si, lid)] = v = nextId++; return v; }
+        var nearAvs = new Dictionary<(int si, uint lid), (Avatar av, Vector3 pos)>();
+        for (int si = 0; si < views.Count; si++)
+        {
+            var (vs, off) = views[si];
+            foreach (var x in vs.ObjectsAvatars.Values)
+            {
+                if (x == null || (si == 0 && x.LocalID == me.LocalID) || (si > 0 && (x.ID == me.AgentID || hereIds.Contains(x.ID)))) continue;
+                if (si > 0 && x.ParentID != 0 && !vs.ObjectsPrimitives.ContainsKey(x.ParentID)) continue;   // seat unknown: position unknown
+                var pos = PositionHelper.GetAvatarPosition(vs, x) + off;
+                if (Vector3.Distance(pos, myPos) <= r && !nearAvs.Values.Any(v => v.av.ID == x.ID)) nearAvs[(si, x.LocalID)] = (x, pos);
+            }
+        }
+        int nbPrims = 0;
         var dir = $"/workspace/secondlife/vision/export-{DateTime.Now:yyyyMMdd-HHmmss}";
         Directory.CreateDirectory(dir);
         var scenePath = Path.Combine(dir, "scene.json");
         var primPart = Path.Combine(dir, "prims.part");
         int nPrims = 0, mine = 0, theirs = 0;
         var matIds = new HashSet<UUID>(); var gltf = new OSDMap();
-        var wornTex = new Dictionary<uint, HashSet<UUID>>();   // wearer LocalID -> texture ids on its attachments
+        var wornTex = new Dictionary<(int, uint), HashSet<UUID>>();   // (region index, wearer LocalID) -> texture ids on its attachments
         using (var part = new FileStream(primPart, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
+        for (int si = 0; si < views.Count; si++)
         {
+            var (vs, off) = views[si];
+            var prims = vs.ObjectsPrimitives.Values.Where(p => p != null).ToList();
+            var byLocal = new Dictionary<uint, Primitive>(); foreach (var p in prims) byLocal[p.LocalID] = p;
+            Primitive Root(Primitive p) { var q = p; for (int i = 0; i < 8 && q.ParentID != 0 && byLocal.TryGetValue(q.ParentID, out var up); i++) q = up; return q; }
             foreach (var p in prims)
             {
-                var root = Root(p); bool attachedToMe = root.ParentID == me.LocalID;
-                nearAvs.TryGetValue(root.ParentID, out var wearer);
+                var root = Root(p); bool attachedToMe = si == 0 && root.ParentID == me.LocalID;
+                nearAvs.TryGetValue((si, root.ParentID), out var wearer);
                 if (root.ParentID != 0 && !attachedToMe && wearer.av == null) continue;   // seated-on / far avatars' attachments
-                if (root.ParentID == 0 && Vector3.Distance(root.Position, myPos) > r && !(p == root && GroundSlab(p.Position, p.Rotation, p.Scale, myPos, r))) continue;
+                if (root.ParentID == 0 && Vector3.Distance(root.Position + off, myPos) > r && !(p == root && GroundSlab(p.Position + off, p.Rotation, p.Scale, myPos, r))) continue;
                 if (p.PrimData.PCode != PCode.Prim) continue;                 // trees/grass (PCode Tree/Grass) have no volume data
                 var o = (OSDMap)p.GetOSD();
                 if (p.RenderMaterials is { Count: > 0 } rms) { var m = new OSDMap(); foreach (var (f, id) in rms) m[f.ToString()] = OSD.FromUUID(id); o["render_materials"] = m; }
@@ -211,12 +230,12 @@ public static partial class Program
                 else if (wearer.av != null)
                 {
                     o["attached_to"] = OSD.FromUUID(wearer.av.ID); o["attach_point"] = (int)root.PrimData.AttachmentPoint; theirs++;
-                    if (!wornTex.TryGetValue(wearer.av.LocalID, out var ts)) wornTex[wearer.av.LocalID] = ts = new HashSet<UUID>();
+                    if (!wornTex.TryGetValue((si, wearer.av.LocalID), out var ts)) wornTex[(si, wearer.av.LocalID)] = ts = new HashSet<UUID>();
                     foreach (var t in FaceTextureIds(p)) ts.Add(t);
                 }
                 else
                 {
-                    var wp = p == root ? p.Position : root.Position + p.Position * root.Rotation;
+                    var wp = (p == root ? p.Position : root.Position + p.Position * root.Rotation) + off;
                     var wr = p == root ? p.Rotation : root.Rotation * p.Rotation;   // Hamilton order: local, then root
                     o["world_pos"] = OSD.FromVector3(wp); o["world_rot"] = OSD.FromQuaternion(wr);
                     if (p == root && !string.IsNullOrEmpty(p.Properties?.Name)) o["name"] = p.Properties.Name;
@@ -224,17 +243,18 @@ public static partial class Program
                 // legacy materials and GLTF overrides of exported prims only (was: every prim in the region)
                 var te = p.Textures;
                 if (te != null) foreach (var f in te.FaceTextures.Append(te.DefaultTexture)) if (f != null && f.MaterialID != UUID.Zero) matIds.Add(f.MaterialID);
-                if (sim.GLTFMaterialOverrides.TryGetValue(p.LocalID, out var ov) && ov.FaceOverrides.Count > 0)
+                if (vs.GLTFMaterialOverrides.TryGetValue(p.LocalID, out var ov) && ov.FaceOverrides.Count > 0)
                 {
                     var faces = new OSDMap();
                     foreach (var (face, m) in ov.FaceOverrides) faces[face.ToString()] = GltfOsd(m);
-                    gltf[p.LocalID.ToString()] = faces;
+                    gltf[Id(si, p.LocalID).ToString()] = faces;
                 }
+                if (si > 0) { o["localid"] = OSD.FromUInteger(Id(si, p.LocalID)); o["parentid"] = OSD.FromUInteger(Id(si, p.ParentID)); o["region"] = vs.Name; nbPrims++; }
                 if (nPrims++ > 0) part.WriteByte((byte)',');
                 var bytes = System.Text.Encoding.UTF8.GetBytes(OSDParser.SerializeJsonString(o)); part.Write(bytes, 0, bytes.Length);
             }
         }
-        Stage("prims", $"({nPrims})");
+        Stage("prims", $"({nPrims}{(nbPrims > 0 ? $", {nbPrims} from {views.Count - 1} neighbor regions" : "")})");
 
         var bakeErr = new ConcurrentBag<string>(); int bakeCached = 0, bakeFetched = 0;
         // one bake (server-side, appearance service) as raw .j2c: bake-<prefix><name>.j2c; prefix "" for her, "<agent id[:8]>-" for others
@@ -262,15 +282,16 @@ public static partial class Program
         // "dressed" (complete / partial / bare / unknown): scene-mesher draws anyone not complete as a neutral stand-in, so
         // their bakes aren't needed. Every needed bake of every avatar (hers: all channels) fetched 16 at a time (was 8 avatars
         // at a time, each avatar's 11 channels one after another: ~55 s cold for 51 avatars).
-        var rootsBy = AttachRootsByAvatar(sim);
-        var avList = nearAvs.Values.ToList();
-        var dressed = avList.Select(x => (exp: ExpectedOf(x.av), have: rootsBy.GetValueOrDefault(x.av.LocalID))).ToList();
+        var rootsBy = views.Select(v => AttachRootsByAvatar(v.sim)).ToList();
+        var avKeys = nearAvs.Keys.ToList();
+        var avList = avKeys.Select(k => nearAvs[k]).ToList();
+        var dressed = avKeys.Select((k, i) => (exp: ExpectedOf(avList[i].av), have: rootsBy[k.si].GetValueOrDefault(k.lid))).ToList();
         var jobs = new List<(int who, int te, string name)>();   // who: -1 = her
         if (self != null) foreach (var (te, name) in Bakes) jobs.Add((-1, te, name));
         for (int i = 0; i < avList.Count; i++)
         {
             if (AttachState(dressed[i].exp, dressed[i].have) != "complete") continue;
-            var need = BakesNeeded(wornTex.TryGetValue(avList[i].av.LocalID, out var ts) ? ts : Enumerable.Empty<UUID>());
+            var need = BakesNeeded(wornTex.TryGetValue(avKeys[i], out var ts) ? ts : Enumerable.Empty<UUID>());
             foreach (var (te, name) in Bakes) if (need.Contains(name)) jobs.Add((i, te, name));
         }
         var got = new ConcurrentDictionary<int, ConcurrentDictionary<string, UUID>>();
@@ -289,7 +310,7 @@ public static partial class Program
             avatars.Add(new OSDMap
             {
                 ["pos"] = OSD.FromVector3(ap), ["rot"] = OSD.FromQuaternion(av.Rotation), ["agent_id"] = OSD.FromUUID(av.ID), ["name"] = av.Name ?? "",
-                ["local_id"] = (int)av.LocalID, ["visual_params"] = Params(av), ["bakes"] = BakeMap(i), ["anims"] = AnimsOf(av.ID),
+                ["local_id"] = unchecked((int)Id(avKeys[i].si, av.LocalID)), ["visual_params"] = Params(av), ["bakes"] = BakeMap(i), ["anims"] = AnimsOf(av.ID),
                 ["dressed"] = AttachState(dressed[i].exp, dressed[i].have), ["attach_expected"] = dressed[i].exp, ["attach_have"] = dressed[i].have,
             });
         }
@@ -327,7 +348,8 @@ public static partial class Program
             ["materials"] = mats, ["gltf_overrides"] = gltf, ["visual_params"] = vparams, ["environment"] = env,
             ["sun_dir"] = OSD.FromVector3(client.Grid.SunDirection),
             ["region"] = sim.Name, ["agent_id"] = OSD.FromUUID(me.AgentID), ["me"] = new OSDMap { ["pos"] = OSD.FromVector3(myPos), ["rot"] = OSD.FromQuaternion(me.SimRotation), ["sitting_on"] = (int)me.SittingOn, ["anims"] = AnimsOf(me.AgentID) },
-            ["water_height"] = sim.WaterHeight, ["terrain"] = TerrainGrid(sim),
+            ["water_height"] = sim.WaterHeight, ["terrain"] = views.Count > 1 ? TerrainGridMerged(views) : TerrainGrid(sim),
+            ["neighbor_regions"] = new OSDArray(views.Skip(1).Select(v => (OSD)new OSDMap { ["name"] = v.sim.Name, ["offset"] = OSD.FromVector3(v.off) }).ToList()),
             ["radius"] = r, ["bakes"] = bakes, ["avatars"] = avatars, ["exported_at"] = DateTime.Now.ToString("o"),
         };
         using (var fs = new FileStream(scenePath + ".tmp", FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
@@ -357,6 +379,53 @@ public static partial class Program
             rows.Add(row);
         }
         return new OSDMap { ["x0"] = 0, ["y0"] = 0, ["step"] = step, ["nx"] = n, ["ny"] = n, ["heights"] = rows };
+    }
+
+    // her region's heightmap plus every connected neighbor's, on one grid in her region's frame (a look across a border
+    // has ground on both sides). Cells no region covers are filled from the nearest known cell (the renderer would put 20 m).
+    static OSDMap TerrainGridMerged(List<(Simulator sim, Vector3 off)> views)
+    {
+        const int step = 4, n = 256 / step + 1;
+        var grids = new List<(int gx0, int gy0, float?[,] h)>();
+        foreach (var (s, off) in views)
+        {
+            var h = new float?[n, n]; int known = 0;
+            for (int j = 0; j < n; j++) for (int i = 0; i < n; i++)
+                if (s.TerrainHeightAtPoint(Math.Min(i * step, 255), Math.Min(j * step, 255), out var v)) { h[j, i] = v; known++; }
+            if (known > 0) grids.Add(((int)MathF.Round(off.X / step), (int)MathF.Round(off.Y / step), h));
+        }
+        var (x0, y0, m) = MergeTerrain(grids, n);
+        var rows = new OSDArray();
+        for (int j = 0; j < m.GetLength(0); j++) { var row = new OSDArray(); for (int i = 0; i < m.GetLength(1); i++) row.Add(m[j, i] is float f ? OSD.FromReal(f) : new OSD()); rows.Add(row); }
+        return new OSDMap { ["x0"] = x0 * step, ["y0"] = y0 * step, ["step"] = step, ["nx"] = m.GetLength(1), ["ny"] = m.GetLength(0), ["heights"] = rows };
+    }
+
+    // pure (neighbor selftest): grids of n x n cells at cell offsets (gx0, gy0); the first grid wins where they overlap;
+    // returns the union's origin (cells) and heights [row j, column i], gaps filled from the nearest known cell (BFS)
+    internal static (int x0, int y0, float?[,] h) MergeTerrain(List<(int gx0, int gy0, float?[,] h)> grids, int n)
+    {
+        if (grids.Count == 0) return (0, 0, new float?[0, 0]);
+        int minX = grids.Min(g => g.gx0), minY = grids.Min(g => g.gy0), maxX = grids.Max(g => g.gx0) + n, maxY = grids.Max(g => g.gy0) + n;
+        int w = maxX - minX, hgt = maxY - minY; var m = new float?[hgt, w];
+        foreach (var (gx0, gy0, h) in grids)
+            for (int j = 0; j < n; j++) for (int i = 0; i < n; i++)
+            {
+                int J = gy0 - minY + j, I = gx0 - minX + i;
+                if (m[J, I] == null && h[j, i] != null) m[J, I] = h[j, i];
+            }
+        var q = new Queue<(int, int)>();
+        for (int j = 0; j < hgt; j++) for (int i = 0; i < w; i++) if (m[j, i] != null) q.Enqueue((j, i));
+        while (q.Count > 0)
+        {
+            var (j, i) = q.Dequeue();
+            foreach (var (dj, di) in new[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+            {
+                int a = j + dj, b = i + di;
+                if (a < 0 || b < 0 || a >= hgt || b >= w || m[a, b] != null) continue;
+                m[a, b] = m[j, i]; q.Enqueue((a, b));
+            }
+        }
+        return (minX, minY, m);
     }
 
     static OSDMap GltfOsd(AssetMaterial m) => new()

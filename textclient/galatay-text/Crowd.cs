@@ -130,14 +130,36 @@ public static partial class Program
     static string CoarseOnlyLines(int max = 12)
     {
         var sim = client.Network.CurrentSim;
-        if (sim == null || coarseSim != sim) return "";
-        var streamed = sim.ObjectsAvatars.Values.Where(a => a != null).Select(a => a.ID).ToHashSet();
-        var only = CoarseOnly(coarseNow, streamed, client.Self.AgentID, client.Self.SimPosition);
-        if (only.Count == 0) return "";
+        if (sim == null) return "";
+        var streamed = ViewSims().SelectMany(v => v.sim.ObjectsAvatars.Values).Where(a => a != null).Select(a => a.ID).ToHashSet();
         var sb = new StringBuilder();
+        // neighbor regions' maps (Neighbors.cs): avatars across a border not streamed to her, in this region's frame
+        var nbCoarse = new Dictionary<UUID, Vector3>(); var nbRegion = new Dictionary<UUID, string>();
+        foreach (var (ns, off) in ViewSims().Skip(1))
+            if (coarseBy.TryGetValue(ns.Handle, out var cm))
+                foreach (var (id, p) in cm) if (!nbCoarse.ContainsKey(id)) { nbCoarse[id] = p.Z >= 1020f ? new Vector3(p.X + off.X, p.Y + off.Y, p.Z) : p + off; nbRegion[id] = ns.Name; }
+        var nbOnly = CoarseOnly(nbCoarse, streamed, client.Self.AgentID, client.Self.SimPosition).Where(x => !coarseNow.ContainsKey(x.id)).ToList();
+        if (nbOnly.Count > 0)
+        {
+            List<UUID> unknown; lock (nameToId) unknown = nbOnly.Select(x => x.id).Where(i => !idToName.ContainsKey(i)).Take(40).ToList();
+            if (unknown.Count > 0) try { client.Avatars.RequestAvatarNames(unknown); } catch { }
+        }
+        if (coarseSim != sim) return NbCoarseLines(nbOnly, nbRegion, max);
+        var only = CoarseOnly(coarseNow, streamed, client.Self.AgentID, client.Self.SimPosition);
+        if (only.Count == 0) return NbCoarseLines(nbOnly, nbRegion, max);
         sb.AppendLine($"+ {only.Count} more avatar(s) in the region on the map (coarse position only; not streamed to me yet, or beyond draw distance):");
         foreach (var (id, d) in only.Take(max)) sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  ~{0,5:F0}m  {1}  {2}", d, id, NameOf(id)));
         if (only.Count > max) sb.AppendLine($"  ... and {only.Count - max} more");
+        return sb.ToString() + NbCoarseLines(nbOnly, nbRegion, max);
+    }
+
+    static string NbCoarseLines(List<(UUID id, float dist)> nbOnly, Dictionary<UUID, string> nbRegion, int max)
+    {
+        if (nbOnly.Count == 0) return "";
+        var sb = new StringBuilder();
+        sb.AppendLine($"+ {nbOnly.Count} avatar(s) in neighbor regions on their maps (coarse position only, not streamed to me):");
+        foreach (var (id, d) in nbOnly.Take(max)) sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  ~{0,5:F0}m  {1}  {2}  [{3}]", d, id, NameOf(id), nbRegion.GetValueOrDefault(id, "?")));
+        if (nbOnly.Count > max) sb.AppendLine($"  ... and {nbOnly.Count - max} more");
         return sb.ToString();
     }
 
@@ -175,7 +197,16 @@ public static partial class Program
             var st = AttachState(exp, have); counts[st] = counts.GetValueOrDefault(st) + 1;
             sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1,-28} attachments {2,3}/{3,-3} {4}{5}", d, av.Name, have, exp, st, raw != have ? $" (raw updates seen: {raw})" : ""));
         }
-        var head = $"crowd within {r:F0} m: {near.Count} avatar(s) streamed ({sim.ObjectsAvatars.Count} in region objects, {coarseNow.Count} on the map); " +
+        // neighbor regions (Neighbors.cs): avatars across the border, attachment roots counted in their own region
+        var nb = NeighborAvatars(r); var nbRoots = new Dictionary<Simulator, Dictionary<uint, int>>();
+        foreach (var (av, nsim, pos, d) in nb)
+        {
+            if (!nbRoots.TryGetValue(nsim, out var rr)) nbRoots[nsim] = rr = AttachRootsByAvatar(nsim);
+            int exp = ExpectedOf(av), have = rr.GetValueOrDefault(av.LocalID);
+            var st = AttachState(exp, have); counts[st] = counts.GetValueOrDefault(st) + 1;
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1,-28} attachments {2,3}/{3,-3} {4}{5}", d, av.Name, have, exp, st, RegionTag(nsim)));
+        }
+        var head = $"crowd within {r:F0} m: {near.Count} avatar(s) streamed{(nb.Count > 0 ? $" + {nb.Count} in neighbor regions" : "")} ({sim.ObjectsAvatars.Count} in region objects, {coarseNow.Count} on the map); " +
                    string.Join(", ", counts.OrderBy(k => k.Key).Select(k => $"{k.Value} {k.Key}")) +
                    $"; objects={sim.ObjectsPrimitives.Count}; interest={(interestState.TryGetValue(sim.Handle, out var s) && s.ok ? "360" : "NOT 360")}";
         return head + "\n" + ObjectDiskCache.Stats() + "\n" + sb.ToString().TrimEnd();

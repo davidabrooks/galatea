@@ -88,6 +88,8 @@ public static partial class Program
     static (bool active, string why) AoStateNow()
     {
         if (!LoggedIn) return (false, "not logged in");
+        // Neighbors.cs: right after a border crossing her HUDs/animations are not in the new region's object list yet
+        if (crossing.AssumeAo) return (true, $"crossing a region border ({crossing.State}): AO assumed unchanged until her attachments arrive");
         Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = ownAnims;
         bool worn = AoHudWorn();
         var srcs = new HashSet<UUID>();
@@ -105,6 +107,8 @@ public static partial class Program
     static async Task<bool> AoRestore(string why, CancellationToken ct)
     {
         client.Self.AutoPilotCancel();
+        // never decide "HUD missing" while a crossing is settling: the new region re-sends her attachments (Neighbors.cs)
+        for (int i = 0; i < 60 && crossing.Grace; i++) await Task.Delay(500, ct);
         if (client.Self.SittingOn != 0) { AoLog("restore skipped: she is seated"); return false; }
         if (AoHudWorn())
         {

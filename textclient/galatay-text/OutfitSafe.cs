@@ -276,7 +276,13 @@ public static partial class Program
         var prims = LinkPrims(root); await EnsureProperties(Sim, prims);
         var list = prims.Select((p, i) => (i + 1, p.LocalID, p.Properties?.Name ?? "?", p.Properties?.Description ?? "")).ToList();
         var opts = HudTextureOptions(list);
-        if (opts.Count == 0) sb.Append($"'{hud.Name}': no color/pattern buttons found");
+        if (opts.Count == 0)
+        {
+            // no named buttons (e.g. [ARTi'S] Strapless Top - HUD): log the layout, then try touchable prims / faces, verified on the top
+            Log("hud", $"'{hud.Name}' has no named color buttons; prims: " + string.Join(" | ", prims.Select((p, i) => $"#{i + 1} '{p.Properties?.Name}' desc '{p.Properties?.Description}' faces {HudFaceCount(p)}{((p.Flags & PrimFlags.Touch) != 0 ? " touch" : "")}")));
+            var (ok2, how) = await HudFallbackPress(hud, prims, clothingItems, ct);
+            sb.Append($"'{hud.Name}': {how}; ");
+        }
         else
         {
             var tried = new HashSet<int>(); bool applied = false;
@@ -330,6 +336,55 @@ public static partial class Program
     {
         try { return File.Exists(ClothingHudMapFile) ? ParseClothingHudMap(File.ReadAllText(ClothingHudMapFile)) : new(); }
         catch (Exception ex) { Log("hud", "clothing HUD map: " + ex.Message); return new(); }
+    }
+
+    static readonly System.Text.RegularExpressions.Regex HudControlRx = new(@"detach|close|minimi|maximi|lock|url|\blm\b|landmark|group|website|help|logo|reset|hide|show|redeliver|update|info|\bon\b|\boff\b|tab|page|next|prev|back|alpha|shine|gloss|mat(erial)?s?\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static int HudFaceCount(Primitive p) { try { var t = p.Textures; if (t?.FaceTextures == null) return 1; int n = 0; for (int i = 0; i < t.FaceTextures.Length; i++) if (t.FaceTextures[i] != null) n = i + 1; return Math.Max(1, n); } catch { return 1; } }
+
+    // touch one face of a HUD prim at a texture (ST) coordinate: for HUDs whose swatches are faces or areas of one face
+    static void GrabAt(Primitive p, int face, float s, float t)
+    {
+        var st = new Vector3(s, t, 0);
+        client.Self.Grab(p.LocalID, Vector3.Zero, st, st, face, Vector3.Zero, Vector3.Zero, Vector3.Zero);
+        client.Self.DeGrab(p.LocalID, st, st, face, Vector3.Zero, Vector3.Zero, Vector3.Zero);
+    }
+
+    static async Task<(bool ok, string how)> HudFallbackPress(InventoryItem hud, List<Primitive> prims, List<UUID> clothingItems, CancellationToken ct)
+    {
+        async Task<int> Changed(Dictionary<uint, string> before)
+        {
+            for (int i = 0; i < 12; i++) { await Task.Delay(500, ct); var after = SnapshotTextures(clothingItems); int n = after.Count(kv => before.TryGetValue(kv.Key, out var b) && b != kv.Value); if (n > 0) return n; }
+            return 0;
+        }
+        var notes = new List<string>();
+        // 1) touchable child prims with non-control names
+        var cands = prims.Skip(prims.Count > 1 ? 1 : 0).Where(p => !HudControlRx.IsMatch((p.Properties?.Name ?? "") + " " + (p.Properties?.Description ?? ""))).ToList();
+        foreach (var p in cands.OrderBy(_ => Random.Shared.Next()).Take(4))
+        {
+            var before = SnapshotTextures(clothingItems);
+            int face = Random.Shared.Next(HudFaceCount(p));
+            GrabAt(p, face, 0.5f, 0.5f);
+            int n = await Changed(before);
+            var lbl = $"prim '{p.Properties?.Name}' face {face}";
+            Log("hud", $"'{hud.Name}' fallback press {lbl}: {(n > 0 ? $"applied, {n} prims changed" : "no change")}");
+            if (n > 0) return (true, $"picked {lbl} -> applied ({n} prim(s) changed texture)");
+            notes.Add(lbl + " no change");
+        }
+        // 2) random face + spot on the biggest prims (swatch grids drawn on one face)
+        var big = prims.OrderByDescending(p => p.Scale.Y * p.Scale.Z).Take(2).ToList();
+        for (int k = 0; k < 6 && big.Count > 0; k++)
+        {
+            var p = big[k % big.Count]; int face = Random.Shared.Next(HudFaceCount(p));
+            float s = 0.1f + (float)Random.Shared.NextDouble() * 0.8f, t = 0.1f + (float)Random.Shared.NextDouble() * 0.8f;
+            var before = SnapshotTextures(clothingItems);
+            GrabAt(p, face, s, t);
+            int n = await Changed(before);
+            var lbl = $"prim '{p.Properties?.Name}' face {face} at st {s:F2},{t:F2}";
+            Log("hud", $"'{hud.Name}' fallback press {lbl}: {(n > 0 ? $"applied, {n} prims changed" : "no change")}");
+            if (n > 0) return (true, $"picked {lbl} -> applied ({n} prim(s) changed texture)");
+            notes.Add(lbl + " no change");
+        }
+        return (false, "no named buttons; fallback touches gave no visible change (" + string.Join(", ", notes.Take(4)) + (notes.Count > 4 ? ", ..." : "") + ")");
     }
 
     static async Task<List<(InventoryItem hud, List<UUID> clothing)>> FindClothingHuds(IEnumerable<InventoryItem> outfitItems, CancellationToken ct)
@@ -435,6 +490,7 @@ public static partial class Program
         // outfit without hair: keep current hair
         var hm = ParseClothingHudMap("{\"tops\":[{\"clothing\":\"" + U(11) + "\",\"hud\":\"" + U(12) + "\"},{\"clothing\":\"" + U(13) + "\",\"hud\":\"" + AoItem + "\"}]}");
         C(hm.Count == 1 && hm[U(11)] == U(12), "clothing HUD map parsed; an AO HUD entry is refused");
+        C(HudControlRx.IsMatch("DETACH") && HudControlRx.IsMatch("Shine OFF") && !HudControlRx.IsMatch("Pink") && !HudControlRx.IsMatch("color 3"), "HUD fallback skips control buttons, keeps swatches");
         C(ClothingHudNameRx.IsMatch("[ARTi'S] Strapless Top - HUD") && ClothingHudNameRx.IsMatch("<HUD> Chill T-Shirt") && !ClothingHudNameRx.IsMatch("VISTA ANIMATIONS *HUD 6.3*MARTHA STS BENTO AO-V1.7"), "clothing HUD names (ARTi'S '- HUD' suffix); AO is not one");
         var t2 = new List<TargetObj> { new(U(11), "Beth Top :: PetiteX"), new(U(2), "/ HEAD / lel evox / AVALON 4.0") };
         var p2 = PlanAttachmentSwap(worn, t2, new HashSet<UUID> { ao });

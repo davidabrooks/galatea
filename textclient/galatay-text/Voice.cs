@@ -473,6 +473,12 @@ public static partial class Program
         return !VoiceFiller.Contains(alnum);
     }
 
+    // pure (2026-10-07): noise/empty STT line -> "unclear" only for David with >= ~0.8 s of real speech (so I can say
+    // I didn't catch that); short blips and everyone else's noise -> null (drop).
+    public const double VoiceUnclearMinSpeechS = 0.8;
+    public static string VoiceNoiseTrigger(string speakerId, double? speechS) =>
+        VoiceIsDavid(speakerId) && speechS is double s && s >= VoiceUnclearMinSpeechS ? "unclear" : null;
+
     // pure: is this line from Galatea herself? (she has no mic; still filter defensively)
     public static bool VoiceIsOwn(string speaker, string speakerId, UUID? selfId, string selfName, string selfDisplay)
     {
@@ -501,13 +507,14 @@ public static partial class Program
         var speaker = ((string)m?["speaker"] ?? "(unattributed)").Trim();
         var speakerId = ((string)m?["speaker_id"] ?? "").Trim();
         var timeStr = (string)m?["time"] ?? vNow().ToString("HH:mm:ss");
-        if (text.Length == 0) return;
-        s.Lines++; s.LastLine = $"{timeStr} {speaker}: {text}";
-        VoiceNoteLine(speaker, speakerId, text, s.ParcelName, s.Channel);
+        double? speechS = m?["speech_s"] is JsonNode sn ? (double)sn : null;
+        if (text.Length == 0 && speechS is null) return;
+        s.Lines++; s.LastLine = $"{timeStr} {speaker}: {(text.Length == 0 ? "[unclear]" : text)}";
+        VoiceNoteLine(speaker, speakerId, text, s.ParcelName, s.Channel, speechS);
     }
 
     // testable entry: record a line and maybe schedule a wake (transcript logging stays in the sidecar)
-    public static void VoiceNoteLine(string speaker, string speakerId, string text, string parcel = null, string channel = null)
+    public static void VoiceNoteLine(string speaker, string speakerId, string text, string parcel = null, string channel = null, double? speechS = null)
     {
         var at = vNow();
         var own = VoiceIsOwnLive(speaker, speakerId);
@@ -521,10 +528,15 @@ public static partial class Program
             }
         }
         if (own) { VLog($"line (own, not waking): {speaker}: {text}"); return; }
-        if (!VoiceIsMeaningful(text)) { VLog($"line (noise, not waking): {speaker}: {text}"); return; }
-        if (VWakeMode == VoiceWakeMode.Off) return;
+        if (VWakeMode == VoiceWakeMode.Off) { if (!VoiceIsMeaningful(text)) VLog($"line (noise, not waking): {speaker}: {text}"); return; }
         string trigger = null;
-        if (VWakeMode == VoiceWakeMode.All) trigger = "all";
+        if (!VoiceIsMeaningful(text))
+        {
+            trigger = VoiceNoiseTrigger(speakerId, speechS);
+            if (trigger == null) { VLog($"line (noise, not waking): {speaker}: {text}" + (speechS is double ss ? $" ({ss:0.0} s speech)" : "")); return; }
+            if (string.IsNullOrWhiteSpace(text)) text = "[unclear]";
+        }
+        else if (VWakeMode == VoiceWakeMode.All) trigger = "all";
         else if (VWakeMode == VoiceWakeMode.Name) trigger = VoiceNameModeTrigger(text, speakerId);
         if (trigger == null) return;
         lock (vWakeGate) vPending.Add(new VLine(at, speaker, speakerId ?? "", text, trigger));
@@ -664,6 +676,10 @@ public static partial class Program
             C(!VoiceIsMeaningful("Mm-hmm."), "noise: filler mm-hmm dropped");
             C(VoiceIsMeaningful("Hi"), "short real word kept");
             C(VoiceIsMeaningful("Hey babe, you're looking good today."), "real line kept");
+            C(VoiceNoiseTrigger("44ce5a36-c1c7-4a68-ac9a-635ddfff6233", 1.2) == "unclear", "David noise with 1.2 s speech -> unclear");
+            C(VoiceNoiseTrigger("44ce5a36-c1c7-4a68-ac9a-635ddfff6233", 0.5) == null, "David blip under 0.8 s dropped");
+            C(VoiceNoiseTrigger("44ce5a36-c1c7-4a68-ac9a-635ddfff6233", null) == null, "David noise without speech length dropped");
+            C(VoiceNoiseTrigger("22222222-2222-2222-2222-222222222222", 3.0) == null, "others' noise dropped even when long");
             const string davidId = "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", otherId = "22222222-2222-2222-2222-222222222222";
             C(VoiceNameModeTrigger("you're looking good today", davidId) == "david", "David: any line wakes (trigger=david)");
             C(VoiceNameModeTrigger("Hey babe, you're looking good today.", davidId) == "name", "David: pet name counts as name");
@@ -749,6 +765,15 @@ public static partial class Program
             VoiceNoteLine("Visitor", "22222222-2222-2222-2222-222222222222", "...", "Sangha", "parcel voice");
             Sleep(0.6);
             C(posted.Count == 0, "noise-only lines never wake (name or all mode)");
+            VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", ".", "Sangha", "parcel voice", 0.4);
+            VoiceNoteLine("Visitor", "22222222-2222-2222-2222-222222222222", "", "Sangha", "parcel voice", 2.0);
+            Sleep(0.6);
+            C(posted.Count == 0, "short David blip and long visitor noise never wake");
+            VWakeMode = VoiceWakeMode.Name;
+            VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", ".", "Sangha", "parcel voice", 1.4);
+            deadline = DateTime.UtcNow.AddSeconds(6);
+            while (posted.Count == 0 && DateTime.UtcNow < deadline) { clock = DateTime.Now; Sleep(0.05); }
+            C(posted.Count >= 1 && posted[0].Contains("\"trigger\":\"unclear\""), $"David real-speech '.' wakes with trigger=unclear ({posted.Count})");
 
             // name mode: open invitation wakes with context + trigger=invitation
             posted.Clear();

@@ -462,6 +462,17 @@ public static partial class Program
     static readonly Regex VoicePetNameRx = new(@"\b(babe|baby|honey|love)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     public static bool VoiceIsDavid(string speakerId) => UUID.TryParse(speakerId ?? "", out var id) && id == DavidId;
 
+    // pure (2026-10-07): is this STT line worth waking for? Drops lines with no letters/digits (".", "...", "♪"),
+    // under 2 letters/digits, and bare filler like "uh", "um", "hmm", "mm-hmm". Such lines are still logged, never woken.
+    static readonly HashSet<string> VoiceFiller = new(StringComparer.OrdinalIgnoreCase) { "uh", "um", "umm", "uhm", "hm", "hmm", "hmmm", "mm", "mmm", "mhm", "mmhmm", "ah", "oh", "eh", "er", "erm" };
+    public static bool VoiceIsMeaningful(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var alnum = new string(text.Where(char.IsLetterOrDigit).ToArray());
+        if (alnum.Length < 2) return false;
+        return !VoiceFiller.Contains(alnum);
+    }
+
     // pure: is this line from Galatea herself? (she has no mic; still filter defensively)
     public static bool VoiceIsOwn(string speaker, string speakerId, UUID? selfId, string selfName, string selfDisplay)
     {
@@ -510,6 +521,7 @@ public static partial class Program
             }
         }
         if (own) { VLog($"line (own, not waking): {speaker}: {text}"); return; }
+        if (!VoiceIsMeaningful(text)) { VLog($"line (noise, not waking): {speaker}: {text}"); return; }
         if (VWakeMode == VoiceWakeMode.Off) return;
         string trigger = null;
         if (VWakeMode == VoiceWakeMode.All) trigger = "all";
@@ -644,6 +656,14 @@ public static partial class Program
             C(VoiceNameModeTrigger("questions or comments?") == "invitation", "trigger=invitation");
             C(VoiceNameModeTrigger("hey Galatay") == "name", "trigger=name");
             C(VoiceNameModeTrigger("Bodhidharma came west") == null, "no trigger on plain lecture");
+            C(!VoiceIsMeaningful("."), "noise: '.' dropped");
+            C(!VoiceIsMeaningful(" ... "), "noise: '...' dropped");
+            C(!VoiceIsMeaningful("♪"), "noise: music symbol dropped");
+            C(!VoiceIsMeaningful("I"), "noise: single letter dropped");
+            C(!VoiceIsMeaningful("Hmm."), "noise: filler hmm dropped");
+            C(!VoiceIsMeaningful("Mm-hmm."), "noise: filler mm-hmm dropped");
+            C(VoiceIsMeaningful("Hi"), "short real word kept");
+            C(VoiceIsMeaningful("Hey babe, you're looking good today."), "real line kept");
             const string davidId = "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", otherId = "22222222-2222-2222-2222-222222222222";
             C(VoiceNameModeTrigger("you're looking good today", davidId) == "david", "David: any line wakes (trigger=david)");
             C(VoiceNameModeTrigger("Hey babe, you're looking good today.", davidId) == "name", "David: pet name counts as name");
@@ -718,6 +738,17 @@ public static partial class Program
             deadline = DateTime.UtcNow.AddSeconds(6);
             while (posted.Count == 0 && DateTime.UtcNow < deadline) { clock = DateTime.Now; Sleep(0.05); }
             C(posted.Count >= 1 && posted[0].Contains("\"trigger\":\"david\"") && posted[0].Contains("looking good today"), $"name mode: David plain line wakes with trigger=david ({posted.Count})");
+
+            // noise from David never wakes, even though every David line normally does
+            posted.Clear();
+            VoiceWakeReset(); VoiceDebounceS = 0.2; VoiceMinWakeS = 0.5;
+            clock = DateTime.Now; vNow = () => clock;
+            VWakeMode = VoiceWakeMode.Name;
+            VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", ".", "Sangha", "parcel voice");
+            VWakeMode = VoiceWakeMode.All;
+            VoiceNoteLine("Visitor", "22222222-2222-2222-2222-222222222222", "...", "Sangha", "parcel voice");
+            Sleep(0.6);
+            C(posted.Count == 0, "noise-only lines never wake (name or all mode)");
 
             // name mode: open invitation wakes with context + trigger=invitation
             posted.Clear();

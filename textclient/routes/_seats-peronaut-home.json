@@ -13,7 +13,7 @@
   "seats": [
     {"uuid": "1b9ab440-3b52-b827-2eae-7de92fb69cfb", "name": "Dutchie maledom desk", "pos": [228.1, 71.5, 29.1], "owner": "David Nightingale", "level": "upper", "where": "indoor living", "adult": true, "place": "desk", "wander": true},
     {"uuid": "f6844138-499f-0f3e-ba6a-ce601a16eafe", "name": "Lalou - Ultra Sofa v1.1", "pos": [228.0, 65.7, 28.7], "owner": "David Nightingale", "level": "upper", "where": "indoor living", "adult": false, "place": "sofa", "wander": true},
-    {"uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "name": "BENTO PHYSICS MIRAGE BED 1.0", "pos": [215.7, 75.3, 27.9], "owner": "David Nightingale", "level": "upper", "where": "indoor west wing", "adult": true, "place": "bed", "wander": true},
+    {"uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "name": "BENTO PHYSICS MIRAGE BED 1.0", "pos": [215.7, 75.3, 27.9], "owner": "David Nightingale", "level": "upper", "where": "indoor west wing", "adult": true, "place": "bed", "nav": "graph: bed (via west-doorway / side-room-1)", "wander": true},
     {"uuid": "53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc", "name": "Dutchie clawfoot bath tub adult", "pos": [239.4, 73.6, 28.8], "owner": "David Nightingale", "level": "upper", "where": "indoor east wing", "adult": true, "place": "tub", "special": "undress", "note": "undress before sitting, dress again after (David)", "wander": true},
     {"uuid": "7beb04ac-b4cc-8e7d-98b2-d5a4683afcbc", "name": "Trompe Loeil - Reiley Net Chair PG", "pos": [230.3, 59.1, 28.8], "owner": "Fiona Velvet", "level": "upper", "where": "outdoor patio", "adult": false, "place": "chairs", "wander": true},
     {"uuid": "cab3241e-97e4-4ad6-f795-008180ea2d74", "name": "Trompe Loeil - Reiley Net Chair PG", "pos": [232.3, 58.4, 28.8], "owner": "Fiona Velvet", "level": "upper", "where": "outdoor patio", "adult": false, "place": "chairs", "wander": true},
@@ -38,6 +38,7 @@
     {"uuid": "5c560cf2-e5e1-f7c2-98fb-80aa794667ec", "name": "GOOSE - deck stair 3 steps", "pos": [214.2, 57.6, 20.1], "note": "west stairs: beach (by the rowboat) <-> GOOSE Mooring deck 3d06b3e3 (center 210.3,59.3); graph edge deck-stair -> deck-top"}
   ],
   "problems": [
+    "West wing (Mirage bed) and east-deck/tub: enter/leave ONLY via side-room-1 / side-room-2 doorway nodes on _graph-Peronaut.json (2026-10-06; direct 8-12 / 7-11 edges cut walls).",
     "Lower-level graph legs come from David's tour positions and her follow trace; the porch walk (front steps -> porch) and beach-sw -> pier-start are interpolated, not walked yet.",
     "Upper nav grid (_nav-peronaut-home.json) is floor_z~28 only; the lower level uses the path graph (see 'lower_links' there).",
     "Nerenzo beach chair table (a81cbe0c) and parasol (fee00d83) are props, not seats."

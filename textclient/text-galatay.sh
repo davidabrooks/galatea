@@ -12,7 +12,7 @@ RUN="$BASE/run"
 PIDF="$RUN/galatay-text.pid"
 export GT_SOCK="${GT_SOCK:-$RUN/galatay.sock}"
 export GT_LOG="${GT_LOG:-/workspace/secondlife/textclient.log}"
-export GT_START="${GT_START:-last}"
+export GT_START="${GT_START:-home}"   # 2026-10-07: log in at home (David), not the last location
 export GT_LURE_ALLOW="${GT_LURE_ALLOW:-David Nightingale,SophieJeanneLaDouce Resident,d695b17a-6504-4697-a945-0b71c53e4771}"
 # sit-height guard (HeightGuard.cs): pinned hover height is POSTed on login/region change; each sit is re-checked
 export GT_HOVER_FILE="${GT_HOVER_FILE:-$BASE/hover.txt}"

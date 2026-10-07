@@ -1,6 +1,6 @@
 {
   "region": "Peronaut",
-  "source": "home places: upper level verified walking on the Peronaut nav grid 2026-10-05; lower level (porch, mid walkway, east stairs, beach, GOOSE 3-step deck stair + Mooring deck, Burgundy pier) from David's tour 15:23-16:51 PT: recorded beach-stairs-up route, David's standing positions and her follow trace; 2026-10-06 doorway fix: west/east side-room legs only through door approach nodes (no wall-cutting 8-12 / 7-11); hall links from home; 2026-10-07 couch fix: living/desk nodes moved off furniture, desk bypass, home -> arrival point, CI checks edges vs furniture_footprints; 2026-10-07 stair-corner fix: porch walk leaves the front-stairs foot north (y 87.3) around the west stair side instead of cutting west at y 85.8",
+  "source": "home places: upper level verified walking on the Peronaut nav grid 2026-10-05; lower level (porch, mid walkway, east stairs, beach, GOOSE 3-step deck stair + Mooring deck, Burgundy pier) from David's tour 15:23-16:51 PT: recorded beach-stairs-up route, David's standing positions and her follow trace; 2026-10-06 doorway fix: west/east side-room legs only through door approach nodes (no wall-cutting 8-12 / 7-11); hall links from home; 2026-10-07 couch fix: living/desk nodes moved off furniture, desk bypass, home -> arrival point, CI checks edges vs furniture_footprints; 2026-10-07 stair-corner fix: porch walk leaves the front-stairs foot north (y 87.3) around the west stair side instead of cutting west at y 85.8; 2026-10-07 front-door fix: front-hall/front legs no longer cut diagonally from the porch-top node 9 through the wall west of the double door - they pass straight N-S through the opening centre (x 228.05) via inside node 48, so both inbound and outbound cross the door cells and pre-open both leaves (west side via 49-50 around the desk, east side via 44)",
   "created": "2026-10-05T11:15:00",
   "updated": "2026-10-07T09:00:00",
   "nodes": [
@@ -13,7 +13,7 @@
     [233.6, 66.0, 29.0],
     [233.0, 69.6, 29.0],
     [223.0, 69.6, 29.0],
-    [228.0, 82.5, 29.0],
+    [228.05, 82.5, 29.0],
     [228.1, 70.2, 29.0],
     [242.0, 75.0, 29.0],
     [218.5, 74.0, 28.5],
@@ -51,7 +51,10 @@
     [230.0, 72.4, 29.0],
     [228.2, 74.0, 29.0],
     [228.3, 87.3, 26.7],
-    [225.0, 87.3, 26.6]
+    [225.0, 87.3, 26.6],
+    [228.05, 77.6, 29.0],
+    [225.5, 72.8, 29.0],
+    [225.3, 70.2, 29.0]
   ],
   "edges": [
     [0, 1, "living"],
@@ -64,8 +67,6 @@
     [5, 6, "patio"],
     [6, 7, "inside"],
     [8, 2, "inside"],
-    [9, 8, "front-hall"],
-    [9, 7, "front-hall"],
     [10, 0, "desk"],
     [9, 13, "front-steps"],
     [13, 14, "mid-walk"],
@@ -103,7 +104,11 @@
     [42, 11, "east-deck"],
     [0, 43, "desk-bypass"],
     [43, 44, "desk-bypass"],
-    [44, 9, "front"],
+    [44, 48, "front"],
+    [9, 48, "front-doorway"],
+    [48, 49, "front-hall-west"],
+    [49, 50, "front-hall-west"],
+    [50, 8, "front-hall-west"],
     [44, 45, "arrival"],
     [45, 39, "west-door-hall"],
     [44, 41, "east-door-hall"]

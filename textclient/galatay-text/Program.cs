@@ -1678,6 +1678,7 @@ public static partial class Program
   vendor look <name filter> [radius]   nearby objects matching name/hover text (default 20 m): face PNGs + index.json in textures/scan-*/
   inv find <text>[|text2]     READ-ONLY recursive inventory search (path, type, item id, desc, last attach point) (max 30 s per call; PARTIAL results resume on the next call)
   inv ls <folder uuid>        READ-ONLY direct contents of one folder
+  inv mkdir <parent uuid> <name> | inv move <item|folder uuid> <dest folder uuid> | inv move undo   organize (InvMove.cs; logged, reversible; not Trash/COF/My Outfits)
   inv read <notecard item>    READ-ONLY print the text of one of her notecards
   undress                     take off clothing attachments + clothing/alpha layers where she stands (not seated), then the undress extras (routes/_topless-extras.txt: nipple rings, The V + HUD); dressing = outfit wear
   thev [status] | thev pubes <shaved | black|brown|blond|ginger [trimmed|strip|bush]> | thev pierce none|ball|bars|hoop   The V pubic hair + piercing via its Play HUD (TheV.cs, routes/the-v-hud.md)
@@ -1911,6 +1912,8 @@ public static partial class Program
             case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a, rest);
             case "inv" when a.Length >= 1 && a[0] == "trash": return await InvTrashCmd(rest.Substring(rest.IndexOf("trash", StringComparison.Ordinal) + 5));
             case "inv" when a.Length >= 2 && a[0] == "ls": return await WearOpsCmd("invls", a[1..]);
+            case "inv" when a.Length >= 1 && a[0] == "move": return await InvMoveCmd(a[1..]);
+            case "inv" when a.Length >= 1 && a[0] == "mkdir": return await InvMkdirCmd(rest.Substring(rest.IndexOf("mkdir", StringComparison.Ordinal) + 5));
             case "inv" when a.Length == 2 && a[0] == "read":
             {   // 2026-09-27 (David's gift): READ-ONLY - print the text of one of her own notecards (never modifies anything)
                 if (!UUID.TryParse(a[1], out var nid)) return "usage: inv read <notecard item uuid>";
@@ -1933,7 +1936,7 @@ public static partial class Program
             case "undress": return await UndressCmd();
             case "thev": return await TheVCmd(rest);
             case "wear": case "rez": case "take": case "offer": return await WearOpsCmd(cmd, a);
-            case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...]";
+            case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...] | inv mkdir <parent uuid> <name> | inv move <uuid> <dest folder uuid> | inv move undo";
             case "outfit": return await OutfitCmd(a);
             case "bikini":
                 if (a.Length >= 1 && a[0] == "on") return await BikiniOn();

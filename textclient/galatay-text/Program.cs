@@ -50,14 +50,14 @@ public static partial class Program
     public static readonly ConcurrentQueue<EventItem> Events = new();
     static readonly HashSet<string> NonEvents = new() { "greet-reply", "cmd", "ready", "webhook", "profile", "height", "muted-drop", "mute", "voice-sc" };
     // Incoming avatar chat/IM notification (MCP webhook wake-up). Invoked AFTER the event is queued for poll_events.
-    public record IncomingChat(string type, string from, string from_id, string text, string time, double? distance, string region, long? msg_id = null, string parcel = null, string context = null, string channel = null, string trigger = null);
+    public record IncomingChat(string type, string from, string from_id, string text, string time, double? distance, string region, long? msg_id = null, string parcel = null, string context = null, string channel = null, string trigger = null, string line = null);
     public static Action<IncomingChat> OnIncoming;
-    static void Notify(string type, string from, UUID fromId, string text, double? dist, long? msgId = null, string parcel = null, string context = null, string channel = null, string trigger = null)
+    static void Notify(string type, string from, UUID fromId, string text, double? dist, long? msgId = null, string parcel = null, string context = null, string channel = null, string trigger = null, string line = null)
     {
         var h = OnIncoming; if (h == null) return;
         // 2026-09-30 token saving (David): while nearby-quiet.txt exists, local chat only wakes the webhook if it is from David or names Galatea
         if (type == "local_chat" && System.IO.File.Exists("/home/box/viewers/textclient/nearby-quiet.txt") && fromId.ToString() != "44ce5a36-c1c7-4a68-ac9a-635ddfff6233" && (text ?? "").IndexOf("galat", StringComparison.OrdinalIgnoreCase) < 0) return;
-        try { h(new IncomingChat(type, from, fromId.ToString(), text, DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), dist, client?.Network?.CurrentSim?.Name, msgId, parcel, context, channel, trigger)); }
+        try { h(new IncomingChat(type, from, fromId.ToString(), text, DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), dist, client?.Network?.CurrentSim?.Name, msgId, parcel, context, channel, trigger, line)); }
         catch (Exception ex) { Log("webhook", "notify error: " + ex.GetType().Name); }
     }
     public static string RegionName => client?.Network?.CurrentSim?.Name;

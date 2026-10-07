@@ -108,8 +108,11 @@ public static class Webhook
         public string context { get; init; }               // voice name-mode: prior ~30 s of other speakers
         public string channel { get; init; }               // voice: "voice" (medium) or the session channel label
         public string trigger { get; init; }               // voice: "name" | "invitation" | "all" (why this wake fired)
+        public string line { get; init; }                  // voice: the exact triggering line (reply to this straight away)
     }
 
+    // pure: skip the debounce flush loop (voice is debounced upstream)
+    public static bool PostsImmediately(string type) => type == "voice";
     // pure (selftest-covered): bypasses the daily cap?
     public static bool CapExempt(Ev e) => UrgentKinds.Contains(e.type) || (e.from_id == DavidId && e.type is "im" or "local_chat" or "voice");
     // pure: may a batch be POSTed? exempt batches always; others while under the cap
@@ -222,7 +225,7 @@ public static class Webhook
         return $"webhook retry selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 
-    public static void Init() => Core.OnIncoming = c => Enqueue(c.type, c.from, c.from_id, c.text, c.time, c.distance, c.msg_id, c.parcel, c.context, c.channel, c.trigger);
+    public static void Init() => Core.OnIncoming = c => Enqueue(c.type, c.from, c.from_id, c.text, c.time, c.distance, c.msg_id, c.parcel, c.context, c.channel, c.trigger, c.line);
 
     static void LogLocal(string msg) => Core.Log("webhook", msg);
 
@@ -294,13 +297,15 @@ public static class Webhook
     // ---- debounced batching ------------------------------------------------------
     static string ConvKey(string type, string fromId) => type is "local_chat" or "voice" ? type : $"{type}:{fromId}";
 
-    public static void Enqueue(string type, string from, string fromId, string text, string time, double? distance, long? msgId = null, string parcel = null, string context = null, string channel = null, string trigger = null)
+    public static void Enqueue(string type, string from, string fromId, string text, string time, double? distance, long? msgId = null, string parcel = null, string context = null, string channel = null, string trigger = null, string line = null)
     {
         if (PostOverride == null && !ConfiguredCached()) return; // silent no-op until URL and key exist
         if (text != null && text.Length > MaxTextChars) text = text[..MaxTextChars] + "…";
         if (context != null && context.Length > MaxTextChars * 2) context = context[..(MaxTextChars * 2)] + "…";
-        var ev = new Ev(type, from, fromId, text, time, distance) { msg_id = msgId, parcel = parcel, context = context, channel = channel, trigger = trigger };
+        var ev = new Ev(type, from, fromId, text, time, distance) { msg_id = msgId, parcel = parcel, context = context, channel = channel, trigger = trigger, line = line };
         if (UrgentKinds.Contains(type)) { _ = Task.Run(() => PostBatch(new List<Ev> { ev }, 0, urgent: true)); return; }
+        // voice wakes are already debounced + rate-limited in Voice.cs: POST at once (was +4-5 s in the flush loop)
+        if (PostsImmediately(type)) { _ = Task.Run(() => PostBatch(new List<Ev> { ev }, 0, urgent: false)); return; }
         var now = DateTime.UtcNow;
         lock (gate)
         {

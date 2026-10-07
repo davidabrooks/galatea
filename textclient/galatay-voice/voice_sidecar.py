@@ -189,6 +189,13 @@ class Transcriber(threading.Thread):
     def run(self):
         while True:
             job = self.q.get()
+            if job == "preload":  # warm the model as soon as voice turns on, before anyone speaks
+                if self.model is None:
+                    try:
+                        self._load()
+                    except Exception as e:
+                        log(f"preload error: {type(e).__name__}: {e}")
+                continue
             if job is None:
                 self.model = None  # free CTranslate2 in this thread, not in interpreter teardown
                 return
@@ -290,6 +297,8 @@ async def run(args):
     st = {"started": time.time(), "pc": "new", "ice": "new", "dc": "closed", "frames": 0, "segments": 0,
           "answer": False, "last_audio": 0.0, "error": None}
     tr = Transcriber(args, names, meta); tr.start()
+    if not args.no_preload:
+        tr.q.put("preload")
     chunk_dir = os.path.join(args.out, "chunks")
     os.makedirs(chunk_dir, exist_ok=True)
 
@@ -491,6 +500,7 @@ def main():
     ap.add_argument("--keep-audio-min", type=int, default=30, help="rolling WAV chunk retention (0 = never write WAVs)")
     ap.add_argument("--max-backlog", type=int, default=60)
     ap.add_argument("--drain-s", type=int, default=600)
+    ap.add_argument("--no-preload", action="store_true", help="lazy-load the whisper model on first speech")
     ap.add_argument("--nice", type=int, default=10)
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)

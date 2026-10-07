@@ -482,8 +482,8 @@ public static partial class Program
                             RLogR($"{o.Label}: door(s) {da:F1} m ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching then through");
                             await EnsureDoorsOpen(ahead, ct);
                             foreach (var nd in ahead) doorsOpened.Add(nd.Id);
-                            var t0 = DateTime.Now;
-                            while ((DateTime.Now - t0).TotalMilliseconds < DoorSwingWaitMs - DoorThroughDelayMs && !ahead.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
+                            var swingT0 = DateTime.Now;
+                            while ((DateTime.Now - swingT0).TotalMilliseconds < DoorSwingWaitMs - DoorThroughDelayMs && !ahead.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
                             doorSeqTried = false; // allow unstick again if still blocked
                             now = DateTime.Now; lastProgT = now; lastProgS = s; needAim = true;
                         }

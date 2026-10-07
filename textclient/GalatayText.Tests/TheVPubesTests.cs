@@ -67,4 +67,25 @@ public class TheVPubesTests
         var (none, _) = Program.AttachVerifyPlan(new[] { a }, new HashSet<UUID> { a }, null);
         Assert.Empty(none);
     }
+
+    [Fact]
+    public void Pubes_face_is_7_on_the_skin_patch_prim_only()
+    {
+        var te = new Primitive.TextureEntry(new UUID("0b81f6ab-dbbd-797f-2d91-fc1ad935983c"));
+        te.CreateFace(0).TextureID = new UUID("8dc72b73-e833-77e9-4fe9-1dc52fdd7a8c");
+        te.CreateFace(1).TextureID = new UUID("8dc72b73-e833-77e9-4fe9-1dc52fdd7a8c");
+        var f = Program.TheVPubesFaceOf(te);
+        Assert.NotNull(f);
+        Assert.Equal("brown strip", Program.TheVPubesLabel(f.TextureID, f.RGBA.A));
+        Assert.Null(Program.TheVPubesFaceOf(new Primitive.TextureEntry(new UUID("506f3252-907b-38cd-7c26-1883691770a7"))));
+    }
+
+    [Fact]
+    public void Detach_stops_only_that_objects_anims()
+    {
+        UUID obj = UUID.Random(), other = UUID.Random(), a1 = UUID.Random(), a2 = UUID.Random(), a3 = UUID.Random();
+        var anims = new Dictionary<UUID, (int seq, UUID src)> { [a1] = (1, obj), [a2] = (2, other), [a3] = (3, obj) };
+        Assert.Equal(new HashSet<UUID> { a1, a3 }, Program.AnimsFromObject(anims, obj).ToHashSet());
+        Assert.Empty(Program.AnimsFromObject(anims, UUID.Zero));
+    }
 }

@@ -303,24 +303,29 @@ public static partial class Program
         return true;
     }
 
+    // Pure: the anims an object is playing on us (ownAnims: anim -> (seq, source object)).
+    internal static List<UUID> AnimsFromObject(IReadOnlyDictionary<UUID, (int seq, UUID src)> anims, UUID obj) =>
+        obj == UUID.Zero ? new() : anims.Where(kv => kv.Value.src == obj).Select(kv => kv.Key).ToList();
+
     static string DetachItem(UUID item, string why)
     {
         var p = WornPrims().FirstOrDefault(x => AttachItemId(x) == item);
         var desc = p == null ? "(not currently worn)" : $"'{p.Properties?.Name ?? "?"}' @{p.PrimData.AttachmentPoint} obj {p.ID}";
-        // Seat-off (AO): remember object id and stop its currently playing anims so they cannot linger after detach.
+        // Stop the object's own playing anims so they cannot linger after detach. Seat-off (AO) items are also remembered.
+        // 2026-10-07: every detach, not only seat-off: The V's two anims kept playing "from object (not in view)" after
+        // outfit wear took The V off.
         bool isSeatOff = false; try { isSeatOff = SeatOffItems().ContainsKey(item); } catch { }
-        if (p != null && isSeatOff)
+        if (p != null)
         {
-            seatOffObjectIds[p.ID] = 1;
+            if (isSeatOff) seatOffObjectIds[p.ID] = 1;
             Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = ownAnims;
             int stopped = 0;
-            foreach (var kv in cur.ToList())
-                if (kv.Value.src == p.ID)
-                {
-                    seatOffPlayedAnims[kv.Key] = 1;
-                    try { client.Self.AnimationStop(kv.Key, true); stopped++; } catch { }
-                }
-            if (stopped > 0) Log("height", $"seat-off detach: stopped {stopped} anim(s) from {desc} before detach");
+            foreach (var anim in AnimsFromObject(cur, p.ID))
+            {
+                if (isSeatOff) seatOffPlayedAnims[anim] = 1;
+                try { client.Self.AnimationStop(anim, true); stopped++; } catch { }
+            }
+            if (stopped > 0) Log("height", $"{(isSeatOff ? "seat-off " : "")}detach: stopped {stopped} anim(s) from {desc} before detach");
         }
         bool keepCof = KeepCofForDetachWhy(why);
         detachIntent[item] = (DateTime.Now, keepCof, why);

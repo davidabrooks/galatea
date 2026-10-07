@@ -1,0 +1,4 @@
+# Attachments worn ONLY while topless (David 2026-10-07: "when you have your tits out you should wear the nipple rings").
+# Added (attach as ADD, never replace) after the tub undress; detached + COF link removed when she dresses again.
+# format: <item uuid> <exact inventory name>   (the name must match the fetched item, else it is skipped)
+64f6948c-acb3-3a32-9509-3ab1923f2146 [BB] Nipple Rings - LaraX Petite (Puffy)

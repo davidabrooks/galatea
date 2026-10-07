@@ -3,7 +3,7 @@
 // Face order (learned live by touching each face and reading The V's pubes face texture back) is NOT the panel order:
 //   0 SHAVED, 1 BLACK, 2 BROWN, 3 BLOND, 4 STRIP, 5 GINGER, 6 TRIMMED, 7 BUSH.
 // A colour keeps the current style and a style keeps the current colour, so "blond strip" = touch face 3, then face 4.
-// The V shows the result as the texture on faces 0+7 of its mesh child whose face 1 is the skin patch 8dc72b73
+// The V shows the result as the texture on face 7 (and the default face) of its mesh child whose faces 0+1 are the skin patch 8dc72b73
 // (alpha 0 = shaved). The state lives in the attachment's prims, so it persists across detach/re-attach, relog and TP.
 // Piercing: faces of the big panel prim 'vagina_look_menu_1': 4 BARS, 5 NONE, 6 BALL, 7 HOOP (faces 0-3 did nothing
 // visible). The V shows it as one of three hidden mesh children (texture 506f3252, silver): the 1-face one = ball,
@@ -77,6 +77,14 @@ public static partial class Program
         return v[0] switch { 1 => "ball", 2 => "hoop (ring)", 3 => "bars", _ => $"unknown ({v[0]} faces)" };
     }
 
+    /// <summary>Pure: the pubes face (7) of The V's mesh child whose faces 0+1 are the skin patch 8dc72b73; null for
+    /// any other prim. (2026-10-07 fix: face 0 is skin, not pubes; the scene export lists face 0 without a face number.)</summary>
+    internal static Primitive.TextureEntryFace TheVPubesFaceOf(Primitive.TextureEntry te)
+    {
+        try { return te != null && te.GetFace(1).TextureID.ToString().StartsWith("8dc72b73") ? te.GetFace(7) : null; }
+        catch { return null; }
+    }
+
     /// <summary>Pure: The V pubes face texture + alpha -> label.</summary>
     internal static string TheVPubesLabel(UUID tex, float alpha) =>
         alpha < 0.01f ? "shaved (pubes face hidden)" : TheVPubesTex.TryGetValue(tex.ToString(), out var l) ? l : $"unknown texture {tex}";
@@ -93,11 +101,8 @@ public static partial class Program
             int n = FaceCount(p);
             try
             {
-                if (te.GetFace(1).TextureID.ToString().StartsWith("8dc72b73"))
-                {
-                    var f0 = te.GetFace(0);
-                    pubes = $"pubes: {TheVPubesLabel(f0.TextureID, f0.RGBA.A)} (texture {f0.TextureID}, alpha {f0.RGBA.A:F2})";
-                }
+                var pf = TheVPubesFaceOf(te);
+                if (pf != null) pubes = $"pubes: {TheVPubesLabel(pf.TextureID, pf.RGBA.A)} (texture {pf.TextureID}, alpha {pf.RGBA.A:F2})";
                 else if (te.GetFace(0).TextureID.ToString().StartsWith("506f3252") && te.GetFace(0).RGBA.A > 0.01f) pierce.Add(n);
             }
             catch { }

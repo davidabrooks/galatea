@@ -78,7 +78,7 @@ The 8 pubic hair buttons are invisible faces of the HUD prim `vagina_look_menu_2
 
 A colour keeps the current style and a style keeps the current colour (from shaved, a colour comes back with the last
 style). By hand: `touch-attachment "The V - Bento Play HUD" vagina_look_menu_2 <face>`, wait ~4 s, then `thev status`.
-The V shows the result as the texture on faces 0+7 of its mesh child whose face 1 is the skin patch 8dc72b73 (alpha 0 =
+The V shows the result as the texture on face 7 (+ default face) of its mesh child whose faces 0+1 are the skin patch 8dc72b73 (alpha 0 =
 shaved). Textures seen: blond strip 5c4db955, blond trimmed f4bb3440, ginger strip 97313e78, ginger trimmed d439f8f3,
 ginger bush d0fd5d7b, black bush 12d20473, brown bush 918a4e8a, brown strip 0b81f6ab. The HUD says nothing in chat.
 Blond on her fair skin is subtle in the 640 px `look self front`. Use a 1280x2048 render (GT_RES) and crop the groin.

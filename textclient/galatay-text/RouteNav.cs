@@ -462,22 +462,30 @@ public static partial class Program
                         lastProgT = DateTime.Now; lastProgS = s;
                     }
                 }
-                // doors ahead on a nav grid: touch (pair) then keep moving — auto-close, no long pause
+                // doors ahead on a nav grid: scan the path (not a chord, so bends can't miss a door) and touch the pair
+                // once it is DoorTriggerM ahead, then give the leaf time to swing before walking into it (David 2026-10-07 09:23)
                 {
-                    var look = Math.Min(poly.Len, s + 4f);
-                    var a2 = V2(poly.At(s)); var b2 = V2(poly.At(look));
-                    var ng = NavGridFor(region, poly.At(s), poly.At(look));
+                    var look = Math.Min(poly.Len, s + DoorScanM);
+                    var ng = NavGridFor(region, poly.At(s), poly.At(look)) ?? NavGridFor(region, poly.At(look), poly.At(look));
                     if (ng != null)
                     {
-                        var ahead = DoorsForCrossing(ng, a2, b2).Where(nd => !doorsOpened.Contains(nd.Id)).ToList();
-                        if (ahead.Count > 0 && Vector2.Distance(a2, new Vector2(ahead[0].OpenCenter.X, ahead[0].OpenCenter.Y)) < 5f)
+                        List<NavDoor> ahead = null;
+                        var dAhead = FirstCrossingAhead(u => V2(poly.At(u)), s, poly.Len, (p, q) =>
+                        {
+                            if (!ng.Contains(p.X, p.Y) && !ng.Contains(q.X, q.Y)) return false;
+                            var l = DoorsForCrossing(ng, p, q).Where(nd => !doorsOpened.Contains(nd.Id)).ToList();
+                            if (l.Count == 0) return false; ahead = l; return true;
+                        });
+                        if (dAhead is float da && DoorTouchDue(da))
                         {
                             client.Self.AutoPilotCancel();
-                            RLogR($"{o.Label}: door(s) ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching then through");
+                            RLogR($"{o.Label}: door(s) {da:F1} m ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching then through");
                             await EnsureDoorsOpen(ahead, ct);
                             foreach (var nd in ahead) doorsOpened.Add(nd.Id);
+                            var swingT0 = DateTime.Now;
+                            while ((DateTime.Now - swingT0).TotalMilliseconds < DoorSwingWaitMs - DoorThroughDelayMs && !ahead.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
                             doorSeqTried = false; // allow unstick again if still blocked
-                            lastProgT = now; lastProgS = s; needAim = true; // no long idle — through within DoorThroughDelayMs
+                            now = DateTime.Now; lastProgT = now; lastProgS = s; needAim = true;
                         }
                     }
                 }

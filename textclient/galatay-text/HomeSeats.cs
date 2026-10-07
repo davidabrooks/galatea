@@ -311,11 +311,11 @@ public static partial class Program
         var (doorOk, doorDetail) = PeronautDoorwayGraphOk(places, g.E);
         C(doorOk, "doorway routing: " + doorDetail);
         var (frBed, frErr) = GraphRoute(g, g.N[N("front")], N("bed"));
-        C(frErr == null && frBed.Any(p => Math.Abs(p.Y - 76f) < 0.6f && p.X > 221f && p.X < 227f),
-          "front->bed passes side-room-1 doorway band (y~76, x~222-226)");
+        C(frErr == null && frBed.Any(p => Math.Abs(p.Y - 75.35f) < 0.6f && p.X > 221f && p.X < 227f),
+          "front->bed passes side-room-1 doorway band (y~75.35 door-cell centre, x~222-226)");
         var (bedEast, beErr) = GraphRoute(g, g.N[N("bed")], N("east-deck"));
-        C(beErr == null && bedEast.Any(p => Math.Abs(p.Y - 76f) < 0.6f && p.X < 223.5f)
-          && bedEast.Any(p => Math.Abs(p.Y - 76f) < 0.6f && p.X > 233f),
+        C(beErr == null && bedEast.Any(p => Math.Abs(p.Y - 75.35f) < 0.6f && p.X < 223.5f)
+          && bedEast.Any(p => Math.Abs(p.Y - 75.35f) < 0.6f && p.X > 233f),
           "bed->east-deck passes west then east side-room doorway bands");
         return $"home seats selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }

@@ -25,16 +25,20 @@ public class PeronautFrontDoorTests
         }
     }
 
-    static (Grid g, double line, double lo, double hi) FrontDoor()
+    // door groups: (name, alongX, line, lo, hi) - double leaves merged by name prefix
+    static (Grid g, List<(string name, bool ax, double line, double lo, double hi)> doors) Doors()
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(Routes("_nav-peronaut-home.json"))); var r = doc.RootElement;
         var g = new Grid { X0 = r.GetProperty("x0").GetDouble(), Y0 = r.GetProperty("y0").GetDouble(), Cell = r.GetProperty("cell").GetDouble(),
             Nx = r.GetProperty("nx").GetInt32(), Ny = r.GetProperty("ny").GetInt32(), Rows = r.GetProperty("rows").EnumerateArray().Select(x => x.GetString()!).ToArray() };
-        var leaves = r.GetProperty("doors").EnumerateArray().Where(d => d.GetProperty("name").GetString()!.StartsWith("front-double")).ToList();
-        Assert.Equal(2, leaves.Count);
-        double lo = leaves.Min(d => d.GetProperty("min")[0].GetDouble()), hi = leaves.Max(d => d.GetProperty("max")[0].GetDouble());
-        double line = leaves.Average(d => (d.GetProperty("min")[1].GetDouble() + d.GetProperty("max")[1].GetDouble()) / 2);
-        return (g, line, lo, hi);
+        var list = r.GetProperty("doors").EnumerateArray().Select(d => (name: d.GetProperty("name").GetString()!, ax: d.GetProperty("axis").GetString() == "x",
+            mn: d.GetProperty("min").EnumerateArray().Select(v => v.GetDouble()).ToArray(), mx: d.GetProperty("max").EnumerateArray().Select(v => v.GetDouble()).ToArray()))
+            .GroupBy(d => d.name.StartsWith("front-double") ? "front-double" : d.name)
+            .Select(k => (k.Key, k.First().ax,
+                k.Average(d => d.ax ? (d.mn[1] + d.mx[1]) / 2 : (d.mn[0] + d.mx[0]) / 2),
+                k.Min(d => d.ax ? d.mn[0] : d.mn[1]), k.Max(d => d.ax ? d.mx[0] : d.mx[1]))).ToList();
+        Assert.Equal(5, list.Count);
+        return (g, list);
     }
 
     static List<(int a, int b, string name, double[] A, double[] B)> UpperEdges()
@@ -51,39 +55,49 @@ public class PeronautFrontDoorTests
         return Enumerable.Range(0, k + 1).Select(i => g.At(A[0] + (B[0] - A[0]) * i / k, A[1] + (B[1] - A[1]) * i / k)).ToList();
     }
 
+    // u = along the door line, v = across it
+    static double U(double[] p, bool ax) => ax ? p[0] : p[1];
+    static double V(double[] p, bool ax) => ax ? p[1] : p[0];
+
     [Fact]
-    public void Front_door_edges_cross_the_opening_centre_in_both_directions()
+    public void Every_door_edge_crosses_its_opening_centre_in_both_directions()
     {
-        var (g, line, lo, hi) = FrontDoor();
-        double[] dx = Enumerable.Range(0, (int)((hi - lo) / 0.05)).Select(i => lo + i * 0.05).Where(x => g.At(x, line) == 'D').ToArray();
-        Assert.NotEmpty(dx);
-        double centre = (dx.Min() + dx.Max()) / 2, half = (dx.Max() - dx.Min()) / 2;
-        int crossing = 0; var bad = new List<string>();
-        foreach (var e in UpperEdges())
+        var (g, doors) = Doors(); var bad = new List<string>();
+        foreach (var d in doors)
         {
-            if ((e.A[1] - line) * (e.B[1] - line) > 0 || e.A[1] == e.B[1]) continue;
-            double t = (line - e.A[1]) / (e.B[1] - e.A[1]), x = e.A[0] + (e.B[0] - e.A[0]) * t;
-            if (x < lo - 1 || x > hi + 1) continue;
-            crossing++;
-            if (Math.Abs(x - centre) > Math.Max(0.1, half - 0.3)) bad.Add($"{e.a}-{e.b} {e.name} crosses at x {x:F2}, opening {centre:F2}+-{half:F2}");
-            if (Math.Abs(e.A[0] - centre) > 0.15 || Math.Abs(e.B[0] - centre) > 0.15) bad.Add($"{e.a}-{e.b} {e.name} approach/exit nodes not on the opening axis x {centre:F2}");
-            foreach (var (P, Q, dir) in new[] { (e.A, e.B, "fwd"), (e.B, e.A, "rev") })
+            var du = Enumerable.Range(0, (int)((d.hi - d.lo + 1) / 0.05)).Select(i => d.lo - 0.5 + i * 0.05)
+                .Where(u => Enumerable.Range(-3, 7).Any(k => (d.ax ? g.At(u, d.line + k * 0.1) : g.At(d.line + k * 0.1, u)) == 'D')).ToArray();
+            Assert.True(du.Length > 0, d.name + ": no door cells");
+            double centre = (du.Min() + du.Max()) / 2, half = (du.Max() - du.Min()) / 2;
+            int crossing = 0;
+            foreach (var e in UpperEdges())
             {
-                var s = Sample(g, P, Q);
-                if (!s.Contains('D')) bad.Add($"{e.a}-{e.b} {e.name} {dir}: no door cells (leaves would not be pre-touched)");
-                if (s.Contains('#')) bad.Add($"{e.a}-{e.b} {e.name} {dir}: hits blocked cells (door frame / wall)");
+                double v0 = V(e.A, d.ax), v1 = V(e.B, d.ax);
+                if ((v0 - d.line) * (v1 - d.line) > 0 || v0 == v1) continue;
+                double t = (d.line - v0) / (v1 - v0), u = U(e.A, d.ax) + (U(e.B, d.ax) - U(e.A, d.ax)) * t;
+                if (u < d.lo - 1 || u > d.hi + 1) continue;
+                crossing++;
+                var tag = $"{d.name} {e.a}-{e.b} {e.name}";
+                if (Math.Abs(u - centre) > Math.Max(0.1, half - 0.3)) bad.Add($"{tag} crosses at {u:F2}, opening {centre:F2}+-{half:F2}");
+                if (Math.Abs(U(e.A, d.ax) - centre) > 0.15 || Math.Abs(U(e.B, d.ax) - centre) > 0.15) bad.Add($"{tag}: approach/exit nodes not on the opening axis {centre:F2}");
+                foreach (var (P, Q, dir) in new[] { (e.A, e.B, "fwd"), (e.B, e.A, "rev") })
+                {
+                    var s = Sample(g, P, Q);
+                    if (!s.Contains('D')) bad.Add($"{tag} {dir}: no door cells (door would not be pre-touched)");
+                    if (s.Contains('#')) bad.Add($"{tag} {dir}: hits blocked cells (door frame / wall)");
+                }
             }
+            if (crossing == 0) bad.Add(d.name + ": no graph edge goes through it");
         }
-        Assert.True(crossing > 0, "no graph edge goes through the front door");
         Assert.True(bad.Count == 0, string.Join("; ", bad));
     }
 
     [Fact]
     public void Front_hall_edges_near_the_door_stay_clear_of_walls()
     {
-        var (g, line, lo, hi) = FrontDoor();
-        var bad = UpperEdges().Where(e => new[] { e.A, e.B }.Any(p => Math.Abs(p[1] - line) < 6 && p[0] > lo - 2 && p[0] < hi + 2)
-                && (e.name.StartsWith("front")) && Sample(g, e.A, e.B).Contains('#'))
+        var (g, doors) = Doors(); var d = doors.Single(x => x.name == "front-double");
+        var bad = UpperEdges().Where(e => new[] { e.A, e.B }.Any(p => Math.Abs(p[1] - d.line) < 6 && p[0] > d.lo - 2 && p[0] < d.hi + 2)
+                && e.name.StartsWith("front") && Sample(g, e.A, e.B).Contains('#'))
             .Select(e => $"{e.a}-{e.b} {e.name}").ToList();
         Assert.True(bad.Count == 0, "front edges through walls: " + string.Join("; ", bad));
     }

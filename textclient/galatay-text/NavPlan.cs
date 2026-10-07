@@ -219,6 +219,18 @@ public static partial class Program
                 if (seen.Add(s.Id)) outL.Add(s);
         return outL;
     }
+    // Door trigger (2026-10-07 David 09:23 'doors open too late, she bumps them'): touch when the door is <= 3 m ahead along
+    // the path, scanning DoorScanM ahead in DoorScanStepM steps; then wait up to DoorSwingWaitMs (total) for a leaf to swing.
+    internal const float DoorTriggerM = 3.0f, DoorScanM = 6.0f, DoorScanStepM = 0.5f;
+    internal const int DoorSwingWaitMs = 900;
+    internal static bool DoorTouchDue(float distAhead) => distAhead >= 0 && distAhead <= DoorTriggerM;
+    // path distance from s to the first step [u, u+step] that crosses a door, or null within the scan window
+    internal static float? FirstCrossingAhead(Func<float, Vector2> at, float s, float len, Func<Vector2, Vector2, bool> crosses, float scan = DoorScanM, float step = DoorScanStepM)
+    {
+        float end = Math.Min(len, s + scan);
+        for (float u = s; u < end; u += step) { float v = Math.Min(end, u + step); if (crosses(at(u), at(v))) return u - s; }
+        return null;
+    }
     // How long we may pause after touches before walking through (auto-close; 2026-10-05 David: within ~0.3 s).
     internal const int DoorThroughDelayMs = 300;
     // Touch closed doors only (never re-touch an already-open leaf — these toggle shut). Touch the pair in one burst,

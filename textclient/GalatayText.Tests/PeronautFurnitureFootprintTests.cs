@@ -54,7 +54,8 @@ public class PeronautFurnitureFootprintTests
             foreach (var f in feet)
             {
                 var mn = f.GetProperty("min"); var mx = f.GetProperty("max");
-                if (SegmentHitsBox(nodes[a].x, nodes[a].y, nodes[b].x, nodes[b].y, mn[0].GetDouble() - m, mn[1].GetDouble() - m, mx[0].GetDouble() + m, mx[1].GetDouble() + m))
+                double fm = f.GetProperty("name").GetString()!.Contains("stairs") ? Math.Max(m, 1.0) : m; // 2026-10-07 David: turn >= 1 m past the stair foot
+                if (SegmentHitsBox(nodes[a].x, nodes[a].y, nodes[b].x, nodes[b].y, mn[0].GetDouble() - fm, mn[1].GetDouble() - fm, mx[0].GetDouble() + fm, mx[1].GetDouble() + fm))
                     bad.Add($"{a}-{b} {e[2].GetString()} x {f.GetProperty("name").GetString()}");
             }
         }

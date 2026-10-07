@@ -1,8 +1,5 @@
-# System Alpha layers worn with EVERY clothed outfit (David 2026-10-07: the Maitreya LaraX body clipped through the
-# Valentine Dress at the butt, back thighs and side torso; those sections may stay hidden whenever she is dressed).
-# Added on every clothed 'outfit wear' / daily / zone / re-dress (never removed as "not in the outfit"); taken off with
-# every undress (tub, Bikini/beach, topless) so the whole body shows again. Only system alpha layers: the body's own
-# auto-alpha (face alpha set by clothing scripts) is never touched.
+# System Alpha layers worn with EVERY clothed outfit (PR #100, for the Valentine Dress clipping), added on every clothed
+# 'outfit wear' / daily / zone / re-dress and taken off with every undress (tub, Bikini/beach, topless).
+# DISABLED 2026-10-07 (David): the Valentine Dress was trashed and the body alphas reset, so no entries: every outfit
+# wears only its own alpha layers. Re-enable by adding lines again.
 # format: <item uuid> <exact inventory name>
-4f9f9534-9bbf-3ea3-84cb-fd2ffb3212b2 Bimbette /// Alpha Layer /// Short Shorts
-800ffae4-df28-3eea-a4c4-fbb449c64f2b Bimbette /// Alpha Layer /// Side & Underboob 1

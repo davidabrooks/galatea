@@ -115,6 +115,9 @@ class Peers:
                     for k, s in self.p.items() if k != self.self_id]
 
 
+UNCLEAR_MIN_SPEECH_S = 0.8  # active speech in a segment before an undecodable line is still reported
+
+
 class Segmenter:
     """Cuts the received (mixed) audio into utterances: starts on energy or a server 'speaking' flag, ends after
     hang_s of quiet (or no packets at all), or at max_s. Votes which participant was flagged speaking per 20 ms frame."""
@@ -164,7 +167,7 @@ class Segmenter:
 
     def _close(self):
         if self.buf is not None and self.active_f >= self.min_active_f:
-            self.on_segment(np.concatenate(self.buf), self.t0, self.votes)
+            self.on_segment(np.concatenate(self.buf), self.t0, self.votes, round(self.active_f * FRAME_S, 2))
         self._reset()
 
     def tick(self, now):
@@ -217,7 +220,7 @@ class Transcriber(threading.Thread):
                                   download_root=self.args.models)
         log(f"model {self.args.model} loaded in {time.time() - t:.1f}s ({self.args.threads} threads)")
 
-    def _do(self, pcm, t0, votes):
+    def _do(self, pcm, t0, votes, speech_s=None):
         if self.model is None:
             self._load()
         audio = pcm.astype(np.float32) / 32768.0
@@ -229,14 +232,20 @@ class Transcriber(threading.Thread):
         text = " ".join(p for p in parts if p).strip()
         took = time.time() - t
         if not text:
-            return
-        self.prev = text
+            # 2026-10-07: real speech that STT could not decode -> still emit (empty text) so the client can decide
+            # (David only: trigger "unclear"). Short blips stay silent.
+            if speech_s is None or speech_s < UNCLEAR_MIN_SPEECH_S:
+                return
+        else:
+            self.prev = text
         speaker, speaker_id = self._speaker(votes)
         when = dt.datetime.fromtimestamp(t0)
-        self._write(when, speaker, text)
+        self._write(when, speaker, text or "[unclear]")
         self.lines += 1
         line = {"t": "line", "time": when.strftime("%H:%M:%S"), "speaker": speaker, "text": text,
                 "audio_s": round(len(pcm) / SR, 1), "stt_s": round(took, 1)}
+        if speech_s is not None:
+            line["speech_s"] = speech_s
         if speaker_id:
             line["speaker_id"] = speaker_id
         emit(line)
@@ -302,7 +311,7 @@ async def run(args):
     chunk_dir = os.path.join(args.out, "chunks")
     os.makedirs(chunk_dir, exist_ok=True)
 
-    def on_segment(pcm, t0, votes):
+    def on_segment(pcm, t0, votes, speech_s=None):
         st["segments"] += 1
         if args.keep_audio_min > 0:
             d = os.path.join(chunk_dir, dt.datetime.fromtimestamp(t0).strftime("%Y-%m-%d"))
@@ -316,7 +325,7 @@ async def run(args):
                 tr.q.get_nowait(); log("backlog full: dropped the oldest untranscribed chunk")
             except queue.Empty:
                 pass
-        tr.q.put((pcm, t0, collections.Counter(votes)))
+        tr.q.put((pcm, t0, collections.Counter(votes), speech_s))
 
     seg = Segmenter(on_segment, thresh=args.thresh)
 

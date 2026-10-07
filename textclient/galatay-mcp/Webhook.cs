@@ -51,7 +51,7 @@ public static class Webhook
     // pure (selftest-covered): is the reply lease still held? ends at my first IM to them after the POST, or after `lease`
     public static bool LeaseActive(DateTime startUtc, DateTime nowUtc, TimeSpan lease, DateTimeOffset? myLastImTo)
         => nowUtc - startUtc < lease && !(myLastImTo != null && myLastImTo.Value.UtcDateTime >= startUtc);
-    public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "group_invite", "group_invite_accepted", "region_restart", "david_login", "david_login_test" };
+    public static readonly HashSet<string> UrgentKinds = new() { "teleport_offer", "friendship_offer", "group_invite", "group_invite_accepted", "region_restart", "david_login", "david_login_test", "visitor_arrival" };
     public static int DailyCap = (int)Math.Clamp(EnvS("GT_WEBHOOK_DAILY_CAP", 600), 1, 100000);
     const string DavidId = "44ce5a36-c1c7-4a68-ac9a-635ddfff6233";
     static int exemptToday, capDroppedToday;

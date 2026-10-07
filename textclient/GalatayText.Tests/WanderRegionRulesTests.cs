@@ -22,10 +22,10 @@ public class WanderRegionRulesTests
     }
 
     [Fact]
-    public void Buddha_Center_is_quiet_10m_and_no_greetings()
+    public void Buddha_Center_is_quiet_10m_with_greetings()
     {
         var r = Program.ParseWanderRule(Json(), "naberrie");
-        Assert.False(r.Greet);
+        Assert.True(r.Greet);
         Assert.False(Program.SeatAllowedByRule(r, 9.9f));
         Assert.True(Program.SeatAllowedByRule(r, 10f));
     }

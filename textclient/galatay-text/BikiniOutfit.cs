@@ -54,7 +54,8 @@ public static partial class Program
         using var cts = new CancellationTokenSource(30000); var ct = cts.Token;
         var mo = await FindMyOutfits(ct); if (mo == null) return "My Outfits folder not found";
         var kids = (await ReadFolderRO(mo.UUID, ct)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID).ToList();
-        var src = kids.FirstOrDefault(f => f.Name.Equals(oldName, StringComparison.OrdinalIgnoreCase));
+        var src = kids.FirstOrDefault(f => f.Name.Equals(oldName, StringComparison.OrdinalIgnoreCase))
+               ?? kids.FirstOrDefault(f => f.Name.Trim().Trim('"', '\'').Equals(oldName, StringComparison.OrdinalIgnoreCase)); // '"Valentine' (10:26 quote bug)
         // David said 'Spicy Bikini' but the folder may be saved as 'Spicy'
         if (src == null && oldName.Equals("Spicy Bikini", StringComparison.OrdinalIgnoreCase))
             src = kids.FirstOrDefault(f => f.Name.Equals("Spicy", StringComparison.OrdinalIgnoreCase));
@@ -112,6 +113,7 @@ public static partial class Program
             sb.AppendLine(await WearOpsCmd("wear", new[] { "remove", JeansItem.ToString() }));
             sb.AppendLine(await WearOpsCmd("wear", new[] { "add", BikiniTopItem.ToString() }));
             sb.AppendLine(await WearOpsCmd("wear", new[] { "add", BikiniPantiesItem.ToString() }));
+            sb.AppendLine(await ClothedAlphasOff("bikini", ct));
             await Task.Delay(2000, ct);
         }
         sb.AppendLine(await BikiniHudRandomize(ct));

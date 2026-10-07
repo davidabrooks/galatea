@@ -105,6 +105,8 @@ public static partial class Program
                     {
                         // DetachItemAsync sends Detach and removes COF link(s) (same as detach command)
                         sb.AppendLine(await DetachItemAsync(it.UUID, "wear remove"));
+                        try { var orphan = await DropOrphanAlphasAfterRemove(it, ct); if (orphan != null) sb.AppendLine(orphan); }
+                        catch (Exception ex) { sb.AppendLine("orphan alpha check failed: " + ex.GetBaseException().Message); }
                     }
                     else
                     {

@@ -25,6 +25,7 @@
     <Compile Include="../galatay-text/RegionRestart.cs" Link="Core/RegionRestart.cs" />
     <Compile Include="../galatay-text/RouteNav.cs" Link="Core/RouteNav.cs" />
     <Compile Include="../galatay-text/Wander.cs" Link="Core/Wander.cs" />
+    <Compile Include="../galatay-text/WanderRules.cs" Link="Core/WanderRules.cs" />
     <Compile Include="../galatay-text/Quiet.cs" Link="Core/Quiet.cs" />
     <Compile Include="../galatay-text/SeatPose.cs" Link="Core/SeatPose.cs" />
     <Compile Include="../galatay-text/AoGuard.cs" Link="Core/AoGuard.cs" />

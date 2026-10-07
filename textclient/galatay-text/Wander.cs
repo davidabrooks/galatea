@@ -608,6 +608,7 @@ public static partial class Program
         dbg?.Add($"  ({raw.Count} seat prims near the path; {infos.Count} catalogued wander seats)");
         var sit = Sitters(sim);
         var avs = Avatars().Where(t => t.dist >= 0).ToList();
+        var rule = CurrentWanderRule();
         var now = DateTime.Now;
         var res = new List<SeatCand>();
         foreach (var (p, q, d, listed) in raw)
@@ -622,7 +623,7 @@ public static partial class Program
             if (cool) { R("failed recently (30 min cooldown)"); continue; }
             var level = avs.Where(t => Math.Abs(t.pos.Z - p.Position.Z) < 4f).ToList();
             float quiet = level.Count == 0 ? 999f : level.Min(t => HDist(t.pos, p.Position));
-            if (quiet < 3f) { R($"avatar {quiet:F1} m away"); continue; }
+            if (!SeatAllowedByRule(rule, quiet)) { R($"avatar {quiet:F1} m away (< {rule.SeatAvatarM:F0} m, {rule.Place} rule)"); continue; }
             res.Add(new SeatCand(p, name, Vector3.Distance(p.Position, me), d, quiet, q));
         }
         var outp = new List<SeatCand>();
@@ -995,6 +996,7 @@ public static partial class Program
         dbg?.Add($"  ({raw.Count} root prims within 45 m of her and 12 m of the path; {raw.Count(t => t.p.Properties == null)} without properties)");
         var sit = Sitters(sim);
         var avs = Avatars().Where(t => t.dist >= 0).ToList();
+        var rule = CurrentWanderRule();
         bool rockHasStranger = sit.Any(kv =>
         {
             if (!sim.ObjectsPrimitives.TryGetValue(kv.Key, out var rp)) return false;
@@ -1019,7 +1021,7 @@ public static partial class Program
             if (cool) { R("failed recently (30 min cooldown)"); continue; }
             var level = avs.Where(t => Math.Abs(t.pos.Z - p.Position.Z) < 10f).ToList();
             float quiet = level.Count == 0 ? 999f : level.Min(t => HDist(t.pos, p.Position));
-            if (quiet < 3f) { R($"avatar {quiet:F1} m away"); continue; }
+            if (!SeatAllowedByRule(rule, quiet)) { R($"avatar {quiet:F1} m away (< {rule.SeatAvatarM:F0} m, {rule.Place} rule)"); continue; }
             res.Add(new SeatCand(p, name, HDist(p.Position, me), d, quiet, q));
         }
         // exact parcel check for the nearest few
@@ -1263,12 +1265,13 @@ public static partial class Program
                     GreetCand who; string why;
                     lock (wGreeted) (who, why) = PickGreet(avs, client.Self.SimPosition, DateTime.Now, wGreeted, wLastGreet, IsMuted, client.Self.AgentID);
                     if (who == null) continue;
+                    if (!CurrentWanderRule().Greet) continue; // per-region rule (_wander-rules.json): Buddha Center wanders quietly
                     if (QuietOn) { QLogSuppressedGreet(who); continue; } // Buddha Center rule: no nearby chat during sessions
 
                     var rg = RateGuard();
                     if (rg != null) { WLog("greeting skipped: " + rg); wLastGreet = DateTime.Now; continue; }
                     var gname = await GreetName(who.id, who.name);
-                    if (wanderPause != null || !wanderPhase.StartsWith("walking") || QuietOn) continue; // changed while looking up the name
+                    if (wanderPause != null || !wanderPhase.StartsWith("walking") || QuietOn || !CurrentWanderRule().Greet) continue; // changed while looking up the name
                     bool robeOn = RobeWorn(out var robeHow);
                     var txt = NextGreeting(DateTime.Now, gname, ref wGreetIdx, HDist(client.Self.SimPosition, DeerParkCentre) <= 25f, robeOn);
                     WLog($"greeting pool: {(robeOn ? "Buddhist" : "ordinary")} ({robeHow})");

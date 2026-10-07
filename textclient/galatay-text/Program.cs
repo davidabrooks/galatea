@@ -1679,6 +1679,7 @@ public static partial class Program
   inv find <text>[|text2]     READ-ONLY recursive inventory search (path, type, item id, desc, last attach point) (max 30 s per call; PARTIAL results resume on the next call)
   inv ls <folder uuid>        READ-ONLY direct contents of one folder
   inv read <notecard item>    READ-ONLY print the text of one of her notecards
+  undress                     take off clothing attachments + clothing/alpha layers where she stands (not seated), then the undress extras (routes/_topless-extras.txt: nipple rings, The V + HUD); dressing = outfit wear
   wear add|remove <item> [pt] ADD an object/clothing layer (never replace) + COF link / take it off + remove only its COF link(s); body parts refused
   rez <item> | take <object>  rez her own Object item 1.5 m in front of her / take her own object back into Objects
   offer allow <object name> [min] | offer status | offer off   accept task-inventory offers ONLY from her own object with that name (default 5 min, one offer)
@@ -1924,8 +1925,11 @@ public static partial class Program
                 try { nc.Decode(); } catch (Exception ex) { return "decode failed: " + ex.GetBaseException().Message; }
                 var body = nc.BodyText ?? "";
                 Log("inv", $"read notecard '{nit.Name}' {nid}: {body.Length} chars, {nc.EmbeddedItems?.Count ?? 0} embedded item(s)");
-                return $"notecard '{nit.Name}' ({body.Length} chars{(nc.EmbeddedItems?.Count > 0 ? ", embedded: " + string.Join(", ", nc.EmbeddedItems.Select(e => e.Name)) : "")}):\n" + (body.Length > 6000 ? body[..6000] + "\n(... truncated)" : body);
+                string full = null;   // 2026-10-07: long notecards (The V FAQ, 11.9k chars) are saved whole; the reply stays capped
+                if (body.Length > 6000) try { Directory.CreateDirectory("/workspace/secondlife/notecards"); full = $"/workspace/secondlife/notecards/{nid}.txt"; File.WriteAllText(full, body); } catch { full = null; }
+                return $"notecard '{nit.Name}' ({body.Length} chars{(nc.EmbeddedItems?.Count > 0 ? ", embedded: " + string.Join(", ", nc.EmbeddedItems.Select(e => e.Name)) : "")}):\n" + (body.Length > 6000 ? body[..6000] + $"\n(... truncated{(full != null ? "; full text in " + full : "")})" : body);
             }
+            case "undress": return await UndressCmd();
             case "wear": case "rez": case "take": case "offer": return await WearOpsCmd(cmd, a);
             case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...]";
             case "outfit": return await OutfitCmd(a);

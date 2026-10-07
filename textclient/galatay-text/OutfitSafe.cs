@@ -116,6 +116,7 @@ public static partial class Program
             var objs = items.Where(i => i is InventoryObject || i is InventoryAttachment).ToList();
             var target = objs.Select(o => new TargetObj(o.UUID, o.Name)).ToList();
             var (detach, attach, notes) = PlanAttachmentSwap(worn, target, prot);
+            foreach (var hid in ExtraHudsOff(worn, target.Select(t => t.Item).ToHashSet(), ToplessExtras().Select(e => e.id))) if (!detach.Contains(hid)) detach.Add(hid);
             foreach (var n in notes) sb.AppendLine("  " + n);
 
             // 1) attachments off first (so a new hair never lands on top of the old one)
@@ -197,7 +198,15 @@ public static partial class Program
     }
 
     // ---- clothed alphas (routes/_clothed-alphas.txt, David 2026-10-07) ---------------------------------------------
-    internal static bool IsClothedOutfit(string outfitName) => !BikiniNameRx.IsMatch((outfitName ?? "").Trim());
+    internal static bool IsClothedOutfit(string outfitName) => !BikiniNameRx.IsMatch((outfitName ?? "").Trim()) && !NakedNameRx.IsMatch((outfitName ?? "").Trim());
+    static readonly Regex NakedNameRx = new(@"^(naked|nude)$", RegexOptions.IgnoreCase);
+    // Pure (selftest): undress-extra HUDs (The V Play HUD) worn but not in the new outfit come off. PlanAttachmentSwap never
+    // touches HUDs; non-HUD extras (rings, The V) already come off there as "not in the outfit".
+    internal static List<UUID> ExtraHudsOff(IEnumerable<WornAtt> worn, ISet<UUID> outfitItems, IEnumerable<UUID> extras)
+    {
+        var ex = extras.ToHashSet();
+        return worn.Where(w => w.Hud && ex.Contains(w.Item) && !outfitItems.Contains(w.Item)).Select(w => w.Item).Distinct().ToList();
+    }
     // Pure (selftest): the layers an outfit wear keeps/adds = its own layers, plus the clothed alphas when clothed.
     internal static HashSet<UUID> EffectiveOutfitLayers(IEnumerable<UUID> outfitLayers, IEnumerable<UUID> clothedAlphas, bool clothed)
     {
@@ -654,6 +663,11 @@ public static partial class Program
         C(LayersNotInOutfit(new[] { U(60), U(61), a1 }, eff).SequenceEqual(new[] { a1 }), "clothed outfit: clothed alphas never removed, stray alpha is");
         var effB = EffectiveOutfitLayers(new[] { U(50) }, ca, IsClothedOutfit("Bikini"));
         C(!IsClothedOutfit("Bikini") && !IsClothedOutfit("spicy") && LayersNotInOutfit(new[] { U(60), U(61) }, effB).Count == 2, "Bikini: clothed alphas come off (whole body shows)");
+        C(!IsClothedOutfit("Naked") && !IsClothedOutfit(" nude ") && IsClothedOutfit("Naked Ambition Dress"), "Naked outfit is not clothed (no clothed alphas)");
+        var vHud = U(70); var vBody = U(71);
+        var wornV = new List<WornAtt> { new(vHud, "The V - Bento Play HUD", true), new(vBody, "The V - Bento", false), new(AoItem, "AO", true) };
+        C(ExtraHudsOff(wornV, new HashSet<UUID> { U(50) }, new[] { vHud, vBody }).SequenceEqual(new[] { vHud }), "dressing: the undress-extra HUD comes off, other HUDs stay");
+        C(ExtraHudsOff(wornV, new HashSet<UUID> { vHud, vBody }, new[] { vHud, vBody }).Count == 0, "Naked outfit lists the HUD: it stays");
         if (rd != null && File.Exists(Path.Combine(rd, "_clothed-alphas.txt")))
         {
             var cl = ParseToplessExtras(File.ReadAllText(Path.Combine(rd, "_clothed-alphas.txt")));

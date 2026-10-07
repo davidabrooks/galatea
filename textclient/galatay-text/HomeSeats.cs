@@ -119,6 +119,14 @@ public static partial class Program
         return res;
     }
 
+    // 'undress' (2026-10-07, David: The V): the same undress as before the tub, wherever she stands (never while seated)
+    static async Task<string> UndressCmd()
+    {
+        if (client.Self.SittingOn != 0) return "refused: seated; stand first (undress on the floor, not on furniture)";
+        using var cts = new CancellationTokenSource(80000);
+        return await UndressForSeat(cts.Token);
+    }
+
     // undress / dress only standing on the floor beside the tub (David 09:06): within 0.8 m of the seat's change_spot and
     // at its floor height (not up on the tub rim)
     internal static bool AtChangeSpot(Vector3 here, Vector3 spot) => HDist(here, spot) <= 0.8f && Math.Abs(here.Z - spot.Z) <= 0.5f;
@@ -288,6 +296,9 @@ public static partial class Program
         C(tx.Count == 1 && tx[0].name == "[BB] Nipple Rings - X (Orig.)", "topless extras: uuid + name with spaces, comments/bad/zero/dup skipped");
         var txf = Path.Combine(dir, "_topless-extras.txt");
         C(File.Exists(txf) && ParseToplessExtras(File.ReadAllText(txf)).Any(e => e.name.Contains("Nipple Rings")), "topless extras data file lists the nipple rings");
+        var txl = File.Exists(txf) ? ParseToplessExtras(File.ReadAllText(txf)) : new();
+        C(txl.Any(e => e.id == new UUID("3034de7b-4f25-3d3a-980c-8a00134f240d") && e.name.Contains("The V") && e.name.Contains("LaraX"))
+          && txl.Any(e => e.id == new UUID("8b537b4b-009a-395d-95d7-70945f1b4a6b") && e.name.Contains("Play HUD")), "undress extras: The V (LaraX sculpted) + its Play HUD");
         C(tub?.ChangeSpot is Vector3 cs && HDist(cs, tub.Pos) is > 1f and < 2.5f && NearestOnGraph(g, cs).Item2 < 0.5f && cs.Z <= tub.Pos.Z + 0.5f, "tub change spot: beside the tub, on the floor path");
         C(tub?.ChangeSpot != null && AtChangeSpot(tub.ChangeSpot.Value + new Vector3(0.3f, 0, 0.2f), tub.ChangeSpot.Value) && !AtChangeSpot(tub.ChangeSpot.Value + new Vector3(0, 0, 0.9f), tub.ChangeSpot.Value)
           && !AtChangeSpot(tub.Pos, tub.ChangeSpot.Value), "change spot check: beside on the floor yes, up on the tub no");

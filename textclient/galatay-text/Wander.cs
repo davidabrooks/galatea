@@ -49,6 +49,18 @@ public static partial class Program
     static readonly Dictionary<UUID, DateTime> wSeatFailed = new();
     static UUID wLastSeat = UUID.Zero;
     static readonly Random wRnd = new();
+    // 2026-10-07: uniform pick with no repeat of the last `noRepeat` picks (places and seat spots); pure, seeded in CI
+    static readonly List<string> wRecentPlaces = new(), wRecentSpots = new();
+    internal static string PickFresh(IReadOnlyList<string> cands, List<string> recent, Random r, int noRepeat = 2)
+    {
+        if (cands.Count == 0) return null;
+        var fresh = cands.Where(c => !recent.TakeLast(noRepeat).Contains(c)).ToList();
+        if (fresh.Count == 0) fresh = cands.Where(c => recent.Count == 0 || c != recent[^1]).ToList();
+        if (fresh.Count == 0) fresh = cands.ToList();
+        var pick = fresh[r.Next(fresh.Count)];
+        recent.Add(pick); if (recent.Count > 8) recent.RemoveAt(0);
+        return pick;
+    }
     static int wGreetIdx = -1;
     static void WLog(string m) => Log("wander", m);
 
@@ -448,7 +460,9 @@ public static partial class Program
         ends = ends.Where(n => g.Places.ContainsKey(n)).ToArray();
         if (ends.Length == 0) throw new InvalidOperationException("Peronaut graph has no wander places");
         var me0 = client.Self.SimPosition;
-        wTarget = ends.OrderBy(n => HDist(me0, g.N[g.Places[n].node])).First();
+        // was nearest-first (always the same start from home); now uniform
+        wTarget = PickFresh(ends, wRecentPlaces, wRnd);
+        WLog($"first target {wTarget} (uniform of [{string.Join(", ", ends)}], recent [{string.Join(", ", wRecentPlaces)}])");
         while (!ct.IsCancellationRequested)
         {
             if (!LoggedIn) { await Task.Delay(2000, ct); continue; }
@@ -518,9 +532,8 @@ public static partial class Program
                 endsReachedHome++;
                 if (endsReachedHome % 2 == 0) wLoops++;
                 wLegsUntilSit--;
-                // pick a different end
-                var others = ends.Where(n => n != target).ToArray();
-                wTarget = others.Length == 0 ? target : others[wRnd.Next(others.Length)];
+                wTarget = PickFresh(ends.Where(n => n != target).ToArray() is { Length: > 0 } o2 ? o2 : ends, wRecentPlaces, wRnd);
+                WLog($"next target {wTarget} (uniform of [{string.Join(", ", ends.Where(n => n != target))}], no repeat of last 2: recent [{string.Join(", ", wRecentPlaces)}])");
             }
             else
             {
@@ -531,7 +544,7 @@ public static partial class Program
                 WLog($"LEG to {target} FAILED ({wFails}/3 in a row): {msg}");
                 if (wFails >= 3) { await HomeWanderRecover(g, "3 failed legs in a row"); return; }
                 var others = ends.Where(n => n != target).ToArray();
-                if (others.Length > 0) { wTarget = others[wRnd.Next(others.Length)]; WLog($"turning around: next target {wTarget}"); }
+                if (others.Length > 0) { wTarget = PickFresh(others, wRecentPlaces, wRnd); WLog($"turning around: next target {wTarget}"); }
                 await Task.Delay(5000, ct);
             }
         }
@@ -613,7 +626,7 @@ public static partial class Program
             res.Add(new SeatCand(p, name, Vector3.Distance(p.Position, me), d, quiet, q));
         }
         var outp = new List<SeatCand>();
-        foreach (var c in res.OrderBy(c => c.fromMe).Take(40))
+        foreach (var c in res.OrderBy(c => c.fromMe).Take(200)) // all mapped seats (Take(40) nearest-only could drop far ones)
         {
             var pid = await ParcelAt(sim, c.p.Position);
             if (ParcelOk(pid, allowed)) outp.Add(c);
@@ -626,12 +639,16 @@ public static partial class Program
     {
         var cands = await HomeWanderSeats(g);
         var infos = LoadHomeSeats().GroupBy(i => i.Id).ToDictionary(x => x.Key, x => x.First());
-        var quiet = cands.Where(c => c.quiet >= 10f).ToList();
-        var pool = quiet.Count > 0 ? quiet : cands;
+        // 2026-10-07: no 'quiet >= 10 m' preference (it skewed picks to the far patio chairs); the 3 m avatar rule stays
+        var pool = cands;
         if (pool.Count == 0) { WLog("sit: no free home seat right now (skipping this time)"); return false; }
-        // one spot at random (grouped chairs count once), then a random free chair at that spot
+        // one spot uniformly at random (grouped chairs count once, no repeat of the last 2 spots), then a random free chair there
         var spots = pool.GroupBy(c => HomeSeatSpot(c.p.ID, infos)).ToList();
-        var spot = spots[wRnd.Next(spots.Count)].ToList();
+        var spotKeys = spots.Select(x => x.Key).ToList();
+        var sk = PickFresh(spotKeys, wRecentSpots, wRnd);
+        string SN(string k) => spots.First(x => x.Key == k).First().name + (k.StartsWith("group:") ? $" ({k[6..]})" : "");
+        WLog($"sit candidates ({spotKeys.Count} spots): [{string.Join(" | ", spotKeys.Select(SN))}]; picked '{SN(sk)}'; no repeat of last 2");
+        var spot = spots.First(x => x.Key == sk).ToList();
         var c = spot[wRnd.Next(spot.Count)];
         infos.TryGetValue(c.p.ID, out var info);
         var seatPos = c.p.Position;

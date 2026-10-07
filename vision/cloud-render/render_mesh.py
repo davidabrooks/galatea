@@ -291,6 +291,16 @@ def world(strength):
     w.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.25 * strength
     w.node_tree.links.new(sky.outputs["Color"], w.node_tree.nodes["Background"].inputs["Color"])
 
+BODY_VIEW_DEG = {"front": 0.0, "back": 180.0, "left": 90.0, "right": -90.0}  # avatar faces +X; her left is +Y
+def body_view_deg(v):
+    """a side name or degrees counter-clockwise (from above) from her front -> rig rotation in degrees"""
+    v = v.strip().lower()
+    return BODY_VIEW_DEG[v] if v in BODY_VIEW_DEG else float(v)
+def body_view_label(v):
+    """file-name suffix: the side name, else e.g. 135deg / -45deg"""
+    v = v.strip().lower()
+    return v if v in BODY_VIEW_DEG else f"{float(v):g}deg"
+
 def camera(loc, target, lens, res):
     cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam")); sc.collection.objects.link(cam); sc.camera = cam
     cam.location = loc; cam.rotation_euler = (Vector(target) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
@@ -536,8 +546,14 @@ else:
         area(head + (0.6, 0.5, 0.25), head, 12, 0.6); area(head + (0.6, -0.6, 0.0), head, 5, 0.8); area(head + (-0.5, 0.0, 0.4), head, 8, 0.5)
     else:
         mid = (lo + hi) / 2; h = hi[2] - lo[2]
-        camera(mid + (h * 1.9, 0.0, 0.0), mid, 50, (640, 1024))
-        area(mid + (2.0, 1.5, 1.0), mid, 120, 2.0); area(mid + (2.0, -2.0, 0.0), mid, 50, 2.5); area(mid + (-1.5, 0.0, 1.5), mid, 60, 1.5)
+        # camera + studio lights on one rig around her vertical axis: GT_BODY_VIEWS="front;back;left;right" (or degrees)
+        # renders each side with the same lighting relative to the camera (alpha-layer checks need the back and sides)
+        rig = bpy.data.objects.new("body-rig", None); sc.collection.objects.link(rig); rig.location = Vector(mid)
+        camera(mid + (h * 1.9, 0.0, 0.0), mid, 50, (640, 1024)); rigged = [sc.camera]
+        for loc, e_, s_ in (((2.0, 1.5, 1.0), 120, 2.0), ((2.0, -2.0, 0.0), 50, 2.5), ((-1.5, 0.0, 1.5), 60, 1.5)):
+            area(mid + loc, mid, e_, s_); rigged.append(bpy.context.object)
+        for ob in rigged: ob.parent = rig; ob.location = ob.location - Vector(mid)
+        views = [("body", body_view_deg(v), body_view_label(v)) for v in os.environ.get("GT_BODY_VIEWS", "").split(";") if v.strip()]
     world(0.5)
 sc.view_settings.view_transform = "Standard"  # SL shows textures as plain sRGB
 sc.view_settings.exposure = float(os.environ.get("GT_EXPOSURE", "0"))
@@ -550,6 +566,10 @@ views = views or [None]
 # multi-view crowd run on 2026-10-05, costing a ~40 s retry; off unless GT_PERSIST=1.
 sc.render.use_persistent_data = len(views) > 1 and os.environ.get("GT_PERSIST", "0") == "1"
 for i, v in enumerate(views):
-    if i: set_view(v)
-    sc.render.filepath = out if len(views) == 1 else out.replace(".jpg", f"-{i}.jpg")
+    if isinstance(v, tuple) and v[0] == "body":  # body side views: rotate the camera/light rig, name the file by side
+        rig.rotation_euler = (0, 0, math.radians(v[1]))
+        sc.render.filepath = out.replace(".jpg", f"-{v[2]}.jpg")
+    else:
+        if i: set_view(v)
+        sc.render.filepath = out if len(views) == 1 else out.replace(".jpg", f"-{i}.jpg")
     t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)

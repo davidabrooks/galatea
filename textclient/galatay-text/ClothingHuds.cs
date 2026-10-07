@@ -236,7 +236,7 @@ public static partial class Program
         if (f != null && File.Exists(f))
         {
             var real = ParseClothingHudSpecs(File.ReadAllText(f));
-            C(real.Count == 5 && real.Select(r => r.Hud).Distinct().Count() == 5, $"shipped map: 5 HUDs ({real.Count})");
+            C(real.Count == 4 && real.Select(r => r.Hud).Distinct().Count() == 4, $"shipped map: 4 HUDs, Valentine trashed 2026-10-07 ({real.Count})");
             var sp = real.FirstOrDefault(r => r.Hud == BikiniHudItem);
             C(sp != null && sp.Clothing.Contains(BikiniTopItem) && sp.Clothing.Contains(BikiniPantiesItem) && sp.LabelRx != null && Regex.IsMatch("D12", sp.LabelRx) && !Regex.IsMatch("C3", sp.LabelRx), "Spicy Bikini HUD: top + panties, D/W/T only");
             var art = real.FirstOrDefault(r => r.Hud == new UUID("cb0dc6c4-545c-3be6-8351-e049094315a7"));

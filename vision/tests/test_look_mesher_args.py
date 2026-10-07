@@ -43,3 +43,18 @@ def test_mesher_gets_its_own_heap_cap_not_the_clients_512mb():
     env = look.mesher_env({"DOTNET_GCHeapHardLimit": "0x20000000", "PATH": "/bin"})
     assert int(env["DOTNET_GCHeapHardLimit"], 16) >= 2 * 1024 ** 3
     assert env["PATH"] == "/bin" and env["DOTNET_gcServer"] == "0"
+
+
+def test_body_views_all_list_and_degrees():
+    import importlib, sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    look = importlib.import_module("look")
+    assert look.body_views("") == ""
+    assert look.body_views("all") == "front;back;left;right"
+    assert look.body_views("back, left,back") == "back;left"
+    assert look.body_views("135,-45deg,90.0") == "135;-45;90"
+    for bad in ("top", "400", "nan", "back;left"):
+        try:
+            look.body_views(bad); assert False, bad
+        except ValueError:
+            pass

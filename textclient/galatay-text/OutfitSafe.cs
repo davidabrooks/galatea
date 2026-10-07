@@ -629,8 +629,8 @@ public static partial class Program
         if (rd != null && File.Exists(Path.Combine(rd, "_clothing-huds.json")))
         {
             var real = ParseClothingHudMap(File.ReadAllText(Path.Combine(rd, "_clothing-huds.json")));
-            C(real.Count == 7 && real.Values.Distinct().Count() == 5 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops + bikini top/panties + Valentine dress/panties -> 5 distinct HUDs, no AO ({real.Count})");
-            C(real.TryGetValue(new UUID("9992295d-5f4b-33fc-addf-b774396caa50"), out var vd) && vd == new UUID("a612303a-f115-3f56-8cc9-c5936180f1ff") && real.TryGetValue(new UUID("d6cffaae-e4d9-345e-84e3-28ab733e6688"), out var vp) && vp == vd, "Valentine Dress + Panties -> Valentine HUD");
+            C(real.Count == 5 && real.Values.Distinct().Count() == 4 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops + bikini top/panties -> 4 distinct HUDs, no AO ({real.Count})");
+            C(!real.ContainsKey(new UUID("9992295d-5f4b-33fc-addf-b774396caa50")) && !real.Values.Contains(new UUID("a612303a-f115-3f56-8cc9-c5936180f1ff")), "Valentine Dress trashed (2026-10-07): no Valentine HUD in the map");
             C(real.TryGetValue(new UUID("5c8487b7-0db2-34fd-a81b-fe2709c98021"), out var beth) && beth == new UUID("6899891e-79d1-3a31-93ab-fac14a3bd75e"), "Beth tube top -> Beth Tube Top HUD");
             C(real.TryGetValue(new UUID("aa265665-7a17-34f6-b423-66d336262ed2"), out var arts) && arts == new UUID("cb0dc6c4-545c-3be6-8351-e049094315a7"), "ARTi'S strapless top -> ARTi'S HUD");
             C(real.TryGetValue(new UUID("90d3e432-c8d1-3f2c-b800-6e88ed678c27"), out var tee) && tee == new UUID("a2591928-d005-3af2-9b02-a04c9e5f93e7"), "TETRA Chill T-Shirt -> Chill T-Shirt HUD");
@@ -657,7 +657,7 @@ public static partial class Program
         if (rd != null && File.Exists(Path.Combine(rd, "_clothed-alphas.txt")))
         {
             var cl = ParseToplessExtras(File.ReadAllText(Path.Combine(rd, "_clothed-alphas.txt")));
-            C(cl.Count >= 2 && cl.All(c => c.name.StartsWith("Bimbette /// Alpha Layer")), $"_clothed-alphas.txt lists the Bimbette alphas ({cl.Count})");
+            C(cl.Count == 0, $"_clothed-alphas.txt disabled (2026-10-07 body alphas reset): no entries ({cl.Count})");
         }
         else C(false, "routes/_clothed-alphas.txt not found");
         // 'outfit create "Valentine Dress"' made a folder named '"Valentine' (10:26): quotes + multi-word names

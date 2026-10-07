@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """`look` for the text client: a `scene export` dir -> mesh (scene-mesher) -> CPU Cycles render(s) of what's around her.
-usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
+usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far] [--views=front,back,left,right,<deg>|all]
   view    over her shoulder, along her facing        around  4 views (front, left, back, right)
   self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
+  --views (self) only the full body, from each listed side / angle (degrees counter-clockwise from her front: 90 = her
+          left, 180 = her back); all = front, back, left, right. One image per view: ...-self-body-<side|NNdeg>.jpg
   --far   also the backdrop (scenery 30-96 m at a screen-size LOD, region terrain, water, sky gradient; needs a 96 m
           export). Off by default (David 2026-10-04: her renders are for her own needs, speed first): near scene only.
 Prints one image path per line (then a JSON summary line). Read-only: never talks to SL; only CDN asset GETs.
@@ -21,6 +23,23 @@ BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.2.3-linux-x64/ble
 OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
 VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
+
+SIDES = ("front", "back", "left", "right")
+def body_views(arg):
+    """--views=back,left,45 / all -> GT_BODY_VIEWS for the self body render ("" = the single front view, unchanged).
+    A side name or degrees around her vertical axis, counter-clockwise from her front (90 = her left, 180 = her back)."""
+    v = (arg or "").strip().lower()
+    if not v: return ""
+    out = []
+    for p in (SIDES if v == "all" else [p.strip() for p in v.split(",") if p.strip()]):
+        q = p[:-3] if p.endswith("deg") else p
+        if q not in SIDES:
+            try: d = float(q)
+            except ValueError: d = None
+            if d is None or d != d or abs(d) > 360: raise ValueError(f"unknown view '{p}' (front, back, left, right, all, or degrees -360..360)")
+            q = f"{d:g}"
+        out.append(q)
+    return ";".join(dict.fromkeys(out))
 
 def mesher_args(d, mode, me, far):
     return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + (["96", "--far=30"] if far else ["30", "--roots=32"])
@@ -139,6 +158,9 @@ def crowd_summary(others):
 
 def main(a):
     fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
+    vw = next((x.split("=", 1)[1] for x in a if x.startswith("--views=")), ""); a = [x for x in a if not x.startswith("--views=")]
+    try: bviews = body_views(vw)
+    except ValueError as e: sys.exit(str(e))
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
@@ -188,9 +210,10 @@ def main(a):
             near = [o["name"] for o in meta.get("others", [])] + sorted({p["name"] for p in doc["prims"] if p.get("name")})[:20]
             sys.exit(f"nothing called '{target}' in view; avatars/objects: {', '.join(near) or 'none'}")
     os.makedirs(OUT, exist_ok=True); stamp = time.strftime("%Y%m%d-%H%M%S"); outs = []
-    for kind in (["face", "body"] if mode == "self" else ["scene"]):
+    for kind in ((["body"] if bviews else ["face", "body"]) if mode == "self" else ["scene"]):
         out = f"{OUT}/look-{stamp}-{mode}{'-' + kind if mode == 'self' else ''}.jpg"; t = time.time()
-        env = {**os.environ, "GT_SAMPLES": "8" if fast else "12" if mode == "around" else "48", **({"GT_VIEW": view} if view else {})}
+        env = {**os.environ, "GT_SAMPLES": "8" if fast else "12" if mode == "around" else "48", **({"GT_VIEW": view} if view else {}),
+               **({"GT_BODY_VIEWS": bviews} if kind == "body" and bviews else {})}
         if mode == "around":
             env.setdefault("GT_RES", "640x360")
             env.setdefault("GT_NOSKY", "1")

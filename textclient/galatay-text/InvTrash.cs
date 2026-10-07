@@ -2,6 +2,8 @@
 // with the classic MoveInventoryItem UDP message (the AIS route the library uses for folder moves answered 400 on SL,
 // see MoveFolderUdp). Exact names only (case-insensitive); several items with the same name are listed with their uuids
 // and refused until they are named by uuid. Skipped for name matches: Trash, Current Outfit, My Outfits (links), worn items.
+// 2026-10-07 (David, Valentine dress): a FOLDER can be trashed by uuid only (never by name): plain or Outfit folders, not
+// system folders, not inside Trash/Current Outfit, not a kept outfit (Bikini + daily list), and nothing worn inside it.
 using System.Text;
 using LibreMetaverse;
 
@@ -41,6 +43,46 @@ public static partial class Program
         return res;
     }
 
+    internal sealed record FolderTrashInfo(UUID Id, string Name, FolderType Type, List<FolderType> AncestorTypes, List<(UUID id, string name)> Items);
+
+    // pure (selftest): "move" or "refused: <why>" for one folder named by uuid. Items = every non-link item inside it (recursive).
+    internal static string FolderTrashVerdict(FolderTrashInfo f, ISet<UUID> worn, ISet<string> keepOutfits)
+    {
+        if (f.Type != FolderType.None && f.Type != FolderType.Outfit) return $"refused: system folder ({f.Type})";
+        if (f.AncestorTypes.Contains(FolderType.Trash)) return "refused: already in Trash";
+        if (f.AncestorTypes.Contains(FolderType.CurrentOutfit)) return "refused: inside Current Outfit";
+        if (f.AncestorTypes.Contains(FolderType.MyOutfits) && keepOutfits.Contains(f.Name.Trim())) return "refused: a kept outfit (Bikini / daily list)";
+        var w = f.Items.Where(i => worn.Contains(i.id)).Select(i => $"'{i.name}'").ToList();
+        return w.Count > 0 ? $"refused: worn item(s) inside: {string.Join(", ", w)}" : "move";
+    }
+
+    static async Task<string> TrashFolderByUuid(InventoryFolder f, UUID trash, ISet<UUID> worn, CancellationToken ct)
+    {
+        var anc = new List<FolderType>(); var parent = f.ParentUUID;
+        for (int i = 0; i < 64 && parent != UUID.Zero && client.Inventory.Store.TryGetValue(parent, out var pb) && pb is InventoryFolder pf; i++)
+        { anc.Add(pf.PreferredType); parent = pf.ParentUUID; }
+        if (f.ParentUUID == UUID.Zero) return $"refused: '{f.Name}' {f.UUID} is the inventory root";
+        var items = new List<(UUID, string)>(); var todo = new Queue<UUID>(); todo.Enqueue(f.UUID); int folders = 0;
+        while (todo.Count > 0 && folders++ < 200)
+        {
+            var id = todo.Dequeue(); var r = await ReadFolderTimed(id, ct, 20000);
+            if (!r.ok) return $"refused: could not read folder {id} inside '{f.Name}'; nothing moved";
+            foreach (var k in r.kids.Where(k => k.ParentUUID == id))
+                if (k is InventoryFolder sf) todo.Enqueue(sf.UUID); else if (k is InventoryItem ii && !ii.IsLink()) items.Add((ii.UUID, ii.Name ?? ""));
+        }
+        if (todo.Count > 0) return $"refused: '{f.Name}' has more than 200 folders inside; nothing moved";
+        var keep = DailyOutfitAllow().Append("Bikini").ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var v = FolderTrashVerdict(new(f.UUID, f.Name ?? "", f.PreferredType, anc, items), worn, keep);
+        if (v != "move") return $"{v}: folder '{f.Name}' {f.UUID}";
+        var from = f.ParentUUID;
+        MoveFolderUdp(f, trash);
+        Log("inv", $"moved folder '{f.Name}' {f.UUID} ({items.Count} items) from {from} -> Trash (UDP)");
+        await Task.Delay(2000, ct);
+        var inTrash = (await ReadFolderRO(trash, ct)).Any(k => k.UUID == f.UUID);
+        var stillThere = (await ReadFolderRO(from, ct)).Any(k => k.UUID == f.UUID && k.ParentUUID == from);
+        return $"{(inTrash && !stillThere ? "moved to Trash (verified)" : stillThere ? "MOVE NOT CONFIRMED (still in its parent)" : "moved (Trash listing not yet updated)")}: folder '{f.Name}' {f.UUID} ({items.Count} items); was in {from}";
+    }
+
     static void MoveItemUdp(InventoryItem it, UUID folder)
     {
         var pk = new LibreMetaverse.Packets.MoveInventoryItemPacket
@@ -56,9 +98,28 @@ public static partial class Program
     {
         if (!LoggedIn) return "not logged in";
         var terms = ParseInvTrashTerms(rest);
-        if (terms.Count == 0) return "usage: inv trash <exact item name|item uuid>[, <name|uuid>...]   (moves to Trash, never purges; same-name items must be named by uuid)";
+        if (terms.Count == 0) return "usage: inv trash <exact item name|item uuid|folder uuid>[, ...]   (moves to Trash, never purges; same-name items must be named by uuid; folders by uuid only)";
         var trash = client.Inventory.FindFolderForType(FolderType.Trash);
         if (trash == UUID.Zero) return "Trash folder not found";
+        // folders named by uuid (from the login skeleton: no inventory scan needed)
+        var fsb = new StringBuilder(); var folderTerms = new List<string>();
+        foreach (var t in terms)
+            if (UUID.TryParse(t, out var fid) && client.Inventory.Store.TryGetValue(fid, out var fb) && fb is InventoryFolder) folderTerms.Add(t);
+        if (folderTerms.Count > 0)
+        {
+            var worn = OutfitProtectedIds();
+            try { foreach (var p in WornPrims()) worn.Add(AttachItemId(p)); foreach (var w in client.Appearance.GetWearables()) worn.Add(w.ItemID); } catch { }
+            using var fct = new CancellationTokenSource(75000);
+            foreach (var t in folderTerms)
+            {
+                var f = (InventoryFolder)client.Inventory.Store[new UUID(t)];
+                try { fsb.AppendLine(await TrashFolderByUuid(f, trash, worn, fct.Token)); }
+                catch (Exception e) { fsb.AppendLine($"folder {t}: failed ({e.Message}); check 'inv ls {t}'"); }
+            }
+            terms = terms.Except(folderTerms).ToList();
+            lock (invIndex) invIndexComplete = false;
+            if (terms.Count == 0) return fsb.ToString().TrimEnd();
+        }
         if (!await invGate.WaitAsync(TimeSpan.FromSeconds(5))) return "an inventory scan is running; try again in ~30 s";
         bool complete;
         try
@@ -113,7 +174,7 @@ public static partial class Program
             }
             lock (invIndex) invIndexComplete = false; // next 'inv find' rescans
         }
-        return sb.ToString().TrimEnd();
+        return (fsb.ToString() + sb.ToString()).TrimEnd();
     }
 
     internal static string InvTrashSelfTest()
@@ -145,6 +206,18 @@ public static partial class Program
         C(PlanInvTrash(idx, new[] { U(4).ToString() }, prot)[0].Outcome == "refused", "already in Trash -> refused");
         C(PlanInvTrash(idx, new[] { "bc sky platform" }, prot)[0].Outcome == "ambiguous", "names are case-insensitive");
         C(PlanInvTrash(idx, new[] { "Unique Thing" }, prot)[0].Outcome == "notfound", "Current Outfit entries are not picked by name");
+        // folders by uuid (2026-10-07: the '"Valentine' outfit + the dress folders)
+        var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Bikini", "ARTi'S Strapless Top" };
+        var worn = new HashSet<UUID> { U(20) };
+        FolderTrashInfo F(string n, FolderType t, FolderType[] anc, params (UUID, string)[] its) => new(U(30), n, t, anc.ToList(), its.ToList());
+        var root = new[] { FolderType.Root };
+        C(FolderTrashVerdict(F("\"Valentine", FolderType.Outfit, new[] { FolderType.MyOutfits, FolderType.Root }), worn, keep) == "move", "outfit folder with a quoted name, links only -> move");
+        C(FolderTrashVerdict(F("TETRA - Valentine Dress (Fatpack)", FolderType.None, new[] { FolderType.Inbox, FolderType.Root }, (U(21), "HUD")), worn, keep) == "move", "plain folder in Received Items, nothing worn -> move");
+        C(FolderTrashVerdict(F("Bikini", FolderType.Outfit, new[] { FolderType.MyOutfits, FolderType.Root }), worn, keep).StartsWith("refused: a kept outfit"), "kept outfit refused");
+        C(FolderTrashVerdict(F("Clothes", FolderType.None, root, (U(20), "jeans")), worn, keep).Contains("'jeans'"), "worn item inside -> refused, named");
+        C(FolderTrashVerdict(F("Received Items", FolderType.Inbox, root), worn, keep).StartsWith("refused: system"), "system folder refused");
+        C(FolderTrashVerdict(F("Old", FolderType.None, new[] { FolderType.Trash, FolderType.Root }), worn, keep) == "refused: already in Trash", "already in Trash refused");
+        C(FolderTrashVerdict(F("x", FolderType.None, new[] { FolderType.CurrentOutfit, FolderType.Root }), worn, keep) == "refused: inside Current Outfit", "inside COF refused");
         return $"inv trash selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

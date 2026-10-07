@@ -1672,7 +1672,7 @@ public static partial class Program
   far [metres]               show / set the draw distance the sim streams within (AgentUpdate Far; default 128)
   throttle [task <kbps>]      show / set the UDP object-update throttle (AgentThrottle; max 1338 kbps task)
   interest [status|360|default]   SL interest list mode per region (360 = stream everything around her, not just the camera frustum)
-  look [self|around|at <name>] [fast] [far]  READ-ONLY (far: +96 m backdrop): scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
+  look [self [front|back|left|right|<deg>|all]|around|at <name>] [fast] [far]  READ-ONLY (far: +96 m backdrop): scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
   texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG
   vendor look <name filter> [radius]   nearby objects matching name/hover text (default 20 m): face PNGs + index.json in textures/scan-*/
@@ -1689,7 +1689,7 @@ public static partial class Program
   outfit hudmap                  READ-ONLY: routes/_clothing-huds.json — each clothing HUD, what it can pick, its last pick
   outfit coffix                  add COF links for worn items that have none (so relog keeps the look)
   outfit link-remove <outfit> <name part> | outfit link-add <outfit> <item uuid>   edit an outfit definition (removed link -> Trash)
-  outfit trash <name>[, <name>…] [force] | defaults   move outfit folder(s) to Trash (exact names, comma separated; Bikini + run/daily-outfits.txt refused without force) | outfit untrash <name>
+  outfit trash <name|folder uuid>[, …] [force] | defaults   move outfit folder(s) to Trash (exact names or folder uuids, comma separated; Bikini + run/daily-outfits.txt refused without force) | outfit untrash <name>
   outfit zone status|selftest    Peronaut beach/house outfit swap status
   outfit daily status            last once-per-PT-day random outfit pick
   outfit check                   READ-ONLY: WARNING for COF object links whose items are not attached (stale links re-attach on relog)
@@ -1927,7 +1927,7 @@ public static partial class Program
                 return $"notecard '{nit.Name}' ({body.Length} chars{(nc.EmbeddedItems?.Count > 0 ? ", embedded: " + string.Join(", ", nc.EmbeddedItems.Select(e => e.Name)) : "")}):\n" + (body.Length > 6000 ? body[..6000] + "\n(... truncated)" : body);
             }
             case "wear": case "rez": case "take": case "offer": return await WearOpsCmd(cmd, a);
-            case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid>[, ...]";
+            case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...]";
             case "outfit": return await OutfitCmd(a);
             case "bikini":
                 if (a.Length >= 1 && a[0] == "on") return await BikiniOn();

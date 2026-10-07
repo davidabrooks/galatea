@@ -252,7 +252,12 @@ public static partial class Program
             .Select(n => (n, keep.Contains(n) && !force ? "refused" : have.Contains(n) ? "trash" : "not found")).ToList();
     }
 
-    // Move My Outfits folders to Trash (exact names only; Bikini + the daily outfits refused unless 'force'). Never purges.
+    // pure (selftest): a term that is the uuid of a My Outfits folder -> that folder's exact name (the command line strips
+    // quotes, so a folder saved as '"Valentine' can only be named by its uuid); other terms unchanged
+    internal static List<string> ResolveOutfitTrashUuids(IEnumerable<string> names, IEnumerable<(UUID id, string name)> kids) =>
+        names.Select(n => UUID.TryParse(n.Trim(), out var id) && kids.Any(k => k.id == id) ? kids.First(k => k.id == id).name : n).ToList();
+
+    // Move My Outfits folders to Trash (exact names or folder uuids; Bikini + the daily outfits refused unless 'force'). Never purges.
     static async Task<string> OutfitTrashNamed(IEnumerable<string> names, bool force = false)
     {
         if (!LoggedIn) return "not logged in";
@@ -263,6 +268,7 @@ public static partial class Program
         var kids = (await ReadFolderRO(mo.UUID, ct)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID).ToList();
         var keep = DailyOutfitAllow().Append("Bikini").ToHashSet(StringComparer.OrdinalIgnoreCase);
         var sb = new StringBuilder();
+        names = ResolveOutfitTrashUuids(names, kids.Select(k => (k.UUID, k.Name)));
         foreach (var (n, verdict) in PlanOutfitTrash(names, kids.Select(k => k.Name), keep, force))
         {
             if (verdict == "refused") { sb.AppendLine($"refused: '{n}' is a kept outfit (Bikini / daily list)"); continue; }
@@ -356,6 +362,10 @@ public static partial class Program
         C(plan[2] == ("tube", "not found"), "a substring ('tube') never matches 'tubetop'");
         C(PlanOutfitTrash(new[] { "PCP Beth Tube Top" }, have, keep, true).Single().verdict == "trash", "force trashes a kept outfit");
         C(PlanOutfitTrash(new[] { "tubetop" }, have, keep, false).Single().verdict == "trash" && !plan.Any(p => p.name == "tubetop"), "'Jiyoo tubetop' never hits 'tubetop'");
+        var vk = new List<(UUID, string)> { (new UUID("d2a13474-008d-443b-9b93-7732bf681990"), "\"Valentine"), (new UUID("665fc9bb-1ce7-453c-b522-297e259aed82"), "Bikini") };
+        var rv = ResolveOutfitTrashUuids(ParseOutfitNames("d2a13474-008d-443b-9b93-7732bf681990, Monk, 11111111-2222-3333-4444-555555555555"), vk);
+        C(rv.SequenceEqual(new[] { "\"Valentine", "Monk", "11111111-2222-3333-4444-555555555555" }), "outfit trash: a My Outfits folder uuid -> its exact (quoted) name; names + unknown uuids unchanged");
+        C(PlanOutfitTrash(ResolveOutfitTrashUuids(new[] { "665fc9bb-1ce7-453c-b522-297e259aed82" }, vk), new[] { "Bikini" }, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Bikini" }, false).Single().verdict == "refused", "outfit trash: Bikini by uuid still refused without force");
         var al2 = DailyOutfitCandidates(new[] { "Bikini", "PCP BETH TUBE TOP", "TETRA Chill T-Shirt", "ARTi'S Strapless Top" }, new[] { "PCP Beth Tube Top", "TETRA Chill T-Shirt", "Missing Outfit" });
         C(al2.Count == 2 && !al2.Contains("ARTi'S Strapless Top") && !al2.Any(n => n == "Missing Outfit"), $"daily allow-list: case-insensitive, unlisted excluded, listed-but-unsaved ignored ({string.Join(",", al2)})");
         C(DailyOutfitCandidates(new[] { "Bikini" }, new[] { "Bikini" }).Count == 0, "Bikini never a daily outfit, even if listed");

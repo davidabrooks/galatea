@@ -1751,6 +1751,7 @@ public static partial class Program
                 HeadTurnForSay();   // someone nearby talking with her: a short head turn to them (LookAt.cs)
                 var (sent, skip) = ChatGuardedSay(t, rest, force, re);
                 if (!sent) return skip;
+                NoteGreetedFromOwnNearbySay(rest); // login/chat-routine hi to David: wander must not greet him again
                 Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}");
                 return "ok";
             }

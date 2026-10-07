@@ -123,6 +123,93 @@ public static partial class Program
         return g;
     }
 
+    // pure: BFS node path over undirected edges (offline doorway checks).
+    public static List<int> GraphNodePath(IReadOnlyList<(int a, int b, string kind)> edges, int from, int to)
+    {
+        var adj = new Dictionary<int, List<(int v, string k)>>();
+        void add(int a, int b, string k) { if (!adj.TryGetValue(a, out var L)) adj[a] = L = new(); L.Add((b, k)); }
+        foreach (var e in edges) { add(e.a, e.b, e.kind); add(e.b, e.a, e.kind); }
+        if (!adj.ContainsKey(from)) return null;
+        var prev = new Dictionary<int, int> { [from] = -1 };
+        var q = new Queue<int>(); q.Enqueue(from);
+        while (q.Count > 0)
+        {
+            var u = q.Dequeue();
+            if (u == to) break;
+            if (!adj.TryGetValue(u, out var nbrs)) continue;
+            foreach (var (v, _) in nbrs) if (!prev.ContainsKey(v)) { prev[v] = u; q.Enqueue(v); }
+        }
+        if (!prev.ContainsKey(to)) return null;
+        var path = new List<int>();
+        for (int v = to; v != -1; v = prev[v]) path.Add(v);
+        path.Reverse();
+        return path;
+    }
+
+    // pure: Peronaut west/east wing seats must route through doorway-kind edges (2026-10-06 wall-cut fix).
+    public static (bool ok, string detail) PeronautDoorwayGraphOk(
+        IReadOnlyDictionary<string, int> places,
+        IReadOnlyList<(int a, int b, string kind)> edges)
+    {
+        if (!places.TryGetValue("front", out var front) || !places.TryGetValue("bed", out var bed)
+            || !places.TryGetValue("east-deck", out var eastDeck) || !places.TryGetValue("inside-west", out var insideWest)
+            || !places.TryGetValue("inside-east", out var insideEast))
+            return (false, "missing places front/bed/east-deck/inside-west/inside-east");
+        bool hasDirectWest = edges.Any(e => (e.a == insideWest && e.b == bed) || (e.b == insideWest && e.a == bed));
+        bool hasDirectEast = edges.Any(e => (e.a == insideEast && e.b == eastDeck) || (e.b == insideEast && e.a == eastDeck));
+        if (hasDirectWest || hasDirectEast)
+            return (false, $"wall-cutting direct edge still present (west={hasDirectWest}, east={hasDirectEast})");
+        bool hasWestDoor = edges.Any(e => e.kind.Contains("west-doorway", StringComparison.OrdinalIgnoreCase));
+        bool hasEastDoor = edges.Any(e => e.kind.Contains("east-doorway", StringComparison.OrdinalIgnoreCase));
+        if (!hasWestDoor || !hasEastDoor)
+            return (false, $"missing doorway edges (west-doorway={hasWestDoor}, east-doorway={hasEastDoor})");
+        var toBed = GraphNodePath(edges, front, bed);
+        if (toBed == null) return (false, "no path front -> bed");
+        var kindsBed = new List<string>();
+        for (int i = 0; i + 1 < toBed.Count; i++)
+        {
+            var a = toBed[i]; var b = toBed[i + 1];
+            var e = edges.FirstOrDefault(x => (x.a == a && x.b == b) || (x.b == a && x.a == b));
+            kindsBed.Add(e.kind ?? "");
+        }
+        if (!kindsBed.Any(k => k.Contains("west-doorway", StringComparison.OrdinalIgnoreCase)))
+            return (false, "front->bed path misses west-doorway: " + string.Join(" > ", kindsBed));
+        var toEast = GraphNodePath(edges, bed, eastDeck);
+        if (toEast == null) return (false, "no path bed -> east-deck");
+        var kindsEast = new List<string>();
+        for (int i = 0; i + 1 < toEast.Count; i++)
+        {
+            var a = toEast[i]; var b = toEast[i + 1];
+            var e = edges.FirstOrDefault(x => (x.a == a && x.b == b) || (x.b == a && x.a == b));
+            kindsEast.Add(e.kind ?? "");
+        }
+        if (!kindsEast.Any(k => k.Contains("west-doorway", StringComparison.OrdinalIgnoreCase))
+            || !kindsEast.Any(k => k.Contains("east-doorway", StringComparison.OrdinalIgnoreCase)))
+            return (false, "bed->east-deck must use both doorways: " + string.Join(" > ", kindsEast));
+        return (true, $"front->bed: {string.Join(" > ", kindsBed)}; bed->east-deck: {string.Join(" > ", kindsEast)}");
+    }
+
+    public static (bool ok, string detail) PeronautDoorwaySelfTest(string graphPath = null)
+    {
+        graphPath ??= Path.Combine(RouteDir, "_graph-Peronaut.json");
+        if (!File.Exists(graphPath))
+        {
+            // repo / CI: prefer routes next to the built binary's sibling routes, then repo textclient/routes
+            foreach (var cand in new[]
+            {
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "routes", "_graph-Peronaut.json")),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "routes", "_graph-Peronaut.json")),
+                "/workspace/galatea-sl-repo/textclient/routes/_graph-Peronaut.json",
+            })
+                if (File.Exists(cand)) { graphPath = cand; break; }
+        }
+        if (!File.Exists(graphPath)) return (false, "no _graph-Peronaut.json at " + graphPath);
+        var g = LoadGraphFile(graphPath);
+        if (g == null) return (false, "failed to load " + graphPath);
+        var places = g.Places.ToDictionary(kv => kv.Key, kv => kv.Value.node, StringComparer.OrdinalIgnoreCase);
+        return PeronautDoorwayGraphOk(places, g.E);
+    }
+
     // shortest path over the graph from the nearest point on any edge to a place node
     static (List<Vector3> pts, string err) GraphRoute(Graph g, Vector3 from, int goal)
     {

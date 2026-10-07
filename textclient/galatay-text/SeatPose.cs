@@ -20,8 +20,9 @@ public static partial class Program
 {
     // Always skip: empty, [bracket controls], punctuation-only, and furniture chrome (not pose names).
     static readonly Regex PoseControlOnlySkip = new(@"^\s*$|^\s*\[.*\]\s*$|^[<>\-\s.]+$|\b(adjust\w*|position\w*|sync\w*|unsit|stand\s*up|stand|swap|back|next|prev\w*|more|page|options?|menu|help|reset|stop|helper|settings?|security|off|on)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    // Couples submenu / pose names (also used to skip when alone / on auto paths).
-    static readonly Regex PoseCouplesName = new(@"\b(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair|2p)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Couples / intimate submenu / pose names (skip on auto paths). Includes Mirage-style Fist* (2026-10-06: wander
+    // picked Fist* > fist 2 labeled [solo] but it was a couples anim). Explicit 'pose couples' may still enter these.
+    static readonly Regex PoseCouplesName = new(@"\b(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair|2p|fist|spank\w*|sex|lovemak\w*|intimate|make.?out|grind|straddl\w*|entwine|entangl\w*)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Solo submenu names (Trompe Loeil Reiley etc. use SINGLE*).
     static readonly Regex PoseSoloMenuName = new(@"\b(singles?|solo|alone|one\s*p|1p)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Adult / multi-avatar menus to skip when auto-picking PG solo after David leaves.
@@ -282,6 +283,9 @@ public static partial class Program
         NotePoseSeatShared(shared, davidHere);
         bool couplesMode = AutoMayPickCouples(explicitCouples);
         if (recovery) couplesMode = false;
+        // Wander / pose default / recovery: always prefer Solo*/SINGLE* and skip adult when a solo menu exists
+        // (2026-10-06 Mirage Fist* was not couples-named and won over Solo* without preferPgSolo).
+        if (!couplesMode) preferPgSolo = true;
         if (recovery && wLastPosePath.Count > 0 && !PosePathIsCouples(wLastPosePath))
         {
             var rest = await SeatPosePath(seat, seatName, wLastPosePath.ToList(), ct);
@@ -570,7 +574,8 @@ public static partial class Program
         bool change = a.Length > 0 && a[0].Equals("change", StringComparison.OrdinalIgnoreCase);
         bool couples = a.Length > 0 && a[0].Equals("couples", StringComparison.OrdinalIgnoreCase);
         if (couples && !SeatHasDavid(p)) return "pose couples: David is not on this seat; refusing (couples only when he asks while sharing)";
-        return await SeatPose(p, name, DateTime.Now.AddSeconds(-20), change || couples, cts.Token, explicitCouples: couples);
+        // pose / pose change = solo only (preferPgSolo forced inside SeatPose); pose couples stays explicit
+        return await SeatPose(p, name, DateTime.Now.AddSeconds(-20), change || couples, cts.Token, explicitCouples: couples, preferPgSolo: !couples);
     }
 
     static string PoseSelfTest()
@@ -656,6 +661,20 @@ public static partial class Program
             lines.Add($"{(good ? "PASS" : "FAIL")} after David leaves: preferPgSolo picks Solo* (skips adult/couples)");
         }
         {
+            // 2026-10-06 Mirage bed: Fist* > fist 2 looked like [solo] in the log but was a couples anim
+            bool named = PoseIsCouplesNamed("Fist*") && PoseIsCouplesNamed("fist 2") && !PoseIsCouplesNamed("F waits")
+                      && !PoseIsSoloMenu("Fist*") && PoseIsSoloMenu("Solo*");
+            bool good = named;
+            for (int i = 0; i < 40; i++)
+            {
+                var (p, _, why) = PickPoseButton(new() { "Fist*", "Solo*", "Couples PG*", "Adult*", "[ADJUST]", "F waits" },
+                    "F waits", rnd, couplesMode: false, preferPgSolo: true);
+                if (p != "Solo*") good = false;
+            }
+            if (good) pass++; else fail++;
+            lines.Add($"{(good ? "PASS" : "FAIL")} Mirage Fist*: couples-named + preferPgSolo forces Solo* (never Fist*)");
+        }
+        {
             bool back = PoseIsBackButton("[BACK]") && PoseIsBackButton("BACK") && PoseIsBackButton("[ BACK ]")
                      && PoseIsBackButton("<<") && !PoseIsBackButton("Solo*") && !PoseIsBackButton("[ADJUST]");
             if (back) pass++; else fail++;
@@ -703,9 +722,10 @@ public static partial class Program
         }
         var cur = PoseCurrent("AVsitter™2.1\n\n [Onlegs 4]"); bool c = cur == "Onlegs 4"; if (c) pass++; else fail++;
         lines.Add($"{(c ? "PASS" : "FAIL")} current pose parsed from the menu text: '{cur}'");
-        bool sh = PoseIsCouplesNamed("COUPLES*") && PoseIsSoloMenu("SINGLE*") && !PoseIsCouplesNamed("Indeed") && !PoseIsSoloMenu("Snuggle");
+        bool sh = PoseIsCouplesNamed("COUPLES*") && PoseIsSoloMenu("SINGLE*") && !PoseIsCouplesNamed("Indeed") && !PoseIsSoloMenu("Snuggle")
+               && PoseIsCouplesNamed("Fist*") && !PoseIsCouplesNamed("Cross legs");
         if (sh) pass++; else fail++;
-        lines.Add($"{(sh ? "PASS" : "FAIL")} COUPLES*/SINGLE* classifiers");
+        lines.Add($"{(sh ? "PASS" : "FAIL")} COUPLES*/SINGLE*/Fist* classifiers");
         return $"seat pose selftest: {pass} pass, {fail} fail (offline; no dialog pressed)\n" + string.Join("\n", lines);
     }
 }

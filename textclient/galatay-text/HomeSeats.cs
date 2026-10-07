@@ -227,6 +227,17 @@ public static partial class Program
         // her own position on the beach under the patio starts on the beach graph, not on the patio
         var (bp, berr) = GraphRoute(g, new Vector3(223.3f, 54.6f, 21.5f), N("mooring-deck"));
         C(berr == null && bp.All(p => p.Z < 24f), "from the beach under the patio: route stays on the lower level");
+        // 2026-10-06: Mirage bed / east-deck only through side-room doorways (no wall-cutting 8-12 / 7-11)
+        var places = g.Places.ToDictionary(kv => kv.Key, kv => kv.Value.node, StringComparer.OrdinalIgnoreCase);
+        var (doorOk, doorDetail) = PeronautDoorwayGraphOk(places, g.E);
+        C(doorOk, "doorway routing: " + doorDetail);
+        var (frBed, frErr) = GraphRoute(g, g.N[N("front")], N("bed"));
+        C(frErr == null && frBed.Any(p => Math.Abs(p.Y - 76f) < 0.6f && p.X > 221f && p.X < 227f),
+          "front->bed passes side-room-1 doorway band (y~76, x~222-226)");
+        var (bedEast, beErr) = GraphRoute(g, g.N[N("bed")], N("east-deck"));
+        C(beErr == null && bedEast.Any(p => Math.Abs(p.Y - 76f) < 0.6f && p.X < 223.5f)
+          && bedEast.Any(p => Math.Abs(p.Y - 76f) < 0.6f && p.X > 233f),
+          "bed->east-deck passes west then east side-room doorway bands");
         return $"home seats selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

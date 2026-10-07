@@ -108,6 +108,26 @@ public static partial class Program
     }
     // mark an avatar as already-greeted / known (by UUID only). Used after a greeting AND after chat/IM so a wander
     // resume never stranger-greets someone she was just talking to. Display names are never keys.
+    // pure: own nearby say that looks like a greeting (login hi / "Hi David! ..."). Used so wander does not
+    // stranger-greet someone she just said hi to via the chat routine (2026-10-06 double hi).
+    public static bool OwnChatLooksLikeGreeting(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.Trim();
+        // leading /me optional; first word hi/hello/hey/greetings/howdy/hola
+        return System.Text.RegularExpressions.Regex.IsMatch(t,
+            @"^(?:/me\s+)?(?:hi+|hello|hey+|heya|hiya|hai|greetings|howdy|hola)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    }
+    // After a successful nearby say: if it greets David by name, mark him greeted (UUID-only history).
+    static void NoteGreetedFromOwnNearbySay(string text)
+    {
+        if (!OwnChatLooksLikeGreeting(text)) return;
+        if (text.IndexOf("David", StringComparison.OrdinalIgnoreCase) < 0
+            && text.IndexOf("Nightingale", StringComparison.OrdinalIgnoreCase) < 0) return;
+        NoteGreeted(DavidId);
+    }
+
     static void NoteGreeted(UUID id, DateTime? when = null)
     {
         if (id == UUID.Zero) return;
@@ -667,7 +687,7 @@ public static partial class Program
         }
         else
         {
-            try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
+            try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
         }
         if (info?.Special == "shower" && info.TouchChild != UUID.Zero && client.Self.SittingOn != 0)
         { await Task.Delay(1500, ct); waterOn = TouchChildPrim(info.TouchChild, "shower water ON (valve)"); }
@@ -680,7 +700,7 @@ public static partial class Program
                 if (!changed && (DateTime.Now - t0).TotalSeconds >= changeAt && wanderPause == null && client.Self.SittingOn != 0)
                 {
                     changed = true;
-                    try { await SeatPose(c.p, c.name, DateTime.Now, true, ct); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
+                    try { await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
                 }
             }
         }
@@ -1038,7 +1058,7 @@ public static partial class Program
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
         bool menu = false;
-        try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
+        try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
         double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
         while ((DateTime.Now - t0).TotalSeconds < stay && wanderPause == null && client.Self.SittingOn != 0)
         {
@@ -1046,7 +1066,7 @@ public static partial class Program
             if (!changed && (DateTime.Now - t0).TotalSeconds >= changeAt && wanderPause == null && client.Self.SittingOn != 0)
             {
                 changed = true;
-                try { await SeatPose(c.p, c.name, DateTime.Now, true, ct); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
+                try { await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
             }
         }
         var sat = (DateTime.Now - t0).TotalSeconds;
@@ -1295,6 +1315,15 @@ public static partial class Program
         T("24 h rule: greeted 23 h ago: NOT again", new() { new(a, "Anna Walker", new Vector3(122, 120, 22), false) }, old, null, null, null, 24);
         greeted[a] = now.AddHours(-25);
         T("24 h rule: greeted 25 h ago: again", new() { new(a, "Anna Walker", new Vector3(122, 120, 22), false) }, old, a, null, null, 24);
+        {
+            bool g1 = OwnChatLooksLikeGreeting("Hi David! I just popped in and found you already here.")
+                   && OwnChatLooksLikeGreeting("Hello there")
+                   && OwnChatLooksLikeGreeting("hey love")
+                   && !OwnChatLooksLikeGreeting("What are we up to tonight?")
+                   && !OwnChatLooksLikeGreeting("sitting on the bed");
+            if (g1) pass++; else fail++;
+            lines.Add($"{(g1 ? "PASS" : "FAIL")} OwnChatLooksLikeGreeting: login hi / hello / hey vs ordinary chat");
+        }
         bool keepAll = double.IsPositiveInfinity(GreetKeepHours); if (keepAll) pass++; else fail++;
         lines.Add($"{(keepAll ? "PASS" : "FAIL")} greet history is permanent (keep hours = {GreetKeepHours}); live rule: {(GreetRepeatHours <= 0 ? "once ever" : $"once per {GreetRepeatHours:0.#} h")}");
         // persistence across a daemon restart: save, wipe memory, reload -> still inside the 60 min window

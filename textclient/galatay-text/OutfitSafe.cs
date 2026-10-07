@@ -237,9 +237,19 @@ public static partial class Program
         return res;
     }
 
+    // Face texture UUIDs only (2026-10-07: the old whole-TextureEntry hash counted any tint/glow/material/full-update
+    // difference, and a not-yet-rezzed prim ("" before) as "changed", so 'leather 6 grey' was reported applied while the
+    // tube top kept its old texture). Comparison: TexIdsChanged (ClothingHuds.cs, pure).
     static string TexSig(Primitive p)
     {
-        try { var b = p.Textures?.GetBytes(); return b == null ? "" : Convert.ToBase64String(System.Security.Cryptography.SHA1.HashData(b)); } catch { return ""; }
+        try
+        {
+            var t = p.Textures; if (t == null) return "";
+            var faces = new List<UUID>();
+            for (int i = 0; i < HudFaceCount(p); i++) faces.Add(t.GetFace((uint)i)?.TextureID ?? UUID.Zero);
+            return FaceTexSig(t.DefaultTexture?.TextureID ?? UUID.Zero, faces);
+        }
+        catch { return ""; }
     }
 
     static Dictionary<uint, string> SnapshotTextures(IEnumerable<UUID> clothingItems)
@@ -309,9 +319,10 @@ public static partial class Program
                 {
                     await Task.Delay(500, ct);
                     var after = SnapshotTextures(clothingItems);
-                    changed = after.Count(kv => before.TryGetValue(kv.Key, out var b) && b != kv.Value);
+                    changed = TexIdsChanged(before, after).Count;
                 }
                 applied = changed > 0;
+                { var aft = SnapshotTextures(clothingItems); foreach (var lid in TexIdsChanged(before, aft)) Log("hud", $"'{hud.Name}' prim {lid} faces {before[lid]} -> {aft[lid]}"); }
                 if (applied) { await Task.Delay(1000, ct); SaveHudLastPick(hud.UUID, pick.Label); } // let multi-prim pieces finish
                 var how = pick.UsesSt ? $"face {pick.Face} st {pick.S:F3},{pick.T:F3}" : $"link {pick.Link} local {pick.Local}";
                 sb.Append($"picked '{pick.Label}' (of {opts.Count}{(last != null ? $", last was '{last}'" : "")}) -> {(applied ? $"applied ({changed} prim(s) changed texture)" : "no visible change")}; ");
@@ -348,7 +359,7 @@ public static partial class Program
     {
         async Task<int> Changed(Dictionary<uint, string> before)
         {
-            for (int i = 0; i < 12; i++) { await Task.Delay(500, ct); var after = SnapshotTextures(clothingItems); int n = after.Count(kv => before.TryGetValue(kv.Key, out var b) && b != kv.Value); if (n > 0) return n; }
+            for (int i = 0; i < 12; i++) { await Task.Delay(500, ct); var after = SnapshotTextures(clothingItems); int n = TexIdsChanged(before, after).Count; if (n > 0) return n; }
             return 0;
         }
         var notes = new List<string>();

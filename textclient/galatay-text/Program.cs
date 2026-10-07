@@ -1900,6 +1900,7 @@ public static partial class Program
             case "scene" when a.Length > 0 && a[0] == "export": return await SceneExport(a);
             case "look": return await LookCmd(a);
             case "texture" when a.Length > 0 && a[0] == "save": case "faces": case "vendor" when a.Length > 0 && a[0] == "look": return await TextureCmds(cmd, a, rest);
+            case "worn" when a.Length >= 2 && a[0] == "tex": { var it = UUID.TryParse(a[1], out var wid) ? wid : UUID.Zero; var sb2 = new System.Text.StringBuilder(); foreach (var kv in SnapshotTextures(new[] { it })) sb2.AppendLine($"local {kv.Key}: {kv.Value}"); return sb2.Length == 0 ? "not worn / no prims" : sb2.ToString().TrimEnd(); } // READ-ONLY: face texture UUIDs (default;f0;f1..) per prim of a worn item
             case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));
             case "touch-attachment": case "touchatt": return await TouchAttachment(rest);
             case "shape": return await ShapeCmd(a);

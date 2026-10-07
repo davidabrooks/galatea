@@ -85,6 +85,14 @@ public static partial class Program
                    .Where(n => allow == null || allow.Count == 0 || allow.Contains(n.Trim(), StringComparer.OrdinalIgnoreCase))
                    .Select(n => n.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
 
+    // Pure: the daily pick never repeats the outfit she is wearing / wore last when any other candidate exists (2026-10-07)
+    internal static List<string> DailyOutfitPool(IReadOnlyList<string> cands, string current)
+    {
+        if (string.IsNullOrWhiteSpace(current)) return cands.ToList();
+        var pool = cands.Where(c => !c.Equals(current.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+        return pool.Count > 0 ? pool : cands.ToList();
+    }
+
     static List<string> DailyOutfitAllow()
     {
         try { if (File.Exists(DailyOutfitAllowFile)) return File.ReadAllLines(DailyOutfitAllowFile).Select(l => l.Split('#')[0].Trim()).Where(l => l.Length > 0).ToList(); } catch { }
@@ -188,7 +196,9 @@ public static partial class Program
             {
                 using var cts = new CancellationTokenSource(60000);
                 var cands = DailyOutfitCandidates((await ListOutfitFolders(cts.Token)).Select(f => f.Name), DailyOutfitAllow());
-                if (cands.Count > 0) pick = cands[Random.Shared.Next(cands.Count)];
+                var pool = DailyOutfitPool(cands, lastNamedOutfit);
+                Log("outfit-daily", $"candidates [{string.Join(", ", cands)}], current '{lastNamedOutfit ?? "-"}' -> pool [{string.Join(", ", pool)}]");
+                if (pool.Count > 0) pick = pool[Random.Shared.Next(pool.Count)];
             }
             beachOutfitBusy = true;
             try
@@ -312,6 +322,9 @@ public static partial class Program
         var sb = new StringBuilder(); int pass = 0, fail = 0;
         void C(bool ok, string w) { if (ok) pass++; else fail++; sb.AppendLine($"{(ok ? "PASS" : "FAIL")} {w}"); }
         C(OutfitZoneFor("Peronaut", 21f, false) == "beach", "enter beach at z21");
+        var dc = new List<string> { "ARTi'S Strapless Top", "PCP Beth Tube Top", "TETRA Chill T-Shirt" };
+        C(DailyOutfitPool(dc, "arti's strapless top ").SequenceEqual(new[] { "PCP Beth Tube Top", "TETRA Chill T-Shirt" }), "daily pool excludes the current outfit (case/space-insensitive)");
+        C(DailyOutfitPool(dc.Take(1).ToList(), "ARTi'S Strapless Top").Count == 1 && DailyOutfitPool(dc, null).Count == 3 && DailyOutfitPool(dc, "Bikini").Count == 3, "daily pool: only candidate kept; no/other current -> all");
         C(OutfitZoneFor("Peronaut", 25f, false) == "mid", "mid at z25 from house");
         C(OutfitZoneFor("Peronaut", 25f, true) == "beach", "still beach at z25 with hysteresis");
         C(OutfitZoneFor("Peronaut", 28f, true) == "house", "leave beach at z28");

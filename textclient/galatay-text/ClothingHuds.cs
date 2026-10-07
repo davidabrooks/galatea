@@ -111,6 +111,13 @@ public static partial class Program
         return pool.Count == 0 ? null : pool[rng.Next(pool.Count)];
     }
 
+    // Pure: "default;f0;f1..." texture UUIDs (no tint/glow/material, so only a real texture swap counts)
+    internal static string FaceTexSig(UUID def, IEnumerable<UUID> faces) => def + ";" + string.Join(";", faces);
+    // Pure: prims whose face textures really changed; a prim with no data before or after (not rezzed yet) never counts
+    internal static List<uint> TexIdsChanged(IReadOnlyDictionary<uint, string> before, IReadOnlyDictionary<uint, string> after) =>
+        after.Where(kv => !string.IsNullOrEmpty(kv.Value) && before.TryGetValue(kv.Key, out var b) && !string.IsNullOrEmpty(b) && b != kv.Value)
+             .Select(kv => kv.Key).OrderBy(k => k).ToList();
+
     // ---- last pick per HUD (run/hud-last-pick.json) ----------------------------------------------------------------
     static string HudLastPickFile => Env("GT_HUD_LAST_PICK", Path.Combine(Path.GetDirectoryName(LastNamedOutfitFile) ?? "/tmp", "hud-last-pick.json"));
     internal static Dictionary<string, string> ParseHudLastPicks(string json)
@@ -203,6 +210,13 @@ public static partial class Program
         C(PickHudOption(go, null, new Random(3), go.Select(o => o.Label).ToList()) == null && PickHudOption(new List<HudOption>(), null, new Random(1)) == null, "everything tried / nothing -> null");
         var tried = new HashSet<string> { "cotton 3", "cotton 4 navy" };
         C(PickHudOption(go, "cotton 1 red", new Random(5), tried)?.Label == "cotton 2 blue", "retry skips tried + last");
+        // texture-change check (face UUIDs only)
+        var t1 = FaceTexSig(U(30), new[] { U(31), U(32) });
+        C(t1 == FaceTexSig(U(30), new[] { U(31), U(32) }) && t1 != FaceTexSig(U(30), new[] { U(31), U(33) }), "face sig: same UUIDs equal, one face swapped differs");
+        var tb = new Dictionary<uint, string> { [1] = t1, [2] = "", [3] = t1 };
+        var ta = new Dictionary<uint, string> { [1] = t1, [2] = t1, [3] = FaceTexSig(U(30), new[] { U(31), U(34) }), [4] = t1 };
+        C(TexIdsChanged(tb, ta).SequenceEqual(new uint[] { 3 }), "changed: only a real face swap; not-rezzed-before and new prims don't count");
+        C(TexIdsChanged(tb, tb).Count == 0 && TexIdsChanged(new Dictionary<uint, string> { [1] = t1 }, new Dictionary<uint, string> { [1] = "" }).Count == 0, "no swap / data lost -> nothing applied");
         // last-pick store
         var lp = ParseHudLastPicks("{\"" + U(10) + "\":\"D6\",\"n\":3}");
         C(lp.Count == 1 && lp[U(10).ToString()] == "D6" && ParseHudLastPicks("not json").Count == 0, "last-pick file: strings only, bad file -> empty");

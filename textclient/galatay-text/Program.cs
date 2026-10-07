@@ -357,6 +357,7 @@ public static partial class Program
         if (tickerTask == null) tickerTask = Task.Run(Ticker);
         if (followTask == null) followTask = Task.Run(FollowLoop); // Follow.cs
         EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
+        VisitorWatchStart(); // visitor_arrival wakes at home (VisitorArrival.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);
@@ -1887,6 +1888,7 @@ public static partial class Program
             case "offers": return await OffersCmd(a);
             case "friend": case "friends": return await FriendCmd(a);
             case "friendwatch": return FriendWatchCmd(a);
+            case "visitors": return VisitorsCmd(a);
             case "lookat": return LookAtCmd(a);
             case "payprice": return await PayPriceCmd(a);
             case "pay": return await PayCmd(a);

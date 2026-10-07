@@ -1,11 +1,11 @@
 {
   "region": "Peronaut",
-  "source": "home places: upper level verified walking on the Peronaut nav grid 2026-10-05; lower level (porch, mid walkway, east stairs, beach, GOOSE 3-step deck stair + Mooring deck, Burgundy pier) from David's tour 15:23-16:51 PT: recorded beach-stairs-up route, David's standing positions and her follow trace; 2026-10-06 doorway fix: west/east side-room legs only through door approach nodes (no wall-cutting 8-12 / 7-11); hall links from home",
+  "source": "home places: upper level verified walking on the Peronaut nav grid 2026-10-05; lower level (porch, mid walkway, east stairs, beach, GOOSE 3-step deck stair + Mooring deck, Burgundy pier) from David's tour 15:23-16:51 PT: recorded beach-stairs-up route, David's standing positions and her follow trace; 2026-10-06 doorway fix: west/east side-room legs only through door approach nodes (no wall-cutting 8-12 / 7-11); hall links from home; 2026-10-07 couch fix: living/desk nodes moved off furniture, desk bypass, home -> arrival point, CI checks edges vs furniture_footprints",
   "created": "2026-10-05T11:15:00",
-  "updated": "2026-10-06T21:45:00",
+  "updated": "2026-10-07T08:50:00",
   "nodes": [
     [228.9, 69.0, 29.0],
-    [228.0, 65.5, 28.9],
+    [228.0, 67.3, 29.0],
     [222.4, 66.0, 29.0],
     [221.8, 57.2, 29.0],
     [230.6, 57.0, 29.0],
@@ -14,7 +14,7 @@
     [233.0, 69.6, 29.0],
     [223.0, 69.6, 29.0],
     [228.0, 82.5, 29.0],
-    [228.1, 71.5, 29.0],
+    [228.1, 70.2, 29.0],
     [242.0, 75.0, 29.0],
     [218.5, 74.0, 28.5],
     [228.24, 85.86, 26.86],
@@ -46,16 +46,16 @@
     [226.5, 76.0, 29.0],
     [222.0, 76.0, 29.0],
     [229.6, 76.0, 29.0],
-    [234.1, 76.0, 29.0]
+    [234.1, 76.0, 29.0],
+    [230.0, 70.3, 29.0],
+    [230.0, 72.4, 29.0],
+    [228.2, 74.0, 29.0]
   ],
   "edges": [
     [0, 1, "living"],
     [0, 10, "desk"],
     [0, 7, "inside"],
     [0, 8, "inside"],
-    [0, 9, "front"],
-    [1, 2, "patio-door"],
-    [1, 6, "patio-door"],
     [2, 3, "patio"],
     [3, 4, "patio"],
     [4, 5, "patio"],
@@ -94,15 +94,19 @@
     [8, 39, "west-door-approach"],
     [39, 40, "west-doorway"],
     [40, 12, "west-wing"],
-    [0, 39, "west-door-hall"],
     [7, 41, "east-door-approach"],
     [41, 42, "east-doorway"],
     [42, 11, "east-deck"],
-    [0, 41, "east-door-hall"]
+    [0, 43, "desk-bypass"],
+    [43, 44, "desk-bypass"],
+    [44, 9, "front"],
+    [44, 45, "arrival"],
+    [45, 39, "west-door-hall"],
+    [44, 41, "east-door-hall"]
   ],
   "places": {
-    "home": {"node": 0, "note": "fireplace / living centre"},
-    "living": {"node": 1, "note": "by Lalou sofa (goto_place living; wander sits via seat list)"},
+    "home": {"node": 45, "note": "SL home / arrival point (sethome 2026-10-06), off the couch"},
+    "living": {"node": 1, "note": "north edge of the Lalou sofa (goto_place living; wander sits via seat list)"},
     "sofa": {"node": 1, "note": "alias of living"},
     "patio-west": {"node": 2, "note": "outside patio-1"},
     "patio-sw": {"node": 3, "note": "SW patio corner"},
@@ -134,6 +138,12 @@
     "west-door": {"node": 39, "note": "living approach to side-room-1 (Mirage bed doorway)"},
     "west-door-room": {"node": 40, "note": "bedroom side of side-room-1 doorway"},
     "east-door": {"node": 41, "note": "living approach to side-room-2 (east-deck/tub doorway)"},
-    "east-door-room": {"node": 42, "note": "east-deck side of side-room-2 doorway"}
-  }
+    "east-door-room": {"node": 42, "note": "east-deck side of side-room-2 doorway"},
+    "centre": {"node": 0, "note": "fireplace / living centre (old home node)"}
+  },
+  "furniture_footprints": [
+    {"name": "Lalou - Ultra Sofa v1.1", "uuid": "f6844138-499f-0f3e-ba6a-ce601a16eafe", "min": [225.6, 61.9], "max": [230.6, 66.6], "source": "linkset child boxes, vision export-20261006-145428"},
+    {"name": "Dutchie maledom desk", "uuid": "1b9ab440-3b52-b827-2eae-7de92fb69cfb", "min": [226.75, 70.8], "max": [229.45, 72.2], "source": "map: <228.1,71.5> size 2.7x1.4 rotZ 0"}
+  ],
+  "footprint_margin": 0.3
 }

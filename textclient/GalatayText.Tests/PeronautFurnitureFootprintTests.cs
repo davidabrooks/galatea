@@ -46,6 +46,7 @@ public class PeronautFurnitureFootprintTests
         double m = g.TryGetProperty("footprint_margin", out var mm) ? mm.GetDouble() : 0.3;
         Assert.Contains(feet, f => f.GetProperty("name").GetString()!.Contains("Sofa"));
         Assert.Contains(feet, f => f.GetProperty("name").GetString()!.Contains("desk"));
+        Assert.Contains(feet, f => f.GetProperty("name").GetString()!.Contains("stairs"));
         var bad = new List<string>();
         foreach (var e in g.GetProperty("edges").EnumerateArray())
         {
@@ -58,6 +59,18 @@ public class PeronautFurnitureFootprintTests
             }
         }
         Assert.True(bad.Count == 0, "edges crossing furniture: " + string.Join("; ", bad));
+    }
+
+    [Fact]
+    public void Porch_walk_does_not_cut_west_at_the_stair_foot()
+    {
+        // 2026-10-07 08:43: STUCK at 226.4,85-86 on the old direct 13-26 edge
+        using var doc = Graph(); var g = doc.RootElement;
+        foreach (var e in g.GetProperty("edges").EnumerateArray())
+        {
+            int a = e[0].GetInt32(), b = e[1].GetInt32();
+            Assert.False((a == 13 && b == 26) || (a == 26 && b == 13), "direct stair-foot to porch-walk edge is back");
+        }
     }
 
     [Fact]

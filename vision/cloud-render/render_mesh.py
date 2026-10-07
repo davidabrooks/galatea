@@ -224,6 +224,15 @@ def cached_linings(group, mine, bones):
     except OSError: pass
     return drop
 
+# Blended overlays lying ON the skin (2026-10-07, The V's soft-edged outer patch over the BoM body): a transparent Cycles
+# ray continuing from the overlay skips the coplanar skin under it and shows the body's inside as a dark box. The SL viewer
+# rasterizes the overlay over the skin. Lift see-through avatar faces 0.5 mm along their normals so the skin is hit next.
+# ponytail: a fixed lift; ceiling = overlays modelled less than 0.5 mm in front of other see-through layers swap order
+DECAL_LIFT = float(os.environ.get("GT_DECAL_LIFT", "0.0005"))
+def lift_along_normals(P, N, d):
+    n = N.reshape(-1, 3).astype(np.float64); n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
+    return (P.reshape(-1, 3) + d * n).astype(np.float32).ravel()
+
 def build(group, bones=None, lining=True):
     lo, hi = np.full(3, 1e9), np.full(3, -1e9); n = 0; obs = []
     mine = [(i, b) for i, b in enumerate(M["batches"]) if b["group"] == group and b["ni"] > 0]
@@ -244,6 +253,8 @@ def build(group, bones=None, lining=True):
         # blank SL textures (32x32 all-alpha-0, e.g. Scentual f54a0c32 "clothing" layer): skip so they don't
         # sit as hashed ghosts over BOM skin (decided before any mesh is made: removing objects is slow in a big scene)
         if tn and _alpha_stats(tn)[1] < 1e-3: continue
+        see_through = group.startswith("avatar") and (b.get("mat") or {}).get("alpha", "auto") in ("auto", "blend") and not b["tex"].startswith("bake:") and tn and has_alpha(tn)
+        if see_through and DECAL_LIFT > 0: P = lift_along_normals(P, N, DECAL_LIFT)
         me = bpy.data.meshes.new(b["tex"][:40]); nt = ni // 3
         me.vertices.add(nv); me.vertices.foreach_set("co", P)
         me.loops.add(ni); me.loops.foreach_set("vertex_index", I)
@@ -258,7 +269,7 @@ def build(group, bones=None, lining=True):
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
         # shadow drew a grey "text" mark beside her nose. The SL viewer's sun shadow map is far too coarse to resolve them.
         # ponytail: decided per texture alpha; ceiling = no hair shadow on her neck
-        if group.startswith("avatar") and (b.get("mat") or {}).get("alpha", "auto") in ("auto", "blend") and not b["tex"].startswith("bake:") and tn and has_alpha(tn):
+        if see_through:
             ob.visible_shadow = False
         # the backdrop is seen and casts sun shadow, but takes no part in the near scene's bounce light or reflections:
         # the near scene lights exactly as before the backdrop (ponytail: no bounce light off far walls; ceiling = a sunlit

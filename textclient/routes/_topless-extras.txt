@@ -1,4 +1,7 @@
-# Attachments worn ONLY while topless (David 2026-10-07: "when you have your tits out you should wear the nipple rings").
-# Added (attach as ADD, never replace) after the tub undress; detached + COF link removed when she dresses again.
+# Attachments worn ONLY while undressed (David 2026-10-07: "when you have your tits out you should wear the nipple rings";
+# The V "wear it whenever undressed"). Added (attach as ADD, never replace) after the undress (tub / 'undress');
+# detached + COF link removed when she dresses again (outfit wear also drops these HUDs; non-HUD ones come off as not in the outfit).
 # format: <item uuid> <exact inventory name>   (the name must match the fetched item, else it is skipped)
 64f6948c-acb3-3a32-9509-3ab1923f2146 [BB] Nipple Rings - LaraX Petite (Puffy)
+3034de7b-4f25-3d3a-980c-8a00134f240d The V - Bento for Maitreya LaraX - SCULPTED - V1.61
+8b537b4b-009a-395d-95d7-70945f1b4a6b The V - Bento Play HUD by Session & ASA V1.61 COPY TRANSFER

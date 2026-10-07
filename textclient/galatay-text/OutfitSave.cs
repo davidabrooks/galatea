@@ -216,7 +216,8 @@ public static partial class Program
             return await OutfitWearNamed(string.Join(' ', nameParts), replace);
         }
         if (a.Length < 2 || (a[0] != "plan" && a[0] != "create")) return "usage: outfit plan|create <name> [extra ids] | outfit check | outfit rename <old> <new> | outfit wear <name> [replace|add] | outfit trash <name…>|defaults | outfit zone status|selftest | outfit daily status";
-        var name = a[1]; var extra = a.Length > 2 ? a[2].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) : Array.Empty<string>();
+        var (name, extra) = ParseOutfitCreateArgs(a);
+        if (name.Length == 0) return "usage: outfit plan|create <name> [extra ids]";
         using var cts = new CancellationTokenSource(180000); var ct = cts.Token;
         var (plan, problems, myOutfits, moKids) = await PlanOutfit(extra, ct);
         var sb = new StringBuilder();
@@ -250,5 +251,17 @@ public static partial class Program
         var missing = plan.Where(p => !back.Any(k => k.AssetUUID == p.Target)).ToList();
         sb.AppendLine(missing.Count == 0 ? "all planned links present" : $"MISSING after read-back ({missing.Count}): {string.Join(", ", missing.Select(m => m.Name))}");
         return sb.ToString().TrimEnd();
+    }
+
+    // Pure (selftest): outfit plan|create <name words…> [comma-separated extra item ids]; surrounding quotes stripped.
+    internal static (string name, string[] extra) ParseOutfitCreateArgs(string[] a)
+    {
+        var parts = a.Skip(1).ToList(); var extra = Array.Empty<string>();
+        if (parts.Count > 1)
+        {
+            var last = parts[^1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (last.Length > 0 && last.All(x => UUID.TryParse(x, out _))) { extra = last; parts.RemoveAt(parts.Count - 1); }
+        }
+        return (string.Join(' ', parts).Trim().Trim('"', '\'', '“', '”').Trim(), extra);
     }
 }

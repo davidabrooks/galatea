@@ -30,3 +30,19 @@ public class WanderUniformPickTests
         for (int i = 0; i < 50; i++) { var p = Program.PickFresh(two, recent, r); Assert.NotEqual(last, p); last = p; }
     }
 }
+
+public class ReileyChairGroupTests
+{
+    [Fact]
+    public void Reiley_net_chairs_share_one_seat_group()
+    {
+        var p = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "routes", "_seats-peronaut-home.json"));
+        if (!File.Exists(p)) p = "/workspace/galatea-sl-repo/textclient/routes/_seats-peronaut-home.json";
+        var t = File.ReadAllText(p);
+        foreach (var id in new[] { "7beb04ac-b4cc-8e7d-98b2-d5a4683afcbc", "cab3241e-97e4-4ad6-f795-008180ea2d74" })
+        {
+            var line = t.Split('\n').Single(l => l.Contains(id));
+            Assert.Contains("\"group\": \"reiley-chairs\"", line);
+        }
+    }
+}

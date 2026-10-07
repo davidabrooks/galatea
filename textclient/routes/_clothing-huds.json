@@ -21,6 +21,8 @@
          {"name": "dirty", "t": [0.2393], "names": ["green", "lilac", "teal", "red", "grey", "brown"]},
          {"name": "ribbon", "t": [0.1689], "names": ["silver", "grey", "black", "cream", "olive", "brown"]}
        ]}},
-    {"clothing": "90d3e432-c8d1-3f2c-b800-6e88ed678c27", "name": "TETRA - Chill T-Shirt - LaraX Petite", "hud": "a2591928-d005-3af2-9b02-a04c9e5f93e7", "hud_name": "<HUD> Chill T-Shirt", "labels": "^[CP]\\d+$"}
+    {"clothing": "90d3e432-c8d1-3f2c-b800-6e88ed678c27", "name": "TETRA - Chill T-Shirt - LaraX Petite", "hud": "a2591928-d005-3af2-9b02-a04c9e5f93e7", "hud_name": "<HUD> Chill T-Shirt", "labels": "^[CP]\\d+$"},
+    {"clothing": "9992295d-5f4b-33fc-addf-b774396caa50", "also": ["d6cffaae-e4d9-345e-84e3-28ab733e6688"], "name": "TETRA - Valentine Dress - Maitreya Petite + Valentine Panties - Maitreya", "hud": "a612303a-f115-3f56-8cc9-c5936180f1ff", "hud_name": "<HUD> Valentine Dress & Panties", "labels": "^[A-Z]{1,2}\\d+$",
+     "comment": "Fatpack HUD (2026-10-07): [TEXTURE] buttons, first ad-hoc pick C14."}
   ]
 }

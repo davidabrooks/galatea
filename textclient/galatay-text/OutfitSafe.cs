@@ -134,10 +134,16 @@ public static partial class Program
             var tCloth = wears.Where(w => w.AssetType != AssetType.Bodypart).ToList();
             List<AppearanceManager.WearableData> cur; try { cur = client.Appearance.GetWearables().ToList(); } catch { cur = new(); }
             var curCloth = cur.Where(w => !IsBodyPartType(w.WearableType)).GroupBy(w => w.ItemID).Select(g => g.First()).ToList();
-            var tClothIds = tCloth.Select(c => c.UUID).ToHashSet();
+            // clothed outfits always carry the clothed alphas (routes/_clothed-alphas.txt); the Bikini sheds them
+            var clothedAlphaItems = new List<InventoryItem>();
+            if (IsClothedOutfit(folder.Name))
+                foreach (var (aid, anm) in ClothedAlphas())
+                { var ai = await FetchItemRO(aid, ct); if (ai is InventoryWearable && string.Equals(ai.Name?.Trim(), anm, StringComparison.OrdinalIgnoreCase)) clothedAlphaItems.Add(ai); }
+            var tClothIds = EffectiveOutfitLayers(tCloth.Select(c => c.UUID), clothedAlphaItems.Select(c => c.UUID), IsClothedOutfit(folder.Name));
+            foreach (var ai in clothedAlphaItems) if (!tCloth.Any(c => c.UUID == ai.UUID)) tCloth.Add((InventoryWearable)ai);
             var removeCloth = new List<InventoryItem>();
-            foreach (var c in curCloth.Where(c => !tClothIds.Contains(c.ItemID)))
-            { var it = await FetchItemRO(c.ItemID, ct); if (it != null) removeCloth.Add(it); }
+            foreach (var cid in LayersNotInOutfit(curCloth.Select(c => c.ItemID), tClothIds)) // incl. system Alpha layers
+            { var it = await FetchItemRO(cid, ct); if (it != null) removeCloth.Add(it); }
             // COF links first: the library rebuilds its wearables from the COF after a bake, so a layer whose COF link
             // survives the removal comes straight back (16:59 'Jiyoo tubetop': 5 layers "off" were all still worn).
             foreach (var it in removeCloth) { await RemoveCofLinksForItem(it.UUID, "outfit swap", ct); sb.AppendLine($"  layer off: '{it.Name}'"); }
@@ -188,6 +194,80 @@ public static partial class Program
             return $"wearing outfit '{folder.Name}' ({detach.Count} off, {attach.Count} on, {removeCloth.Count}/{addCloth.Count} layers off/on)\n" + sb.ToString().TrimEnd();
         }
         finally { outfitChangeUntil = DateTime.Now.AddSeconds(15); }
+    }
+
+    // ---- clothed alphas (routes/_clothed-alphas.txt, David 2026-10-07) ---------------------------------------------
+    internal static bool IsClothedOutfit(string outfitName) => !BikiniNameRx.IsMatch((outfitName ?? "").Trim());
+    // Pure (selftest): the layers an outfit wear keeps/adds = its own layers, plus the clothed alphas when clothed.
+    internal static HashSet<UUID> EffectiveOutfitLayers(IEnumerable<UUID> outfitLayers, IEnumerable<UUID> clothedAlphas, bool clothed)
+    {
+        var s = outfitLayers.Where(x => x != UUID.Zero).ToHashSet();
+        if (clothed) foreach (var a in clothedAlphas) if (a != UUID.Zero) s.Add(a);
+        return s;
+    }
+    static List<(UUID id, string name)> ClothedAlphas()
+    {
+        try { var f = Path.Combine(RouteDir, "_clothed-alphas.txt"); return File.Exists(f) ? ParseToplessExtras(File.ReadAllText(f)) : new(); }
+        catch { return new(); }
+    }
+    // undress paths that do not go through OutfitWearSafe (Bikini fallback swap): show the whole body again
+    static async Task<string> ClothedAlphasOff(string why, CancellationToken ct)
+    {
+        List<UUID> worn; try { worn = client.Appearance.GetWearables().Select(w => w.ItemID).ToList(); } catch { return "clothed alphas: wearables unknown"; }
+        var off = new List<InventoryItem>();
+        foreach (var (id, _) in ClothedAlphas()) if (worn.Contains(id)) { var it = await FetchItemRO(id, ct); if (it != null) off.Add(it); }
+        foreach (var it in off) await RemoveCofLinksForItem(it.UUID, why, ct);
+        if (off.Count > 0) client.Appearance.RemoveFromOutfit(off);
+        return off.Count == 0 ? "clothed alphas: none worn" : $"clothed alphas off ({why}): {string.Join(", ", off.Select(o => "'" + o.Name + "'"))}";
+    }
+
+    // Pure (selftest): worn clothing layers (system Alpha layers included) that are not in the new outfit's definition.
+    internal static List<UUID> LayersNotInOutfit(IEnumerable<UUID> wornClothingLayers, ISet<UUID> outfitLayers) =>
+        wornClothingLayers.Where(id => id != UUID.Zero && !outfitLayers.Contains(id)).Distinct().ToList();
+
+    // Pure (selftest, 2026-10-07 Valentine Dress): after an ad-hoc 'wear remove' of a clothing attachment, the system Alpha
+    // layers that came with it (same My Outfits folder) come off once none of that outfit's clothing attachments is still
+    // worn. Tee off with the jeans still on -> alphas stay; jeans off too -> alphas off.
+    internal static List<UUID> OrphanAlphas(IReadOnlyList<(UUID id, WearableType type)> wornLayers, ISet<UUID> outfitItems,
+        ISet<UUID> outfitClothingAtts, ISet<UUID> wornAttsAfter)
+    {
+        if (outfitClothingAtts.Overlaps(wornAttsAfter)) return new();
+        return wornLayers.Where(l => l.type == WearableType.Alpha && outfitItems.Contains(l.id)).Select(l => l.id).Distinct().ToList();
+    }
+
+    // Ad-hoc clothing change ('wear remove' of a clothing attachment, e.g. the chat routine swapping into a dress by hand):
+    // drop that outfit's orphaned Alpha layers and their COF links. Remembered outfit first, then other My Outfits folders.
+    static async Task<string> DropOrphanAlphasAfterRemove(InventoryItem removed, CancellationToken ct)
+    {
+        if (removed == null || !ClothingNameRx.IsMatch(removed.Name ?? "") || ClothingHudNameRx.IsMatch(removed.Name ?? "")) return null;
+        List<(UUID id, WearableType type)> layers;
+        try { layers = client.Appearance.GetWearables().Where(w => w.WearableType == WearableType.Alpha).Select(w => (w.ItemID, w.WearableType)).Distinct().ToList(); }
+        catch { return null; }
+        if (layers.Count == 0) return null; // nothing to orphan: no inventory reads
+        bool leaving(UUID id) => id == removed.UUID || (detachIntent.TryGetValue(id, out var di) && (DateTime.Now - di.t).TotalSeconds < 60);
+        var wornAfter = WornPrims().Where(p => !IsHudAttachPoint(p.PrimData.AttachmentPoint)).Select(AttachItemId)
+                                   .Where(id => id != UUID.Zero && !leaving(id)).ToHashSet();
+        var mo = await FindMyOutfits(ct); if (mo == null) return null;
+        var folders = (await ReadFolderRO(mo.UUID, ct)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID)
+                        .OrderBy(f => string.Equals(f.Name, lastNamedOutfit, StringComparison.OrdinalIgnoreCase) ? 0 : 1).Take(40).ToList();
+        var drop = new HashSet<UUID>();
+        foreach (var f in folders)
+        {
+            var items = await ResolveOutfitItems(f, ct);
+            if (!items.Any(i => i.UUID == removed.UUID)) continue;
+            var atts = items.Where(i => (i is InventoryObject || i is InventoryAttachment) && ClothingNameRx.IsMatch(i.Name ?? "") && !ClothingHudNameRx.IsMatch(i.Name ?? ""))
+                            .Select(i => i.UUID).ToHashSet();
+            var keepClothed = ClothedAlphas().Select(c => c.id).ToHashSet();
+            foreach (var id in OrphanAlphas(layers, items.Select(i => i.UUID).ToHashSet(), atts, wornAfter)) if (!keepClothed.Contains(id)) drop.Add(id);
+            if (string.Equals(f.Name, lastNamedOutfit, StringComparison.OrdinalIgnoreCase)) break; // the outfit she was in decides
+        }
+        if (drop.Count == 0) return null;
+        var gone = new List<InventoryItem>();
+        foreach (var id in drop) { var it = await FetchItemRO(id, ct); if (it == null) continue; await RemoveCofLinksForItem(id, "orphan alpha", ct); gone.Add(it); }
+        if (gone.Count > 0) client.Appearance.RemoveFromOutfit(gone);
+        var msg = $"alpha layer(s) that came with '{removed.Name}' off: {string.Join(", ", gone.Select(g => "'" + g.Name + "'"))} (COF links removed)";
+        Log("wear", msg);
+        return msg;
     }
 
     // Add a COF link for every worn attachment / wearable that has none (never removes anything; Firestorm bridge excluded).
@@ -549,13 +629,43 @@ public static partial class Program
         if (rd != null && File.Exists(Path.Combine(rd, "_clothing-huds.json")))
         {
             var real = ParseClothingHudMap(File.ReadAllText(Path.Combine(rd, "_clothing-huds.json")));
-            C(real.Count == 5 && real.Values.Distinct().Count() == 4 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops + bikini top/panties -> 4 distinct HUDs, no AO ({real.Count})");
+            C(real.Count == 7 && real.Values.Distinct().Count() == 5 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops + bikini top/panties + Valentine dress/panties -> 5 distinct HUDs, no AO ({real.Count})");
+            C(real.TryGetValue(new UUID("9992295d-5f4b-33fc-addf-b774396caa50"), out var vd) && vd == new UUID("a612303a-f115-3f56-8cc9-c5936180f1ff") && real.TryGetValue(new UUID("d6cffaae-e4d9-345e-84e3-28ab733e6688"), out var vp) && vp == vd, "Valentine Dress + Panties -> Valentine HUD");
             C(real.TryGetValue(new UUID("5c8487b7-0db2-34fd-a81b-fe2709c98021"), out var beth) && beth == new UUID("6899891e-79d1-3a31-93ab-fac14a3bd75e"), "Beth tube top -> Beth Tube Top HUD");
             C(real.TryGetValue(new UUID("aa265665-7a17-34f6-b423-66d336262ed2"), out var arts) && arts == new UUID("cb0dc6c4-545c-3be6-8351-e049094315a7"), "ARTi'S strapless top -> ARTi'S HUD");
             C(real.TryGetValue(new UUID("90d3e432-c8d1-3f2c-b800-6e88ed678c27"), out var tee) && tee == new UUID("a2591928-d005-3af2-9b02-a04c9e5f93e7"), "TETRA Chill T-Shirt -> Chill T-Shirt HUD");
         }
         else C(false, "routes/_clothing-huds.json not found for the map test");
         C(ParseClothingHudMap("{\"note\":\"x\"}").Count == 0 && ParseClothingHudMap("{\"tops\":[{\"clothing\":\"not-a-uuid\",\"hud\":\"" + U(12) + "\"}]}").Count == 0, "map without tops / with a bad uuid -> empty, no crash");
+        // stray system Alpha layers (2026-10-07: Bimbette alphas left on under the Valentine Dress)
+        var a1 = U(31); var a2 = U(32); var a3 = U(33); var teeX = U(40); var jeans = U(41); var dress = U(42); var skin = U(43);
+        C(LayersNotInOutfit(new[] { a1, a2, a3, U(50) }, new HashSet<UUID> { U(50) }).Count == 3, "outfit wear: alphas not in the new outfit come off");
+        C(LayersNotInOutfit(new[] { a1, U(50) }, new HashSet<UUID> { a1, U(50) }).Count == 0, "outfit wear: alphas in the new outfit stay");
+        var wl = new List<(UUID, WearableType)> { (a1, WearableType.Alpha), (a2, WearableType.Alpha), (a3, WearableType.Alpha), (skin, WearableType.Tattoo), (U(34), WearableType.Alpha) };
+        var chill = new HashSet<UUID> { a1, a2, a3, teeX, jeans, skin };
+        var chillAtts = new HashSet<UUID> { teeX, jeans };
+        C(OrphanAlphas(wl, chill, chillAtts, new HashSet<UUID> { jeans }).Count == 0, "ad hoc: tee off, jeans still on -> alphas stay");
+        var oa = OrphanAlphas(wl, chill, chillAtts, new HashSet<UUID> { dress });
+        C(oa.Count == 3 && !oa.Contains(skin) && !oa.Contains(U(34)), "ad hoc: jeans off too -> only that outfit's 3 alphas off (tattoo + foreign alpha kept)");
+        // clothed alphas: kept/added for clothed outfits, shed for the Bikini (= show all)
+        var ca = new[] { U(60), U(61) };
+        var eff = EffectiveOutfitLayers(new[] { U(50) }, ca, IsClothedOutfit("Valentine Dress"));
+        C(eff.SetEquals(new[] { U(50), U(60), U(61) }), "clothed outfit: clothed alphas added to the outfit's layers");
+        C(LayersNotInOutfit(new[] { U(60), U(61), a1 }, eff).SequenceEqual(new[] { a1 }), "clothed outfit: clothed alphas never removed, stray alpha is");
+        var effB = EffectiveOutfitLayers(new[] { U(50) }, ca, IsClothedOutfit("Bikini"));
+        C(!IsClothedOutfit("Bikini") && !IsClothedOutfit("spicy") && LayersNotInOutfit(new[] { U(60), U(61) }, effB).Count == 2, "Bikini: clothed alphas come off (whole body shows)");
+        if (rd != null && File.Exists(Path.Combine(rd, "_clothed-alphas.txt")))
+        {
+            var cl = ParseToplessExtras(File.ReadAllText(Path.Combine(rd, "_clothed-alphas.txt")));
+            C(cl.Count >= 2 && cl.All(c => c.name.StartsWith("Bimbette /// Alpha Layer")), $"_clothed-alphas.txt lists the Bimbette alphas ({cl.Count})");
+        }
+        else C(false, "routes/_clothed-alphas.txt not found");
+        // 'outfit create "Valentine Dress"' made a folder named '"Valentine' (10:26): quotes + multi-word names
+        var pc1 = ParseOutfitCreateArgs(new[] { "create", "\"Valentine", "Dress\"" });
+        C(pc1.name == "Valentine Dress" && pc1.extra.Length == 0, $"outfit create: quoted multi-word name ('{pc1.name}')");
+        var pc2 = ParseOutfitCreateArgs(new[] { "create", "Beach", "Day", U(7) + "," + U(8) });
+        C(pc2.name == "Beach Day" && pc2.extra.Length == 2, "outfit create: trailing comma-separated uuid list = extra ids");
+        C(ParseOutfitCreateArgs(new[] { "plan", "Chill" }).name == "Chill", "outfit plan: single word unchanged");
         return $"outfit-safe selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();
     }
 }

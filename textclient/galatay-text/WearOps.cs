@@ -45,6 +45,49 @@ public static partial class Program
         catch (Exception ex) { return "COF link removal FAILED: " + ex.GetBaseException().Message; }
     }
 
+    // 2026-10-07: re-attaching an item a few seconds after detaching it (The V, after its HUD changed its prims) was
+    // silently dropped by the sim: "attach (ADD) sent" but nothing arrived (the sim is still saving the detached copy
+    // back to inventory). So: send, wait for the attachment to show up, re-send once for the missing ones, report.
+    internal static (List<UUID> resend, List<UUID> missing) AttachVerifyPlan(IEnumerable<UUID> wanted, ISet<UUID> seenFirst, ISet<UUID> seenAfterRetry)
+    {
+        var w = wanted.Distinct().ToList();
+        var resend = w.Where(u => !seenFirst.Contains(u)).ToList();
+        return (resend, seenAfterRetry == null ? null : resend.Where(u => !seenAfterRetry.Contains(u)).ToList());
+    }
+
+    static async Task<bool> WaitWorn(ICollection<UUID> items, int ms, CancellationToken ct)
+    {
+        var until = DateTime.UtcNow.AddMilliseconds(ms);
+        while (DateTime.UtcNow < until)
+        {
+            var worn = WornPrims().Select(AttachItemId).ToHashSet();
+            if (items.All(worn.Contains)) return true;
+            await Task.Delay(1000, ct);
+        }
+        return false;
+    }
+
+    /// <summary>Attach (ADD) each item, verify it arrives (12 s), re-send once for the missing ones (15 s more).
+    /// Returns a note per item: "attached", "attached on retry" or "NOT attached after retry".</summary>
+    static async Task<Dictionary<UUID, string>> AttachVerified(IList<(InventoryItem inv, AttachmentPoint pt)> items, CancellationToken ct)
+    {
+        foreach (var (inv, pt) in items) client.Appearance.Attach(inv, pt, false);
+        var ids = items.Select(i => i.inv.UUID).ToList();
+        await WaitWorn(ids, 12000, ct);
+        var seen1 = WornPrims().Select(AttachItemId).ToHashSet();
+        var (resend, _) = AttachVerifyPlan(ids, seen1, null);
+        HashSet<UUID> seen2 = seen1;
+        if (resend.Count > 0)
+        {
+            Log("wear", $"attach not seen after 12 s, re-sending once: {string.Join(", ", resend)}");
+            foreach (var (inv, pt) in items.Where(i => resend.Contains(i.inv.UUID))) client.Appearance.Attach(inv, pt, false);
+            await WaitWorn(resend, 15000, ct);
+            seen2 = WornPrims().Select(AttachItemId).ToHashSet();
+        }
+        var (_, missing) = AttachVerifyPlan(ids, seen1, seen2);
+        return ids.ToDictionary(u => u, u => missing.Contains(u) ? "NOT attached after retry" : resend.Contains(u) ? "attached on retry" : "attached");
+    }
+
     static async Task<string> WearOpsCmd(string cmd, string[] a)
     {
         if (!LoggedIn) return "not logged in";
@@ -79,8 +122,8 @@ public static partial class Program
                     if (isObj)
                     {
                         var pt = AttachmentPoint.Default; if (a.Length > 2 && int.TryParse(a[2], out var n)) pt = (AttachmentPoint)n;
-                        client.Appearance.Attach(it, pt, false);
-                        sb.AppendLine($"attach (ADD) sent for '{it.Name}' at {pt}");
+                        var got = await AttachVerified(new List<(InventoryItem, AttachmentPoint)> { (it, pt) }, ct);
+                        sb.AppendLine($"attach (ADD) for '{it.Name}' at {pt}: {got[it.UUID]}");
                     }
                     else
                     {

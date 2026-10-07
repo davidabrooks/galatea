@@ -186,13 +186,18 @@ public static partial class Program
     {
         var sb = new StringBuilder();
         var worn = WornPrims().Select(AttachItemId).ToHashSet();
+        var send = new List<(InventoryItem, AttachmentPoint)>();
         foreach (var (id, nm) in ToplessExtras())
         {
             if (worn.Contains(id)) { sb.Append($"'{nm}' already worn; "); continue; }
             var inv = await FetchItemRO(id, ct);
             if (inv == null || !string.Equals(inv.Name?.Trim(), nm, StringComparison.OrdinalIgnoreCase)) { sb.Append($"'{nm}' not found / name mismatch; "); continue; }
-            client.Appearance.Attach(inv, AttachmentPoint.Default, false); // ADD, never replace
-            sb.Append($"on '{nm}'; ");
+            send.Add((inv, AttachmentPoint.Default)); // ADD, never replace
+        }
+        if (send.Count > 0)
+        {   // verified: a re-attach right after a detach can be dropped by the sim (WearOps.AttachVerified re-sends once)
+            var got = await AttachVerified(send, ct);
+            foreach (var (inv, _) in send) sb.Append($"on '{inv.Name}' ({got[inv.UUID]}); ");
         }
         var r = sb.Length == 0 ? "no topless extras configured" : sb.ToString().TrimEnd(' ', ';');
         WLog("TOPLESS extras: " + r);

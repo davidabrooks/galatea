@@ -1680,6 +1680,7 @@ public static partial class Program
   inv ls <folder uuid>        READ-ONLY direct contents of one folder
   inv read <notecard item>    READ-ONLY print the text of one of her notecards
   undress                     take off clothing attachments + clothing/alpha layers where she stands (not seated), then the undress extras (routes/_topless-extras.txt: nipple rings, The V + HUD); dressing = outfit wear
+  thev [status] | thev pubes <shaved | black|brown|blond|ginger [trimmed|strip|bush]> | thev pierce none|ball|bars|hoop   The V pubic hair + piercing via its Play HUD (TheV.cs, routes/the-v-hud.md)
   wear add|remove <item> [pt] ADD an object/clothing layer (never replace) + COF link / take it off + remove only its COF link(s); body parts refused
   rez <item> | take <object>  rez her own Object item 1.5 m in front of her / take her own object back into Objects
   offer allow <object name> [min] | offer status | offer off   accept task-inventory offers ONLY from her own object with that name (default 5 min, one offer)
@@ -1930,6 +1931,7 @@ public static partial class Program
                 return $"notecard '{nit.Name}' ({body.Length} chars{(nc.EmbeddedItems?.Count > 0 ? ", embedded: " + string.Join(", ", nc.EmbeddedItems.Select(e => e.Name)) : "")}):\n" + (body.Length > 6000 ? body[..6000] + $"\n(... truncated{(full != null ? "; full text in " + full : "")})" : body);
             }
             case "undress": return await UndressCmd();
+            case "thev": return await TheVCmd(rest);
             case "wear": case "rez": case "take": case "offer": return await WearOpsCmd(cmd, a);
             case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...]";
             case "outfit": return await OutfitCmd(a);

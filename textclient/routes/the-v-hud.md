@@ -21,7 +21,7 @@ relay and is not used. The V hides the Maitreya groin itself while worn.
 
 ## Play HUD (41 prims, root 'The V - Bento Play HUD by Session & ASA V1.61 COPY TRANSFER')
 Read with `worn links "The V - Bento Play HUD"`; menu art = HUD textures saved under /workspace/secondlife/the-v/hud-*.jpg.
-The prims are named by panel; buttons are areas on the panel faces (touch by face + ST, not by prim name).
+The prims are named by panel; the buttons are faces of the small overlay prims (`vagina_look_menu_2` = pubic hair, see below). Touch by prim + face.
 
 | prim(s) | panel | what it does |
 |---|---|---|
@@ -35,14 +35,58 @@ The prims are named by panel; buttons are areas on the panel faces (touch by fac
 | options_menu_1..4, only_bom, only_omega | Extra options | Skin Applier Support BOM/OMEGA; Toggle V light ON/OFF; Sounds ON/OFF; Face Animations ON/OFF; Switch to Rest State on TP ON/OFF; Eye Icon Shows Original BoM Groin ON/OFF; Moaning Sound With Cum ON/OFF; Sound Volume HIGH/MED; RESET V COLOR; TOGGLE CUM LAYER; HUD RESIZE; REMOTE CONTROL (group/public/private/guest list); group/wiki/landmark/support |
 | data, empty | internal | script data / blank backing |
 
-## Current settings (2026-10-07 11:15 PT)
-Factory defaults, untouched: nothing on any HUD has been pressed. The HUD state (which shape, pubes, piercing, option
-radios) lives in the V's scripts and is not readable from the text client; the in-world look is the reference.
+## Current settings (2026-10-07 11:50 PT)
+- **Pubic hair: BROWN + STRIP (landing strip).** David's choices on 2026-10-07: first "I would like you to have a landing
+  strip of pubic hair", then "match my dark eyebrows". Her brows are dark brown: about (105,72,64) lit in the render.
+  The HUD's hair colours average black (3,3,3), brown (58,36,25), ginger (124,72,49) and blond (167,117,86), so BROWN is the
+  closest dark one (black is jet black). It shows as texture 0b81f6ab on The V. (Blond strip 5c4db955 was set for a few
+  minutes before the eyebrow note.)
+- **Piercing: HOOP (silver ring with a bead).** David asked for "a clit ring that matches your nipple rings". The
+  nipple rings are [BB] Belzebubble Nipple Rings LaraX Petite (Puffy): silver captive-bead rings (chrome texture
+  ed4c7f1f, white tint). The V's hoop is the same silver ring with a bead (texture 506f3252, white tint). The BB set has no
+  clit or genital ring, so the built-in hoop is used. It persists with The V like the pubes, so there's no extra item in
+  routes/_topless-extras.txt or in the Naked outfit (The V is already in both).
+- Verified with `thev status` ("brown strip; piercing: hoop (ring)") and a 2560x4096 front render cropped to the groin.
+- Everything else is factory default (shape and option radios).
+- Persistence: the pubes and piercing are on The V's own prims, so the server keeps them in the attachment. Tested twice
+  on 2026-10-07: The V was detached and re-attached, and its new prims came back with the same pubes and piercing. The
+  HUD still drives the re-attached V. Relog and TP keep them the same way. There's no save button for these (REST
+  POSITION Save is for the vagina shape only).
+- Re-attach gotcha: a `wear add` about 8 s after detaching The V was silently dropped by the sim (it was still saving the
+  changed V back to inventory). The second `wear add` worked. Since PR #103, `wear add` and the undress extras wait for
+  the attachment and re-send once.
+
+## Piercing: how to change it (text client)
+`thev pierce none|ball|bars|hoop` touches a face of the big panel prim `vagina_look_menu_1`: 4 BARS, 5 NONE, 6 BALL,
+7 HOOP. Faces 0-3 changed nothing visible. The V shows it as one of three hidden silver mesh children (texture 506f3252):
+1 face = ball, 2 faces = hoop (seen in a render), 3 faces = bars (ball and bars are inferred from the face counts and
+icons, not rendered). `thev status` reports it.
+
+## Pubic hair: how to change it (text client)
+`thev status` reads the current pubes and piercing; `thev pubes <words>` presses the HUD buttons, e.g. `thev pubes brown strip` (current),
+`thev pubes shaved`, `thev pubes brown bush`, `thev pubes trimmed` (keeps the colour). Code: galatay-text/TheV.cs.
+
+The 8 pubic hair buttons are invisible faces of the HUD prim `vagina_look_menu_2`; the face order is NOT the panel order
+(learned by touching each face and reading The V back):
+
+| face | button | | face | button |
+|---|---|---|---|---|
+| 0 | SHAVED (hides the pubes face) | | 4 | STRIP (landing strip) |
+| 1 | BLACK | | 5 | GINGER |
+| 2 | BROWN | | 6 | TRIMMED |
+| 3 | BLOND | | 7 | BUSH |
+
+A colour keeps the current style and a style keeps the current colour (from shaved, a colour comes back with the last
+style). By hand: `touch-attachment "The V - Bento Play HUD" vagina_look_menu_2 <face>`, wait ~4 s, then `thev status`.
+The V shows the result as the texture on faces 0+7 of its mesh child whose face 1 is the skin patch 8dc72b73 (alpha 0 =
+shaved). Textures seen: blond strip 5c4db955, blond trimmed f4bb3440, ginger strip 97313e78, ginger trimmed d439f8f3,
+ginger bush d0fd5d7b, black bush 12d20473, brown bush 918a4e8a, brown strip 0b81f6ab. The HUD says nothing in chat.
+Blond on her fair skin is subtle in the 640 px `look self front`. Use a 1280x2048 render (GT_RES) and crop the groin.
 
 ## Main options David may want to adjust
 1. Shape / state: one of the 5 shapes or an extra state (56 = puffy), then REST POSITION Save so it stays.
-2. Pubic hair: shaved or a colour (black/brown/blond/ginger) and a style (trimmed/strip/bush).
-3. Piercing: none / ball / bars / hoop.
+2. Pubic hair: shaved or a colour (black/brown/blond/ginger) and a style (trimmed/strip/bush). Now brown strip (David).
+3. Piercing: none / ball / bars / hoop. Now hoop, matching the nipple rings (David).
 4. Options: Sounds and Face Animations on/off (both play when animations run), Switch to Rest State on TP, V light.
 5. Shine HUD (body + V spec) and Texture HUD (tone match / redness) if the V's colour does not match her skin.
 6. Remote control: give David a copy of the Play HUD and allow him in Options > Remote Control.
@@ -51,5 +95,5 @@ radios) lives in the V's scripts and is not readable from the text client; the i
 - Worn only while undressed: The V + Play HUD are in routes/_topless-extras.txt with the nipple rings (on after an
   undress, off with COF links removed when she dresses; outfit wear drops the HUD too).
 - Outfit "Naked" under My Outfits = body, head, skin, shape, hair, rings, The V, Play HUD (+ AO as in every outfit).
-- Do not press HUD buttons beyond defaults without David's OK. No animations/sounds/fluids in public.
+- Do not press HUD buttons beyond the settings above without David's OK. No animations/sounds/fluids in public.
 - HUD only shows on her own screen (nobody else sees HUDs), so it is never "in the way" for others.

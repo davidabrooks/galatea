@@ -72,8 +72,8 @@ public static partial class Program
     static DateTime vLastWakeAt = DateTime.MinValue;
     static int vWakeFlushGen;
     static Func<DateTime> vNow = () => DateTime.Now; // selftest clock hook
-    public static double VoiceDebounceS = 3;
-    public static double VoiceMinWakeS = 10;
+    public static double VoiceDebounceS = 1.5; // 2026-10-07: was 3 (latency)
+    public static double VoiceMinWakeS = 5;    // first wake is never delayed (vLastWakeAt = MinValue)
     public static double VoiceContextS = 30;
     // Galatea / Galatay / Gal / Nightingale, tolerant of common STT splits/misspellings
     static readonly Regex VoiceNameRx = new(
@@ -119,7 +119,7 @@ public static partial class Program
             VLog($"wake mode set to {VWakeMode.ToString().ToLowerInvariant()}");
             return $"voice wake {VWakeMode.ToString().ToLowerInvariant()}" +
                    (VWakeMode == VoiceWakeMode.Name ? " (mentions of me, or open invitations like questions/comments; prior ~30 s context; trigger=name|invitation)" :
-                    VWakeMode == VoiceWakeMode.All ? " (every utterance, debounced ~3 s / rate-limited ~10 s)" :
+                    VWakeMode == VoiceWakeMode.All ? " (every utterance, debounced ~1.5 s / rate-limited ~5 s)" :
                     " (transcript still written; webhook never woken for voice)");
         }
         if (sub == "test")
@@ -577,7 +577,9 @@ public static partial class Program
         // context for name-mode wakes (mention or invitation) so she can reply relevantly
         var ctx = VWakeMode == VoiceWakeMode.Name ? VoiceFmtLines(context, primary.Speaker) : null;
         UUID.TryParse(string.IsNullOrEmpty(primary.SpeakerId) ? null : primary.SpeakerId, out var fromId);
-        Notify("voice", primary.Speaker, fromId, text, null, null, parcel, ctx, channel ?? "voice", trigger);
+        double? dist = null;
+        try { if (fromId != UUID.Zero && client?.Self != null && FindAvatarAnySim(fromId) is { } nb) dist = Math.Round(Vector3.Distance(nb.pos, client.Self.SimPosition), 1); } catch { }
+        Notify("voice", primary.Speaker, fromId, text, dist, null, parcel, ctx, channel ?? "voice", trigger, primary.Text);
         VLog($"wake ({VWakeMode.ToString().ToLowerInvariant()}/{trigger}): {batch.Count} line(s) from {primary.Speaker}" + (ctx != null ? " (+ context)" : ""));
     }
 
@@ -586,7 +588,7 @@ public static partial class Program
         lock (vWakeGate) { vRecent.Clear(); vPending.Clear(); vLastWakeAt = DateTime.MinValue; }
         Interlocked.Increment(ref vWakeFlushGen);
         VWakeMode = VoiceWakeMode.Name;
-        VoiceDebounceS = 3; VoiceMinWakeS = 10; VoiceContextS = 30;
+        VoiceDebounceS = 1.5; VoiceMinWakeS = 5; VoiceContextS = 30;
         vNow = () => DateTime.Now;
     }
 
@@ -603,6 +605,8 @@ public static partial class Program
         try
         {
             VoiceWakeReset();
+            C(VoiceDebounceS <= 1.5 && VoiceMinWakeS <= 5, "low-latency defaults (debounce <= 1.5 s, min <= 5 s)");
+            C(GalatayMcp.Webhook.PostsImmediately("voice") && !GalatayMcp.Webhook.PostsImmediately("im"), "voice skips webhook flush loop");
             C(VoiceMentionsMe("Hey Galatea, can you hear me?"), "mentions Galatea");
             C(VoiceMentionsMe("galatay are you there"), "mentions galatay");
             C(VoiceMentionsMe("thanks Gal"), "mentions Gal as a word");
@@ -687,6 +691,7 @@ public static partial class Program
                 C(body.Contains("Galatea what do you think"), "mention text in event");
                 C(body.Contains("\"context\":") && (body.Contains("Bodhidharma") || body.Contains("interesting point")), "prior ~30 s context included");
                 C(body.Contains("\"trigger\":\"name\""), "trigger=name on mention wake");
+                C(body.Contains("\"line\":\"Galatea what do you think?\""), "exact triggering line in payload");
             }
 
             // name mode: open invitation wakes with context + trigger=invitation

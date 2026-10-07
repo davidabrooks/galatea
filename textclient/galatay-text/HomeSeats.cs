@@ -112,6 +112,7 @@ public static partial class Program
         finally { outfitChangeUntil = DateTime.Now.AddSeconds(15); }
         var res = sb.Length == 0 ? "nothing to take off" : sb.ToString().TrimEnd(' ', ';');
         WLog("UNDRESS before the tub: " + res);
+        try { res += "; " + await ToplessExtrasOn(ct); } catch (Exception ex) { WLog("topless extras on failed: " + ex.GetBaseException().Message); }
         return res;
     }
 
@@ -123,8 +124,55 @@ public static partial class Program
         {
             var r = BikiniNameRx.IsMatch(name) ? await BikiniOn() : await WearOutfitWithHuds(name);
             WLog($"DRESSED again after the tub ('{name}'): " + r.Replace("\n", " | ")[..Math.Min(400, r.Length)]);
+            try { WLog("topless extras off: " + await ToplessExtrasOff()); } catch (Exception ex) { WLog("topless extras off failed: " + ex.GetBaseException().Message); }
         }
         catch (Exception ex) { WLog("dress after the tub failed: " + ex.GetBaseException().Message); pendingDressOutfit = name; }
+    }
+
+    // routes/_topless-extras.txt: attachments worn only while topless (nipple rings); "<uuid> <exact name>" per line
+    internal static List<(UUID id, string name)> ParseToplessExtras(string text)
+    {
+        var res = new List<(UUID, string)>();
+        foreach (var raw in (text ?? "").Split('\n'))
+        {
+            var l = raw.Trim(); if (l.Length == 0 || l.StartsWith("#")) continue;
+            var sp = l.IndexOf(' '); if (sp <= 0) continue;
+            if (!UUID.TryParse(l[..sp], out var id) || id == UUID.Zero) continue;
+            var nm = l[(sp + 1)..].Trim(); if (nm.Length == 0) continue;
+            if (!res.Any(r => r.Item1 == id)) res.Add((id, nm));
+        }
+        return res;
+    }
+
+    static List<(UUID id, string name)> ToplessExtras()
+    {
+        try { var f = Path.Combine(RouteDir, "_topless-extras.txt"); return File.Exists(f) ? ParseToplessExtras(File.ReadAllText(f)) : new(); }
+        catch { return new(); }
+    }
+
+    static async Task<string> ToplessExtrasOn(CancellationToken ct)
+    {
+        var sb = new StringBuilder();
+        var worn = WornPrims().Select(AttachItemId).ToHashSet();
+        foreach (var (id, nm) in ToplessExtras())
+        {
+            if (worn.Contains(id)) { sb.Append($"'{nm}' already worn; "); continue; }
+            var inv = await FetchItemRO(id, ct);
+            if (inv == null || !string.Equals(inv.Name?.Trim(), nm, StringComparison.OrdinalIgnoreCase)) { sb.Append($"'{nm}' not found / name mismatch; "); continue; }
+            client.Appearance.Attach(inv, AttachmentPoint.Default, false); // ADD, never replace
+            sb.Append($"on '{nm}'; ");
+        }
+        var r = sb.Length == 0 ? "no topless extras configured" : sb.ToString().TrimEnd(' ', ';');
+        WLog("TOPLESS extras: " + r);
+        return r;
+    }
+
+    static async Task<string> ToplessExtrasOff()
+    {
+        var sb = new StringBuilder();
+        foreach (var (id, nm) in ToplessExtras())
+            sb.Append($"'{nm}': {await DetachItemAsync(id, "dressed again (topless extras off)")}; "); // detach also removes the COF link
+        return sb.Length == 0 ? "none configured" : sb.ToString().TrimEnd(' ', ';');
     }
 
     static bool TouchChildPrim(UUID child, string why)
@@ -212,6 +260,10 @@ public static partial class Program
         var picks = Enumerable.Range(0, 40).Select(k => HomeSeatMenu(sh, new Random(k))).ToList();
         C(picks.All(m => m.Count == 2 && m[0] == "Single*" && (m[1] == "F1" || m[1] == "F2")) && picks.Select(m => m[1]).Distinct().Count() == 2, "shower menu: Single* then a random F1/F2");
         C(infos.TryGetValue(U("53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc"), out var tub) && tub.Special == "undress", "clawfoot tub: undress before, dress after");
+        var tx = ParseToplessExtras("# c\n\nf2a379d0-2952-3cc5-9b88-ca554cbfdec2 [BB] Nipple Rings - X (Orig.)\nbad line\n00000000-0000-0000-0000-000000000000 zero\nf2a379d0-2952-3cc5-9b88-ca554cbfdec2 dup\n");
+        C(tx.Count == 1 && tx[0].name == "[BB] Nipple Rings - X (Orig.)", "topless extras: uuid + name with spaces, comments/bad/zero/dup skipped");
+        var txf = Path.Combine(dir, "_topless-extras.txt");
+        C(File.Exists(txf) && ParseToplessExtras(File.ReadAllText(txf)).Any(e => e.name.Contains("Nipple Rings")), "topless extras data file lists the nipple rings");
         C(seats.Any(s => s.Id.ToString().StartsWith("fee00d83") && !s.Wander), "Nerenzo parasol is not a seat");
         C(!seats.Any(s => HDist(s.Pos, new Vector3(217f, 24f, 21f)) < 1.5f && s.Pos.Z < 23f), "multi-seat boat under the pier is not catalogued");
         // level-aware projection: the shower is under the patio edge but must land on the beach

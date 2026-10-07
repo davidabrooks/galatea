@@ -13,7 +13,7 @@ namespace GalatayText;
 public static partial class Program
 {
     internal sealed record HomeSeatInfo(UUID Id, string Name, Vector3 Pos, string Level, string Group, string Special,
-                                        List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander);
+                                        List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander, Vector3? ChangeSpot = null);
 
     internal static List<HomeSeatInfo> ParseHomeSeats(string json)
     {
@@ -36,7 +36,10 @@ public static partial class Program
                 }
             var touch = UUID.Zero; var tc = Str("touch_child"); if (tc != null) UUID.TryParse(tc, out touch);
             bool wander = !s.TryGetProperty("wander", out var wv) || wv.ValueKind != JsonValueKind.False;
-            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander));
+            Vector3? cs = null;
+            if (s.TryGetProperty("change_spot", out var cv) && cv.ValueKind == JsonValueKind.Array && cv.GetArrayLength() >= 3)
+                cs = new Vector3((float)cv[0].GetDouble(), (float)cv[1].GetDouble(), (float)cv[2].GetDouble());
+            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs));
         }
         return res;
     }
@@ -116,13 +119,34 @@ public static partial class Program
         return res;
     }
 
+    // undress / dress only standing on the floor beside the tub (David 09:06): within 0.8 m of the seat's change_spot and
+    // at its floor height (not up on the tub rim)
+    internal static bool AtChangeSpot(Vector3 here, Vector3 spot) => HDist(here, spot) <= 0.8f && Math.Abs(here.Z - spot.Z) <= 0.5f;
+
+    static async Task<bool> GoToChangeSpot(Vector3? spot, string why, CancellationToken ct)
+    {
+        if (spot == null) return true;
+        for (int k = 0; k < 3; k++)
+        {
+            if (AtChangeSpot(client.Self.SimPosition, spot.Value)) return true;
+            try { await WalkLeg(spot.Value, 0.5f, "change spot (" + why + ")", ct); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("change spot walk: " + ex.GetBaseException().Message); }
+            await Task.Delay(800, ct);
+        }
+        var ok = AtChangeSpot(client.Self.SimPosition, spot.Value);
+        WLog($"change spot for {why}: {(ok ? "reached" : "NOT reached")} (at {V(client.Self.SimPosition)}, spot {V(spot.Value)})");
+        return ok;
+    }
+
+    static Vector3? pendingDressSpot;
+
     static async Task DressAfterSeatIfPending()
     {
         var name = pendingDressOutfit; if (name == null || client.Self.SittingOn != 0) return;
+        try { await EnsureStandingForWalk(CancellationToken.None); using var cts = new CancellationTokenSource(45000); await GoToChangeSpot(pendingDressSpot, "dressing", cts.Token); } catch (Exception ex) { WLog("dress spot: " + ex.GetBaseException().Message); }
         pendingDressOutfit = null;
         try
         {
-            var r = BikiniNameRx.IsMatch(name) ? await BikiniOn() : await WearOutfitWithHuds(name);
+            var r = BikiniNameRx.IsMatch(name) ? await BikiniOn() : await WearOutfitWithHuds(name, keepColor: true);
             WLog($"DRESSED again after the tub ('{name}'): " + r.Replace("\n", " | ")[..Math.Min(400, r.Length)]);
             try { WLog("topless extras off: " + await ToplessExtrasOff()); } catch (Exception ex) { WLog("topless extras off failed: " + ex.GetBaseException().Message); }
         }
@@ -264,6 +288,9 @@ public static partial class Program
         C(tx.Count == 1 && tx[0].name == "[BB] Nipple Rings - X (Orig.)", "topless extras: uuid + name with spaces, comments/bad/zero/dup skipped");
         var txf = Path.Combine(dir, "_topless-extras.txt");
         C(File.Exists(txf) && ParseToplessExtras(File.ReadAllText(txf)).Any(e => e.name.Contains("Nipple Rings")), "topless extras data file lists the nipple rings");
+        C(tub?.ChangeSpot is Vector3 cs && HDist(cs, tub.Pos) is > 1f and < 2.5f && NearestOnGraph(g, cs).Item2 < 0.5f && cs.Z <= tub.Pos.Z + 0.5f, "tub change spot: beside the tub, on the floor path");
+        C(tub?.ChangeSpot != null && AtChangeSpot(tub.ChangeSpot.Value + new Vector3(0.3f, 0, 0.2f), tub.ChangeSpot.Value) && !AtChangeSpot(tub.ChangeSpot.Value + new Vector3(0, 0, 0.9f), tub.ChangeSpot.Value)
+          && !AtChangeSpot(tub.Pos, tub.ChangeSpot.Value), "change spot check: beside on the floor yes, up on the tub no");
         C(seats.Any(s => s.Id.ToString().StartsWith("fee00d83") && !s.Wander), "Nerenzo parasol is not a seat");
         C(!seats.Any(s => HDist(s.Pos, new Vector3(217f, 24f, 21f)) < 1.5f && s.Pos.Z < 23f), "multi-seat boat under the pier is not catalogued");
         // level-aware projection: the shower is under the patio edge but must land on the beach

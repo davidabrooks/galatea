@@ -150,7 +150,7 @@ public static partial class Program
                 else
                 {
                     Log("outfit-zone", $"leaving beach (z={z:F1}): restoring outfit '{restore}'");
-                    var r = await WearOutfitWithHuds(restore);
+                    var r = await WearOutfitWithHuds(restore, keepColor: true);
                     RememberNamedOutfit(restore);
                     // Detach bikini HUD if still on
                     if (WornPrims().Any(p => AttachItemId(p) == BikiniHudItem))
@@ -191,14 +191,14 @@ public static partial class Program
             bool onBeach = OutfitZoneFor(region, lpos, false) == "beach" || (beachMode && OutfitZoneFor(region, lpos, true) == "beach");
             var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null);
             Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT)");
-            string pick = null;
+            string pick = null; bool freshPick = false; var wornBefore = lastNamedOutfit;
             if (dailyPending)
             {
                 using var cts = new CancellationTokenSource(60000);
                 var cands = DailyOutfitCandidates((await ListOutfitFolders(cts.Token)).Select(f => f.Name), DailyOutfitAllow());
                 var pool = DailyOutfitPool(cands, lastNamedOutfit);
                 Log("outfit-daily", $"candidates [{string.Join(", ", cands)}], current '{lastNamedOutfit ?? "-"}' -> pool [{string.Join(", ", pool)}]");
-                if (pool.Count > 0) pick = pool[Random.Shared.Next(pool.Count)];
+                if (pool.Count > 0) { pick = pool[Random.Shared.Next(pool.Count)]; freshPick = true; }
             }
             beachOutfitBusy = true;
             try
@@ -217,7 +217,7 @@ public static partial class Program
                 {
                     if (beachMode && !string.IsNullOrWhiteSpace(beachRememberedOutfit) && pick == null) pick = beachRememberedOutfit;
                     beachMode = false; beachRememberedOutfit = null; PersistBeachState();
-                    if (pick != null) Log("outfit-daily", $"wearing '{pick}': " + (await WearOutfitWithHuds(pick)).Replace("\n", " | "));
+                    if (pick != null) Log("outfit-daily", $"wearing '{pick}': " + (await WearOutfitWithHuds(pick, KeepHudColorFor(pick, wornBefore, freshPick))).Replace("\n", " | "));
                 }
                 if (dailyPending && pick != null)
                     try { Directory.CreateDirectory(Path.GetDirectoryName(DailyOutfitDateFile)!); File.WriteAllText(DailyOutfitDateFile, today + "\n" + pick + "\n"); } catch { }

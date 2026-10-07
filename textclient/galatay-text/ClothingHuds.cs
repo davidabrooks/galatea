@@ -104,6 +104,14 @@ public static partial class Program
 
     // Pure: random option, never the previous pick when there is any other (so two wears in a row look different);
     // 'exclude' = labels already tried in this round
+    // remembered color button for a same-outfit re-dress (null: nothing remembered / button not on this HUD)
+    internal static HudOption HudKeepOption(IReadOnlyList<HudOption> opts, string lastLabel) =>
+        string.IsNullOrEmpty(lastLabel) ? null : opts?.FirstOrDefault(o => string.Equals(o.Label, lastLabel, StringComparison.OrdinalIgnoreCase));
+
+    // HUD color on a login / zone wear: keep unless it is a fresh change into a different outfit
+    internal static bool KeepHudColorFor(string wearing, string current, bool freshPick) =>
+        !freshPick || string.Equals(wearing?.Trim(), current?.Trim(), StringComparison.OrdinalIgnoreCase);
+
     internal static HudOption PickHudOption(IReadOnlyList<HudOption> opts, string lastLabel, Random rng, ICollection<string> exclude = null)
     {
         var pool = opts.Where(o => exclude == null || !exclude.Contains(o.Label)).ToList();
@@ -218,6 +226,8 @@ public static partial class Program
         C(TexIdsChanged(tb, ta).SequenceEqual(new uint[] { 3 }), "changed: only a real face swap; not-rezzed-before and new prims don't count");
         C(TexIdsChanged(tb, tb).Count == 0 && TexIdsChanged(new Dictionary<uint, string> { [1] = t1 }, new Dictionary<uint, string> { [1] = "" }).Count == 0, "no swap / data lost -> nothing applied");
         // last-pick store
+        C(HudKeepOption(go, "COTTON 2 BLUE")?.Label == "cotton 2 blue" && HudKeepOption(go, null) == null && HudKeepOption(go, "gone") == null, "keep: remembered button found, else null");
+        C(!KeepHudColorFor("TETRA", "x", true) && KeepHudColorFor("TETRA", "tetra", true) && KeepHudColorFor("TETRA", "x", false), "HUD color randomizes only on a fresh change to another outfit");
         var lp = ParseHudLastPicks("{\"" + U(10) + "\":\"D6\",\"n\":3}");
         C(lp.Count == 1 && lp[U(10).ToString()] == "D6" && ParseHudLastPicks("not json").Count == 0, "last-pick file: strings only, bad file -> empty");
         // the shipped map: Bikini + the three daily tops, each its own HUD, grid for ARTi'S

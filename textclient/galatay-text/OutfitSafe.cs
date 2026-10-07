@@ -274,7 +274,7 @@ public static partial class Program
     // Attach a clothing HUD, press a random color/pattern (spec: ClothingHuds.cs; never the previous pick), wait until the
     // change shows on the worn clothing, detach (with a re-check: the library's after-bake outfit send once re-attached a
     // HUD seconds after it came off).
-    static async Task<string> HudRandomize(InventoryItem hud, List<UUID> clothingItems, CancellationToken ct, ClothingHudSpec spec = null)
+    static async Task<string> HudRandomize(InventoryItem hud, List<UUID> clothingItems, CancellationToken ct, ClothingHudSpec spec = null, bool keepColor = false)
     {
         if (hud == null) return "no HUD";
         if (hud.UUID == AoItem || hud.UUID == RetiredAwpAo || (hud.Name ?? "").Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)) return $"refused: '{hud.Name}' is the AO";
@@ -300,8 +300,27 @@ public static partial class Program
         else
         {
             var last = HudLastPick(hud.UUID);
+            var keep = keepColor ? HudKeepOption(opts, last) : null;
+            if (keep != null)
+            {
+                // same outfit re-dressed (tub / beach / relog): re-apply the remembered color, never a new one
+                var target = prims.FirstOrDefault(p => p.LocalID == keep.Local);
+                if (target != null)
+                {
+                    var before = SnapshotTextures(clothingItems);
+                    if (keep.UsesSt) GrabAt(target, keep.Face, keep.S, keep.T);
+                    else { client.Self.Grab(target.LocalID, Vector3.Zero, Vector3.Zero, Vector3.Zero, 0, Vector3.Zero, Vector3.Zero, Vector3.Zero); client.Self.DeGrab(target.LocalID); }
+                    int changed = 0;
+                    for (int i = 0; i < 10 && changed == 0; i++) { await Task.Delay(500, ct); changed = TexIdsChanged(before, SnapshotTextures(clothingItems)).Count; }
+                    if (changed > 0) await Task.Delay(1000, ct);
+                    sb.Append($"kept remembered '{last}' ({(changed > 0 ? $"re-applied, {changed} prim(s) changed" : "already showing")}); ");
+                    Log("hud", $"'{hud.Name}' keep remembered '{last}': {(changed > 0 ? $"re-applied, {changed} prims changed" : "already showing")}");
+                }
+                else sb.Append($"remembered button '{last}' prim gone; ");
+            }
+            else if (keepColor) { sb.Append($"no remembered color ('{last ?? "-"}'): left as is; "); Log("hud", $"'{hud.Name}' keep mode, no remembered button '{last ?? "-"}': not recoloring"); }
             var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase); bool applied = false;
-            for (int attempt = 0; attempt < 3 && !applied; attempt++)
+            for (int attempt = 0; attempt < 3 && !applied && !keepColor; attempt++)
             {
                 var pick = PickHudOption(opts, last, Random.Shared, tried); if (pick == null) break;
                 tried.Add(pick.Label);
@@ -421,18 +440,20 @@ public static partial class Program
         return res;
     }
 
-    static async Task<string> OutfitClothingHuds(InventoryFolder folder, CancellationToken ct)
+    static async Task<string> OutfitClothingHuds(InventoryFolder folder, CancellationToken ct, bool keepColor = false)
     {
         var items = await ResolveOutfitItems(folder, ct);
         var huds = await FindClothingHuds(items, ct);
         if (huds.Count == 0) return $"no clothing HUDs found for '{folder.Name}'";
         var sb = new StringBuilder();
-        foreach (var (hud, clothing, spec) in huds) sb.AppendLine("  " + await HudRandomize(hud, clothing, ct, spec));
+        foreach (var (hud, clothing, spec) in huds) sb.AppendLine("  " + await HudRandomize(hud, clothing, ct, spec, keepColor));
         return sb.ToString().TrimEnd();
     }
 
     // wear + clothing HUD randomize (non-beach outfits and the Bikini alike)
-    static async Task<string> WearOutfitWithHuds(string name)
+    // keepColor: re-dressing the SAME outfit (after the tub / beach, relog restore) re-applies the remembered HUD color;
+    // only a real change into a different outfit (daily pick, 'outfit wear') randomizes.
+    static async Task<string> WearOutfitWithHuds(string name, bool keepColor = false)
     {
         if (!LoggedIn) return "not logged in";
         using var cts = new CancellationTokenSource(180000); var ct = cts.Token;
@@ -440,7 +461,7 @@ public static partial class Program
         if (folder == null) return $"no outfit '{name}' under My Outfits";
         var r = await OutfitWearSafe(folder, ct);
         await Task.Delay(2000, ct);
-        var h = await OutfitClothingHuds(folder, ct);
+        var h = await OutfitClothingHuds(folder, ct, keepColor);
         return r + "\n" + h;
     }
 

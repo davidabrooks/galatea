@@ -685,6 +685,8 @@ public static partial class Program
         if (info?.Special == "undress")
         {
             pendingDressOutfit = lastNamedOutfit ?? (beachMode ? "Bikini" : null) ?? DailyOutfitAllow().FirstOrDefault();
+            pendingDressSpot = info.ChangeSpot;
+            if (!await GoToChangeSpot(info.ChangeSpot, "undressing", ct)) { pendingDressOutfit = null; MarkSeatFailed(c, "could not reach the change spot"); return false; }
             await UndressForSeat(ct);
         }
         var sitReq = DateTime.Now;

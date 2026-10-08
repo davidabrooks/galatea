@@ -17,13 +17,14 @@ namespace GalatayText;
 // The beach-zone change stays only as a safety net.
 public static partial class Program
 {
-    // house body from the nav grid (_nav-peronaut-home.json, floor z 28.03): living + hall, the patio-door band, the west (bed) wing.
-    // Patios, the east deck and the porch are outside.
+    // house body from the nav grid (_nav-peronaut-home.json, floor z 28.03): living + hall, the patio-door band, the west (bed) wing
+    // and (2026-10-08) the east-wing bathroom, whose east end is the graph place 'east-deck'. Patios and the porch are outside.
     internal static readonly (float x0, float y0, float x1, float y1)[] PeronautHouseRects =
     {
         (224.6f, 60.5f, 231.4f, 79.4f),   // living room + front hall (front doors at y 79.6)
         (222.0f, 68.3f, 234.0f, 70.6f),   // band between the patio-1 / patio-2 doors (inside-west .. inside-east)
-        (213.0f, 71.3f, 224.6f, 75.5f),   // west wing (MIRAGE bed)
+        (213.0f, 71.3f, 224.6f, 75.7f),   // west wing (MIRAGE bed) = the bedroom (nav grid: free to the north wall face y 75.7)
+        (231.4f, 71.4f, 243.6f, 76.2f),   // east-wing bathroom past side-room-2 (toilet, tub, sink; wall faces y 71.46 / 76.16, east x ~243.6)
     };
     internal const float HouseFloorZ = 28.03f, HomeApproachMaxOffGraph = 4f;
 
@@ -109,7 +110,8 @@ public static partial class Program
         return DailyOutfitCandidates(folders.Select(f => f.Name), DailyOutfitAllow()).FirstOrDefault();
     }
 
-    // before a beach-bound wander walk: walk to the living room (not a doorway) and put the Bikini on there
+    // before a beach-bound wander walk: walk to the bedroom change spot (clear of the bed and the doorway) and put the
+    // Bikini on there (2026-10-08 12:22 David: "go in the bedroom to change in/out of your bikini")
     static async Task BikiniIndoorsIfBeachBound(Graph g, Vector3 target, string seatLevel, string what, CancellationToken ct)
     {
         var me = client.Self.SimPosition;
@@ -119,25 +121,9 @@ public static partial class Program
             if (BeachBound(target, seatLevel) && !BikiniWorn()) WLog($"beach-bound ({what}) but already in the beach zone (at {P3(me)}): the beach zone will change her");
             return;
         }
-        if (plan == "detour-indoors") WLog($"beach-bound ({what}) from outside the house (at {P3(me)}): detour into the living room to change first");
-        var spotName = g.Places.ContainsKey("living") ? "living" : "home";
-        var spot = g.N[g.Places[spotName].node];
-        if (HDist(me, spot) > 3f || Math.Abs(me.Z - spot.Z) > 1.5f)
-        {
-            var (pts, err) = GraphRoute(g, me, g.Places[spotName].node);
-            if (err == null)
-            {
-                wanderPhase = "walking to the living room to change";
-                legCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                try
-                {
-                    var (ok, msg) = await FollowPoly(new Poly(pts), new RouteOpts { Label = $"to the {spotName} to put the bikini on" }, legCts.Token);
-                    WLog($"bikini change spot ({spotName}): {(ok ? "reached" : "not reached")} ({msg})");
-                }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-                { client.Self.AutoPilotCancel(); WLog($"walk to the change spot interrupted ({wanderPause ?? "cancel"})"); return; }
-            }
-        }
+        WLog($"beach-bound ({what}) from {(plan == "detour-indoors" ? "outside the house" : "inside")} (at {P3(me)}): to the {BikiniChangePlace(g)} to change first");
+        if (!await WalkToChangeSpot(g, "to put the bikini on", ct)) return;
+        if (!InBedroom(client.Self.SimPosition) && IndoorsAtHome(client.Self.SimPosition)) WLog($"bikini: walk ended short of the bedroom at {P3(client.Self.SimPosition)} (still indoors): changing here");
         if (!IndoorsAtHome(client.Self.SimPosition)) { WLog("bikini: not inside the house after the walk; the beach zone will change her on arrival"); return; }
         beachOutfitBusy = true;
         try
@@ -147,7 +133,7 @@ public static partial class Program
             WLog($"BIKINI indoors before the beach ({what}): remember '{remember ?? "-"}' for the way back");
             var r = await BikiniOn();
             RememberNamedOutfit("Bikini");
-            beachRememberedOutfit = remember; beachMode = true; PersistBeachState();
+            beachRememberedOutfit = remember; beachMode = true; beachModeDeferRestoreUntil = DateTime.UtcNow.AddMinutes(8); PersistBeachState();
             WLog("bikini on: " + r.Replace("\n", " | ")[..Math.Min(300, r.Length)]);
         }
         catch (Exception ex) { WLog("bikini indoors failed: " + ex.GetBaseException().Message); }

@@ -22,7 +22,7 @@ public class HomeSafetyTests
         Assert.True(Program.IndoorsAtHome(new(228.9f, 69.0f, 29.0f)));    // home / arrival point
         Assert.True(Program.IndoorsAtHome(new(228.0f, 65.0f, 29.0f)));    // living
         Assert.False(Program.IndoorsAtHome(new(230.6f, 57.0f, 29.0f)));   // patio chairs (outside)
-        Assert.False(Program.IndoorsAtHome(new(242.0f, 75.0f, 29.0f)));   // east deck (outside)
+        Assert.True(Program.IndoorsAtHome(new(242.0f, 74.0f, 29.0f)));    // "east-deck" place = east end of the bathroom (inside since 2026-10-08)
         Assert.False(Program.UnderHouse(StartLower));
         Assert.False(Program.UnderHouse(new(217.1f, 82.8f, 25.5f)));      // porch rockers
         Assert.False(Program.UnderHouse(new(219.3f, 60.3f, 21.1f)));      // rowboat

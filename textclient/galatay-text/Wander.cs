@@ -534,6 +534,8 @@ public static partial class Program
                 }
                 await Task.Delay(1000, ct); continue;
             }
+            // 2026-10-08 David: wash hands at the bathroom sink after the toilet (WashHands.cs)
+            if (toiletSatAt != null && client.Self.SittingOn == 0 && pendingToilet == null) { wanderPhase = "washing hands"; await WashHandsIfDue(g, ct); continue; }
             if (wLegsUntilSit <= 0)
             {
                 wanderPhase = "choosing a seat";
@@ -686,16 +688,17 @@ public static partial class Program
         return outp;
     }
 
-    static async Task<bool> HomeRandomSit(Graph g, CancellationToken ct)
+    // force* (hand wash after the toilet): that seat, that menu path and that stay instead of a random pick
+    static async Task<bool> HomeRandomSit(Graph g, CancellationToken ct, SeatCand force = null, List<string> forceMenu = null, int forceStay = 0)
     {
-        var cands = await HomeWanderSeats(g);
+        var cands = force != null ? new List<SeatCand> { force } : await HomeWanderSeats(g);
         var infos = LoadHomeSeats().GroupBy(i => i.Id).ToDictionary(x => x.Key, x => x.First());
         // 2026-10-07: no 'quiet >= 10 m' preference (it skewed picks to the far patio chairs); the 3 m avatar rule stays
         var pool = cands;
         if (pool.Count == 0) { WLog("sit: no free home seat right now (skipping this time)"); return false; }
         // 2026-10-08 level dwell: seats on the level she is staying on; busy seats there mean a walk instead, not a level switch
         string SeatLevel(SeatCand c) => HomeLevelOf(c.p.Position, infos.TryGetValue(c.p.ID, out var si) ? si.Level : null);
-        var level = WanderPickLevel(g, pool.Count(c => SeatLevel(c) == LevelBeach), pool.Count(c => SeatLevel(c) == LevelUpper));
+        var level = force != null ? SeatLevel(force) : WanderPickLevel(g, pool.Count(c => SeatLevel(c) == LevelBeach), pool.Count(c => SeatLevel(c) == LevelUpper));
         pool = pool.Where(c => SeatLevel(c) == level).ToList();
         if (pool.Count == 0) { WLog($"sit: no free seat on the {level} level right now (walking there instead)"); return false; }
         // one spot uniformly at random (grouped chairs count once, no repeat of the last 2 spots), then a random free chair there
@@ -759,12 +762,12 @@ public static partial class Program
         if (client.Self.SittingOn == 0) { MarkSeatFailed(c, "sit failed: " + r); await DressAfterSeatIfPending(); return false; }
         wLastSeat = c.p.ID; wSits++;
         WanderNoteLevel();
-        var stay = wRnd.Next(120, 241);
+        var stay = forceStay > 0 ? forceStay : wRnd.Next(120, 241);
         var t0 = DateTime.Now;
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
         bool menu = false, waterOn = false;
-        var fixedMenu = HomeSeatMenu(info, wRnd);
+        var fixedMenu = forceMenu ?? HomeSeatMenu(info, wRnd);
         if (fixedMenu != null)
         {
             try { var pr = await SeatPosePath(c.p, c.name, fixedMenu, ct); WLog($"POSE (seat menu {string.Join(" > ", fixedMenu)}): {pr}"); }

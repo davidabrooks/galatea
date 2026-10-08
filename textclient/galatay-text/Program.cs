@@ -563,7 +563,7 @@ public static partial class Program
             if (e.Status is TeleportStatus.Finished or TeleportStatus.Failed or TeleportStatus.Cancelled or TeleportStatus.Start)
                 Log("teleport", $"{e.Status}: {e.Message}");
         };
-        client.Self.AvatarSitResponse += (s, e) => Log("sit", $"sit response for object {e.ObjectID} (autopilot={e.Autopilot})");
+        client.Self.AvatarSitResponse += (s, e) => { Log("sit", $"sit response for object {e.ObjectID} (autopilot={e.Autopilot})"); NoteSitForWash(e.ObjectID); };
         client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = RecoverAfterRegionChange(); _ = Ensure360ForCurrentRegion("region change"); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); } };
         client.Network.Disconnected += (s, e) =>
         {

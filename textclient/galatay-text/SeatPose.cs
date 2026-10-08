@@ -22,11 +22,24 @@ public static partial class Program
     static readonly Regex PoseControlOnlySkip = new(@"^\s*$|^\s*\[.*\]\s*$|^[<>\-\s.]+$|\b(adjust\w*|position\w*|sync\w*|unsit|stand\s*up|stand|swap|back|next|prev\w*|more|page|options?|menu|help|reset|stop|helper|settings?|security|off|on)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Couples / intimate submenu / pose names (skip on auto paths). Includes Mirage-style Fist* (2026-10-06: wander
     // picked Fist* > fist 2 labeled [solo] but it was a couples anim). Explicit 'pose couples' may still enter these.
-    static readonly Regex PoseCouplesName = new(@"\b(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair|2p|fist|spank\w*|sex|lovemak\w*|intimate|make.?out|grind|straddl\w*|entwine|entangl\w*)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // 2026-10-07 19:39 (Beach Hammock ADULT: Adults* > 5Adults picked as solo): letter-only boundaries so digits next
+    // to the word still match ("5Adults", "Couple2"); adds mirror / love / hers / M&F-pair terms.
+    static readonly Regex PoseCouplesName = new(@"(?<![a-z])(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair\w*|[2-9]\s*p|fist|spank\w*|sex|lovemak\w*|love(?:rs?)?|intimate|make.?out|grind|straddl\w*|entwine|entangl\w*|mirror\w*|hers|his\s*(?:&|and|n)\s*hers)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Solo submenu names (Trompe Loeil Reiley etc. use SINGLE*).
-    static readonly Regex PoseSoloMenuName = new(@"\b(singles?|solo|alone|one\s*p|1p)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Prefix match so "SinglesSet*" counts (19:39 hammock); Sit / Relax-type menus count as solo too.
+    static readonly Regex PoseSoloMenuName = new(@"(?<![a-z])(?:singles?|solo|alone|relax|(?:sit(?:s|ting)?|one\s*p|1p)(?![a-z]))", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Adult / multi-avatar menus to skip when auto-picking PG solo after David leaves.
-    static readonly Regex PoseAdultMenuName = new(@"\b(adult|ffm|mmf|f\+?f\d*|m\+?f\d*|xxx|nsfw)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex PoseAdultMenuName = new(@"(?<![a-z])(adults?|ffm|mmf|fmf|mfm|f\+?f\d*|m\+?f\d*|m\s*[/&]\s*f|f\s*[/&]\s*m|xxx|nsfw|erotic\w*)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Seat object names like "... Beach Hammock ADULT": skipped for solo wander sits unless a singles menu was seen on it.
+    static readonly Regex SeatAdultName = new(@"(?<![a-z])adults?(?![a-z])|xxx|nsfw", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> poseSinglesSeen = new(StringComparer.OrdinalIgnoreCase);
+    // pure: may a solo wander sit use this seat? (ADULT-named only with a confirmed singles/solo menu)
+    public static bool SoloSeatNameOk(string name, bool singlesConfirmed) => singlesConfirmed || !SeatAdultName.IsMatch(name ?? "");
+    // pure: does this dialog offer a solo submenu (Singles*/SinglesSet*/Solo*/Sit*/Relax*)?
+    public static bool PoseMenuHasSoloSubmenu(IReadOnlyList<string> labels) =>
+        labels != null && labels.Any(b => (b ?? "").TrimEnd().EndsWith("*") && !PoseIsControl(b) && PoseIsSoloMenu(b) && !PoseIsCouplesNamed(b) && !PoseIsAdultMenu(b));
+    static bool SeatSinglesConfirmed(UUID id, string name) =>
+        poseSinglesSeen.ContainsKey(id.ToString()) || (!string.IsNullOrEmpty(name) && poseSinglesSeen.ContainsKey("name:" + name));
     // David 2026-09-25: never pick male poses
     static readonly Regex PoseMaleSkip = new(@"\b(male|males|men|man|guy|guys|boy|boys|him|his|masc\w*)\b|(^|[\s(\[_/-])m(\d+|(?=[\s)\]_*/-])|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly ConcurrentQueue<(DateTime at, ScriptDialogEventArgs e)> wDialogs = new();
@@ -110,6 +123,11 @@ public static partial class Program
     static void WanderDialogIn(ScriptDialogEventArgs e)
     {
         wDialogs.Enqueue((DateTime.Now, e));
+        if (PoseMenuHasSoloSubmenu(e.ButtonLabels))
+        {
+            poseSinglesSeen[e.ObjectID.ToString()] = true;
+            if (!string.IsNullOrEmpty(e.ObjectName)) poseSinglesSeen["name:" + e.ObjectName] = true;
+        }
         while (wDialogs.Count > 30) wDialogs.TryDequeue(out _);
         if (client?.Self?.SittingOn != 0)
         {
@@ -200,9 +218,10 @@ public static partial class Program
 
     // pure: which button to press (null = nothing suitable). submenu = AVsitter '*' label.
     // couplesMode: ONLY for explicit 'pose couples'. !couplesMode (default/recovery/wander): skip couples even if shared.
-    static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false)
+    // inSubmenu: already inside a submenu she chose (depth > 0); the "no clearly solo option" rule is for the top menu.
+    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false)
     {
-        var ok = new List<string>(); var skipped = new List<string>();
+        var ok = new List<string>(); var skipped = new List<string>(); bool risky = false;
         bool seatSel = PoseMenuLooksLikeSeatSelect(labels);
         foreach (var raw in labels ?? new())
         {
@@ -220,8 +239,8 @@ public static partial class Program
             }
             else
             {
-                if (PoseIsCouplesNamed(l)) { skipped.Add(l); continue; }
-                if (preferPgSolo && PoseIsAdultMenu(l)) { skipped.Add(l); continue; }
+                // solo mode: never couples / adult / intimate names (19:39 Adults* > 5Adults)
+                if (PoseIsCouplesNamed(l) || PoseIsAdultMenu(l)) { skipped.Add(l); risky = true; continue; }
             }
             ok.Add(l);
         }
@@ -230,11 +249,19 @@ public static partial class Program
             var mode = couplesMode ? (inCouplesMenu ? "couples submenu" : "couples (explicit)") : "solo";
             return (null, false, $"no suitable {mode} option (skipped: {string.Join(", ", skipped)})");
         }
-        // After David leaves: prefer Solo*/SINGLE* submenu at the top level when present
-        if (preferPgSolo && !couplesMode && !inCouplesMenu)
+        if (!couplesMode && !inCouplesMenu && !inSubmenu)
         {
-            var soloMenus = ok.Where(PoseIsSoloMenu).ToList();
-            if (soloMenus.Count > 0) ok = soloMenus;
+            var soloAny = ok.Where(PoseIsSoloMenu).ToList();
+            var soloSubs = soloAny.Where(l => l.TrimEnd().EndsWith("*")).ToList();
+            // a menu mixing adult/couples options: only a clearly solo option, else stay in the default pose
+            if (risky)
+            {
+                if (soloAny.Count == 0)
+                    return (null, false, $"no clearly solo option next to adult/couples options (skipped: {string.Join(", ", skipped)}); staying in the default pose");
+                ok = soloSubs.Count > 0 ? soloSubs : soloAny;
+            }
+            // prefer a Singles*/Solo*/Sit*/Relax* submenu at the top level when present
+            else if (preferPgSolo && soloSubs.Count > 0) ok = soloSubs;
         }
         var notCur = ok.Where(l => current == null || !string.Equals(PoseBare(l), current, StringComparison.OrdinalIgnoreCase)).ToList();
         var pool = notCur.Count > 0 ? notCur : ok;
@@ -357,7 +384,7 @@ public static partial class Program
                 var m = $"'{seatName}': David joined mid-pick — stopping (he chooses poses)";
                 WLog("POSE " + m); return m;
             }
-            var (pick, sub, why) = PickPoseButton(d.ButtonLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo);
+            var (pick, sub, why) = PickPoseButton(d.ButtonLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0);
             if (pick == null)
             {
                 var m = $"'{seatName}': {why}; keeping the current pose {current ?? "?"}";
@@ -719,6 +746,16 @@ public static partial class Program
             if (mag && cross && togetherNamed) pass++; else fail++;
             lines.Add($"{(mag && cross && togetherNamed ? "PASS" : "FAIL")} PoseLeafIsCouples: Magnetize from Couples PG path; Cross legs solo");
             poseLeafFromCouples.Clear();
+        }
+        {
+            // 2026-10-07 19:39 KraftWork Beach Hammock ADULT: Adults* > 5Adults was picked as [solo]
+            var hammock = new List<string> { "Adults*", "[ADJUST]", "[SWAP]", "SinglesSet*", "Mirror*", "Cuddles*" };
+            bool good = true;
+            for (int i = 0; i < 40; i++) good &= PickPoseButton(hammock, null, rnd, preferPgSolo: true).pick == "SinglesSet*";
+            good &= PickPoseButton(new() { "Adults*", "[ADJUST]", "Mirror*", "Cuddles*", "Clean*" }, null, rnd, preferPgSolo: true).pick == null;
+            good &= !SoloSeatNameOk("KraftWork Summer Shack . Beach Hammock ADULT", false) && SoloSeatNameOk("KraftWork Summer Shack . Beach Hammock ADULT", true);
+            if (good) pass++; else fail++;
+            lines.Add($"{(good ? "PASS" : "FAIL")} Beach Hammock ADULT: SinglesSet* only; no solo option -> default pose; ADULT seat needs a singles menu");
         }
         var cur = PoseCurrent("AVsitter™2.1\n\n [Onlegs 4]"); bool c = cur == "Onlegs 4"; if (c) pass++; else fail++;
         lines.Add($"{(c ? "PASS" : "FAIL")} current pose parsed from the menu text: '{cur}'");

@@ -4,7 +4,7 @@ using Xunit;
 
 namespace GalatayText.Tests;
 
-/// <summary>2026-10-08 David: bathroom sink = singles poses only (Solo*, never Shave); the clawfoot tub moved to 239.9,72.0.</summary>
+/// <summary>2026-10-08 David: bathroom sink = singles poses only (Solo*, never Shave); the clawfoot tub moved to 240.6,72.0.</summary>
 public class SinkSeatTests
 {
     static readonly List<string> SinkTop = new() { "Sex Behind*", "[ADJUST]", "[SWAP]", "Blowjobs*", "Mutual FP*", "Sex Front*", "Playing*", "Going Down*", "Handjobs*", "Texture", "Solo*", "Cuddles*" };
@@ -51,7 +51,7 @@ public class SinkSeatTests
     {
         var s = Seats();
         var tub = s[new UUID("53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc")]; var sink = s[new UUID("406eeb80-c05f-2f82-0857-145b725da0f8")];
-        Assert.Equal(239.9f, tub.Pos.X, 2); Assert.Equal(72.0f, tub.Pos.Y, 2);
+        Assert.Equal(240.6f, tub.Pos.X, 2); Assert.Equal(72.0f, tub.Pos.Y, 2);
         var cs = tub.ChangeSpot!.Value;
         // tub footprint 2.7 x 1.2 m along x (rotZ 180): x 238.55..241.25, y 71.4..72.6; stand >= 0.6 m off it, within 2.5 m of its centre
         bool inside = cs.X > 238.55f - 0.6f && cs.X < 241.25f + 0.6f && cs.Y > 71.4f - 0.6f && cs.Y < 72.6f + 0.6f;

@@ -510,7 +510,7 @@ public static partial class Program
         while (!ct.IsCancellationRequested)
         {
             if (!LoggedIn) { await Task.Delay(2000, ct); continue; }
-            if (pendingDressOutfit != null && client.Self.SittingOn == 0) await DressAfterSeatIfPending();
+            if ((pendingDressOutfit != null || pendingToilet != null) && client.Self.SittingOn == 0) await DressAfterSeatIfPending();
             if (!InPeronaut) { WLog($"left Peronaut (now {client.Network.CurrentSim?.Name ?? "-"}): stopping"); SaveWanderFlag(false, "left Peronaut"); return; }
             if (RestartActive) { wanderResumeAfterRestart = true; WLog("region restart handling active: stopping (resume after the return)"); SaveWanderFlag(true, "restart"); return; }
             if (client.Self.SittingOn == 0 && UnderHouse(client.Self.SimPosition)) { await UnderHouseRecover(g, "home wander loop", ct); continue; }
@@ -739,6 +739,11 @@ public static partial class Program
             pendingDressSpot = info.ChangeSpot;
             if (!await GoToChangeSpot(info.ChangeSpot, "undressing", ct)) { pendingDressOutfit = null; MarkSeatFailed(c, "could not reach the change spot"); return false; }
             await UndressForSeat(ct);
+        }
+        if (info?.Special == "toilet")
+        {
+            if (!await GoToChangeSpot(info.ChangeSpot, "toilet", ct)) { MarkSeatFailed(c, "could not reach the toilet spot"); return false; }
+            await ToiletUndress(ct);
         }
         var sitReq = DateTime.Now;
         var r = await Exec("sit " + c.p.ID);

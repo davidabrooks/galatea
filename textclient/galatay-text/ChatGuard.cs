@@ -7,6 +7,9 @@
 // Plain 'say' / 'shout' / 'whisper' still works (David-directed lines); a second nearby say within
 // GT_CHAT_GUARD_WINDOW_S (default 5 s) is refused unless '--force' (manual / David-directed double-send).
 // 'chatlog [name] [n]' = read-only nearby chat history with ids / answered state. 'chatguard selftest'.
+// 2026-10-08 08:13 David: "You greeted me twice again". A plain 'say' (no --re) answered his "good morning, babe" and the
+// chat routine's 'say --re <id>' 10 s later answered it again. A plain nearby say now also claims every unanswered nearby
+// line from the last PlainSayClaimWindow (2 min), implicitly, so a later 'say --re' on those ids is refused as answered.
 using System.Collections.Concurrent;
 using System.Globalization;
 using LibreMetaverse;
@@ -55,6 +58,11 @@ public static partial class Program
                (open.Count == 0 ? ". Nothing nearby is unanswered; nothing said." : $". Still unanswered: {string.Join("; ", open.Select(m => $"{m.Id} '{Short(m.Text, 60)}'"))} - reply to only those with 'say --re <ids>'; nothing said.");
     }
 
+    static readonly TimeSpan PlainSayClaimWindow = TimeSpan.FromMinutes(2);
+    // pure: ids a plain say (no --re) answers implicitly = unanswered nearby lines received in the last `window`
+    internal static List<long> PlainSayClaimIds(IEnumerable<InMsg> all, DateTimeOffset now, TimeSpan window) =>
+        all.Where(m => m.AnsweredAt == null && m.T <= now && now - m.T <= window).Select(m => m.Id).ToList();
+
     // pure (selftest): short duplicate window for plain say (not --re)
     internal static bool ChatWindowBlocks(DateTimeOffset now, DateTimeOffset? lastSay, TimeSpan window, bool force) =>
         !force && lastSay != null && now - lastSay.Value < window;
@@ -89,6 +97,14 @@ public static partial class Program
             (send ?? (() => client.Self.Chat(text, 0, type)))();
             lastNearbySayAt = now; lastNearbySayText = text ?? "";
             if (force) Log("chat-guard", "--force: said without the duplicate window");
+            var claim = PlainSayClaimIds(AllChatMsgs(), now, PlainSayClaimWindow);
+            if (claim.Count > 0)
+            {
+                foreach (var kv in chatMsgs)
+                    lock (kv.Value) foreach (var m in kv.Value)
+                        if (m.AnsweredAt == null && claim.Contains(m.Id)) { m.AnsweredAt = now; m.AnsweredBy = text ?? ""; m.Explicit = false; }
+                Log("chat-guard", $"plain {type}: also answers recent nearby line(s) {string.Join(",", claim)} (a later 'say --re' on them is refused)");
+            }
             return (true, null);
         }
     }

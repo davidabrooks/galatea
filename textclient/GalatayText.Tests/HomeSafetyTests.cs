@@ -79,10 +79,10 @@ public class HomeSafetyTests
         Assert.True(Program.BeachBound(new(228.5f, 53.0f, 21.2f), null));          // beach place
         Assert.False(Program.BeachBound(new(217.1f, 82.8f, 25.5f), "lower-porch"));
         Assert.False(Program.BeachBound(new(228.0f, 65.0f, 29.0f), null));
-        Assert.True(Program.IndoorBikiniChangeNeeded(true, false, true));
-        Assert.False(Program.IndoorBikiniChangeNeeded(true, true, true));             // already in the bikini
-        Assert.False(Program.IndoorBikiniChangeNeeded(true, false, false));           // not inside: zone fallback
-        Assert.False(Program.IndoorBikiniChangeNeeded(false, false, true));
+        Assert.Equal("change-here", Program.IndoorBikiniPlan(true, false, true, false));
+        Assert.Equal("none", Program.IndoorBikiniPlan(true, true, true, false));        // already in the bikini
+        Assert.Equal("none", Program.IndoorBikiniPlan(false, false, true, false));
+        Assert.Equal("none", Program.IndoorBikiniPlan(true, false, false, true));       // already on the beach: zone safety net
         Assert.Equal("ARTi tubetop", Program.BeachRememberChoice("ARTi tubetop", null));
         Assert.Equal("Jani tshirt", Program.BeachRememberChoice("Bikini", "Jani tshirt"));
         Assert.Null(Program.BeachRememberChoice("Bikini", "Spicy"));
@@ -92,5 +92,17 @@ public class HomeSafetyTests
         Assert.Equal("wait-indoors", Program.ZoneAction("house", true, true, false)); // porch / patio: wait
         Assert.Equal("restore", Program.ZoneAction("house", true, true, true));
         Assert.Equal("none", Program.ZoneAction("house", false, false, true));
+    }
+
+    [Fact]
+    public void Outside_with_a_beach_target_detours_indoors_before_the_change()
+    {
+        // 2026-10-08 08:14: on patio-sw (outside) when 'Burgundy Pier . Bench' was picked
+        var patioSw = new Vector3(221.5f, 57.2f, 29.0f);
+        Assert.False(Program.IndoorsAtHome(patioSw));
+        Assert.NotEqual("beach", Program.OutfitZoneFor("Peronaut", patioSw, false));
+        bool beach = Program.BeachBound(new(214.8f, 30.5f, 23.9f), "lower-pier");
+        Assert.Equal("detour-indoors", Program.IndoorBikiniPlan(beach, false, Program.IndoorsAtHome(patioSw), false));
+        Assert.Equal("none", Program.IndoorBikiniPlan(beach, true, false, false));      // bikini already on: no detour
     }
 }

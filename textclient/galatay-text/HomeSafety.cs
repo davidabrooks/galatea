@@ -11,6 +11,10 @@ namespace GalatayText;
 // 2026-10-07 21:19 David: "When you decide you walk to the beach you should put on your bikini inside the house".
 // Before a beach-bound wander walk she changes in the living room. Back from the beach she changes back only once
 // she is inside the house again (not on the porch or patios).
+// 2026-10-08 08:14 David: no bikini change at home before the beach. The beach seat was picked while she was outside on
+// patio-sw, so the indoor change was skipped and the beach zone changed her on the way down. Now, outside the house (and
+// not already in the beach zone), she detours back into the living room, changes there, then walks on to the beach.
+// The beach-zone change stays only as a safety net.
 public static partial class Program
 {
     // house body from the nav grid (_nav-peronaut-home.json, floor z 28.03): living + hall, the patio-door band, the west (bed) wing.
@@ -74,8 +78,10 @@ public static partial class Program
     internal static bool BeachBound(Vector3 target, string seatLevel) =>
         (seatLevel != null && (seatLevel.StartsWith("lower-beach", StringComparison.OrdinalIgnoreCase) || seatLevel.StartsWith("lower-pier", StringComparison.OrdinalIgnoreCase)))
         || OutfitZoneFor("Peronaut", target, false) == "beach";
-    // pure: change into the bikini here, before leaving the house?
-    internal static bool IndoorBikiniChangeNeeded(bool beachBound, bool bikiniWorn, bool indoorsNow) => beachBound && !bikiniWorn && indoorsNow;
+    // pure: "none" | "change-here" (inside: change in the living room) | "detour-indoors" (outside: walk back into the living
+    // room first, change there, then on to the beach). Already in the beach zone: "none" (the zone safety net changes her).
+    internal static string IndoorBikiniPlan(bool beachBound, bool bikiniWorn, bool indoorsNow, bool inBeachZoneNow) =>
+        !beachBound || bikiniWorn ? "none" : indoorsNow ? "change-here" : inBeachZoneNow ? "none" : "detour-indoors";
     // pure: the clothed outfit to come back to (never the bikini itself)
     internal static string BeachRememberChoice(string lastNamed, string beachRemembered)
     {
@@ -107,11 +113,13 @@ public static partial class Program
     static async Task BikiniIndoorsIfBeachBound(Graph g, Vector3 target, string seatLevel, string what, CancellationToken ct)
     {
         var me = client.Self.SimPosition;
-        if (!IndoorBikiniChangeNeeded(BeachBound(target, seatLevel), BikiniWorn(), IndoorsAtHome(me)))
+        var plan = IndoorBikiniPlan(BeachBound(target, seatLevel), BikiniWorn(), IndoorsAtHome(me), OutfitZoneFor("Peronaut", me, false) == "beach");
+        if (plan == "none")
         {
-            if (BeachBound(target, seatLevel) && !BikiniWorn()) WLog($"beach-bound ({what}) but not inside the house (at {P3(me)}): the beach zone will change her on arrival");
+            if (BeachBound(target, seatLevel) && !BikiniWorn()) WLog($"beach-bound ({what}) but already in the beach zone (at {P3(me)}): the beach zone will change her");
             return;
         }
+        if (plan == "detour-indoors") WLog($"beach-bound ({what}) from outside the house (at {P3(me)}): detour into the living room to change first");
         var spotName = g.Places.ContainsKey("living") ? "living" : "home";
         var spot = g.N[g.Places[spotName].node];
         if (HDist(me, spot) > 3f || Math.Abs(me.Z - spot.Z) > 1.5f)

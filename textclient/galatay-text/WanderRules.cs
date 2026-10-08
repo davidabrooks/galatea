@@ -1,7 +1,7 @@
 // Per-region wander rules (2026-10-07, David): data-driven from routes/_wander-rules.json, keyed by region name.
 // Home (Peronaut): sit anywhere (even by David), skip seats with anyone within 3 m, greetings on.
 // levelDwellMin (2026-10-08): home wander minutes on one level (beach / upper) before switching (LevelDwell.cs).
-// Buddha Center (Naberrie): quiet rule, no seat within 10 m of ANY avatar, and no greetings / nearby chat during wander.
+// Buddha Center (Naberrie): quiet rule, no seat within 10 m of ANY avatar; greetings on (sessions still suppress via Quiet.cs).
 using System.Text.Json.Nodes;
 
 namespace GalatayText;

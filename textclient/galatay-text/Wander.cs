@@ -1211,7 +1211,22 @@ public static partial class Program
     // 2026-09-27 09:31 (David): short, gentle Buddhist greetings, always with the display name (GreetName/ShortName).
     // Picked at random, never the same line twice in a row. Lines mentioning the Deer Park are used only near the Deer Park.
     // 2026-09-27 09:50 (David): the Buddhist pool/personality is used ONLY while the VIOLETTE robe is actually worn
-    // (RobeWorn(): her attached objects, not her location); without the robe the old ordinary pool below is used.
+    // (RobeWorn(): her attached objects, not her location).
+    // 2026-10-08 (David): without the robe, home (Peronaut) uses HomeGreetTemplates (warm casual hellos — never
+    // "Buddha Center" / "gardens"); Buddha Center without the robe keeps OrdinaryGreetTemplates below.
+    // Home pool (Peronaut / place "home"): warm, casual hellos that suit our house. No BC / gardens lines.
+    internal static readonly string[] HomeGreetTemplates =
+    {
+        "Hi {name}! Nice to see you :)",
+        "Hey {name}, hello! Good to see you.",
+        "Hello {name}! Lovely {tod}.",
+        "Hi {name}, welcome! Make yourself at home.",
+        "Hey {name}! How's your {tod} going?",
+        "Hello {name}, good to see you here :)",
+        "Hi {name}! Come on in.",
+        "Hey {name}, hello! Glad you're here.",
+    };
+    // Buddha Center without the robe (ordinary / location-flavoured pool).
     static readonly string[] OrdinaryGreetTemplates =
     {
         "Hi {name}, welcome to the Buddha Center!",
@@ -1294,10 +1309,18 @@ public static partial class Program
     }
     static string TimeOfDay(DateTime t) => t.Hour switch { >= 5 and < 12 => "morning", >= 12 and < 17 => "afternoon", >= 17 and < 22 => "evening", _ => "night" };
     static bool GreetDeerParkOnly(string t) => t.Contains("Deer Park", StringComparison.Ordinal);
-    // idx = last line used (encoded: Buddhist i, ordinary 100+i) so a pool switch never blocks a line wrongly
-    static string NextGreeting(DateTime now, string name, ref int idx, bool atDeerPark = false, bool robe = true)
+    // pure: place from _wander-rules.json ("home", "The Buddha Center", "default", ...)
+    internal static bool IsHomeGreetPlace(string place) =>
+        string.Equals(place?.Trim(), "home", StringComparison.OrdinalIgnoreCase);
+    // idx = last line used (encoded: Buddhist i, ordinary 100+i, home 200+i) so a pool switch never blocks a line wrongly
+    // place: CurrentWanderRule().Place — home -> HomeGreetTemplates when robe is off; BC/default without robe -> OrdinaryGreetTemplates
+    internal static string NextGreeting(DateTime now, string name, ref int idx, bool atDeerPark = false, bool robe = true, string place = null)
     {
-        var t = robe ? GreetTemplates : OrdinaryGreetTemplates; int off = robe ? 0 : 100;
+        // Home always uses the home pool (location wins over robe) so we never welcome guests to the Buddha Center at Peronaut.
+        string[] t; int off;
+        if (IsHomeGreetPlace(place)) { t = HomeGreetTemplates; off = 200; }
+        else if (robe) { t = GreetTemplates; off = 0; }
+        else { t = OrdinaryGreetTemplates; off = 100; }
         int last = idx - off;
         var pool = Enumerable.Range(0, t.Length).Where(i => i != last && (atDeerPark || !GreetDeerParkOnly(t[i]))).ToList();
         int pick = pool[wRnd.Next(pool.Count)]; idx = pick + off;
@@ -1372,7 +1395,7 @@ public static partial class Program
                     GreetCand who; string why;
                     lock (wGreeted) (who, why) = PickGreet(avs, client.Self.SimPosition, DateTime.Now, wGreeted, wLastGreet, IsMuted, client.Self.AgentID, spoke: wSpokeTo);
                     if (who == null) continue;
-                    if (!CurrentWanderRule().Greet) continue; // per-region rule (_wander-rules.json): Buddha Center wanders quietly
+                    if (!CurrentWanderRule().Greet) continue; // per-region rule (_wander-rules.json): greet:false skips auto-greet
                     if (QuietOn) { QLogSuppressedGreet(who); continue; } // Buddha Center rule: no nearby chat during sessions
 
                     var rg = RateGuard();
@@ -1380,8 +1403,10 @@ public static partial class Program
                     var gname = await GreetName(who.id, who.name);
                     if (wanderPause != null || !wanderPhase.StartsWith("walking") || QuietOn || !CurrentWanderRule().Greet) continue; // changed while looking up the name
                     bool robeOn = RobeWorn(out var robeHow);
-                    var txt = NextGreeting(DateTime.Now, gname, ref wGreetIdx, HDist(client.Self.SimPosition, DeerParkCentre) <= 25f, robeOn);
-                    WLog($"greeting pool: {(robeOn ? "Buddhist" : "ordinary")} ({robeHow})");
+                    var place = CurrentWanderRule().Place;
+                    var txt = NextGreeting(DateTime.Now, gname, ref wGreetIdx, HDist(client.Self.SimPosition, DeerParkCentre) <= 25f, robeOn, place);
+                    var poolName = IsHomeGreetPlace(place) ? "home" : (robeOn ? "Buddhist" : "ordinary");
+                    WLog($"greeting pool: {poolName} ({robeHow}; place={place})");
                     HeadTurnTo(who.id, "wander greeting");   // a short head turn to whom she greets (LookAt.cs)
                     client.Self.Chat(txt, 0, ChatType.Normal);
                     var now = DateTime.Now;
@@ -1540,22 +1565,35 @@ public static partial class Program
         }
         lines.Add($"{(shortOk ? "PASS" : "FAIL")} every line short (<= 60 chars) and has the name");
         lines.Add("pool: " + string.Join(" | ", GreetTemplates.Select(t => t.Replace("{name}", "Maya"))));
-        // robe-gated pools
-        int oi = -1; var seenO = new List<string>(); for (int i = 0; i < 200; i++) seenO.Add(NextGreeting(now, "Maya", ref oi, true, robe: false));
+        // robe / place-gated pools
+        int oi = -1; var seenO = new List<string>(); for (int i = 0; i < 200; i++) seenO.Add(NextGreeting(now, "Maya", ref oi, true, robe: false, place: "The Buddha Center"));
         var ordSet = OrdinaryGreetTemplates.Select(t => t.Replace("{tod}", TimeOfDay(now)).Replace("{name}", "Maya")).ToHashSet();
         bool ordOk = seenO.All(ordSet.Contains) && seenO.Distinct().Count() == OrdinaryGreetTemplates.Length && seenO.Zip(seenO.Skip(1)).All(p => p.First != p.Second);
         if (ordOk) pass++; else fail++;
-        lines.Add($"{(ordOk ? "PASS" : "FAIL")} no robe -> ordinary pool only ({seenO.Distinct().Count()}/{OrdinaryGreetTemplates.Length} used, no Buddhist line, never twice in a row)");
-        int mi = -1; var mixed = new List<string>(); for (int i = 0; i < 100; i++) mixed.Add(NextGreeting(now, "Maya", ref mi, false, robe: i % 7 < 4));
-        bool mixOk = mixed.Zip(mixed.Skip(1)).All(p => p.First != p.Second);
+        lines.Add($"{(ordOk ? "PASS" : "FAIL")} BC no robe -> ordinary pool only ({seenO.Distinct().Count()}/{OrdinaryGreetTemplates.Length} used, no Buddhist line, never twice in a row)");
+        int hi = -1; var seenH = new List<string>(); for (int i = 0; i < 200; i++) seenH.Add(NextGreeting(now, "Maya", ref hi, false, robe: false, place: "home"));
+        var homeSet = HomeGreetTemplates.Select(t => t.Replace("{tod}", TimeOfDay(now)).Replace("{name}", "Maya")).ToHashSet();
+        bool homeOk = seenH.All(homeSet.Contains) && seenH.Distinct().Count() == HomeGreetTemplates.Length
+            && seenH.Zip(seenH.Skip(1)).All(p => p.First != p.Second)
+            && HomeGreetTemplates.All(t => !t.Contains("Buddha Center", StringComparison.OrdinalIgnoreCase) && !t.Contains("gardens", StringComparison.OrdinalIgnoreCase));
+        if (homeOk) pass++; else fail++;
+        lines.Add($"{(homeOk ? "PASS" : "FAIL")} home no robe -> home pool only ({seenH.Distinct().Count()}/{HomeGreetTemplates.Length} used, no BC/gardens, never twice in a row)");
+        int mi = -1; var mixed = new List<string>(); for (int i = 0; i < 100; i++) mixed.Add(NextGreeting(now, "Maya", ref mi, false, robe: i % 7 < 4, place: "home"));
+        var homeSet2 = HomeGreetTemplates.Select(t => t.Replace("{tod}", TimeOfDay(now)).Replace("{name}", "Maya")).ToHashSet();
+        bool mixOk = mixed.All(homeSet2.Contains) && mixed.Zip(mixed.Skip(1)).All(p => p.First != p.Second);
         if (mixOk) pass++; else fail++;
-        lines.Add($"{(mixOk ? "PASS" : "FAIL")} robe on/off switching: never the same line twice in a row");
+        lines.Add($"{(mixOk ? "PASS" : "FAIL")} home + robe on/off: still home pool only, never the same line twice in a row");
+        int mi2 = -1; var mixedBc = new List<string>(); for (int i = 0; i < 100; i++) mixedBc.Add(NextGreeting(now, "Maya", ref mi2, false, robe: i % 7 < 4, place: "The Buddha Center"));
+        bool mixBcOk = mixedBc.Zip(mixedBc.Skip(1)).All(p => p.First != p.Second);
+        if (mixBcOk) pass++; else fail++;
+        lines.Add($"{(mixBcOk ? "PASS" : "FAIL")} BC robe on/off switching: never the same line twice in a row");
         foreach (var (reg, robe, force, allow) in new (string, bool, bool, bool)[] { ("Naberrie", true, false, true), ("naberrie", true, false, true), ("Firestorm Orientation", true, false, false), ("Firestorm Orientation", true, true, true), ("Firestorm Orientation", false, false, true), (null, true, false, false) })
         {
             bool ok = (RobeTpBlock(reg, robe, force) == null) == allow; if (ok) pass++; else fail++;
             lines.Add($"{(ok ? "PASS" : "FAIL")} robe teleport guard: to '{reg ?? "(unknown, e.g. lure)"}' robe={robe} force={force} -> {(allow ? "allowed" : "refused")}");
         }
         lines.Add("ordinary pool: " + string.Join(" | ", OrdinaryGreetTemplates.Select(t => t.Replace("{name}", "Maya"))));
+        lines.Add("home pool: " + string.Join(" | ", HomeGreetTemplates.Select(t => t.Replace("{name}", "Maya"))));
         return $"greeting selftest: {pass} pass, {fail} fail\n" + string.Join("\n", lines);
     }
 

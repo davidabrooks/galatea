@@ -1,8 +1,8 @@
 {
   "region": "Peronaut",
-  "source": "home places: upper level verified walking on the Peronaut nav grid 2026-10-05; lower level (porch, mid walkway, east stairs, beach, GOOSE 3-step deck stair + Mooring deck, Burgundy pier) from David's tour 15:23-16:51 PT: recorded beach-stairs-up route, David's standing positions and her follow trace; 2026-10-06 doorway fix: west/east side-room legs only through door approach nodes (no wall-cutting 8-12 / 7-11); hall links from home; 2026-10-07 couch fix: living/desk nodes moved off furniture, desk bypass, home -> arrival point, CI checks edges vs furniture_footprints; 2026-10-07 stair-corner fix: porch walk leaves the front-stairs foot north (y 87.3) around the west stair side instead of cutting west at y 85.8; 2026-10-07 front-door fix: front-hall/front legs no longer cut diagonally from the porch-top node 9 through the wall west of the double door - they pass straight N-S through the opening centre (x 228.05) via inside node 48, so both inbound and outbound cross the door cells and pre-open both leaves (west side via 49-50 around the desk, east side via 44); 2026-10-07 all-doors fix: side-room-1/2 doorway nodes on y 75.3/75.35 and patio-1/2 legs on x 223.2/232.9 (door-cell centres; side-room approaches via corridor nodes 50 / 51); front-stairs turn points 1 m further out (y 88.3)",
+  "source": "home places: upper level verified walking on the Peronaut nav grid 2026-10-05; lower level (porch, mid walkway, east stairs, beach, GOOSE 3-step deck stair + Mooring deck, Burgundy pier) from David's tour 15:23-16:51 PT: recorded beach-stairs-up route, David's standing positions and her follow trace; 2026-10-06 doorway fix: west/east side-room legs only through door approach nodes (no wall-cutting 8-12 / 7-11); hall links from home; 2026-10-07 couch fix: living/desk nodes moved off furniture, desk bypass, home -> arrival point, CI checks edges vs furniture_footprints; 2026-10-07 stair-corner fix: porch walk leaves the front-stairs foot north (y 87.3) around the west stair side instead of cutting west at y 85.8; 2026-10-07 front-door fix: front-hall/front legs no longer cut diagonally from the porch-top node 9 through the wall west of the double door - they pass straight N-S through the opening centre (x 228.05) via inside node 48, so both inbound and outbound cross the door cells and pre-open both leaves (west side via 49-50 around the desk, east side via 44); 2026-10-07 all-doors fix: side-room-1/2 doorway nodes on y 75.3/75.35 and patio-1/2 legs on x 223.2/232.9 (door-cell centres; side-room approaches via corridor nodes 50 / 51); front-stairs turn points 1 m further out (y 88.3); 2026-10-07 pier fix: Burgundy pier nodes on its long axis x 216.3 (pier-start 35 in the open root module, pier 36, ramp top 52, axis 53 by the second bench, pier-end 38); she turns west to pier-south 37 only at the bench; 'narrow' corridor = the pier deck between its rails (x 214.0-218.6): no corner cutting, no lane sidesteps",
   "created": "2026-10-05T11:15:00",
-  "updated": "2026-10-07T09:00:00",
+  "updated": "2026-10-07T19:50:00",
   "nodes": [
     [228.9, 69.0, 29.0],
     [228.0, 68.0, 29.0],
@@ -39,10 +39,10 @@
     [213.1, 57.6, 21.8],
     [210.6, 58.8, 21.8],
     [220.0, 50.5, 21.0],
-    [216.5, 47.1, 22.2],
-    [217.3, 44.7, 21.8],
+    [216.3, 51.9, 21.2],
+    [216.3, 44.6, 22.3],
     [215.4, 30.5, 24.7],
-    [216.6, 26.0, 24.7],
+    [216.3, 24.4, 24.7],
     [226.5, 75.3, 29.0],
     [222.0, 75.3, 29.0],
     [229.6, 75.35, 29.0],
@@ -55,7 +55,9 @@
     [228.05, 77.6, 29.0],
     [225.5, 72.8, 29.0],
     [225.3, 70.2, 29.0],
-    [231.0, 70.4, 29.0]
+    [231.0, 70.4, 29.0],
+    [216.3, 37.0, 24.6],
+    [216.3, 30.5, 24.7]
   ],
   "edges": [
     [0, 1, "living"],
@@ -95,8 +97,10 @@
     [28, 34, "beach"],
     [34, 35, "beach-pier"],
     [35, 36, "burgundy-pier"],
-    [36, 37, "burgundy-pier"],
-    [37, 38, "burgundy-pier"],
+    [36, 52, "burgundy-pier"],
+    [52, 53, "burgundy-pier"],
+    [53, 37, "pier-bench"],
+    [53, 38, "burgundy-pier"],
     [50, 39, "west-door-approach"],
     [39, 40, "west-doorway"],
     [40, 12, "west-wing"],
@@ -157,5 +161,8 @@
     {"name": "Dutchie maledom desk", "uuid": "1b9ab440-3b52-b827-2eae-7de92fb69cfb", "min": [226.75, 70.8], "max": [229.45, 72.2], "source": "map: <228.1,71.5> size 2.7x1.4 rotZ 0"},
     {"name": "front stairs west side (bottom-left corner)", "uuid": "Trompe Loeil - Petra Elevated child", "min": [225.6, 83.0], "max": [227.0, 86.3], "source": "export-20261007-084458 child box max y 86.26 + STUCK trace 2026-10-07 08:43 at x 226.4 y 84.9-86.5 (z 27.5-26.3)"}
   ],
-  "footprint_margin": 0.3
+  "footprint_margin": 0.3,
+  "narrow": [
+    {"name": "Burgundy pier", "a": [216.3, 49.4], "b": [216.3, 17.0], "half_width": 2.3, "source": "scene export-20261007-194712: Simple Module deck 5 m wide on x 216.3, rails x 214.0 / 218.6 from y 49.4 to 17"}
+  ]
 }

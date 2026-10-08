@@ -354,6 +354,13 @@ public static partial class Program
         double idleSecs = 0; float nextIdle = o.Idle ? 15f + (float)wRnd.NextDouble() * 30f : float.MaxValue; // wander: short natural pauses
         var start = client.Self.SimPosition;
         bool legacy = steerLegacy;
+        // doorway zones on this path (no pause / idle / greet / sidestep there; 19:45 David)
+        var zoneGrids = NavGrids().Where(g => g.Region == null || string.Equals(g.Region, region, StringComparison.OrdinalIgnoreCase)).ToList();
+        var doorCrossS = AllDoorCrossings(u => V2(poly.At(u)), poly.Len, (p, q) => zoneGrids.Any(g => (g.Contains(p.X, p.Y) || g.Contains(q.X, q.Y)) && DoorsOnSegment(g, p, q).Count > 0));
+        var doorCentres = zoneGrids.SelectMany(g => g.Doors).Select(nd => V2(nd.Center)).ToList();
+        bool idleDeferLogged = false, blockDeferLogged = false;
+        var narrow = NarrowFor(region); bool narrowLogged = false;   // piers/docks: no corner cutting, no lane offsets
+        if (doorCrossS.Count > 0) RLogR($"{o.Label}: doorway zones at s={string.Join(", ", doorCrossS.Select(x => x.ToString("F1", CultureInfo.InvariantCulture)))} (no pauses {DoorZoneBeforeM:F1} m before to {DoorZoneAfterM:F1} m past)");
         RLogR($"{o.Label}: start at {P3(start)}, {poly.Len:F0} m, {poly.P.Count} points, end {P3(poly.At(poly.Len))}; steer {(legacy ? "legacy" : "smooth")}");
         // steering state + heading instrumentation (sampled every 100 ms from the sim's own-avatar rotation while moving > 0.8 m/s)
         Vector3? aim = null; DateTime aimAt = DateTime.MinValue; bool needAim = true, driftMode = false; float aimLane = 0;
@@ -401,6 +408,11 @@ public static partial class Program
                 if (pj.s > s) s = pj.s;
                 curS = s; if (pj.dist > maxDev) { maxDev = pj.dist; maxDevAt = me; }
                 var end = poly.At(poly.Len);
+                var zoneClear = DoorZoneClearAt(s, doorCrossS);
+                bool nearDoor = NearDoorCentre(V2(me), doorCentres);
+                routeInDoorZone = zoneClear != null || nearDoor;
+                routeDoorZoneWhy = zoneClear != null ? $"s={s:F1}, clear at s={zoneClear:F1}" : nearDoor ? $"within {DoorNearM:F1} m of a door" : "";
+                if (zoneClear == null && nearDoor) zoneClear = s + DoorZoneAfterM;
                 routeState = $"{o.Label}: {s:F0}/{poly.Len:F0} m at {P3(me)}, off-path {pj.dist:F1} m{(lane != 0 ? $", lane {lane:+0;-0}" : "")}{(blockedSince != null ? ", PAUSED for " + lastBlock?.name : "")}";
                 if (poly.Len - s < 1.6f && HDist(me, end) <= EndTol)
                 {
@@ -416,13 +428,21 @@ public static partial class Program
                 if (me.Z < pz - 1.8f && pj.dist < 4f) { belowSince ??= now; if ((now - belowSince.Value).TotalSeconds > 2.5) { client.Self.AutoPilotCancel(); var m = Summary($"stopped: FELL below the path at {P3(me)} (path z {pz:F1})"); RLogR($"{o.Label}: {m}"); return (false, m); } }
                 else belowSince = null;
                 // people
+                bool noLane = NoLaneHere(poly.P, poly.C, s, V2(me), narrow);
+                if (noLane && !narrowLogged) { narrowLogged = true; RLogR($"{o.Label}: narrow segment at s={s:F0} (pier/dock): centre line only, no corner cutting, no lane offsets"); }
+                if (noLane && lane != 0) { lane = 0; laneUntil = -1; needAim = true; }
                 var blk = Blocker(poly, s, lane, me);
+                if (blk != null && blockedSince == null && routeInDoorZone && DeferBlockerPause(s, zoneClear, blk.s))
+                {
+                    if (!blockDeferLogged) { blockDeferLogged = true; RLogR($"{o.Label}: {blk.name} {blk.s - s:F1} m ahead, but she is in a doorway: walking on and pausing once clear (s={zoneClear:F1})"); }
+                    blk = null;
+                }
                 if (blk != null)
                 {
                     if (blockedSince == null) { blockedSince = now; pauses++; triedSide = false; client.Self.AutoPilotCancel(); needAim = true; RLogR($"{o.Label}: PAUSE - {blk.name} on the path {blk.s - s:F1} m ahead (lateral {blk.lat:+0.0;-0.0} m, {blk.dist:F1} m away) at s={s:F0}"); }
                     lastBlock = blk;
                     var waited = (now - blockedSince.Value).TotalSeconds;
-                    if (waited >= 10 && !triedSide)
+                    if (waited >= 10 && !triedSide && !routeInDoorZone && !noLane)   // no sidestep inside a doorway
                     {
                         triedSide = true;
                         foreach (var side in new[] { blk.lat > 0 ? -1f : 1f, blk.lat > 0 ? 1f : -1f })
@@ -444,7 +464,12 @@ public static partial class Program
                 if (lane != 0 && laneUntil >= 0 && s > laneUntil && Blocker(poly, s, 0, me) == null) { lane = 0; laneUntil = -1; RLogR($"{o.Label}: back to the path centre at s={s:F0}"); }
                 if (lane != 0 && poly.Len - s < 2.5f && Blocker(poly, s, 0, me) == null) { lane = 0; laneUntil = -1; }
                 // natural short pause (wander only): every 15-45 m, 6-20 s (was 3-10 s; David 2026-09-26 10:15 'wait a little longer'), not near the end, zendo margin, steps, or people
-                if (s >= nextIdle && lane == 0 && blockedSince == null && poly.Len - s > 5f)
+                if (s >= nextIdle && lane == 0 && blockedSince == null && poly.Len - s > 5f && !IdlePauseAllowedHere(s, doorCrossS, nearDoor))
+                {
+                    nextIdle = Math.Max(nextIdle, (zoneClear ?? s) + 0.5f);   // defer the look-around until clear of the doorway
+                    if (!idleDeferLogged) { idleDeferLogged = true; Log("wander", $"short pause deferred at s={s:F0}: in a doorway, waiting until s={nextIdle:F1}"); }
+                }
+                else if (s >= nextIdle && lane == 0 && blockedSince == null && poly.Len - s > 5f)
                 {
                     float slope = Math.Abs(poly.At(Math.Min(poly.Len, s + 2f)).Z - poly.At(Math.Max(0, s - 2f)).Z);
                     bool steps = slope > 0.5f || Math.Abs(me.Z - poly.At(s).Z) > 1.6f;
@@ -478,12 +503,21 @@ public static partial class Program
                         });
                         if (dAhead is float da && DoorTouchDue(da))
                         {
-                            client.Self.AutoPilotCancel();
-                            RLogR($"{o.Label}: door(s) {da:F1} m ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching then through");
-                            await EnsureDoorsOpen(ahead, ct);
+                            // touch while walking (no stop at an open door); hold outside only if the leaf would not have
+                            // DoorSwingWaitMs to swing before she reaches it (19:45 David: no pausing at doorways)
+                            RLogR($"{o.Label}: door(s) {da:F1} m ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching while walking");
+                            var touchT0 = DateTime.Now;
+                            var vel = client.Self.Velocity; float spd = new Vector2(vel.X, vel.Y).Length();
+                            int touched = await EnsureDoorsOpen(ahead, ct);
                             foreach (var nd in ahead) doorsOpened.Add(nd.Id);
                             var swingT0 = DateTime.Now;
-                            while ((DateTime.Now - swingT0).TotalMilliseconds < DoorSwingWaitMs - DoorThroughDelayMs && !ahead.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
+                            int hold = DoorApproachHoldMs(da, spd, (int)(swingT0 - touchT0).TotalMilliseconds, touched > 0);
+                            if (hold > 0 && !ahead.Any(nd => DoorState(nd).open))
+                            {
+                                client.Self.AutoPilotCancel();
+                                RLogR($"{o.Label}: holding {hold} ms before the door (speed {spd:F1} m/s, {da:F1} m) for the leaf to swing");
+                                while ((DateTime.Now - swingT0).TotalMilliseconds < hold && !ahead.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
+                            }
                             doorSeqTried = false; // allow unstick again if still blocked
                             now = DateTime.Now; lastProgT = now; lastProgS = s; needAim = true;
                         }
@@ -511,13 +545,15 @@ public static partial class Program
                         var back = poly.At(Math.Max(0, s - 1.2f)); client.Self.AutoPilotCancel(); AutoPilotTo(back);
                         for (int i = 0; i < 5 && HDist(client.Self.SimPosition, back) > 0.5f; i++) await Task.Delay(400, ct);
                     }
-                    bool ok = await LaneClear(poly, s, side, o) || await LaneClear(poly, s, side = -side, o);
+                    bool ok = !noLane && (await LaneClear(poly, s, side, o) || await LaneClear(poly, s, side = -side, o));
                     lane = ok ? side : 0; laneUntil = s + 3f;
+                    if (noLane) RLogR($"{o.Label}: narrow segment: no lane sidestep, retrying the centre line");
                     RLogR($"{o.Label}: STUCK at {P3(me)} s={s:F0} (no progress 3 s) -> recovery {recov}/4: {(recov >= 3 ? "backed off 1.2 m, " : "")}{(ok ? $"lane {side:+0;-0} m" : "no free side lane, retry centre")}");
                     lastProgT = now; lastProgS = s; needAim = true;
                 }
                 // steer
                 float lookD = legacy ? Look : SteerLook(poly, s);
+                lookD = NarrowLook(poly.P, poly.C, s, lookD, narrow);   // never look past a corner on/onto a pier
                 float cs = Math.Min(poly.Len, s + lookD);
                 var d = poly.Dir(cs); var c = poly.At(cs) + new Vector3(-d.Y, d.X, 0) * lane;
                 // the server autopilot stops ~1 m short of its target: near the end aim 0.8 m past the end point (arrival check cancels at 1 m)
@@ -548,7 +584,7 @@ public static partial class Program
                 }
             }
         }
-        finally { curRoute = null; routeState = "idle"; try { sampCts.Cancel(); } catch { } }
+        finally { curRoute = null; routeState = "idle"; routeInDoorZone = false; routeDoorZoneWhy = ""; try { sampCts.Cancel(); } catch { } }
     }
 
     static async Task<string> RunRoute(List<Vector3> pts, RouteOpts o, CancellationToken ct)

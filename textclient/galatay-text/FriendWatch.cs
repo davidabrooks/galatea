@@ -109,6 +109,7 @@ public static partial class Program
             var pending = Reminders().Select((r, i) => (n: i + 1, r)).Where(x => x.r.pending).ToList();
             var text = DavidLoginText(simulated, atMyLogin, source, DateTime.Now, pending.Select(x => (x.n, x.r.text)).ToList());
             Log("friendwatch", $"{kind}: waking the chat routine ({pending.Count} pending reminder(s))");
+            if (!simulated) NoteSpokeTo(DavidAgent, "david_login wake; the chat routine greets him"); // 19:38 double hi race
             Notify(kind, DavidName, DavidAgent, text, null);
         });
     }

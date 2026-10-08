@@ -44,6 +44,10 @@ public static partial class Program
     static int wLegs, wLoops, wSits, wGreets, wFails, wLegsUntilSit;
     static string wTarget, wLastLeg = "-", wLastSit = "-", wLastGreetTxt = "-";
     static readonly Dictionary<UUID, DateTime> wGreeted = new();
+    // 2026-10-07 19:38 "You greeted me twice": last time she said anything in nearby chat while each avatar was within
+    // chat range (routine say/shout/whisper, chan 0, wander greetings). Guarded by lock (wGreeted). In-memory only.
+    static readonly Dictionary<UUID, DateTime> wSpokeTo = new();
+    internal static readonly TimeSpan SpokeWindow = TimeSpan.FromMinutes(15);
     // last-greeted time per avatar UUID survives daemon restarts (2026-09-25 22:15; restarts had wiped it -> repeat greetings)
     static readonly string GreetHistoryFile = Env("GT_GREET_HISTORY", "/home/box/viewers/textclient/run/greet-history.json");
     static readonly Dictionary<UUID, DateTime> wSeatFailed = new();
@@ -138,6 +142,41 @@ public static partial class Program
         if (text.IndexOf("David", StringComparison.OrdinalIgnoreCase) < 0
             && text.IndexOf("Nightingale", StringComparison.OrdinalIgnoreCase) < 0) return;
         NoteGreeted(DavidId);
+    }
+
+    // ---- spoke-to tracking (pure helpers + notes) ------------------------------------------------------
+    // SL chat ranges: say 20 m, shout 100 m, whisper 10 m.
+    internal static float ChatRangeOf(ChatType t) => t == ChatType.Shout ? 100f : t == ChatType.Whisper ? 10f : 20f;
+    // pure: avatars (not self, not unknown position) within `range` metres (3D) of `me`
+    internal static List<UUID> InChatRange(IEnumerable<(UUID id, Vector3 pos, bool known)> avs, Vector3 me, float range, UUID self) =>
+        avs.Where(a => a.known && a.id != self && a.id != UUID.Zero && Vector3.Distance(a.pos, me) <= range)
+           .Select(a => a.id).Distinct().ToList();
+    // pure: she spoke near this avatar (or greeted them) less than `window` ago
+    internal static bool SpokeRecently(IReadOnlyDictionary<UUID, DateTime> spoke, UUID id, DateTime now, TimeSpan window) =>
+        spoke != null && spoke.TryGetValue(id, out var t) && now - t < window;
+    // pure: mark every listed avatar as spoken-to at `now` (keeps the later time)
+    internal static void MarkSpoke(Dictionary<UUID, DateTime> spoke, IEnumerable<UUID> ids, DateTime now)
+    {
+        foreach (var id in ids) if (id != UUID.Zero && (!spoke.TryGetValue(id, out var t) || now > t)) spoke[id] = now;
+    }
+    // after any own nearby chat: everyone within that chat type's range heard her
+    static void NoteSpokeToNearby(ChatType t)
+    {
+        try
+        {
+            var me = client.Self.SimPosition;
+            var ids = InChatRange(Avatars().Select(x => (x.av.ID, x.pos, x.dist >= 0)), me, ChatRangeOf(t), client.Self.AgentID);
+            lock (wGreeted) MarkSpoke(wSpokeTo, ids, DateTime.Now);
+            if (ids.Count > 0) WLog($"spoke-to noted for {ids.Count} avatar(s) within {ChatRangeOf(t):F0} m (wander greets skip them for {SpokeWindow.TotalMinutes:F0} min)");
+        }
+        catch (Exception ex) { WLog("spoke-to note error: " + ex.Message); }
+    }
+    // a pending routine greeting (FriendWatch david_login wake): reserve the avatar so wander does not greet first
+    static void NoteSpokeTo(UUID id, string why)
+    {
+        if (id == UUID.Zero) return;
+        lock (wGreeted) MarkSpoke(wSpokeTo, new[] { id }, DateTime.Now);
+        WLog($"spoke-to noted for {id} ({why}); wander greets skip them for {SpokeWindow.TotalMinutes:F0} min");
     }
 
     static void NoteGreeted(UUID id, DateTime? when = null)
@@ -314,6 +353,11 @@ public static partial class Program
     }
 
     static void SetPause(string reason, string why)
+    {
+        if (DeferPauseIfInDoorway(reason, why, SetPauseNow)) return;   // never stop in a doorway (19:45 David)
+        SetPauseNow(reason, why);
+    }
+    static void SetPauseNow(string reason, string why)
     {
         wanderPause = reason; wPausedAt = DateTime.Now;
         legCts?.Cancel(); try { client.Self.AutoPilotCancel(); } catch { }
@@ -617,6 +661,7 @@ public static partial class Program
             if (!listed && (!HomeSeatRx.IsMatch(name) || WSeatBad.IsMatch(name))) continue;
             void R(string why) => dbg?.Add($"  - '{name}' {p.ID} {P3(p.Position)}: {why}");
             if (Math.Max(p.Scale.X, Math.Max(p.Scale.Y, p.Scale.Z)) > 10f) { R("too big"); continue; }
+            if (!SoloSeatNameOk(name, SeatSinglesConfirmed(p.ID, name))) { R("ADULT-named seat, no singles menu confirmed"); continue; }
             if (sit.ContainsKey(p.LocalID)) { R("occupied"); continue; }
             if (p.ID == wLastSeat) { R("sat there last time"); continue; }
             bool cool; lock (wSeatFailed) cool = wSeatFailed.TryGetValue(p.ID, out var ft) && (now - ft).TotalMinutes < 30;
@@ -1014,6 +1059,7 @@ public static partial class Program
             void R(string why) => dbg?.Add($"  - '{name}' {p.ID} {P3(p.Position)}: {why}");
             if (home && rockHasStranger) { R("her pillow, but someone other than David is on the rock pillows"); continue; }
             if (Math.Max(p.Scale.X, Math.Max(p.Scale.Y, p.Scale.Z)) > 8f) { R("too big"); continue; }
+            if (!home && !SoloSeatNameOk(name, SeatSinglesConfirmed(p.ID, name))) { R("ADULT-named seat, no singles menu confirmed"); continue; }
             if (sit.ContainsKey(p.LocalID)) { R("occupied"); continue; }
             if (ZendoDiamond(p.Position) <= 20f) { R("zendo footprint + margin"); continue; } // zendo footprint + margin
             var qblk = QBlocked(p.Position, QIn, QSeatedIn, false);
@@ -1105,7 +1151,7 @@ public static partial class Program
     }
 
     // ---- greetings -----------------------------------------------------------------------------------
-    sealed record GreetCand(UUID id, string name, Vector3 pos, bool seated);
+    internal sealed record GreetCand(UUID id, string name, Vector3 pos, bool seated);
     // 2026-09-27 09:31 (David): short, gentle Buddhist greetings, always with the display name (GreetName/ShortName).
     // Picked at random, never the same line twice in a row. Lines mentioning the Deer Park are used only near the Deer Park.
     // 2026-09-27 09:50 (David): the Buddhist pool/personality is used ONLY while the VIOLETTE robe is actually worn
@@ -1232,7 +1278,7 @@ public static partial class Program
                "Change to the 'Original' outfit first (no automatic outfit switching yet), or add 'force'.";
     }
     // pure decision (unit-testable): who to greet now, or null with the reason
-    static (GreetCand who, string why) PickGreet(List<GreetCand> avs, Vector3 me, DateTime now, Dictionary<UUID, DateTime> greeted, DateTime lastAny, Func<UUID, bool> muted, UUID self, string quietWhy = null, double repeatHours = double.NaN)
+    internal static (GreetCand who, string why) PickGreet(List<GreetCand> avs, Vector3 me, DateTime now, Dictionary<UUID, DateTime> greeted, DateTime lastAny, Func<UUID, bool> muted, UUID self, string quietWhy = null, double repeatHours = double.NaN, IReadOnlyDictionary<UUID, DateTime> spoke = null)
     {
         if (double.IsNaN(repeatHours)) repeatHours = GreetRepeatHours;
         if (quietWhy != null) return (null, "quiet mode: " + quietWhy);
@@ -1247,6 +1293,8 @@ public static partial class Program
             if (a.seated && hd > 6f) continue;
             if (InZendo(a.pos)) continue;
             if (GreetedRecently(greeted, a.id, now, repeatHours)) continue;
+            if (SpokeRecently(greeted, a.id, now, SpokeWindow)) continue;   // greeted < 15 min ago, whatever the repeat rule
+            if (SpokeRecently(spoke, a.id, now, SpokeWindow)) continue;     // she already said something near them < 15 min ago
             return (a, "ok");
         }
         return (null, "nobody to greet");
@@ -1262,10 +1310,11 @@ public static partial class Program
                 {
                     if (!LoggedIn || !InWanderRegion || wanderPause != null || !(wanderPhase.StartsWith("walking"))) continue;
                     if (client.Self.SittingOn != 0) continue;
+                    if (routeInDoorZone) continue;   // no greet-pause in a doorway: greet once she is clear of it
                     var sim = Sim;
                     var avs = Avatars().Where(t => t.dist >= 0).Select(t => new GreetCand(t.av.ID, t.av.Name, t.pos, t.av.ParentID != 0)).ToList();
                     GreetCand who; string why;
-                    lock (wGreeted) (who, why) = PickGreet(avs, client.Self.SimPosition, DateTime.Now, wGreeted, wLastGreet, IsMuted, client.Self.AgentID);
+                    lock (wGreeted) (who, why) = PickGreet(avs, client.Self.SimPosition, DateTime.Now, wGreeted, wLastGreet, IsMuted, client.Self.AgentID, spoke: wSpokeTo);
                     if (who == null) continue;
                     if (!CurrentWanderRule().Greet) continue; // per-region rule (_wander-rules.json): Buddha Center wanders quietly
                     if (QuietOn) { QLogSuppressedGreet(who); continue; } // Buddha Center rule: no nearby chat during sessions
@@ -1281,6 +1330,7 @@ public static partial class Program
                     client.Self.Chat(txt, 0, ChatType.Normal);
                     var now = DateTime.Now;
                     NoteGreeted(who.id, now);
+                    NoteSpokeToNearby(ChatType.Normal);
                     wLastGreet = now; wGreets++; wLastGreetTxt = $"{now:HH:mm:ss} {who.name}: \"{txt}\"";
                     Log("me-chat", txt + " (wander greeting)");
                     WLog($"GREETED {who.name} ({who.id}) at {HDist(who.pos, client.Self.SimPosition):F1} m: \"{txt}\"");

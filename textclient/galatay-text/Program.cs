@@ -1756,6 +1756,7 @@ public static partial class Program
                 var (sent, skip) = ChatGuardedSay(t, rest, force, re);
                 if (!sent) return skip;
                 NoteGreetedFromOwnNearbySay(rest); // login/chat-routine hi to David: wander must not greet him again
+                NoteSpokeToNearby(t);              // anyone in chat range heard her: no wander greeting for 15 min
                 Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}");
                 return "ok";
             }
@@ -1764,6 +1765,7 @@ public static partial class Program
                 if (a.Length < 2 || !int.TryParse(a[0], out var ch)) return "usage: chan <n> <text>";
                 var text = rest[a[0].Length..].Trim();
                 client.Self.Chat(text, ch, ChatType.Normal);
+                if (ch == 0) NoteSpokeToNearby(ChatType.Normal);
                 Log("me-chat", $"(channel {ch}) {text}");
                 return "ok";
             }

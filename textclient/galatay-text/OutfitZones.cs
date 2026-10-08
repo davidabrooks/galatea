@@ -115,12 +115,19 @@ public static partial class Program
         var z = client.Self.SimPosition.Z;
         var zone = OutfitZoneFor(sim.Name, client.Self.SimPosition, beachMode);
         if (zone == null || zone == "mid") return;
-        if (zone == "beach" && beachMode) return;
-        if (zone == "house" && !beachMode) return;
+        var pos = client.Self.SimPosition;
+        // 21:19 David: back from the beach she changes only once inside the house; a worn bikini is never re-worn
+        var act = ZoneAction(zone, beachMode, BikiniWorn(), IndoorsAtHome(pos));
+        if (act is "none" or "wait-indoors") return;
         beachOutfitBusy = true;
         try
         {
-            if (zone == "beach")
+            if (act == "mark-beach")
+            {
+                beachRememberedOutfit = await RememberForBeach(); beachMode = true; PersistBeachState();
+                Log("outfit-zone", $"entering beach (z={z:F1}) already in the Bikini: no change; remember '{beachRememberedOutfit ?? "-"}' for the house");
+            }
+            else if (zone == "beach")
             {
                 var remember = lastNamedOutfit;
                 if (string.IsNullOrWhiteSpace(remember) || BikiniNameRx.IsMatch(remember))

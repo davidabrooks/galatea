@@ -463,7 +463,7 @@ public static partial class Program
     }
 
     // ---- graph helpers -------------------------------------------------------------------------------
-    static (Vector3 p, float d) NearestOnGraph(Graph g, Vector3 x)
+    internal static (Vector3 p, float d) NearestOnGraph(Graph g, Vector3 x)
     {
         Vector3 best = Vector3.Zero; float bd = float.MaxValue;
         foreach (var e in g.E)
@@ -476,7 +476,7 @@ public static partial class Program
         return (best, bd);
     }
     // route over the graph from 'from' to an arbitrary point on the network ('to' is projected onto the nearest edge)
-    static (List<Vector3> pts, string err) GraphRouteTo(Graph g, Vector3 from, Vector3 to)
+    internal static (List<Vector3> pts, string err) GraphRouteTo(Graph g, Vector3 from, Vector3 to)
     {
         int bestE = -1; float bd = float.MaxValue, bt = 0;
         for (int k = 0; k < g.E.Count; k++)
@@ -513,6 +513,7 @@ public static partial class Program
             if (pendingDressOutfit != null && client.Self.SittingOn == 0) await DressAfterSeatIfPending();
             if (!InPeronaut) { WLog($"left Peronaut (now {client.Network.CurrentSim?.Name ?? "-"}): stopping"); SaveWanderFlag(false, "left Peronaut"); return; }
             if (RestartActive) { wanderResumeAfterRestart = true; WLog("region restart handling active: stopping (resume after the return)"); SaveWanderFlag(true, "restart"); return; }
+            if (client.Self.SittingOn == 0 && UnderHouse(client.Self.SimPosition)) { await UnderHouseRecover(g, "home wander loop", ct); continue; }
             MaybeSnapshot();
             var pause = wanderPause;
             if (pause != null)
@@ -543,6 +544,8 @@ public static partial class Program
                 continue;
             }
             var target = wTarget;
+            await BikiniIndoorsIfBeachBound(g, g.N[g.Places[target].node], null, "leg to " + target, ct);
+            if (wanderPause != null) continue;
             wanderPhase = $"walking to {target}";
             var (pts, err) = GraphRoute(g, client.Self.SimPosition, g.Places[target].node);
             bool ok; string msg;
@@ -699,6 +702,9 @@ public static partial class Program
         infos.TryGetValue(c.p.ID, out var info);
         var seatPos = c.p.Position;
         WLog($"SIT target: '{c.name}' {c.p.ID} at {P3(seatPos)} ({c.fromMe:F0} m from her, {c.fromPath:F1} m from the path; {spots.Count} free spots{(spot.Count > 1 ? $", random pick of {spot.Count} chairs here" : "")}{(info?.Special != null ? ", special " + info.Special : "")})");
+        try { await BikiniIndoorsIfBeachBound(g, seatPos, info?.Level, $"seat '{c.name}'", ct); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("bikini change walk interrupted (" + (wanderPause ?? "cancel") + ")"); return false; }
+        if (wanderPause != null) return false;
         var (pts, _, _, err) = HomeSeatRoute(g, client.Self.SimPosition, seatPos);
         if (err != null) { MarkSeatFailed(c, "no route: " + err); return false; }
         var poly = new Poly(pts);
@@ -980,6 +986,7 @@ public static partial class Program
     // ---- approach a speaker --------------------------------------------------------------------------
     static async Task ApproachSpeaker(CancellationToken ct)
     {
+        if (InPeronaut) { await HomeApproachSpeaker(ct); return; }   // home: path graph only (21:18 under the house)
         var sim = Sim; var id = wSpeaker;
         var av = sim.ObjectsAvatars.Values.FirstOrDefault(x => x != null && x.ID == id);
         if (av == null || (av.ParentID != 0 && !sim.ObjectsPrimitives.ContainsKey(av.ParentID))) { WLog($"approach: {wSpeakerName} not visible nearby: waiting here"); return; }
@@ -1016,6 +1023,38 @@ public static partial class Program
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("approach interrupted (new chat)"); }
         finally { blockIgnore = UUID.Zero; }
+        av = sim.ObjectsAvatars.Values.FirstOrDefault(x => x != null && x.ID == id);
+        if (av != null && client.Self.SittingOn == 0) { client.Self.Movement.TurnToward(PositionHelper.GetAvatarPosition(sim, av)); }
+    }
+
+    // home: approach over the path graph to the graph point nearest the speaker, at the speaker's real level
+    static async Task HomeApproachSpeaker(CancellationToken ct)
+    {
+        var sim = Sim; var id = wSpeaker;
+        var av = sim.ObjectsAvatars.Values.FirstOrDefault(x => x != null && x.ID == id);
+        if (av == null || (av.ParentID != 0 && !sim.ObjectsPrimitives.ContainsKey(av.ParentID))) { WLog($"approach: {wSpeakerName} not visible nearby: waiting here"); return; }
+        var sp = PositionHelper.GetAvatarPosition(sim, av); var me = client.Self.SimPosition;
+        float d = HDist(sp, me); bool sameLevel = Math.Abs(sp.Z - me.Z) < 1.5f;
+        if (client.Self.SittingOn != 0 && d <= 8f && sameLevel) { WLog($"approach: seated and {wSpeakerName} is {d:F1} m away: staying seated"); return; }
+        if (d <= 3.5f && sameLevel) { if (client.Self.SittingOn == 0) client.Self.Movement.TurnToward(sp); WLog($"approach: {wSpeakerName} already {d:F1} m away: facing and waiting"); return; }
+        if (client.Self.SittingOn != 0) { WLog($"approach: seated; {wSpeakerName} is {d:F1} m away{(sameLevel ? "" : " on another level")}: staying seated"); return; }
+        var g = LoadGraph(HomeWanderRegion);
+        var (pts, err) = PlanHomeApproach(g, me, sp, 2.5f);
+        if (err != null) { WLog($"approach REFUSED ({wSpeakerName} at {P3(sp)}): {err}; waiting here"); return; }
+        var poly = new Poly(pts);
+        var o = new RouteOpts { Label = $"wander approach {wSpeakerName}" };
+        wanderPhase = "approaching " + wSpeakerName;
+        WLog($"APPROACH {wSpeakerName} at {P3(sp)}: {d:F1} m away{(sameLevel ? "" : $", other level (dz {sp.Z - me.Z:+0.0;-0.0} m, via the stairs)")}; path graph {poly.Len:F0} m, {pts.Count} points, end {P3(pts[^1])}");
+        blockIgnore = id;
+        legCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        try
+        {
+            var (ok, msg) = await FollowPoly(poly, o, legCts.Token);
+            WLog($"approach {(ok ? "done" : "ended")}: {msg}");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("approach interrupted (new chat)"); }
+        finally { blockIgnore = UUID.Zero; }
+        if (UnderHouse(client.Self.SimPosition)) { await UnderHouseRecover(g, "after the approach", ct); return; }
         av = sim.ObjectsAvatars.Values.FirstOrDefault(x => x != null && x.ID == id);
         if (av != null && client.Self.SittingOn == 0) { client.Self.Movement.TurnToward(PositionHelper.GetAvatarPosition(sim, av)); }
     }

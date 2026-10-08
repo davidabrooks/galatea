@@ -80,7 +80,7 @@ public static partial class Program
         public List<Vector3> From(float s) { var l = new List<Vector3> { At(s) }; for (int i = 0; i < P.Count; i++) if (C[i] > s + 0.05f) l.Add(P[i]); return l; }
     }
 
-    sealed class RouteOpts { public bool AllowZendo, AllowOutside, SitAtEnd, Idle; public string Label = ""; public string Place; }
+    sealed class RouteOpts { public bool AllowZendo, AllowOutside, SitAtEnd, Idle, EscapeUnderHouse; public string Label = ""; public string Place; }
 
     // live state (read by route status / overhead)
     static volatile Poly curRoute; static volatile string curRouteName; static float curS; static volatile string routeState = "idle";
@@ -111,9 +111,9 @@ public static partial class Program
         };
         var tmp = RoutePath(name) + ".tmp"; File.WriteAllText(tmp, o.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); File.Move(tmp, RoutePath(name), true);
     }
-    sealed class Graph { public List<Vector3> N = new(); public List<(int a, int b, string kind)> E = new(); public Dictionary<string, (int node, string note)> Places = new(StringComparer.OrdinalIgnoreCase); }
+    internal sealed class Graph { public List<Vector3> N = new(); public List<(int a, int b, string kind)> E = new(); public Dictionary<string, (int node, string note)> Places = new(StringComparer.OrdinalIgnoreCase); }
     static Graph LoadGraph(string region) => LoadGraphFile(Path.Combine(RouteDir, $"_graph-{region}.json"));
-    static Graph LoadGraphFile(string f)
+    internal static Graph LoadGraphFile(string f)
     {
         if (!File.Exists(f)) return null;
         var j = JsonNode.Parse(File.ReadAllText(f))!; var g = new Graph();
@@ -211,7 +211,7 @@ public static partial class Program
     }
 
     // shortest path over the graph from the nearest point on any edge to a place node
-    static (List<Vector3> pts, string err) GraphRoute(Graph g, Vector3 from, int goal)
+    internal static (List<Vector3> pts, string err) GraphRoute(Graph g, Vector3 from, int goal)
     {
         int bestE = -1; float bestD = float.MaxValue, bestT = 0;
         for (int k = 0; k < g.E.Count; k++)
@@ -359,6 +359,8 @@ public static partial class Program
         var doorCrossS = AllDoorCrossings(u => V2(poly.At(u)), poly.Len, (p, q) => zoneGrids.Any(g => (g.Contains(p.X, p.Y) || g.Contains(q.X, q.Y)) && DoorsOnSegment(g, p, q).Count > 0));
         var doorCentres = zoneGrids.SelectMany(g => g.Doors).Select(nd => V2(nd.Center)).ToList();
         bool idleDeferLogged = false, blockDeferLogged = false;
+        bool homeGuard = string.Equals(region, HomeWanderRegion, StringComparison.OrdinalIgnoreCase) && !o.EscapeUnderHouse && !UnderHouse(start);
+        DateTime? underSince = null;   // under-house guard (21:18): stop if she ends up below the house floor
         var narrow = NarrowFor(region); bool narrowLogged = false;   // piers/docks: no corner cutting, no lane offsets
         if (doorCrossS.Count > 0) RLogR($"{o.Label}: doorway zones at s={string.Join(", ", doorCrossS.Select(x => x.ToString("F1", CultureInfo.InvariantCulture)))} (no pauses {DoorZoneBeforeM:F1} m before to {DoorZoneAfterM:F1} m past)");
         RLogR($"{o.Label}: start at {P3(start)}, {poly.Len:F0} m, {poly.P.Count} points, end {P3(poly.At(poly.Len))}; steer {(legacy ? "legacy" : "smooth")}");
@@ -421,6 +423,8 @@ public static partial class Program
                     var msg = Summary("arrived") + $"; final {P3(fin)}, {HDist(fin, end):F1} m from the end point (settled)";
                     RLogR($"{o.Label}: {msg}"); return (true, msg);
                 }
+                if (homeGuard && UnderHouse(me)) { underSince ??= now; if ((now - underSince.Value).TotalSeconds >= 1.0) { client.Self.AutoPilotCancel(); var mu = Summary($"stopped: UNDER THE HOUSE at {P3(me)} (below the floor z {HouseFloorZ:F1})"); RLogR($"{o.Label}: {mu}"); return (false, mu); } }
+                else underSince = null;
                 if (wdFired == 1) { client.Self.AutoPilotCancel(); var mf = Summary($"stopped: watchdog relogin ({wdLastEvent}) at {P3(me)}"); RLogR($"{o.Label}: {mf}"); return (false, mf); }
                 if (now - t0 > timeout + TimeSpan.FromSeconds(idleSecs)) { client.Self.AutoPilotCancel(); var m = Summary($"stopped: timeout at {P3(me)}"); RLogR($"{o.Label}: {m}"); return (false, m); }
                 // fell off a raised section?

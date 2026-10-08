@@ -333,7 +333,12 @@ public static partial class Program
                         dest = seat.Value.p.Position;
                         Log("walk", $"sit_near: target seat '{seat.Value.p.Properties?.Name}' {seat.Value.p.ID} at {V(dest)}, {seat.Value.d:F1} m from {av.Name}");
                     }
-                    if (HDist(client.Self.SimPosition, dest) > 2.0f)
+                    if (InPeronaut && (HDist(client.Self.SimPosition, dest) > 2.0f || Math.Abs(client.Self.SimPosition.Z - dest.Z) > 1.5f))
+                    {   // home (21:18): over the path graph at the target's real level, never a straight line / the upper grid from below
+                        var hr = await HomeGraphWalkTo(dest, cmd == "sit_near" ? 1.2f : 1.5f, $"{cmd} {av.Name}", ct);
+                        if (hr != null) return $"could not walk to {av.Name} at home: {hr} (at {V(client.Self.SimPosition)})";
+                    }
+                    else if (HDist(client.Self.SimPosition, dest) > 2.0f)
                     {
                         var me = client.Self.SimPosition;
                         var dir = new Vector3(dest.X - me.X, dest.Y - me.Y, 0); dir = dir.Length() > 0.01f ? Vector3.Normalize(dir) : Vector3.UnitX;

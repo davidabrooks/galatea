@@ -2,7 +2,7 @@
   "region": "Peronaut",
   "source": "home places: upper level verified walking on the Peronaut nav grid 2026-10-05; lower level (porch, mid walkway, east stairs, beach, GOOSE 3-step deck stair + Mooring deck, Burgundy pier) from David's tour 15:23-16:51 PT: recorded beach-stairs-up route, David's standing positions and her follow trace; 2026-10-06 doorway fix: west/east side-room legs only through door approach nodes (no wall-cutting 8-12 / 7-11); hall links from home; 2026-10-07 couch fix: living/desk nodes moved off furniture, desk bypass, home -> arrival point, CI checks edges vs furniture_footprints; 2026-10-07 stair-corner fix: porch walk leaves the front-stairs foot north (y 87.3) around the west stair side instead of cutting west at y 85.8; 2026-10-07 front-door fix: front-hall/front legs no longer cut diagonally from the porch-top node 9 through the wall west of the double door - they pass straight N-S through the opening centre (x 228.05) via inside node 48, so both inbound and outbound cross the door cells and pre-open both leaves (west side via 49-50 around the desk, east side via 44); 2026-10-07 all-doors fix: side-room-1/2 doorway nodes on y 75.3/75.35 and patio-1/2 legs on x 223.2/232.9 (door-cell centres; side-room approaches via corridor nodes 50 / 51); front-stairs turn points 1 m further out (y 88.3); 2026-10-07 pier fix: Burgundy pier nodes on its long axis x 216.3 (pier-start 35 in the open root module, pier 36, ramp top 52, axis 53 by the second bench, pier-end 38); she turns west to pier-south 37 only at the bench; 'narrow' corridor = the pier deck between its rails (x 214.0-218.6): no corner cutting, no lane sidesteps; 2026-10-08 bathroom centre-line fix (David: stay in the centre of this room): the old 42-11 east-deck edge ran along y 75.35 under the north wall and walked into the new BackBone sink (STUCK 238.9,75.0-75.6 at 08:57); now east-door-room 42 -> bath-centre 56 (235.2,73.8) -> east-deck 11 moved to (241.5,73.8) (the old 242.0,75.0 was inside the sink cabinet; she settles ~1 m past the end point, east wall face x 243.45), tub 55 from 56; room x 231.94-243.45, y 71.46-76.16 (export-20261007-084458 wall faces, nav grid)",
   "created": "2026-10-05T11:15:00",
-  "updated": "2026-10-08T09:10:00",
+  "updated": "2026-10-08T12:40:00",
   "nodes": [
     [228.9, 69.0, 29.0],
     [228.0, 68.0, 29.0],
@@ -60,7 +60,8 @@
     [216.3, 30.5, 24.7],
     [233.6, 73.0, 29.0],
     [239.9, 73.6, 29.0],
-    [235.2, 73.8, 29.0]
+    [235.2, 73.8, 29.0],
+    [220.6, 73.4, 29.0]
   ],
   "edges": [
     [0, 1, "living"],
@@ -123,7 +124,9 @@
     [45, 39, "west-door-hall"],
     [44, 41, "east-door-hall"],
     [42, 54, "toilet"],
-    [56, 55, "tub"]
+    [56, 55, "tub"],
+    [40, 57, "bedroom"],
+    [57, 12, "bedroom"]
   ],
   "places": {
     "home": {"node": 45, "note": "SL home / arrival point (sethome 2026-10-06), off the couch"},
@@ -163,7 +166,8 @@
     "centre": {"node": 0, "note": "fireplace / living centre (old home node)"},
     "toilet": {"node": 54, "note": "floor beside the BackBone toilet (her change spot); reached only from east-door-room (side-room-2 doorway), a wall blocks the living-room side (David 2026-10-08)"},
     "tub": {"node": 55, "note": "floor beside the clawfoot tub (its change spot), after David moved the tub 2026-10-08; from east-door-room via bath-centre 56"},
-    "bath-centre": {"node": 56, "note": "bathroom centre line (y 73.8 = midway between the south wall face y 71.46 and the north wall face y 76.16), first point after the side-room-2 doorway; David 2026-10-08: stay in the centre of this room"}
+    "bath-centre": {"node": 56, "note": "bathroom centre line (y 73.8 = midway between the south wall face y 71.46 and the north wall face y 76.16), first point after the side-room-2 doorway; David 2026-10-08: stay in the centre of this room"},
+    "bedroom": {"node": 57, "note": "bikini change spot in the bedroom (west wing): open floor 3.3 m east of the MIRAGE bed, 4.5 m from the side-room-1 doorway, 2 m off the walls; reached via west-door-room 40 (David 2026-10-08 12:22: change in/out of the bikini in the bedroom)"}
   },
   "furniture_footprints": [
     {"name": "Lalou - Ultra Sofa v1.1", "uuid": "f6844138-499f-0f3e-ba6a-ce601a16eafe", "min": [225.6, 61.9], "max": [230.6, 66.6], "source": "linkset child boxes, vision export-20261006-145428"},
@@ -171,7 +175,8 @@
     {"name": "front stairs west side (bottom-left corner)", "uuid": "Trompe Loeil - Petra Elevated child", "min": [225.6, 83.0], "max": [227.0, 86.3], "source": "export-20261007-084458 child box max y 86.26 + STUCK trace 2026-10-07 08:43 at x 226.4 y 84.9-86.5 (z 27.5-26.3)"},
     {"name": "BackBone Playtime Bathroom Sink - Adult", "uuid": "406eeb80-c05f-2f82-0857-145b725da0f8", "min": [238.31, 75.03], "max": [242.52, 76.2], "source": "linkset child boxes, scene export-20261008-090334 (vanity cabinet x 239.17-241.54 reaches y 75.03; root plate 4.2x3.3x0.3 is the wall-mounted back)"},
     {"name": "Dutchie clawfoot bath tub adult", "uuid": "53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc", "min": [239.22, 71.29], "max": [241.96, 72.74], "source": "linkset child boxes, scene export-20261008-090334 (map: <240.6,72.0> size 2.7x1.2 rotZ 180)"},
-    {"name": "BackBone Playtime Toilet", "uuid": "48b303e0-8dcc-58e2-39bf-23e9f9f895b9", "min": [233.05, 71.15], "max": [233.95, 72.45], "source": "map: <233.5,71.8> size 0.9x1.3 rotZ 180"}
+    {"name": "BackBone Playtime Toilet", "uuid": "48b303e0-8dcc-58e2-39bf-23e9f9f895b9", "min": [233.05, 71.15], "max": [233.95, 72.45], "source": "map: <233.5,71.8> size 0.9x1.3 rotZ 180"},
+    {"name": "BENTO PHYSICS MIRAGE BED 1.0", "uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "min": [214.2, 72.7], "max": [217.3, 75.8], "source": "linkset child boxes, scene export-20261007-084458 (root 215.7,75.3 rotZ 90; headboard on the north wall y 75.8)"}
   ],
   "footprint_margin": 0.3,
   "narrow": [

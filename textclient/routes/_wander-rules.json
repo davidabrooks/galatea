@@ -1,6 +1,6 @@
 {
-  "_comment": "Per-region wander rules (2026-10-07). Matched by sim (region) name, case-insensitive. seatAvatarM: skip a seat if any avatar is within this many metres (horizontal, same level). greet: auto-greet people while wandering. Unknown regions use 'default'.",
+  "_comment": "Per-region wander rules (2026-10-07). Matched by sim (region) name, case-insensitive. seatAvatarM: skip a seat if any avatar is within this many metres (horizontal, same level). greet: auto-greet people while wandering. levelDwellMin (2026-10-08): home wander minutes on one level (beach or upper) before switching to the other. Unknown regions use 'default'.",
   "default":  { "place": "default",              "seatAvatarM": 3,  "greet": true },
-  "Peronaut": { "place": "home",                 "seatAvatarM": 3,  "greet": true },
+  "Peronaut": { "place": "home",                 "seatAvatarM": 3,  "greet": true, "levelDwellMin": 30 },
   "Naberrie": { "place": "The Buddha Center",    "seatAvatarM": 10, "greet": true  }
 }

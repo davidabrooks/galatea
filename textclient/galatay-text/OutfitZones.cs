@@ -23,6 +23,7 @@ public static partial class Program
 
     static volatile bool beachOutfitBusy;
     static volatile bool beachMode; // true while we consider her on-beach (bikini rule active)
+    static DateTime beachModeDeferRestoreUntil = DateTime.MinValue; // bikini just put on indoors: don't change back until she heads down
     static string beachRememberedOutfit; // saved folder name before bikini
     static string lastNamedOutfit; // last worn named My Outfits folder (non-transient)
     static DateTime beachTickAt = DateTime.MinValue;
@@ -117,8 +118,10 @@ public static partial class Program
         if (zone == null || zone == "mid") return;
         var pos = client.Self.SimPosition;
         // 21:19 David: back from the beach she changes only once inside the house; a worn bikini is never re-worn
-        var act = ZoneAction(zone, beachMode, BikiniWorn(), IndoorsAtHome(pos));
-        if (act is "none" or "wait-indoors") return;
+        // 2026-10-08 12:22 David: the home wander changes back in the bedroom (LevelDwell.cs); the tick does it only when the wander is off
+        var act = ZoneActionWithWander(zone, beachMode, BikiniWorn(), IndoorsAtHome(pos), WanderOn && InPeronaut);
+        if (act == "restore" && DateTime.UtcNow < beachModeDeferRestoreUntil) return; // bikini just put on in the bedroom
+        if (act is "none" or "wait-indoors" or "wait-wander") return;
         beachOutfitBusy = true;
         try
         {
@@ -145,27 +148,7 @@ public static partial class Program
                 Log("outfit-zone", "beach wear done: " + r.Replace("\n", " | ")[..Math.Min(300, r.Length)]);
             }
             else // house
-            {
-                var restore = beachRememberedOutfit;
-                beachMode = false; PersistBeachState();
-                if (string.IsNullOrWhiteSpace(restore) || BikiniNameRx.IsMatch(restore))
-                {
-                    Log("outfit-zone", $"leaving beach (z={z:F1}): no remembered outfit → bikini off (strapless+jeans)");
-                    var r = await BikiniOff();
-                    Log("outfit-zone", "house restore: " + r.Replace("\n", " | ")[..Math.Min(300, r.Length)]);
-                }
-                else
-                {
-                    Log("outfit-zone", $"leaving beach (z={z:F1}): restoring outfit '{restore}'");
-                    var r = await WearOutfitWithHuds(restore, keepColor: true);
-                    RememberNamedOutfit(restore);
-                    // Detach bikini HUD if still on
-                    if (WornPrims().Any(p => AttachItemId(p) == BikiniHudItem))
-                        await WearOpsCmd("wear", new[] { "remove", BikiniHudItem.ToString() });
-                    Log("outfit-zone", "house restore: " + r);
-                }
-                beachRememberedOutfit = null; PersistBeachState();
-            }
+                await RestoreFromBeachCore($"inside the house (z={z:F1})");
         }
         catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); }
         finally { beachOutfitBusy = false; }

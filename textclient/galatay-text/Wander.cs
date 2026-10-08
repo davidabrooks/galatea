@@ -500,13 +500,11 @@ public static partial class Program
     static async Task HomeWanderLoop(CancellationToken ct)
     {
         var g = LoadGraph(HomeWanderRegion) ?? throw new InvalidOperationException("no path graph for Peronaut");
-        string[] ends = { "front", "chairs", "patio-sw", "living", "home", "patio-east", "east-deck", "porch" };
-        ends = ends.Where(n => g.Places.ContainsKey(n)).ToArray();
-        if (ends.Length == 0) throw new InvalidOperationException("Peronaut graph has no wander places");
-        var me0 = client.Self.SimPosition;
-        // was nearest-first (always the same start from home); now uniform
-        wTarget = PickFresh(ends, wRecentPlaces, wRnd);
-        WLog($"first target {wTarget} (uniform of [{string.Join(", ", ends)}], recent [{string.Join(", ", wRecentPlaces)}])");
+        // 2026-10-08 12:22 David: about 30 min on one level (beach / upper) before switching (LevelDwell.cs)
+        if (LevelEnds(g, LevelUpper).Count + LevelEnds(g, LevelBeach).Count == 0) throw new InvalidOperationException("Peronaut graph has no wander places");
+        WanderLevelReset();   // the dwell on her current level starts now (login / wander start)
+        string lastPlace = null;
+        wTarget = PickHomeLegTarget(g, null);
         while (!ct.IsCancellationRequested)
         {
             if (!LoggedIn) { await Task.Delay(2000, ct); continue; }
@@ -543,8 +541,10 @@ public static partial class Program
                 wLegsUntilSit = r ? wRnd.Next(1, 4) : 1;
                 continue;
             }
+            wTarget ??= PickHomeLegTarget(g, lastPlace);
             var target = wTarget;
-            await BikiniIndoorsIfBeachBound(g, g.N[g.Places[target].node], null, "leg to " + target, ct);
+            try { await BeachOutfitForTarget(g, g.N[g.Places[target].node], null, "leg to " + target, ct); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("change walk interrupted (" + (wanderPause ?? "cancel") + ")"); continue; }
             if (wanderPause != null) continue;
             wanderPhase = $"walking to {target}";
             await StepToNarrowCentre(g.N[g.Places[target].node], "leg to " + target, ct);
@@ -580,8 +580,9 @@ public static partial class Program
                 endsReachedHome++;
                 if (endsReachedHome % 2 == 0) wLoops++;
                 wLegsUntilSit--;
-                wTarget = PickFresh(ends.Where(n => n != target).ToArray() is { Length: > 0 } o2 ? o2 : ends, wRecentPlaces, wRnd);
-                WLog($"next target {wTarget} (uniform of [{string.Join(", ", ends.Where(n => n != target))}], no repeat of last 2: recent [{string.Join(", ", wRecentPlaces)}])");
+                lastPlace = target;
+                WanderNoteLevel();
+                wTarget = null;   // picked at the next leg (after any sit), from the level the dwell says
             }
             else
             {
@@ -591,8 +592,7 @@ public static partial class Program
                 wLastLeg = $"{DateTime.Now:HH:mm:ss} {target} FAILED: {msg}";
                 WLog($"LEG to {target} FAILED ({wFails}/3 in a row): {msg}");
                 if (wFails >= 3) { await HomeWanderRecover(g, "3 failed legs in a row"); return; }
-                var others = ends.Where(n => n != target).ToArray();
-                if (others.Length > 0) { wTarget = PickFresh(others, wRecentPlaces, wRnd); WLog($"turning around: next target {wTarget}"); }
+                wTarget = PickHomeLegTarget(g, target); WLog($"turning around: next target {wTarget}");
                 await Task.Delay(5000, ct);
             }
         }
@@ -693,6 +693,11 @@ public static partial class Program
         // 2026-10-07: no 'quiet >= 10 m' preference (it skewed picks to the far patio chairs); the 3 m avatar rule stays
         var pool = cands;
         if (pool.Count == 0) { WLog("sit: no free home seat right now (skipping this time)"); return false; }
+        // 2026-10-08 level dwell: seats on the level she is staying on; busy seats there mean a walk instead, not a level switch
+        string SeatLevel(SeatCand c) => HomeLevelOf(c.p.Position, infos.TryGetValue(c.p.ID, out var si) ? si.Level : null);
+        var level = WanderPickLevel(g, pool.Count(c => SeatLevel(c) == LevelBeach), pool.Count(c => SeatLevel(c) == LevelUpper));
+        pool = pool.Where(c => SeatLevel(c) == level).ToList();
+        if (pool.Count == 0) { WLog($"sit: no free seat on the {level} level right now (walking there instead)"); return false; }
         // one spot uniformly at random (grouped chairs count once, no repeat of the last 2 spots), then a random free chair there
         var spots = pool.GroupBy(c => HomeSeatSpot(c.p.ID, infos)).ToList();
         var spotKeys = spots.Select(x => x.Key).ToList();
@@ -704,7 +709,7 @@ public static partial class Program
         infos.TryGetValue(c.p.ID, out var info);
         var seatPos = c.p.Position;
         WLog($"SIT target: '{c.name}' {c.p.ID} at {P3(seatPos)} ({c.fromMe:F0} m from her, {c.fromPath:F1} m from the path; {spots.Count} free spots{(spot.Count > 1 ? $", random pick of {spot.Count} chairs here" : "")}{(info?.Special != null ? ", special " + info.Special : "")})");
-        try { await BikiniIndoorsIfBeachBound(g, seatPos, info?.Level, $"seat '{c.name}'", ct); }
+        try { await BeachOutfitForTarget(g, seatPos, info?.Level, $"seat '{c.name}'", ct); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("bikini change walk interrupted (" + (wanderPause ?? "cancel") + ")"); return false; }
         if (wanderPause != null) return false;
         await StepToNarrowCentre(seatPos, $"to seat '{c.name}'", ct);
@@ -753,6 +758,7 @@ public static partial class Program
         await Task.Delay(1000, ct);
         if (client.Self.SittingOn == 0) { MarkSeatFailed(c, "sit failed: " + r); await DressAfterSeatIfPending(); return false; }
         wLastSeat = c.p.ID; wSits++;
+        WanderNoteLevel();
         var stay = wRnd.Next(120, 241);
         var t0 = DateTime.Now;
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
@@ -1555,7 +1561,7 @@ public static partial class Program
         if (!WanderOn) return $"wander off; last leg {wLastLeg}; last sit {wLastSit}; {QuietShort()} [quiet={QuietFlag()}]";
         var quiet = DateTime.Now - (wLastIncoming > wLastOwnChat ? wLastIncoming : wLastOwnChat);
         return $"wander ON since {wStarted:HH:mm:ss}; phase: {wanderPhase}{(wanderPause != null ? $"; PAUSED ({wanderPause}{(wanderPause == "chat" ? $", speaker {wSpeakerName}, quiet {quiet.TotalSeconds:F0}/180 s" : "")})" : "")}; " +
-               $"target {wTarget}; legs {wLegs}, loops {wLoops}, sits {wSits}, greetings {wGreets}, fails in a row {wFails}; next sit in {Math.Max(0, wLegsUntilSit)} leg(s); " +
+               $"target {wTarget ?? "(next leg)"}; {(InPeronaut ? WanderLevelStatus() + "; " : "")}legs {wLegs}, loops {wLoops}, sits {wSits}, greetings {wGreets}, fails in a row {wFails}; next sit in {Math.Max(0, wLegsUntilSit)} leg(s); " +
                $"last leg {wLastLeg}; last sit {wLastSit}; last pose {wLastPose}; last greeting {wLastGreetTxt}; route: {routeState}; {QuietShort()} [quiet={QuietFlag()}]; ao={AoFlag()} (last guard event {aoLastEvent})";
     }
 

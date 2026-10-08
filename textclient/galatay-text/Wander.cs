@@ -547,6 +547,7 @@ public static partial class Program
             await BikiniIndoorsIfBeachBound(g, g.N[g.Places[target].node], null, "leg to " + target, ct);
             if (wanderPause != null) continue;
             wanderPhase = $"walking to {target}";
+            await StepToNarrowCentre(g.N[g.Places[target].node], "leg to " + target, ct);
             var (pts, err) = GraphRoute(g, client.Self.SimPosition, g.Places[target].node);
             bool ok; string msg;
             var t0 = DateTime.Now;
@@ -608,6 +609,7 @@ public static partial class Program
         try
         {
             var place = g.Places.ContainsKey("living") ? "living" : "home";
+            await StepToNarrowCentre(g.N[g.Places[place].node], "recovery to " + place, rc.Token);
             var (pts, err) = GraphRoute(g, client.Self.SimPosition, g.Places[place].node);
             if (err != null) res = "no route to " + place + ": " + err;
             else res = await RunRoute(pts, new RouteOpts { Label = "home wander recovery to " + place, Place = place, Idle = true }, rc.Token);
@@ -705,6 +707,7 @@ public static partial class Program
         try { await BikiniIndoorsIfBeachBound(g, seatPos, info?.Level, $"seat '{c.name}'", ct); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("bikini change walk interrupted (" + (wanderPause ?? "cancel") + ")"); return false; }
         if (wanderPause != null) return false;
+        await StepToNarrowCentre(seatPos, $"to seat '{c.name}'", ct);
         var (pts, _, _, err) = HomeSeatRoute(g, client.Self.SimPosition, seatPos);
         if (err != null) { MarkSeatFailed(c, "no route: " + err); return false; }
         var poly = new Poly(pts);

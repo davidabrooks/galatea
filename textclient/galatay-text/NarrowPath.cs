@@ -91,3 +91,44 @@ public static partial class Program
         catch (Exception ex) { RLogR($"narrow corridors for {region}: {ex.Message}"); return new(); }
     }
 }
+
+// 2026-10-08 08:27 (stood up from the second pier bench at 215.5,31.0, 0.8 m off the axis x 216.3): the route started with a
+// 0.5 m jog to the bench edge + 0.8 m to the axis, the narrow look-ahead (never past the corner) put the aim < 1 m away, inside
+// the autopilot stop distance, so she never moved: STUCK s=0 x4 per leg, 3 legs + the recovery, wander stopped. Off the axis
+// in a corridor she now first walks to a centre-line point ~2 m along the axis toward where she is going, then routes.
+public static partial class Program
+{
+    internal const float NarrowCentreOffTol = 0.4f, NarrowCentreAhead = 2.0f;
+
+    // pure: centre-line point to step to first (null = not in a corridor, or already on its centre line)
+    internal static Vector3? NarrowCentreStep(Vector3 me, IReadOnlyList<NarrowCorridor> cs, Vector3 toward)
+    {
+        if (cs == null) return null;
+        var p = new Vector2(me.X, me.Y);
+        foreach (var c in cs)
+        {
+            if (!InCorridor(p, c)) continue;
+            var d = c.B - c.A; float len = d.Length(); if (len < 1e-3f) return null;
+            var u = d / len;
+            float t = Vector2.Dot(p - c.A, u);
+            var q = c.A + u * t;
+            if (Vector2.Distance(p, q) <= NarrowCentreOffTol) return null;
+            float dir = Vector2.Dot(new Vector2(toward.X, toward.Y) - p, u) >= 0 ? 1f : -1f;
+            float t2 = Math.Clamp(t + dir * NarrowCentreAhead, 0f, len);
+            var r = c.A + u * t2;
+            return new Vector3(r.X, r.Y, me.Z);
+        }
+        return null;
+    }
+
+    static async Task StepToNarrowCentre(Vector3 toward, string why, CancellationToken ct)
+    {
+        var me = client.Self.SimPosition;
+        var step = NarrowCentreStep(me, NarrowFor(HomeWanderRegion), toward);
+        if (step == null) return;
+        WLog($"narrow corridor: {why}: off the centre line at {P3(me)}, stepping to {P3(step.Value)} first");
+        try { await WalkLeg(step.Value, 0.6f, "narrow centre line (" + why + ")", ct); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { WLog("narrow centre step: " + ex.GetBaseException().Message); }
+    }
+}

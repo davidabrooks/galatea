@@ -92,6 +92,24 @@ public static partial class Program
             || t.av.Name.StartsWith(name + " ", StringComparison.OrdinalIgnoreCase));
         if (av.av == null) return $"'{name}' is not in view";
         if (av.dist < 0) return $"{av.av.Name} is seated on an object not loaded yet (no position)";
+        if (InPeronaut && UnderHouse(av.pos)) return $"refused: {av.av.Name} is at {V(av.pos)}, below the house floor";
+        // home (21:18): far away or on another level -> walk over the path graph first, then the short front arc
+        bool homeGraphFirst = InPeronaut && (Math.Abs(av.pos.Z - client.Self.SimPosition.Z) > 1.5f || HDist(av.pos, client.Self.SimPosition) > 6f);
+        if (homeGraphFirst)
+        {
+            var avPos = av.pos; var avName = av.av.Name; var avRot = av.av.Rotation;
+            return StartWalk($"front {avName} (path graph first)", async ct =>
+            {
+                await EnsureStandingForWalk(ct);
+                var hr = await HomeGraphWalkTo(avPos, 2.5f, $"front {avName}", ct);
+                if (hr != null) return $"could not reach {avName} at home: {hr}";
+                var me2 = V2(client.Self.SimPosition); var z2 = client.Self.SimPosition.Z;
+                var arc = FrontArcWaypoints(me2, new Vector2(avPos.X, avPos.Y), AvatarYawRad(avRot), frontDist, orbitR: 1.0f).Select(p => new Vector3(p.X, p.Y, z2)).ToList();
+                if (!await WalkPath(arc, ct, lastTol: 0.6f)) return $"stopped at {V(client.Self.SimPosition)} before reaching the front of {avName}";
+                try { client.Self.Movement.TurnToward(new Vector3(avPos.X, avPos.Y, client.Self.SimPosition.Z)); } catch { }
+                return $"in front of {avName} at {V(client.Self.SimPosition)} (path graph, then the front arc)";
+            });
+        }
         float yaw = AvatarYawRad(av.av.Rotation);
         var me = V2(client.Self.SimPosition);
         var leader = new Vector2(av.pos.X, av.pos.Y);

@@ -1,0 +1,98 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>SlTextureVision</name>
+    </assembly>
+    <members>
+        <member name="T:SlTextureVision.PngWriter">
+            <summary>Dependency-free PNG encoder (8-bit gray, gray+alpha, RGB or RGBA; filter 0; zlib via System.IO.Compression).</summary>
+        </member>
+        <member name="M:SlTextureVision.PngWriter.Encode(LibreMetaverse.Imaging.ManagedImage)">
+            <summary>Encode a LibreMetaverse <see cref="T:LibreMetaverse.Imaging.ManagedImage"/> (rows top-down, as decoded from JPEG 2000) to PNG bytes.
+            An alpha channel is kept only when some pixel is not fully opaque.</summary>
+        </member>
+        <member name="M:SlTextureVision.PngWriter.Encode(System.Int32,System.Int32,System.Byte,System.Byte[])">
+            <summary>Encode already-filtered scanlines (each row prefixed with filter byte 0).</summary>
+        </member>
+        <member name="T:SlTextureVision.SavedTexture">
+            <summary>Result of saving one texture.</summary>
+        </member>
+        <member name="M:SlTextureVision.SavedTexture.#ctor(LibreMetaverse.UUID,System.String,System.Int32,System.Int32,System.Int32,System.String)">
+            <summary>Result of saving one texture.</summary>
+        </member>
+        <member name="T:SlTextureVision.FaceInfo">
+            <summary>One face of one prim with its texture.</summary>
+        </member>
+        <member name="M:SlTextureVision.FaceInfo.#ctor(LibreMetaverse.UUID,System.UInt32,System.Int32,System.String,LibreMetaverse.UUID,LibreMetaverse.Color4,System.Boolean,System.String)">
+            <summary>One face of one prim with its texture.</summary>
+        </member>
+        <member name="T:SlTextureVision.ObjectLook">
+            <summary>An object (linkset root) with its faces and saved images.</summary>
+        </member>
+        <member name="T:SlTextureVision.TextureVisionOptions">
+            <summary>Options for <see cref="T:SlTextureVision.TextureVision"/>.</summary>
+        </member>
+        <member name="P:SlTextureVision.TextureVisionOptions.OutputDirectory">
+            <summary>Folder where PNGs are written (created if missing).</summary>
+        </member>
+        <member name="P:SlTextureVision.TextureVisionOptions.DownloadTimeout">
+            <summary>Per-texture download timeout.</summary>
+        </member>
+        <member name="P:SlTextureVision.TextureVisionOptions.KeepJ2c">
+            <summary>Also write the raw JPEG 2000 (.j2c) next to each PNG.</summary>
+        </member>
+        <member name="P:SlTextureVision.TextureVisionOptions.MinSide">
+            <summary>Skip textures smaller than this on both sides (e.g. 1x1 / 4x4 tint helpers).</summary>
+        </member>
+        <member name="P:SlTextureVision.TextureVisionOptions.MaxParallel">
+            <summary>Max textures downloaded in parallel.</summary>
+        </member>
+        <member name="T:SlTextureVision.TextureVision">
+            <summary>
+            Lets a headless (text-only) Second Life client "see" textures: download any texture by UUID and decode it to PNG,
+            list the faces of an in-world object with their texture UUIDs, and dump the images of nearby vendor boards.
+            Needs only a logged-in LibreMetaverse <see cref="T:LibreMetaverse.GridClient"/>; no GPU, no viewer, no native libraries.
+            </summary>
+        </member>
+        <member name="F:SlTextureVision.TextureVision.KnownBlank">
+            <summary>Well-known textures that carry no visual information (blank, plywood, transparent, invisible, media).</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.SkipReason(LibreMetaverse.UUID,LibreMetaverse.Color4)">
+            <summary>Why a texture would be skipped, or null if it is worth looking at.</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.DecodeJ2cToPng(System.Byte[])">
+            <summary>Decode JPEG 2000 bytes (an SL texture asset) to PNG bytes. Pure managed (CoreJ2K via LibreMetaverse).</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.SaveTextureAsync(LibreMetaverse.UUID,System.String,System.Threading.CancellationToken)">
+            <summary>Download a texture by UUID and save it as PNG. Returns the saved path or an error. Results are cached per UUID.</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.Linkset(LibreMetaverse.Simulator,LibreMetaverse.Primitive)">
+            <summary>All prims of the linkset that <paramref name="prim"/> belongs to (root first).</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.ListFaces(LibreMetaverse.Simulator,LibreMetaverse.Primitive,System.Boolean)">
+            <summary>List the faces of a prim/linkset with their texture UUIDs. Faces without an override report the prim's default texture as face "default".</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.EnsurePropertiesAsync(LibreMetaverse.Simulator,System.Collections.Generic.IReadOnlyCollection{LibreMetaverse.Primitive},System.Threading.CancellationToken)">
+            <summary>Request names / descriptions (ObjectProperties) for prims that do not have them yet.</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.FindObjectAsync(System.String,System.Single,System.Threading.CancellationToken)">
+            <summary>Find a nearby object by UUID or by (case-insensitive) name substring; nearest match wins.</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.NearbyAsync(System.String,System.Single,System.Int32,System.Threading.CancellationToken)">
+            <summary>Root prims within <paramref name="radius"/> m whose name contains <paramref name="nameFilter"/> (null/empty = all), nearest first.</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.LookAtAsync(LibreMetaverse.Primitive,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>Describe an object and save its face textures (all non-blank faces, or only <paramref name="onlyFace"/>, e.g. "0", "3", "default").</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.ScanAsync(System.String,System.Single,System.Int32,System.Threading.CancellationToken)">
+            <summary>Scan nearby objects matching <paramref name="nameFilter"/> (name or hover text), save their face textures into a
+            timestamped folder and write index.json describing every object, face and PNG. Returns the folder and the looks.</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.ToJson(System.Object)">
+            <summary>Serialize results (UUIDs, vectors and colors as strings).</summary>
+        </member>
+        <member name="M:SlTextureVision.TextureVision.SafeName(System.String)">
+            <summary>File-system-safe short name.</summary>
+        </member>
+    </members>
+</doc>

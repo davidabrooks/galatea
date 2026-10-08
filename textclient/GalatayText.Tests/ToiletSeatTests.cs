@@ -46,6 +46,8 @@ public class ToiletSeatTests
     [InlineData(WearableType.Alpha, "Bimbette /// Alpha Layer /// Butt 1", true)]
     [InlineData(WearableType.Alpha, "Bimbette /// Alpha Layer /// Upper Torso", false)]
     [InlineData(WearableType.Alpha, "Alpha Feet", false)]
+    [InlineData(WearableType.Alpha, "<Alpha mask> Chill Shorts - Maitreya", true)]
+    [InlineData(WearableType.Alpha, "<Alpha mask> Chill T-Shirt - Maitreya +Petite", false)]
     [InlineData(WearableType.Pants, "anything", true)]
     [InlineData(WearableType.Skirt, "anything", true)]
     [InlineData(WearableType.Underpants, "anything", true)]

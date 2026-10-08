@@ -135,6 +135,13 @@ public static partial class Program
             var tCloth = wears.Where(w => w.AssetType != AssetType.Bodypart).ToList();
             List<AppearanceManager.WearableData> cur; try { cur = client.Appearance.GetWearables().ToList(); } catch { cur = new(); }
             var curCloth = cur.Where(w => !IsBodyPartType(w.WearableType)).GroupBy(w => w.ItemID).Select(g => g.First()).ToList();
+            // layers linked only in the COF count as worn too: the server bakes from the COF, and the library's own list lags
+            // after an ad-hoc swap (2026-10-08: Bimbette leg alphas 'COF only' stayed on under the new shorts)
+            var cofF = await CofFolder(ct);
+            if (cofF != null)
+                foreach (var l in (await ReadFolderRO(cofF.UUID, ct)).OfType<InventoryItem>().Where(i => i.ParentUUID == cofF.UUID && i.IsLink() && i.InventoryType == InventoryType.Wearable))
+                    if (!curCloth.Any(c => c.ItemID == l.AssetUUID) && await FetchItemRO(l.AssetUUID, ct) is InventoryWearable tw && tw.AssetType != AssetType.Bodypart)
+                        curCloth.Add(new AppearanceManager.WearableData { ItemID = tw.UUID, AssetID = tw.AssetUUID, WearableType = tw.WearableType, AssetType = tw.AssetType });
             // clothed outfits always carry the clothed alphas (routes/_clothed-alphas.txt); the Bikini sheds them
             var clothedAlphaItems = new List<InventoryItem>();
             if (IsClothedOutfit(folder.Name))
@@ -187,6 +194,19 @@ public static partial class Program
                 foreach (var it in again) await RemoveCofLinksForItem(it.UUID, "outfit swap (retry)", ct);
                 client.Appearance.RemoveFromOutfit(again);
                 sb.AppendLine($"  layer retry off: {string.Join(", ", again.Select(a => "'" + a.Name + "'"))}");
+                await Task.Delay(3000, ct);
+            }
+            // verify the new layers really went on; add once more (2026-10-08: the removal retry re-sent a stale wearables
+            // list and dropped the just-added '<Alpha mask> Chill Shorts - Maitreya')
+            for (int k = 0; k < 2 && addCloth.Count > 0; k++)
+            {
+                HashSet<UUID> have; try { have = client.Appearance.GetWearables().Select(w => w.ItemID).ToHashSet(); } catch { have = new(); }
+                var miss = LayersNotInOutfit(addCloth.Select(c => c.UUID), have).ToHashSet();
+                if (miss.Count == 0) break;
+                var again = addCloth.Where(c => miss.Contains(c.UUID)).ToList();
+                if (k == 1) { sb.AppendLine($"  WARNING layers still not worn after retry: {string.Join(", ", again.Select(a => a.Name))}"); break; }
+                client.Appearance.AddToOutfit(again, false);
+                sb.AppendLine($"  layer retry on: {string.Join(", ", again.Select(a => "'" + a.Name + "'"))}");
                 await Task.Delay(3000, ct);
             }
             sb.AppendLine("  " + await CofSyncAddMissing(ct, removedIds));
@@ -363,7 +383,8 @@ public static partial class Program
     // Attach a clothing HUD, press a random color/pattern (spec: ClothingHuds.cs; never the previous pick), wait until the
     // change shows on the worn clothing, detach (with a re-check: the library's after-bake outfit send once re-attached a
     // HUD seconds after it came off).
-    static async Task<string> HudRandomize(InventoryItem hud, List<UUID> clothingItems, CancellationToken ct, ClothingHudSpec spec = null, bool keepColor = false)
+    static async Task<string> HudRandomize(InventoryItem hud, List<UUID> clothingItems, CancellationToken ct, ClothingHudSpec spec = null, bool keepColor = false,
+                                           IReadOnlyList<(UUID hud, string label)> matchTo = null)
     {
         if (hud == null) return "no HUD";
         if (hud.UUID == AoItem || hud.UUID == RetiredAwpAo || (hud.Name ?? "").Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)) return $"refused: '{hud.Name}' is the AO";
@@ -409,9 +430,12 @@ public static partial class Program
             }
             else if (keepColor) { sb.Append($"no remembered color ('{last ?? "-"}'): left as is; "); Log("hud", $"'{hud.Name}' keep mode, no remembered button '{last ?? "-"}': not recoloring"); }
             var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase); bool applied = false;
+            string matchWhy = null;
+            var pickFrom = keepColor ? opts : HudMatchOptions(opts, spec, matchTo, out matchWhy);
+            if (!keepColor && matchWhy != null) { sb.Append($"color match ({matchWhy}): {pickFrom.Count} of {opts.Count}; "); Log("hud", $"'{hud.Name}' color match {matchWhy}: [{string.Join(", ", pickFrom.Select(o => o.Label))}]"); }
             for (int attempt = 0; attempt < 3 && !applied && !keepColor; attempt++)
             {
-                var pick = PickHudOption(opts, last, Random.Shared, tried); if (pick == null) break;
+                var pick = PickHudOption(pickFrom, last, Random.Shared, tried) ?? PickHudOption(opts, last, Random.Shared, tried); if (pick == null) break;
                 tried.Add(pick.Label);
                 var target = prims.FirstOrDefault(p => p.LocalID == pick.Local);
                 if (target == null) { sb.Append($"button '{pick.Label}' prim gone; "); continue; }
@@ -535,7 +559,13 @@ public static partial class Program
         var huds = await FindClothingHuds(items, ct);
         if (huds.Count == 0) return $"no clothing HUDs found for '{folder.Name}'";
         var sb = new StringBuilder();
-        foreach (var (hud, clothing, spec) in huds) sb.AppendLine("  " + await HudRandomize(hud, clothing, ct, spec, keepColor));
+        // HUDs that match another piece's color (the shorts) go last, after the tops have picked
+        var done = new List<(UUID hud, string label)>();
+        foreach (var (hud, clothing, spec) in huds.OrderBy(h => h.spec?.Matches == true ? 1 : 0))
+        {
+            sb.AppendLine("  " + await HudRandomize(hud, clothing, ct, spec, keepColor, done));
+            done.Add((hud.UUID, HudLastPick(hud.UUID)));
+        }
         return sb.ToString().TrimEnd();
     }
 
@@ -638,7 +668,7 @@ public static partial class Program
         if (rd != null && File.Exists(Path.Combine(rd, "_clothing-huds.json")))
         {
             var real = ParseClothingHudMap(File.ReadAllText(Path.Combine(rd, "_clothing-huds.json")));
-            C(real.Count == 5 && real.Values.Distinct().Count() == 4 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops + bikini top/panties -> 4 distinct HUDs, no AO ({real.Count})");
+            C(real.Count == 6 && real.Values.Distinct().Count() == 5 && !real.Values.Contains(AoItem), $"_clothing-huds.json: 3 tops + bikini top/panties + Chill Shorts -> 5 distinct HUDs, no AO ({real.Count})");
             C(!real.ContainsKey(new UUID("9992295d-5f4b-33fc-addf-b774396caa50")) && !real.Values.Contains(new UUID("a612303a-f115-3f56-8cc9-c5936180f1ff")), "Valentine Dress trashed (2026-10-07): no Valentine HUD in the map");
             C(real.TryGetValue(new UUID("5c8487b7-0db2-34fd-a81b-fe2709c98021"), out var beth) && beth == new UUID("6899891e-79d1-3a31-93ab-fac14a3bd75e"), "Beth tube top -> Beth Tube Top HUD");
             C(real.TryGetValue(new UUID("aa265665-7a17-34f6-b423-66d336262ed2"), out var arts) && arts == new UUID("cb0dc6c4-545c-3be6-8351-e049094315a7"), "ARTi'S strapless top -> ARTi'S HUD");

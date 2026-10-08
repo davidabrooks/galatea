@@ -236,10 +236,11 @@ public static partial class Program
     // Touch closed doors only (never re-touch an already-open leaf — these toggle shut). Touch the pair in one burst,
     // wait at most DoorThroughDelayMs, then return so the walker goes through at full speed. One open leaf is enough;
     // a slow/failed sibling must not delay the pass (2026-10-05).
-    static async Task EnsureDoorsOpen(IReadOnlyList<NavDoor> doors, CancellationToken ct)
+    // returns how many leaves it touched (0 = all open/unknown: the walker never needs to stop)
+    static async Task<int> EnsureDoorsOpen(IReadOnlyList<NavDoor> doors, CancellationToken ct)
     {
-        if (doors == null || doors.Count == 0) return;
-        var sim = client.Network.CurrentSim; if (sim == null) return;
+        if (doors == null || doors.Count == 0) return 0;
+        var sim = client.Network.CurrentSim; if (sim == null) return 0;
         var need = new List<(NavDoor d, Primitive p, string how)>();
         int alreadyOpen = 0;
         foreach (var d in doors)
@@ -253,7 +254,7 @@ public static partial class Program
             { alreadyOpen++; Log("nav", $"door {d.Name}: already {st.how} — not touching (toggle risk)"); continue; }
             need.Add((d, p, st.how));
         }
-        if (need.Count == 0) { if (alreadyOpen > 0) Log("nav", $"doors: {alreadyOpen} already open, going through"); return; }
+        if (need.Count == 0) { if (alreadyOpen > 0) Log("nav", $"doors: {alreadyOpen} already open, going through"); return 0; }
         foreach (var (d, p, how) in need)
         {
             d.LastTouch = DateTime.Now; client.Self.Touch(p.LocalID);
@@ -262,6 +263,7 @@ public static partial class Program
         // Fixed short delay then GO — do not wait for every leaf; one opening is enough to pass
         await Task.Delay(DoorThroughDelayMs, ct);
         foreach (var (d, _, _) in need) Log("nav", $"door {d.Name}: {DoorState(d).how} (through after {DoorThroughDelayMs} ms)");
+        return need.Count;
     }
 
     // ---- doors ----

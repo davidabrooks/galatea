@@ -354,6 +354,11 @@ public static partial class Program
 
     static void SetPause(string reason, string why)
     {
+        if (DeferPauseIfInDoorway(reason, why, SetPauseNow)) return;   // never stop in a doorway (19:45 David)
+        SetPauseNow(reason, why);
+    }
+    static void SetPauseNow(string reason, string why)
+    {
         wanderPause = reason; wPausedAt = DateTime.Now;
         legCts?.Cancel(); try { client.Self.AutoPilotCancel(); } catch { }
         WLog($"PAUSE ({reason}): {why}");
@@ -1305,6 +1310,7 @@ public static partial class Program
                 {
                     if (!LoggedIn || !InWanderRegion || wanderPause != null || !(wanderPhase.StartsWith("walking"))) continue;
                     if (client.Self.SittingOn != 0) continue;
+                    if (routeInDoorZone) continue;   // no greet-pause in a doorway: greet once she is clear of it
                     var sim = Sim;
                     var avs = Avatars().Where(t => t.dist >= 0).Select(t => new GreetCand(t.av.ID, t.av.Name, t.pos, t.av.ParentID != 0)).ToList();
                     GreetCand who; string why;

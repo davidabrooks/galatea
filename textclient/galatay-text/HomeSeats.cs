@@ -316,7 +316,9 @@ public static partial class Program
         int N(string p) => g.Places[p].node;
         bool Edge(string a, string b) => g.E.Any(e => (e.a == N(a) && e.b == N(b)) || (e.a == N(b) && e.b == N(a)));
         C(Edge("deck-stair", "deck-top") && Edge("rowboat", "deck-stair") && Edge("deck-top", "mooring-deck"), "graph: beach (rowboat) <-> GOOSE 3-step stair <-> Mooring deck");
-        C(Edge("pier-start", "pier") && Edge("pier", "pier-south") && Edge("pier-south", "pier-end"), "graph: Burgundy pier path south from the beach");
+        // 2026-10-07 pier fix: pier -> pier-south / pier-end run along the long axis via ramp/axis nodes (no direct edges)
+        bool PierPath(string a, string b) { var np = GraphNodePath(g.E, N(a), N(b)); return np != null && np.Skip(1).SkipLast(1).All(k => Math.Abs(g.N[k].X - 216.3f) < 0.2f); }
+        C(Edge("pier-start", "pier") && PierPath("pier", "pier-south") && PierPath("pier", "pier-end"), "graph: Burgundy pier path south from the beach (along the axis)");
         var (pp, perr) = GraphRoute(g, g.N[N("porch")], N("pier-end"));
         C(perr == null && pp.Any(p => HDist(p, g.N[N("front-steps")]) < 0.5f) && pp.Any(p => HDist(p, g.N[N("beach-east")]) < 0.5f), "porch -> pier end goes via the front steps, east stairs and beach");
         // her own position on the beach under the patio starts on the beach graph, not on the patio

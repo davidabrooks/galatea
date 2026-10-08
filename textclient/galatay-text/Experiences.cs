@@ -5,8 +5,9 @@
 // ExperiencePreferences Allow, the prop never attaches.
 //
 // Policy: auto-grant experience ScriptQuestions when the experience is (a) already Allowed in prefs,
-// (b) on our small name/id allowlist (AVsitter by Code Violet), or (c) Allowed/Trusted on the current
-// region / permitted on the current parcel. Never grant Debit. Persist Allow/Block via ExperiencePreferences.
+// (b) on our small name/id allowlist (AVsitter by Code Violet), (c) Allowed/Trusted on the current
+// region / permitted on the current parcel, or (d) any experience (not blocked) while seated — furniture
+// props after a pose. Never grant Debit. Persist Allow/Block via ExperiencePreferences.
 // Classic Attach (no ExperienceID) while seated: grant Attach|TriggerAnimation only (AVsitter fallback).
 // Temp attachments (llAttachToAvatarTemp) are tracked, shown as TEMP in `worn`, never written to COF,
 // and cleaned up on stand if the experience does not detach them.
@@ -62,7 +63,7 @@ public static partial class Program
             }
             catch (Exception ex) { Log("exp", "bootstrap error: " + ex.GetBaseException().Message); }
         });
-        Log("exp", "experience permission handler hooked (auto-grant allowlist/region-allowed; Debit never granted)");
+        Log("exp", "experience permission handler hooked (auto-grant allowlist/region-allowed/seated; Debit never granted)");
     }
 
     static void LoadExpLists()
@@ -111,6 +112,13 @@ public static partial class Program
                     : nameOrIdAllowlisted ? "allowlist"
                     : "region/parcel allowed";
                 return (true, why, safe);
+            }
+            // David's rule: while seated, accept furniture prop experience requests (any not blocked).
+            if (seated)
+            {
+                if (safe == ScriptPermission.None)
+                    return (false, "experience request only asked for Debit (never granted)", ScriptPermission.None);
+                return (true, "experience while seated (furniture prop)", safe);
             }
             return (false, "experience not allowed (not in prefs/allowlist/region)", ScriptPermission.None);
         }
@@ -538,7 +546,13 @@ public static partial class Program
         C(!g && why.Contains("blocked"), "prefs Block wins over allowlist/region");
 
         (g, why, p) = DecideScriptQuestion(other, expBits, true, false, false, false, false);
-        C(!g, "unknown experience, not region-allowed -> deny");
+        C(g && p == expBits && why.Contains("seated"), "unknown experience while seated -> grant safe perms (furniture prop)");
+
+        (g, why, p) = DecideScriptQuestion(other, expBits, false, false, false, false, false);
+        C(!g, "unknown experience while standing -> deny");
+
+        (g, why, p) = DecideScriptQuestion(other, withDebit, true, false, false, false, false);
+        C(g && (p & ScriptPermission.Debit) == 0 && (p & ScriptPermission.Attach) != 0, "seated unknown experience strips Debit");
 
         (g, why, p) = DecideScriptQuestion(avs, withDebit, true, false, false, false, true);
         C(g && (p & ScriptPermission.Debit) == 0 && (p & ScriptPermission.Attach) != 0, "Debit stripped from grant");

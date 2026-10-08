@@ -71,6 +71,43 @@ public class PrBackfillPureTests
         Assert.Contains("Debit", why);
     }
 
+    // ---- seated furniture props: grant any experience not blocked (never Debit) ----
+    [Fact]
+    public void Seated_unknown_experience_grants_safe_perms_without_Debit()
+    {
+        var exp = UUID.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var ask = ScriptPermission.Attach | ScriptPermission.TriggerAnimation | ScriptPermission.Debit;
+        var (g, why, perms) = Program.DecideScriptQuestion(
+            exp, ask, seated: true,
+            prefAllowed: false, prefBlocked: false, regionOrParcelAllowed: false, nameOrIdAllowlisted: false);
+        Assert.True(g);
+        Assert.Equal(ScriptPermission.Attach | ScriptPermission.TriggerAnimation, perms);
+        Assert.Equal(0, (int)(perms & ScriptPermission.Debit));
+        Assert.Contains("seated", why);
+    }
+
+    [Fact]
+    public void Standing_unknown_experience_still_denied()
+    {
+        var exp = UUID.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        var (g, why, _) = Program.DecideScriptQuestion(
+            exp, ScriptPermission.Attach, seated: false,
+            prefAllowed: false, prefBlocked: false, regionOrParcelAllowed: false, nameOrIdAllowlisted: false);
+        Assert.False(g);
+        Assert.Contains("not allowed", why);
+    }
+
+    [Fact]
+    public void Seated_blocked_experience_still_denied()
+    {
+        var exp = UUID.Parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        var (g, why, _) = Program.DecideScriptQuestion(
+            exp, ScriptPermission.Attach, seated: true,
+            prefAllowed: false, prefBlocked: true, regionOrParcelAllowed: true, nameOrIdAllowlisted: true);
+        Assert.False(g);
+        Assert.Contains("blocked", why);
+    }
+
     [Fact]
     public void Pr46_IsLikelyTempAttach_LaraX_false_positive_cases()
     {

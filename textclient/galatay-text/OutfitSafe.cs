@@ -209,7 +209,7 @@ public static partial class Program
                 sb.AppendLine($"  layer retry on: {string.Join(", ", again.Select(a => "'" + a.Name + "'"))}");
                 await Task.Delay(3000, ct);
             }
-            sb.AppendLine("  " + await CofSyncAddMissing(ct, removedIds));
+            sb.AppendLine("  " + await CofSyncAddMissing(ct, removedIds, addCloth.Select(c => c.UUID)));
             RememberNamedOutfit(folder.Name);
             Log("outfit", $"wore outfit '{folder.Name}' safely: {detach.Count} off, {attach.Count} on, {removeCloth.Count} layers off, {addCloth.Count} layers on, {tBody.Count} body parts");
             return $"wearing outfit '{folder.Name}' ({detach.Count} off, {attach.Count} on, {removeCloth.Count}/{addCloth.Count} layers off/on)\n" + sb.ToString().TrimEnd();
@@ -300,7 +300,9 @@ public static partial class Program
     }
 
     // Add a COF link for every worn attachment / wearable that has none (never removes anything; Firestorm bridge excluded).
-    static async Task<string> CofSyncAddMissing(CancellationToken ct, ICollection<UUID> skip = null)
+    // 'also': items that must be linked even when the library's wearables list does not show them yet (layers an outfit
+    // wear just added: a removal retry re-sent a stale list and they never got a COF link, so the next bake dropped them)
+    static async Task<string> CofSyncAddMissing(CancellationToken ct, ICollection<UUID> skip = null, IEnumerable<UUID> also = null)
     {
         var cof = await CofFolder(ct); if (cof == null) return "COF sync: Current Outfit folder not found";
         var links = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>().Where(l => l.ParentUUID == cof.UUID && l.IsLink()).ToList();
@@ -312,6 +314,7 @@ public static partial class Program
             var it = AttachItemId(p); if (it != UUID.Zero && !linked.Contains(it)) want.Add(it);
         }
         try { foreach (var w in client.Appearance.GetWearables()) if (!linked.Contains(w.ItemID)) want.Add(w.ItemID); } catch { }
+        foreach (var a in also ?? Enumerable.Empty<UUID>()) if (!linked.Contains(a)) want.Add(a);
         var added = new List<string>();
         foreach (var id in want.Distinct())
         {

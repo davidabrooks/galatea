@@ -17,7 +17,7 @@ namespace GalatayText;
 // Bikini changes: on the way down she walks to the bedroom change spot (graph place "bedroom", west wing, clear of the
 // MIRAGE bed and the side-room-1 doorway), changes there, then heads down. On the way back up she walks straight to
 // the same spot, changes back into the remembered outfit (colors kept), then goes on. While the home wander runs, the
-// outfit-zone tick leaves that restore to the wander. When the wander is off, she still changes back anywhere indoors.
+// outfit-zone tick leaves that restore to the wander. When the wander is off or paused, she still changes back anywhere indoors.
 public static partial class Program
 {
     internal const double DefaultLevelDwellMin = 30;
@@ -61,11 +61,22 @@ public static partial class Program
     // pure: already standing at the change spot (no walk needed)
     internal static bool AtBikiniSpot(Vector3 me, Vector3 spot) => HDist(me, spot) <= 1.0f && Math.Abs(me.Z - spot.Z) <= 1.5f;
 
+    // pure: the home wander owns the change back only while it is actually moving (on, at home, not paused; the 15 s
+    // greeting stop counts as moving). On but paused indoors (chat, hold, user, ao, rest on the sofa), the outfit-zone
+    // tick changes her back itself; the 8-min guard after the bedroom bikini change still applies. 2026-10-08 14:51 David.
+    internal static bool HomeWanderOwnsRestore(bool wanderOn, bool inPeronaut, string pause) => wanderOn && inPeronaut && pause is null or "greet";
+
     // pure: the outfit-zone tick defers the house restore to the home wander (which changes back in the bedroom)
     internal static string ZoneActionWithWander(string zone, bool beachMode, bool bikiniWorn, bool indoors, bool homeWanderOwnsRestore)
     {
         var a = ZoneAction(zone, beachMode, bikiniWorn, indoors);
         return a == "restore" && homeWanderOwnsRestore ? "wait-wander" : a;
+    }
+    // pure: the zone tick's final action, with the 8-min guard after the bedroom bikini change ("wait-guard")
+    internal static string ZoneTickAction(string zone, bool beachMode, bool bikiniWorn, bool indoors, bool homeWanderOwnsRestore, DateTime nowUtc, DateTime deferRestoreUntilUtc)
+    {
+        var a = ZoneActionWithWander(zone, beachMode, bikiniWorn, indoors, homeWanderOwnsRestore);
+        return a == "restore" && nowUtc < deferRestoreUntilUtc ? "wait-guard" : a;
     }
 
     static string wLevel; static DateTime wLevelSince;

@@ -28,7 +28,6 @@ public static partial class Program
     static bool InPeronaut => string.Equals(client.Network.CurrentSim?.Name, HomeWanderRegion, StringComparison.OrdinalIgnoreCase);
     static bool InWanderRegion => InNaberrie || InPeronaut;
     static readonly string HomeSeatsFile = Path.Combine(RouteDir, "_seats-peronaut-home.json");
-    static readonly Regex HomeSeatRx = new(@"\b(pillow|cushion|zafu|zabuton|seat|mat|bench|chair|stool|pouf|sofa|couch|desk|bed|tub|bath|lounger|hammock|rocking)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly UUID AlexNova = new("84a4e062-0511-4a1c-9983-866907907199");
     static readonly object wLock = new();
     static CancellationTokenSource wanderCts, legCts;
@@ -291,7 +290,7 @@ public static partial class Program
             if (walkTask != null && !walkTask.IsCompleted) { walkCts?.Cancel(); client.Self.AutoPilotCancel(); }
             wanderCts = new CancellationTokenSource();
             var ct = wanderCts.Token;
-            wanderPause = null; wApproachPending = false; wFails = 0; wLegs = 0; wLoops = 0; wSits = 0; wGreets = 0;
+            wanderPause = null; wApproachPending = false; wFails = 0; wLegs = 0; wLoops = 0; wSits = 0; wGreets = 0; WanderRestReset();
             wLegsUntilSit = wRnd.Next(1, 4); endsReachedHome = 0; wStarted = DateTime.Now; wLastSnap = DateTime.Now.AddMinutes(-9.5); // first picture ~30 s in
             wanderResumeAfterRestart = false;
             SaveWanderFlag(true, why);
@@ -383,6 +382,7 @@ public static partial class Program
             var p = wanderPause;
             if (p is "hold" or "user" or "ao") { WLog($"{(im ? "IM" : "chat")} from {name} while paused ({p}): no action"); return; }
             if (p == "greet") { WLog($"{name} spoke during the greeting reply window ({(id == wGreetWho ? "the greeted avatar" : "someone else nearby")})"); p = null; }
+            if (p == "rest") { WLog($"{name} spoke while she rests: chat pause (the rest picks up again after the chat if she is still seated)"); p = null; }
             bool newSpeaker = p == null || wSpeaker != id;
             wSpeaker = id; wSpeakerName = name; wSpeakerPos = pos;
             if (dist >= 0 && dist <= 40f) wApproachPending = true;
@@ -532,7 +532,18 @@ public static partial class Program
                     if (quiet.TotalSeconds >= 180 && wanderPause == "chat")
                     { wanderPause = null; WLog($"RESUME: no chat for {quiet.TotalSeconds:F0} s (paused {(DateTime.Now - wPausedAt).TotalSeconds:F0} s for {wSpeakerName})"); continue; }
                 }
+                if (pause == "rest" && RestStateNow() != "rest" && wanderPause == "rest") { wanderPause = null; continue; }
                 await Task.Delay(1000, ct); continue;
+            }
+            // 2026-10-08 14:51 David: rest after 3 failed walks, then wander again by herself (WanderRest.cs)
+            var rs = RestStateNow();
+            if (rs == "rest") { wanderPhase = $"resting on the sofa until {wRestUntil:HH:mm:ss}"; wanderPause = "rest"; WLog("back to resting until " + $"{wRestUntil:HH:mm:ss}"); continue; }
+            if (rs == "end")
+            {
+                wRestUntil = null; wFails = 0; wTarget = null; wLegsUntilSit = wRnd.Next(1, 4);
+                WLog("REST over: standing up and wandering again");
+                await EnsureStandingForWalk(ct);
+                continue;
             }
             // 2026-10-08 David: wash hands at the bathroom sink after the toilet (WashHands.cs)
             if (toiletSatAt != null && client.Self.SittingOn == 0 && pendingToilet == null) { wanderPhase = "washing hands"; await WashHandsIfDue(g, ct); continue; }
@@ -593,7 +604,7 @@ public static partial class Program
                 wFails++;
                 wLastLeg = $"{DateTime.Now:HH:mm:ss} {target} FAILED: {msg}";
                 WLog($"LEG to {target} FAILED ({wFails}/3 in a row): {msg}");
-                if (wFails >= 3) { await HomeWanderRecover(g, "3 failed legs in a row"); return; }
+                if (wFails >= 3) { if (await HomeWanderRecover(g, "3 failed legs in a row", ct)) continue; return; }
                 wTarget = PickHomeLegTarget(g, target); WLog($"turning around: next target {wTarget}");
                 await Task.Delay(5000, ct);
             }
@@ -601,11 +612,18 @@ public static partial class Program
     }
     static int endsReachedHome;
 
-    static async Task HomeWanderRecover(Graph g, string why)
+    // true = resting (the loop carries on and resumes after the rest); false = gave up, wander off (rest cap reached)
+    static async Task<bool> HomeWanderRecover(Graph g, string why, CancellationToken ct)
     {
+        var now = DateTime.Now;
+        bool rest; lock (wRests) { rest = RestAllowed(wRests, now); if (rest) wRests.Add(now); }
         wanderPhase = "recovering to sofa";
-        WLog($"GIVING UP ({why}): walking to living/sofa and sitting");
-        SaveWanderFlag(false, "gave up: " + why);
+        if (rest) WLog($"RESTING ({why}): walking to living/sofa to rest, then wandering again");
+        else
+        {
+            WLog($"GIVING UP ({why}): already rested {MaxRestsPerHour}x in the last hour; walking to living/sofa, sitting and turning the wander OFF");
+            SaveWanderFlag(false, $"gave up: {why} (after {MaxRestsPerHour} rests in an hour)");
+        }
         using var rc = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         string res;
         try
@@ -626,32 +644,31 @@ public static partial class Program
             }
             catch (Exception ex) { res += "; sit sofa error " + ex.Message; }
         }
-        WLog("stopped after home recovery: " + res);
+        if (!rest) { WLog("stopped after home recovery: " + res); return false; }
+        var secs = RestSeconds(wRnd);
+        wRestUntil = DateTime.Now.AddSeconds(secs); wRestSeated = client.Self.SittingOn != 0; wFails = 0;
+        wanderPause = "rest"; wPausedAt = DateTime.Now;
+        wanderPhase = $"resting on the sofa until {wRestUntil:HH:mm:ss}";
+        WLog($"REST {secs / 60.0:F1} min {(wRestSeated ? "on the sofa" : "standing (no sofa sit)")} ({res}); wandering again at {wRestUntil:HH:mm:ss}");
+        return !ct.IsCancellationRequested;
     }
 
-    // Home seats: every catalogued seat (routes/_seats-peronaut-home.json, any level, reached over the path graph)
-    // plus seat-named objects on the upper floor near the path. Grouped chairs = one spot.
+    // Home seats: only the catalogued seats with wander: true (routes/_seats-peronaut-home.json, any level, reached over
+    // the path graph). 2026-10-08 14:51 David: listed seats only; unlisted seat-named objects are never used. Grouped chairs = one spot.
     static async Task<List<SeatCand>> HomeWanderSeats(Graph g, List<string> dbg = null)
     {
         var sim = Sim; var me = client.Self.SimPosition;
-        var infos = LoadHomeSeats().Where(i => i.Wander).GroupBy(i => i.Id).ToDictionary(x => x.Key, x => x.First());
-        var skip = LoadHomeSeats().Where(i => !i.Wander).Select(i => i.Id).ToHashSet();
+        var infos = HomeWanderSeatInfos(LoadHomeSeats());
         var allowed = await AllowedParcel(sim);
         var raw = new List<(Primitive p, Vector3 q, float d, bool listed)>();
         var seen = new HashSet<UUID>();
         foreach (var p in sim.ObjectsPrimitives.Values)
         {
             if (p == null || p.ParentID != 0 || p.PrimData.PCode != PCode.Prim) continue;
-            bool listed = infos.ContainsKey(p.ID);
-            if (!listed)
-            {
-                if (skip.Contains(p.ID)) continue;
-                if (HDist(p.Position, me) > 40f) continue;
-                if (p.Position.Z < 27f || p.Position.Z > 32f) continue; // uncatalogued: upper level only
-            }
+            if (!HomeWanderSeatAllowed(p.ID, infos)) continue;
             var (q, d) = NearestOnGraph(g, p.Position);
-            if (d > (listed ? 6f : 14f)) { if (listed) dbg?.Add($"  - '{infos[p.ID].Name}' {p.ID} {P3(p.Position)}: {d:F1} m from the path graph"); continue; }
-            raw.Add((p, q, d, listed)); seen.Add(p.ID);
+            if (d > 6f) { dbg?.Add($"  - '{infos[p.ID].Name}' {p.ID} {P3(p.Position)}: {d:F1} m from the path graph"); continue; }
+            raw.Add((p, q, d, true)); seen.Add(p.ID);
         }
         foreach (var i in infos.Values.Where(i => !seen.Contains(i.Id) && !raw.Any(r => r.p.ID == i.Id)))
             if (!sim.ObjectsPrimitives.Values.Any(x => x != null && x.ID == i.Id)) dbg?.Add($"  - '{i.Name}' {i.Id} {P3(i.Pos)}: not in view right now");
@@ -664,8 +681,7 @@ public static partial class Program
         var res = new List<SeatCand>();
         foreach (var (p, q, d, listed) in raw)
         {
-            var name = p.Properties?.Name ?? (listed ? infos[p.ID].Name : "");
-            if (!listed && (!HomeSeatRx.IsMatch(name) || WSeatBad.IsMatch(name))) continue;
+            var name = p.Properties?.Name ?? infos[p.ID].Name;
             void R(string why) => dbg?.Add($"  - '{name}' {p.ID} {P3(p.Position)}: {why}");
             if (Math.Max(p.Scale.X, Math.Max(p.Scale.Y, p.Scale.Z)) > 10f) { R("too big"); continue; }
             if (!SoloSeatNameOk(name, SeatSinglesConfirmed(p.ID, name) || (listed && HomeSeatSoloMenuPath(infos[p.ID])))) { R("ADULT-named seat, no singles menu confirmed"); continue; }
@@ -762,7 +778,7 @@ public static partial class Program
         if (client.Self.SittingOn == 0) { MarkSeatFailed(c, "sit failed: " + r); await DressAfterSeatIfPending(); return false; }
         wLastSeat = c.p.ID; wSits++;
         WanderNoteLevel();
-        var stay = forceStay > 0 ? forceStay : wRnd.Next(120, 241);
+        var stay = forceStay > 0 ? forceStay : HomeSitStaySeconds(info, wRnd);   // toilet / sink: their seat-list stay_s (30-60 s)
         var t0 = DateTime.Now;
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
@@ -1621,7 +1637,7 @@ public static partial class Program
                 if (!WanderOn) return "wander is not running ('wander start')";
                 if (wanderPause == null) return "wander is not paused";
                 if (client.Self.SittingOn == 0 && !AoStateNow().active) { AoLog("wander resume REFUSED: " + AoStateNow().why); return "refused: AO not active (" + AoStateNow().why + "); staying paused"; }
-                WLog($"RESUME by command (was {wanderPause})"); wanderPause = null;
+                WLog($"RESUME by command (was {wanderPause})"); if (wRestUntil != null) wRestUntil = DateTime.Now; wanderPause = null;   // a rest ends now (stands up)
                 return "wander resumed";
             case "status": return WanderStatus();
             case "selftest": return GreetSelfTest() + "\n" + QuietSelfTest() + "\n" + PoseSelfTest() + "\n" + AoSelfTest() + "\n" + WatchdogSelfTest() + "\n" + ResumeSelfTest();

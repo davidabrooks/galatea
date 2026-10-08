@@ -3,6 +3,7 @@
 //  - group: several chairs at one spot -> pick one at random
 //  - special "shower": Bikini on, menu Single* > random F1/F2, touch the valve child prim to start the water, touch it again before standing
 //  - special "undress": undress before sitting (clawfoot tub), dress again after standing
+//  - special "toilet": legs bare + The V before sitting, random female pose, the same clothes back after standing (Toilet.cs)
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -59,7 +60,8 @@ public static partial class Program
     {
         if (i == null || (i.MenuFixed.Count == 0 && i.MenuChoice.Count == 0)) return null;
         var m = i.MenuFixed.ToList();
-        if (i.MenuChoice.Count > 0) m.Add(i.MenuChoice[r.Next(i.MenuChoice.Count)]);
+        var choice = i.Special == "toilet" ? ToiletFemaleButtons(i.MenuChoice) : i.MenuChoice; // toilet: female poses only
+        if (choice.Count > 0) m.Add(choice[r.Next(choice.Count)]);
         return m;
     }
 
@@ -149,6 +151,7 @@ public static partial class Program
 
     static async Task DressAfterSeatIfPending()
     {
+        await ToiletRestoreIfPending();
         var name = pendingDressOutfit; if (name == null || client.Self.SittingOn != 0) return;
         try { await EnsureStandingForWalk(CancellationToken.None); using var cts = new CancellationTokenSource(45000); await GoToChangeSpot(pendingDressSpot, "dressing", cts.Token); } catch (Exception ex) { WLog("dress spot: " + ex.GetBaseException().Message); }
         pendingDressOutfit = null;
@@ -288,7 +291,9 @@ public static partial class Program
         string[] tour = { "e386ff1e-825c-14ec-715d-3dfc2df5e54b", "c78d42b6-c75c-df84-aa8c-8f78cbd2cb6c", "1f6e8ba6-3ea2-02c3-6e3b-2618f4c1b6aa", "81f12788-a433-0222-8c30-9eeae62cf80e",
                           "889748ee-b571-128e-7868-64aafad8f7ab", "4f86d9a9-97de-3e9e-d1c4-d6ba9a843f1d", "a3f619bd-52c2-0e1f-e8c3-7f95375f2ae9", "e352f3a5-1c88-1747-b5fb-b9bc703eb2db",
                           "9970956b-d6dc-8328-224a-6f527268eb3f", "6ddb08d2-f9bd-4118-d602-af6f0386bd28", "753e6d7c-5cc0-5ab2-d015-f80b6ef5abf6", "90a518f7-e954-b6f1-3d4f-eb0c7ed1449f" };
-        C(tour.All(t => infos.TryGetValue(U(t), out var i) && i.Wander), "all 12 tour seats catalogued for the wander");
+        // 2026-10-08 (#109): David swapped the two mooring-deck poolside chairs (tour[7], tour[8]) for a hot tub
+        C(tour.Where((t, k) => k is not (7 or 8)).All(t => infos.TryGetValue(U(t), out var i) && i.Wander)
+          && new[] { 7, 8 }.All(k => infos.TryGetValue(U(tour[k]), out var i) && !i.Wander), "10 tour seats in the wander, the 2 removed deck chairs out");
         C(HomeSeatSpot(U(tour[0]), infos) == HomeSeatSpot(U(tour[1]), infos) && HomeSeatSpot(U(tour[3]), infos) == HomeSeatSpot(U(tour[4]), infos)
           && HomeSeatSpot(U(tour[7]), infos) == HomeSeatSpot(U(tour[8]), infos), "porch rockers / Nerenzo chairs / deck poolside chairs are one random-pick spot each");
         C(new[] { 9, 10, 11 }.Select(k => HomeSeatSpot(U(tour[k]), infos)).Distinct().Count() == 3, "the 3 pier benches are separate spots");
@@ -307,6 +312,11 @@ public static partial class Program
         C(tub?.ChangeSpot is Vector3 cs && HDist(cs, tub.Pos) is > 1f and < 2.5f && NearestOnGraph(g, cs).Item2 < 0.5f && cs.Z <= tub.Pos.Z + 0.5f, "tub change spot: beside the tub, on the floor path");
         C(tub?.ChangeSpot != null && AtChangeSpot(tub.ChangeSpot.Value + new Vector3(0.3f, 0, 0.2f), tub.ChangeSpot.Value) && !AtChangeSpot(tub.ChangeSpot.Value + new Vector3(0, 0, 0.9f), tub.ChangeSpot.Value)
           && !AtChangeSpot(tub.Pos, tub.ChangeSpot.Value), "change spot check: beside on the floor yes, up on the tub no");
+        // 2026-10-08 toilet: female menu, change spot = graph node behind side-room-2 (the living-room side is walled off)
+        C(infos.TryGetValue(U("48b303e0-8dcc-58e2-39bf-23e9f9f895b9"), out var wc) && wc.Special == "toilet" && wc.Wander && wc.MenuChoice.Count == 3
+          && ToiletFemaleButtons(wc.MenuChoice).Count == 3 && wc.ChangeSpot is Vector3 ws && HDist(ws, g.N[g.Places["toilet"].node]) < 0.2f
+          && NearestOnGraph(g, wc.Pos).Item2 < 1.5f && GraphRoute(g, front, g.Places["toilet"].node).Item1?.Any(p => HDist(p, g.N[g.Places["east-door-room"].node]) < 0.3f) == true,
+          "toilet: female menu, change spot on the graph, reached through side-room-2");
         C(seats.Any(s => s.Id.ToString().StartsWith("fee00d83") && !s.Wander), "Nerenzo parasol is not a seat");
         C(!seats.Any(s => HDist(s.Pos, new Vector3(217f, 24f, 21f)) < 1.5f && s.Pos.Z < 23f), "multi-seat boat under the pier is not catalogued");
         // level-aware projection: the shower is under the patio edge but must land on the beach

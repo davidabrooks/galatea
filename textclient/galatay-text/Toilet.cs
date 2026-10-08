@@ -31,7 +31,8 @@ public static partial class Program
 
     // pure: is this worn clothing layer lower-body (pants / skirt / underpants, or a leg / butt alpha)?
     internal static bool ToiletLowerLayer(WearableType t, string name) =>
-        t is WearableType.Pants or WearableType.Skirt or WearableType.Underpants || (t == WearableType.Alpha && LegAlphaNameRx.IsMatch(name ?? ""));
+        t is WearableType.Pants or WearableType.Skirt or WearableType.Underpants
+        || (t == WearableType.Alpha && (LegAlphaNameRx.IsMatch(name ?? "") || LowerClothingNameRx.IsMatch(name ?? ""))); // '<Alpha mask> Chill Shorts - Maitreya' too
 
     // pure: the female pose buttons of the toilet menu
     internal static List<string> ToiletFemaleButtons(IEnumerable<string> buttons) =>

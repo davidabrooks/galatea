@@ -15,7 +15,14 @@ public static partial class Program
     // a swatch grid drawn on one face of one prim: press by touch ST (s left->right, t bottom->top)
     internal sealed record HudGridGroup(string Name, List<float> T, List<string> Names);
     internal sealed record HudGrid(int Link, int Face, List<float> S, List<HudGridGroup> Groups);
-    internal sealed record ClothingHudSpec(UUID Hud, string HudName, List<UUID> Clothing, string LabelRx, HudGrid Grid, Dictionary<string, string> LabelNames);
+    // shorts color matching (David 2026-10-08): first rule whose HUD (Zero = any) and label regex fit another HUD's current
+    // pick in the same outfit -> only these buttons (code = first word of the label); no rule -> MatchDefault
+    internal sealed record HudMatchRule(UUID Hud, string When, List<string> Pick);
+    internal sealed record ClothingHudSpec(UUID Hud, string HudName, List<UUID> Clothing, string LabelRx, HudGrid Grid, Dictionary<string, string> LabelNames,
+                                           List<HudMatchRule> Match = null, List<string> MatchDefault = null)
+    {
+        public bool Matches => Match is { Count: > 0 } || MatchDefault is { Count: > 0 };
+    }
     // one pressable color/pattern: a named button prim (Face < 0, no ST) or a spot on a face (ST)
     internal sealed record HudOption(int Link, uint Local, string Label, int Face = -1, float S = -1, float T = -1)
     {
@@ -54,7 +61,20 @@ public static partial class Program
             var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (t.TryGetProperty("label_names", out var ln) && ln.ValueKind == JsonValueKind.Object)
                 foreach (var p in ln.EnumerateObject()) names[p.Name] = p.Value.GetString() ?? "";
-            res.Add(new ClothingHudSpec(hud, t.TryGetProperty("hud_name", out var hn) ? hn.GetString() ?? "" : "", cloth, rx, grid, names));
+            List<string> Strs(JsonElement e) => e.ValueKind == JsonValueKind.Array ? e.EnumerateArray().Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString()).Where(v => v.Length > 0).ToList() : new();
+            var match = new List<HudMatchRule>();
+            if (t.TryGetProperty("match", out var ma) && ma.ValueKind == JsonValueKind.Array)
+                foreach (var m in ma.EnumerateArray())
+                {
+                    var mh = m.TryGetProperty("hud", out var mhe) && UUID.TryParse(mhe.GetString(), out var mhu) ? mhu : UUID.Zero;
+                    var when = m.TryGetProperty("when", out var we) ? we.GetString() : null;
+                    if (when != null) { try { _ = new Regex(when); } catch { continue; } }
+                    var pick = m.TryGetProperty("pick", out var pe) ? Strs(pe) : new();
+                    if (pick.Count > 0) match.Add(new HudMatchRule(mh, when, pick));
+                }
+            var mdef = t.TryGetProperty("match_default", out var md) ? Strs(md) : new();
+            res.Add(new ClothingHudSpec(hud, t.TryGetProperty("hud_name", out var hn) ? hn.GetString() ?? "" : "", cloth, rx, grid, names,
+                                        match.Count > 0 ? match : null, mdef.Count > 0 ? mdef : null));
         }
         // one spec per HUD (a later duplicate adds its clothing to the first)
         return res.GroupBy(r => r.Hud).Select(gp => gp.First() with { Clothing = gp.SelectMany(x => x.Clothing).Distinct().ToList() }).ToList();
@@ -100,6 +120,26 @@ public static partial class Program
         if (!string.IsNullOrEmpty(spec?.LabelRx)) opts = opts.Where(o => Regex.IsMatch(o.Label, spec.LabelRx, RegexOptions.IgnoreCase)).ToList();
         if (spec?.LabelNames is { Count: > 0 } ln) opts = opts.Select(o => ln.TryGetValue(o.Label, out var nm) && nm.Length > 0 ? o with { Label = o.Label + " " + nm } : o).ToList();
         return opts;
+    }
+
+    // Pure: the options that go with the other HUDs' current picks in this outfit (spec.Match, first fitting rule, else
+    // MatchDefault); no match spec, or none of the wanted buttons on this HUD -> every option. 'why' names the rule for the log.
+    internal static List<HudOption> HudMatchOptions(IReadOnlyList<HudOption> opts, ClothingHudSpec spec, IReadOnlyList<(UUID hud, string label)> others, out string why)
+    {
+        why = null;
+        if (spec == null || !spec.Matches) return opts.ToList();
+        List<string> want = null;
+        foreach (var r in spec.Match ?? new())
+        {
+            var hit = (others ?? Array.Empty<(UUID, string)>()).FirstOrDefault(o => (r.Hud == UUID.Zero || r.Hud == o.hud)
+                        && (string.IsNullOrEmpty(r.When) || (!string.IsNullOrEmpty(o.label) && Regex.IsMatch(o.label, r.When, RegexOptions.IgnoreCase))));
+            if (hit.hud != UUID.Zero) { want = r.Pick; why = $"matches '{hit.label ?? "-"}'"; break; }
+        }
+        if (want == null) { want = spec.MatchDefault; why = "default set"; }
+        if (want == null || want.Count == 0) { why = null; return opts.ToList(); }
+        var res = opts.Where(o => want.Any(w => o.Label.Equals(w, StringComparison.OrdinalIgnoreCase) || o.Label.Split(' ')[0].Equals(w, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (res.Count == 0) { why = null; return opts.ToList(); }
+        return res;
     }
 
     // Pure: random option, never the previous pick when there is any other (so two wears in a row look different);
@@ -236,7 +276,7 @@ public static partial class Program
         if (f != null && File.Exists(f))
         {
             var real = ParseClothingHudSpecs(File.ReadAllText(f));
-            C(real.Count == 4 && real.Select(r => r.Hud).Distinct().Count() == 4, $"shipped map: 4 HUDs, Valentine trashed 2026-10-07 ({real.Count})");
+            C(real.Count == 5 && real.Select(r => r.Hud).Distinct().Count() == 5, $"shipped map: 5 HUDs (Chill Shorts added 2026-10-08) ({real.Count})");
             var sp = real.FirstOrDefault(r => r.Hud == BikiniHudItem);
             C(sp != null && sp.Clothing.Contains(BikiniTopItem) && sp.Clothing.Contains(BikiniPantiesItem) && sp.LabelRx != null && Regex.IsMatch("D12", sp.LabelRx) && !Regex.IsMatch("C3", sp.LabelRx), "Spicy Bikini HUD: top + panties, D/W/T only");
             var art = real.FirstOrDefault(r => r.Hud == new UUID("cb0dc6c4-545c-3be6-8351-e049094315a7"));
@@ -249,6 +289,9 @@ public static partial class Program
             var tee = real.FirstOrDefault(r => r.Clothing.Contains(new UUID("90d3e432-c8d1-3f2c-b800-6e88ed678c27")));
             C(tee != null && tee.Hud == new UUID("a2591928-d005-3af2-9b02-a04c9e5f93e7") && Regex.IsMatch("C33", tee.LabelRx) && Regex.IsMatch("P5", tee.LabelRx), "TETRA Chill T-Shirt -> Chill T-Shirt HUD, C colors + P patterns");
             C(!real.Any(r => r.Hud == AoItem), "no AO in the map");
+            var sh = real.FirstOrDefault(r => r.Clothing.Contains(new UUID("596631d6-a5fd-3d98-aa43-70e0996ded81")));
+            C(sh != null && sh.Hud == new UUID("bff83228-ba99-320c-ad9b-7f2abe1832f8") && sh.Matches && Regex.IsMatch("D35", sh.LabelRx) && !Regex.IsMatch("B3", sh.LabelRx) && real.Count(r => r.Matches) == 1,
+              "Chill Shorts -> Chill Shorts HUD, denim washes D only, the only color-matching spec");
         }
         else C(false, "routes/_clothing-huds.json not found");
         return $"clothing-huds selftest: {pass} PASS, {fail} FAIL\n" + sb.ToString().TrimEnd();

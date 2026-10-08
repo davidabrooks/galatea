@@ -65,6 +65,11 @@ public static partial class Program
         return m;
     }
 
+    // pure: an explicit seat-list menu path that starts in a solo submenu (Solo* / Single*): an ADULT-named seat
+    // (sink, shower) may join the solo wander without a singles menu seen this session (2026-10-08 sink)
+    internal static bool HomeSeatSoloMenuPath(HomeSeatInfo i) =>
+        i != null && i.MenuFixed.Count > 0 && PoseIsSoloMenu(i.MenuFixed[0]) && !PoseIsCouplesNamed(i.MenuFixed[0]) && !PoseIsAdultMenu(i.MenuFixed[0]);
+
     // seat spot key: grouped chairs count as one spot (pick the spot, then a random free chair in it)
     internal static string HomeSeatSpot(UUID id, IReadOnlyDictionary<UUID, HomeSeatInfo> infos) =>
         infos.TryGetValue(id, out var i) && !string.IsNullOrEmpty(i.Group) ? "group:" + i.Group : id.ToString();

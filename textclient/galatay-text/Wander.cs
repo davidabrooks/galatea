@@ -666,7 +666,7 @@ public static partial class Program
             if (!listed && (!HomeSeatRx.IsMatch(name) || WSeatBad.IsMatch(name))) continue;
             void R(string why) => dbg?.Add($"  - '{name}' {p.ID} {P3(p.Position)}: {why}");
             if (Math.Max(p.Scale.X, Math.Max(p.Scale.Y, p.Scale.Z)) > 10f) { R("too big"); continue; }
-            if (!SoloSeatNameOk(name, SeatSinglesConfirmed(p.ID, name))) { R("ADULT-named seat, no singles menu confirmed"); continue; }
+            if (!SoloSeatNameOk(name, SeatSinglesConfirmed(p.ID, name) || (listed && HomeSeatSoloMenuPath(infos[p.ID])))) { R("ADULT-named seat, no singles menu confirmed"); continue; }
             if (sit.ContainsKey(p.LocalID)) { R("occupied"); continue; }
             if (p.ID == wLastSeat) { R("sat there last time"); continue; }
             bool cool; lock (wSeatFailed) cool = wSeatFailed.TryGetValue(p.ID, out var ft) && (now - ft).TotalMinutes < 30;

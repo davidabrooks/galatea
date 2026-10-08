@@ -29,7 +29,7 @@ public static partial class Program
     // Prefix match so "SinglesSet*" counts (19:39 hammock); Sit / Relax-type menus count as solo too.
     static readonly Regex PoseSoloMenuName = new(@"(?<![a-z])(?:singles?|solo|alone|relax|(?:sit(?:s|ting)?|one\s*p|1p)(?![a-z]))", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Adult / multi-avatar menus to skip when auto-picking PG solo after David leaves.
-    static readonly Regex PoseAdultMenuName = new(@"(?<![a-z])(adults?|ffm|mmf|fmf|mfm|f\+?f\d*|m\+?f\d*|m\s*[/&]\s*f|f\s*[/&]\s*m|xxx|nsfw|erotic\w*)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex PoseAdultMenuName = new(@"(?<![a-z])(adults?|ffm|mmf|fmf|mfm|f\+?f\d*|m\+?f\d*|m\s*[/&]\s*f|f\s*[/&]\s*m|xxx|nsfw|erotic\w*|(?:blow|hand|foot|tit|rim)\s*jobs?|going\s*down|oral|mutual\s*fp)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Seat object names like "... Beach Hammock ADULT": skipped for solo wander sits unless a singles menu was seen on it.
     static readonly Regex SeatAdultName = new(@"(?<![a-z])adults?(?![a-z])|xxx|nsfw", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> poseSinglesSeen = new(StringComparer.OrdinalIgnoreCase);

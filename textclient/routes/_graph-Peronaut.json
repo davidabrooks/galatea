@@ -58,7 +58,8 @@
     [231.0, 70.4, 29.0],
     [216.3, 37.0, 24.6],
     [216.3, 30.5, 24.7],
-    [233.6, 73.0, 29.0]
+    [233.6, 73.0, 29.0],
+    [239.9, 73.6, 29.0]
   ],
   "edges": [
     [0, 1, "living"],
@@ -119,7 +120,8 @@
     [44, 45, "arrival"],
     [45, 39, "west-door-hall"],
     [44, 41, "east-door-hall"],
-    [42, 54, "toilet"]
+    [42, 54, "toilet"],
+    [42, 55, "tub"]
   ],
   "places": {
     "home": {"node": 45, "note": "SL home / arrival point (sethome 2026-10-06), off the couch"},
@@ -157,7 +159,8 @@
     "east-door": {"node": 41, "note": "living approach to side-room-2 (east-deck/tub doorway)"},
     "east-door-room": {"node": 42, "note": "east-deck side of side-room-2 doorway"},
     "centre": {"node": 0, "note": "fireplace / living centre (old home node)"},
-    "toilet": {"node": 54, "note": "floor beside the BackBone toilet (her change spot); reached only from east-door-room (side-room-2 doorway), a wall blocks the living-room side (David 2026-10-08)"}
+    "toilet": {"node": 54, "note": "floor beside the BackBone toilet (her change spot); reached only from east-door-room (side-room-2 doorway), a wall blocks the living-room side (David 2026-10-08)"},
+    "tub": {"node": 55, "note": "floor beside the clawfoot tub (its change spot), after David moved the tub 2026-10-08; from east-door-room"}
   },
   "furniture_footprints": [
     {"name": "Lalou - Ultra Sofa v1.1", "uuid": "f6844138-499f-0f3e-ba6a-ce601a16eafe", "min": [225.6, 61.9], "max": [230.6, 66.6], "source": "linkset child boxes, vision export-20261006-145428"},

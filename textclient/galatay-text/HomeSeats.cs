@@ -14,7 +14,8 @@ namespace GalatayText;
 public static partial class Program
 {
     internal sealed record HomeSeatInfo(UUID Id, string Name, Vector3 Pos, string Level, string Group, string Special,
-                                        List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander, Vector3? ChangeSpot = null);
+                                        List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander, Vector3? ChangeSpot = null,
+                                        (int min, int max)? StayS = null);
 
     internal static List<HomeSeatInfo> ParseHomeSeats(string json)
     {
@@ -40,7 +41,12 @@ public static partial class Program
             Vector3? cs = null;
             if (s.TryGetProperty("change_spot", out var cv) && cv.ValueKind == JsonValueKind.Array && cv.GetArrayLength() >= 3)
                 cs = new Vector3((float)cv[0].GetDouble(), (float)cv[1].GetDouble(), (float)cv[2].GetDouble());
-            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs));
+            (int, int)? stay = null;   // optional "stay_s": [min, max] seconds for this seat (2026-10-08: toilet, sink 30-60)
+            if (s.TryGetProperty("stay_s", out var sv) && sv.ValueKind == JsonValueKind.Array && sv.GetArrayLength() >= 2
+                && sv[0].ValueKind == JsonValueKind.Number && sv[1].ValueKind == JsonValueKind.Number
+                && sv[0].TryGetInt32(out var smin) && sv[1].TryGetInt32(out var smax) && smin > 0 && smax >= smin)
+                stay = (smin, smax);
+            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay));
         }
         return res;
     }
@@ -54,6 +60,21 @@ public static partial class Program
     // Graph distance with a level penalty: the upper patio sits right above the beach, so a plain horizontal
     // projection would put the outdoor shower (z20.9) on the patio edge (z29). 2.5 m of slack keeps sloped paths as before.
     internal static float GDist(Vector3 q, Vector3 x) => HDist(q, x) + 3f * Math.Max(0f, Math.Abs(q.Z - x.Z) - 2.5f);
+
+    // 2026-10-08 14:51 David: the home wander sits only on furniture in the seat list (wander: true). Unlisted
+    // seat-named objects are never used, so new furniture waits until it is listed with its rules.
+    internal static Dictionary<UUID, HomeSeatInfo> HomeWanderSeatInfos(IEnumerable<HomeSeatInfo> seats) =>
+        seats.Where(i => i.Wander).GroupBy(i => i.Id).ToDictionary(x => x.Key, x => x.First());
+    internal static bool HomeWanderSeatAllowed(UUID id, IReadOnlyDictionary<UUID, HomeSeatInfo> wanderSeats) => wanderSeats.ContainsKey(id);
+
+    // 2026-10-08 14:51 David: how long one home sit lasts. A seat's "stay_s" [min, max] (toilet, sink: 30-60 s) wins,
+    // otherwise the usual 2-4 min. The hand wash after the toilet passes its own 20-40 s (WashHands.cs).
+    internal const int HomeSitMinS = 120, HomeSitMaxS = 240;
+    internal static int HomeSitStaySeconds(HomeSeatInfo i, Random r)
+    {
+        var (lo, hi) = i?.StayS ?? (HomeSitMinS, HomeSitMaxS);
+        return r.Next(lo, hi + 1);
+    }
 
     // menu for this sit: fixed steps + one random choice (shower: Single* > F1|F2)
     internal static List<string> HomeSeatMenu(HomeSeatInfo i, Random r)

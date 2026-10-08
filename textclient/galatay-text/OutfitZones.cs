@@ -119,9 +119,10 @@ public static partial class Program
         var pos = client.Self.SimPosition;
         // 21:19 David: back from the beach she changes only once inside the house; a worn bikini is never re-worn
         // 2026-10-08 12:22 David: the home wander changes back in the bedroom (LevelDwell.cs); the tick does it only when the wander is off
-        var act = ZoneActionWithWander(zone, beachMode, BikiniWorn(), IndoorsAtHome(pos), WanderOn && InPeronaut);
-        if (act == "restore" && DateTime.UtcNow < beachModeDeferRestoreUntil) return; // bikini just put on in the bedroom
-        if (act is "none" or "wait-indoors" or "wait-wander") return;
+        // 2026-10-08 14:51 David: a wander that is on but paused (chat, hold, rest...) no longer holds the change back indoors
+        var act = ZoneTickAction(zone, beachMode, BikiniWorn(), IndoorsAtHome(pos), HomeWanderOwnsRestore(WanderOn, InPeronaut, wanderPause),
+                                 DateTime.UtcNow, beachModeDeferRestoreUntil);   // "wait-guard": bikini just put on in the bedroom (8 min)
+        if (act is "none" or "wait-indoors" or "wait-wander" or "wait-guard") return;
         beachOutfitBusy = true;
         try
         {

@@ -135,6 +135,13 @@ public static partial class Program
             var tCloth = wears.Where(w => w.AssetType != AssetType.Bodypart).ToList();
             List<AppearanceManager.WearableData> cur; try { cur = client.Appearance.GetWearables().ToList(); } catch { cur = new(); }
             var curCloth = cur.Where(w => !IsBodyPartType(w.WearableType)).GroupBy(w => w.ItemID).Select(g => g.First()).ToList();
+            // layers linked only in the COF count as worn too: the server bakes from the COF, and the library's own list lags
+            // after an ad-hoc swap (2026-10-08: Bimbette leg alphas 'COF only' stayed on under the new shorts)
+            var cofF = await CofFolder(ct);
+            if (cofF != null)
+                foreach (var l in (await ReadFolderRO(cofF.UUID, ct)).OfType<InventoryItem>().Where(i => i.ParentUUID == cofF.UUID && i.IsLink() && i.InventoryType == InventoryType.Wearable))
+                    if (!curCloth.Any(c => c.ItemID == l.AssetUUID) && await FetchItemRO(l.AssetUUID, ct) is InventoryWearable tw && tw.AssetType != AssetType.Bodypart)
+                        curCloth.Add(new AppearanceManager.WearableData { ItemID = tw.UUID, AssetID = tw.AssetUUID, WearableType = tw.WearableType, AssetType = tw.AssetType });
             // clothed outfits always carry the clothed alphas (routes/_clothed-alphas.txt); the Bikini sheds them
             var clothedAlphaItems = new List<InventoryItem>();
             if (IsClothedOutfit(folder.Name))

@@ -209,7 +209,11 @@ public static partial class Program
                 sb.AppendLine($"  layer retry on: {string.Join(", ", again.Select(a => "'" + a.Name + "'"))}");
                 await Task.Delay(3000, ct);
             }
-            sb.AppendLine("  " + await CofSyncAddMissing(ct, removedIds, addCloth.Select(c => c.UUID)));
+            var cofSync = await CofSyncAddMissing(ct, removedIds, addCloth.Select(c => c.UUID));
+            sb.AppendLine("  " + cofSync);
+            // a layer linked only now missed the bake already requested: ask for one more so the sim (and the library) wear it
+            if (addCloth.Count > 0 && cofSync.Contains("added links"))
+                try { await client.Appearance.RequestSetAppearance(true); sb.AppendLine("  rebake requested (new COF links)"); } catch (Exception ex) { Log("outfit", "rebake: " + ex.Message); }
             RememberNamedOutfit(folder.Name);
             Log("outfit", $"wore outfit '{folder.Name}' safely: {detach.Count} off, {attach.Count} on, {removeCloth.Count} layers off, {addCloth.Count} layers on, {tBody.Count} body parts");
             return $"wearing outfit '{folder.Name}' ({detach.Count} off, {attach.Count} on, {removeCloth.Count}/{addCloth.Count} layers off/on)\n" + sb.ToString().TrimEnd();

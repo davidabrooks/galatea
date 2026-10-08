@@ -189,6 +189,19 @@ public static partial class Program
                 sb.AppendLine($"  layer retry off: {string.Join(", ", again.Select(a => "'" + a.Name + "'"))}");
                 await Task.Delay(3000, ct);
             }
+            // verify the new layers really went on; add once more (2026-10-08: the removal retry re-sent a stale wearables
+            // list and dropped the just-added '<Alpha mask> Chill Shorts - Maitreya')
+            for (int k = 0; k < 2 && addCloth.Count > 0; k++)
+            {
+                HashSet<UUID> have; try { have = client.Appearance.GetWearables().Select(w => w.ItemID).ToHashSet(); } catch { have = new(); }
+                var miss = LayersNotInOutfit(addCloth.Select(c => c.UUID), have).ToHashSet();
+                if (miss.Count == 0) break;
+                var again = addCloth.Where(c => miss.Contains(c.UUID)).ToList();
+                if (k == 1) { sb.AppendLine($"  WARNING layers still not worn after retry: {string.Join(", ", again.Select(a => a.Name))}"); break; }
+                client.Appearance.AddToOutfit(again, false);
+                sb.AppendLine($"  layer retry on: {string.Join(", ", again.Select(a => "'" + a.Name + "'"))}");
+                await Task.Delay(3000, ct);
+            }
             sb.AppendLine("  " + await CofSyncAddMissing(ct, removedIds));
             RememberNamedOutfit(folder.Name);
             Log("outfit", $"wore outfit '{folder.Name}' safely: {detach.Count} off, {attach.Count} on, {removeCloth.Count} layers off, {addCloth.Count} layers on, {tBody.Count} body parts");

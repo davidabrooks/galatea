@@ -1,0 +1,53 @@
+diff --git a/LibreMetaverse/GridClient.cs b/LibreMetaverse/GridClient.cs
+index c7218853..5c17968d 100644
+--- a/LibreMetaverse/GridClient.cs
++++ b/LibreMetaverse/GridClient.cs
+@@ -123,6 +123,12 @@ namespace LibreMetaverse
+         public Stats.UtilizationStatistics Stats { get; private set; }
+         /// <summary>HttpClient chiefly used for Caps</summary>
+         public HttpCapsClient HttpCapsClient { get; set; }
++#if NET5_0_OR_GREATER
++        /// <summary>galatea: when set before a GridClient is constructed, the caps HttpClient is built on a SocketsHttpHandler
++        /// with this ConnectCallback (e.g. resolve hosts via DNS-over-HTTPS and connect to the real IP). TLS still runs on top
++        /// with the request's host name for SNI and certificate checks.</summary>
++        public static Func<SocketsHttpConnectionContext, System.Threading.CancellationToken, ValueTask<System.IO.Stream>>? CapsConnectCallback { get; set; }
++#endif
+         /// <summary>Per-category rate limiter applied to all caps HTTP requests</summary>
+         public CapsRateLimiter CapsRateLimiter { get; private set; }
+         /// <summary>Second Life Marketplace subsystem</summary>
+@@ -206,6 +212,23 @@ namespace LibreMetaverse
+             }
+             handler = winHttpHandler;
+ #else
++#if NET5_0_OR_GREATER
++            if (CapsConnectCallback != null)
++            {
++                var sockets = new SocketsHttpHandler
++                {
++                    AllowAutoRedirect = true,
++                    AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip,
++                    ConnectCallback = CapsConnectCallback,
++                    SslOptions = new SslClientAuthenticationOptions
++                    {
++                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true // same as ValidateServerCertificate
++                    },
++                    MaxConnectionsPerServer = Settings.MaxHttpConnections
++                };
++                return FinishHttpCapsClient(sockets);
++            }
++#endif
+             var httpClientHandler = new HttpClientHandler
+             {
+                 AllowAutoRedirect = true,
+@@ -220,6 +243,11 @@ namespace LibreMetaverse
+             handler = httpClientHandler;
+ #endif
+ 
++            return FinishHttpCapsClient(handler);
++        }
++
++        private HttpCapsClient FinishHttpCapsClient(HttpMessageHandler handler)
++        {
+             var rateLimitingHandler = new RateLimitingCapsHandler(CapsRateLimiter, handler);
+             HttpCapsClient client = new HttpCapsClient(rateLimitingHandler);
+             client.DefaultRequestHeaders.Accept.Clear();

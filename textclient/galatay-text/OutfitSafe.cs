@@ -537,7 +537,9 @@ public static partial class Program
         var res = new List<(InventoryItem, List<UUID>, ClothingHudSpec)>();
         var items = outfitItems.ToList();
         var ids = items.Select(i => i.UUID).ToHashSet(); var mapped = new HashSet<UUID>();
-        foreach (var spec in LoadClothingHudSpecs()) // one HUD once, with every outfit piece it colors (Bikini top + panties)
+        var (press, skip) = PartitionHudSpecs(LoadClothingHudSpecs(), ids);
+        foreach (var sp in skip) foreach (var c in sp.Clothing.Where(ids.Contains)) mapped.Add(c); // single color: no HUD step at all
+        foreach (var spec in press) // one HUD once, with every outfit piece it colors (Bikini top + panties)
         {
             var cloth = spec.Clothing.Where(ids.Contains).ToList();
             if (cloth.Count == 0) continue;
@@ -564,10 +566,13 @@ public static partial class Program
     {
         var items = await ResolveOutfitItems(folder, ct);
         var huds = await FindClothingHuds(items, ct);
-        if (huds.Count == 0) return $"no clothing HUDs found for '{folder.Name}'";
         var sb = new StringBuilder();
         // HUDs that match another piece's color (the shorts) go last, after the tops have picked
         var done = new List<(UUID hud, string label)>();
+        // single-color pieces (Beth tube top): HUD skipped; their remembered finish still steers the shorts color match
+        foreach (var sp in PartitionHudSpecs(LoadClothingHudSpecs(), items.Select(i => i.UUID).ToHashSet()).skip)
+        { done.Add((sp.Hud, HudLastPick(sp.Hud))); sb.AppendLine($"  '{sp.HudName}': single color, HUD step skipped"); }
+        if (huds.Count == 0) return sb.Length > 0 ? sb.ToString().TrimEnd() : $"no clothing HUDs found for '{folder.Name}'";
         foreach (var (hud, clothing, spec) in huds.OrderBy(h => h.spec?.Matches == true ? 1 : 0))
         {
             sb.AppendLine("  " + await HudRandomize(hud, clothing, ct, spec, keepColor, done));

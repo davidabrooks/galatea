@@ -816,8 +816,9 @@ public static partial class Program
         }
         var sat = (DateTime.Now - t0).TotalSeconds;
         if (wanderPause != null) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (interrupted: {wanderPause})"; WLog($"sit on '{c.name}' interrupted after {sat:F0} s ({wanderPause})"); return true; }
-        if (client.Self.SittingOn == 0) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (stood up by something else)"; WLog($"no longer seated after {sat:F0} s"); await DressAfterSeatIfPending(); return true; }
+        if (client.Self.SittingOn == 0) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (stood up by something else)"; WLog($"no longer seated after {sat:F0} s"); await StandOutAfterSeat(info, ct); await DressAfterSeatIfPending(); return true; }
         await EnsureStandingForWalk(ct);
+        await StandOutAfterSeat(info, ct);   // 2026-10-08 18:38: clear floor first (stood inside the sink cabinet)
         await DressAfterSeatIfPending();
         wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s";
         WLog($"STOOD UP from '{c.name}' {c.p.ID} after {sat:F0} s; rejoining the path");

@@ -41,10 +41,13 @@ public static partial class Program
     sealed record ToiletUndressState(List<(UUID id, AttachmentPoint pt, string name)> Atts, List<(UUID id, string name)> Layers, List<UUID> Added);
     static ToiletUndressState pendingToilet;
 
+    // 2026-10-08 18:36 (David: long delay before the legs alpha comes off): layers + jeans in one batch, COF links in one
+    // call, bake right away (FastLayers.UndressOrder); The V + HUD and the orphan-alpha check after that.
     static async Task<string> ToiletUndress(CancellationToken ct)
     {
         var atts = new List<(UUID, AttachmentPoint, string)>(); var layers = new List<(UUID, string)>(); var added = new List<UUID>();
-        var sb = new StringBuilder();
+        var layerItems = new List<InventoryItem>();
+        var sb = new StringBuilder(); var t0 = DateTime.Now;
         outfitChangeUntil = DateTime.Now.AddSeconds(60);
         try
         {
@@ -61,48 +64,85 @@ public static partial class Program
             foreach (var w in cur.GroupBy(w => w.ItemID).Select(x => x.First()))
             {
                 var it = await FetchItemRO(w.ItemID, ct);
-                if (it != null && ToiletLowerLayer(w.WearableType, it.Name)) layers.Add((it.UUID, it.Name));
+                if (it != null && ToiletLowerLayer(w.WearableType, it.Name)) { layers.Add((it.UUID, it.Name)); layerItems.Add(it); }
             }
             pendingToilet = new ToiletUndressState(atts, layers, added); // set first: a failure below still restores
-            foreach (var (id, _, nm) in atts) { await WearOpsCmd("wear", new[] { "remove", id.ToString() }); sb.Append($"off '{nm}'; "); }
-            foreach (var (id, nm) in layers) { await WearOpsCmd("wear", new[] { "remove", id.ToString() }); sb.Append($"layer off '{nm}'; "); }
-            // an outfit-orphan alpha dropped by 'wear remove' also comes back afterwards
-            try
-            {
-                var alphasAfter = client.Appearance.GetWearables().Where(w => w.WearableType == WearableType.Alpha).Select(w => w.ItemID).ToHashSet();
-                foreach (var gone in alphasBefore.Where(a => !alphasAfter.Contains(a) && !layers.Any(l => l.Item1 == a)))
-                { var it = await FetchItemRO(gone, ct); layers.Add((gone, it?.Name ?? gone.ToString())); sb.Append($"orphan alpha off '{it?.Name}'; "); }
-            }
-            catch { }
             var worn = WornPrims().Select(AttachItemId).ToHashSet();
-            foreach (var v in new[] { TheVItem, TheVHudItem })
-            {
-                if (worn.Contains(v)) continue;
-                var r = await WearOpsCmd("wear", new[] { "add", v.ToString() });
-                added.Add(v); sb.Append($"on {v.ToString()[..8]} ({r.Split('\n')[0]}); ");
-            }
-            await Task.Delay(1500, ct);
+            var extras = new[] { TheVItem, TheVHudItem }.Where(v => !worn.Contains(v)).ToList();
+            foreach (var step in UndressOrder(atts.Count, layers.Count, extras.Count, orphanCheck: true))
+                switch (step)
+                {
+                    case LegStep.LayersOff: client.Appearance.RemoveFromOutfit(layerItems); foreach (var (_, nm) in layers) sb.Append($"layer off '{nm}'; "); break;
+                    case LegStep.DetachClothing: foreach (var (id, _, nm) in atts) { DetachItem(id, "toilet undress"); sb.Append($"off '{nm}'; "); } break;
+                    case LegStep.CofLinksOff: await CofLinksOffBatch(atts.Select(a => a.Item1).Concat(layers.Select(l => l.Item1)), "toilet undress", ct); break;
+                    case LegStep.RebakeNow: await RebakeNow("toilet undress"); sb.Append($"bake asked at +{(DateTime.Now - t0).TotalSeconds:F1} s; "); break;
+                    case LegStep.ExtrasOn:
+                        foreach (var v in extras)
+                        {
+                            var r = await WearOpsCmd("wear", new[] { "add", v.ToString() });
+                            added.Add(v); sb.Append($"on {v.ToString()[..8]} ({r.Split('\n')[0]}); ");
+                        }
+                        break;
+                    case LegStep.OrphanCheck:
+                        // an outfit-orphan alpha that belonged to the clothing also comes off now (and back afterwards)
+                        foreach (var (id, _, _) in atts)
+                        {
+                            try { var inv = await FetchItemRO(id, ct); if (inv != null) await DropOrphanAlphasAfterRemove(inv, ct); } catch { }
+                        }
+                        try
+                        {
+                            var alphasAfter = client.Appearance.GetWearables().Where(w => w.WearableType == WearableType.Alpha).Select(w => w.ItemID).ToHashSet();
+                            foreach (var gone in alphasBefore.Where(a => !alphasAfter.Contains(a) && !layers.Any(l => l.Item1 == a)))
+                            { var it = await FetchItemRO(gone, ct); layers.Add((gone, it?.Name ?? gone.ToString())); sb.Append($"orphan alpha off '{it?.Name}'; "); }
+                        }
+                        catch { }
+                        break;
+                }
+            await Task.Delay(1000, ct);
         }
         finally { outfitChangeUntil = DateTime.Now.AddSeconds(15); }
         var res = sb.Length == 0 ? "nothing on the legs" : sb.ToString().TrimEnd(' ', ';');
-        WLog("TOILET undress: " + res);
+        WLog($"TOILET undress ({(DateTime.Now - t0).TotalSeconds:F0} s): " + res);
         return res;
     }
 
+    // 2026-10-08 18:37 (David: long delay after the toilet before washing hands): was 66 s, one 'wear add' per alpha each
+    // reading every COF link. Now jeans + all layers in one batch, COF links in one call, The V off, bake right away.
     static async Task ToiletRestoreIfPending()
     {
         var st = pendingToilet; if (st == null || client.Self.SittingOn != 0) return;
         pendingToilet = null;
-        var sb = new StringBuilder();
+        var sb = new StringBuilder(); var t0 = DateTime.Now;
         outfitChangeUntil = DateTime.Now.AddSeconds(60);
         try
         {
-            foreach (var (id, pt, nm) in st.Atts) sb.Append($"on '{nm}': {(await WearOpsCmd("wear", new[] { "add", id.ToString(), ((int)pt).ToString() })).Split('\n')[0]}; ");
-            foreach (var (id, nm) in st.Layers) { await WearOpsCmd("wear", new[] { "add", id.ToString() }); sb.Append($"layer on '{nm}'; "); }
-            foreach (var v in st.Added) sb.Append($"off {v.ToString()[..8]}: {(await WearOpsCmd("wear", new[] { "remove", v.ToString() })).Split('\n')[0]}; ");
+            using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
+            var wornBefore = WornLayerTypes();
+            var attInv = new List<(InventoryItem, AttachmentPoint)>(); var layerInv = new List<InventoryItem>();
+            foreach (var (id, pt, _) in st.Atts) { var it = await FetchItemRO(id, ct); if (it != null) attInv.Add((it, pt)); }
+            foreach (var (id, _) in st.Layers) { var it = await FetchItemRO(id, ct); if (it is InventoryWearable) layerInv.Add(it); }
+            if (layerInv.Count > 0) { client.Appearance.AddToOutfit(layerInv, false); sb.Append($"layers on: {string.Join(", ", layerInv.Select(l => "'" + l.Name + "'"))}; "); }
+            foreach (var (it, pt) in attInv) client.Appearance.Attach(it, pt, false);
+            foreach (var v in st.Added) DetachItem(v, "toilet restore");
+            var descs = LayerLinkDescs(layerInv.OfType<InventoryWearable>().Select(w => (w.UUID, w.WearableType)), wornBefore);
+            sb.Append(await CofLinksOnBatch(layerInv.Concat(attInv.Select(a => a.Item1)).ToList(), descs, "toilet restore", ct) + "; ");
+            if (st.Added.Count > 0) sb.Append(await CofLinksOffBatch(st.Added, "toilet restore", ct) + "; ");
+            sb.Append(await RebakeNow("toilet restore") + $" at +{(DateTime.Now - t0).TotalSeconds:F1} s; ");
+            // verify (re-send once): the jeans attach, and layers a stale wearables list may have dropped (COF only)
+            if (attInv.Count > 0)
+            {
+                await WaitWorn(attInv.Select(a => a.Item1.UUID).ToList(), 8000, ct);
+                var seen = WornPrims().Select(AttachItemId).ToHashSet();
+                foreach (var (it, pt) in attInv)
+                    if (seen.Contains(it.UUID)) sb.Append($"on '{it.Name}'; ");
+                    else { client.Appearance.Attach(it, pt, false); sb.Append($"'{it.Name}' re-sent; "); }
+            }
+            HashSet<UUID> have; try { have = client.Appearance.GetWearables().Select(w => w.ItemID).ToHashSet(); } catch { have = new(); }
+            var miss = layerInv.Where(l => !have.Contains(l.UUID)).ToList();
+            if (miss.Count > 0) { client.Appearance.AddToOutfit(miss, false); sb.Append($"layer retry on: {string.Join(", ", miss.Select(m => "'" + m.Name + "'"))}; "); await RebakeNow("toilet restore retry"); }
         }
         catch (Exception ex) { sb.Append("FAILED: " + ex.GetBaseException().Message); }
         finally { outfitChangeUntil = DateTime.Now.AddSeconds(15); }
-        WLog("TOILET restore after standing: " + sb.ToString().TrimEnd(' ', ';'));
+        WLog($"TOILET restore after standing ({(DateTime.Now - t0).TotalSeconds:F0} s): " + sb.ToString().TrimEnd(' ', ';'));
     }
 }

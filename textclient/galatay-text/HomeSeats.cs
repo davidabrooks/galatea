@@ -15,7 +15,7 @@ public static partial class Program
 {
     internal sealed record HomeSeatInfo(UUID Id, string Name, Vector3 Pos, string Level, string Group, string Special,
                                         List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander, Vector3? ChangeSpot = null,
-                                        (int min, int max)? StayS = null);
+                                        (int min, int max)? StayS = null, Vector3? StandSpot = null);
 
     internal static List<HomeSeatInfo> ParseHomeSeats(string json)
     {
@@ -41,12 +41,15 @@ public static partial class Program
             Vector3? cs = null;
             if (s.TryGetProperty("change_spot", out var cv) && cv.ValueKind == JsonValueKind.Array && cv.GetArrayLength() >= 3)
                 cs = new Vector3((float)cv[0].GetDouble(), (float)cv[1].GetDouble(), (float)cv[2].GetDouble());
+            Vector3? ss = null;   // optional "stand_spot": clear floor point to step to right after standing (2026-10-08 sink)
+            if (s.TryGetProperty("stand_spot", out var sp) && sp.ValueKind == JsonValueKind.Array && sp.GetArrayLength() >= 3)
+                ss = new Vector3((float)sp[0].GetDouble(), (float)sp[1].GetDouble(), (float)sp[2].GetDouble());
             (int, int)? stay = null;   // optional "stay_s": [min, max] seconds for this seat (2026-10-08: toilet, sink 30-60)
             if (s.TryGetProperty("stay_s", out var sv) && sv.ValueKind == JsonValueKind.Array && sv.GetArrayLength() >= 2
                 && sv[0].ValueKind == JsonValueKind.Number && sv[1].ValueKind == JsonValueKind.Number
                 && sv[0].TryGetInt32(out var smin) && sv[1].TryGetInt32(out var smax) && smin > 0 && smax >= smin)
                 stay = (smin, smax);
-            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay));
+            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss));
         }
         return res;
     }
@@ -115,30 +118,38 @@ public static partial class Program
     static readonly HashSet<WearableType> UndressLayerTypes = new() { WearableType.Shirt, WearableType.Pants, WearableType.Underpants, WearableType.Undershirt,
         WearableType.Jacket, WearableType.Skirt, WearableType.Socks, WearableType.Shoes, WearableType.Gloves, WearableType.Alpha };
 
+    // 2026-10-08 18:36 (David: long delay before the legs alpha comes off): clothing attachments and every alpha / clothing
+    // layer in one batch, COF links in one call, bake right away (FastLayers.UndressOrder); the topless extras after that.
     static async Task<string> UndressForSeat(CancellationToken ct)
     {
-        var sb = new StringBuilder();
+        var sb = new StringBuilder(); var t0 = DateTime.Now;
         outfitChangeUntil = DateTime.Now.AddSeconds(60);
         try
         {
             var prot = OutfitProtectedIds();
             var roots = WornPrims(); await EnsureProperties(Sim, roots);
+            var atts = new List<(UUID id, string nm)>();
             foreach (var r in roots)
             {
                 if (IsHudAttachPoint(r.PrimData.AttachmentPoint)) continue;
                 var id = AttachItemId(r); var nm = r.Properties?.Name ?? "";
-                if (id == UUID.Zero || prot.Contains(id) || OutfitGroup(nm) != null || !ClothingNameRx.IsMatch(nm)) continue;
-                await RemoveCofLinksForItem(id, "undress (tub)", ct);
-                await DetachItemAsync(id, "undress (tub)");
-                sb.Append($"off '{nm}'; ");
+                if (id == UUID.Zero || prot.Contains(id) || OutfitGroup(nm) != null || !ClothingNameRx.IsMatch(nm) || atts.Any(x => x.id == id)) continue;
+                atts.Add((id, nm));
             }
             List<AppearanceManager.WearableData> cur; try { cur = client.Appearance.GetWearables().ToList(); } catch { cur = new(); }
             var layers = new List<InventoryItem>();
             foreach (var w in cur.Where(w => UndressLayerTypes.Contains(w.WearableType)).GroupBy(w => w.ItemID).Select(x => x.First()))
             { var it = await FetchItemRO(w.ItemID, ct); if (it != null) layers.Add(it); }
-            foreach (var it in layers) await RemoveCofLinksForItem(it.UUID, "undress (tub)", ct);
-            if (layers.Count > 0) { client.Appearance.RemoveFromOutfit(layers); sb.Append($"layers off: {string.Join(", ", layers.Select(l => "'" + l.Name + "'"))}"); }
-            await Task.Delay(2000, ct);
+            foreach (var step in UndressOrder(atts.Count, layers.Count, 0, orphanCheck: false))
+                switch (step)
+                {
+                    case LegStep.LayersOff: client.Appearance.RemoveFromOutfit(layers); break;
+                    case LegStep.DetachClothing: foreach (var (id, nm) in atts) { DetachItem(id, "undress (tub)"); sb.Append($"off '{nm}'; "); } break;
+                    case LegStep.CofLinksOff: await CofLinksOffBatch(atts.Select(x => x.id).Concat(layers.Select(l => l.UUID)), "undress (tub)", ct); break;
+                    case LegStep.RebakeNow: await RebakeNow("undress (tub)"); break;
+                }
+            if (layers.Count > 0) sb.Append($"layers off: {string.Join(", ", layers.Select(l => "'" + l.Name + "'"))}; bake asked at +{(DateTime.Now - t0).TotalSeconds:F1} s");
+            await Task.Delay(1000, ct);
         }
         finally { outfitChangeUntil = DateTime.Now.AddSeconds(15); }
         var res = sb.Length == 0 ? "nothing to take off" : sb.ToString().TrimEnd(' ', ';');

@@ -42,6 +42,7 @@
     <Compile Include="../galatay-text/ImTarget.cs" Link="Core/ImTarget.cs" />
     <Compile Include="../galatay-text/ChatGuard.cs" Link="Core/ChatGuard.cs" />
     <Compile Include="../galatay-text/FastChat.cs" Link="Core/FastChat.cs" />
+    <Compile Include="../galatay-text/FastOutfit.cs" Link="Core/FastOutfit.cs" />
     <Compile Include="../galatay-text/SlDns.cs" Link="Core/SlDns.cs" />
     <Compile Include="../galatay-text/InstantReplies.cs" Link="Core/InstantReplies.cs" />
     <Compile Include="../galatay-text/Doors.cs" Link="Core/Doors.cs" />

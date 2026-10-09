@@ -40,7 +40,7 @@ public static partial class Program
         public double MaxDelayS => PaceMaxS.Values.Append(TypingMaxS).Max();
     }
     internal sealed record FastLine(string Scope, string Speaker, string Text, bool Mine);
-    internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error, string Pace = "normal");
+    internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error, string Pace = "normal", string Outfit = null, bool Helper = false);
 
     static string FastFile => Path.Combine(RouteDir, "_fast-chat.json");
     static string FastUsageFile => Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "fastchat-usage.jsonl");
@@ -187,12 +187,19 @@ public static partial class Program
             using var cd = JsonDocument.Parse(content);
             var reply = cd.RootElement.TryGetProperty("reply", out var rp) && rp.ValueKind == JsonValueKind.String ? rp.GetString() ?? "" : "";
             bool action = cd.RootElement.TryGetProperty("action", out var ac) && ac.ValueKind == JsonValueKind.True;
+            // 2026-10-09: helper=true (a how/why question about her own behaviour / client / speed / bugs / setup) is never
+            // answered from guesswork: it is handled like an action (short 'let me check' ack, the routine answers)
+            bool helper = cd.RootElement.TryGetProperty("helper", out var hp) && hp.ValueKind == JsonValueKind.True;
+            if (helper) action = true;
+            // 2026-10-09: outfit = "random" | "top_color" | "<saved outfit name>" (FastOutfit.cs validates it; null = none)
+            var outfit = cd.RootElement.TryGetProperty("outfit", out var of) && of.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(of.GetString()) ? of.GetString().Trim() : null;
+            if (outfit != null && (outfit.Equals("null", StringComparison.OrdinalIgnoreCase) || outfit.Equals("none", StringComparison.OrdinalIgnoreCase))) outfit = null;
             var pace = cd.RootElement.TryGetProperty("pace", out var pc) && pc.ValueKind == JsonValueKind.String ? pc.GetString() : null;
             (reply, var tagPace) = FastStripPaceTag(reply);
             pace = FastNormPace(pace ?? tagPace);
             reply = System.Text.RegularExpressions.Regex.Replace(reply, @"\s*\n\s*", " ").Trim();
             if (reply.Length > 300) reply = reply[..300].TrimEnd() + "…";
-            return new FastResult(reply, action, pt, ct, ot, null, pace);
+            return new FastResult(reply, action, pt, ct, ot, null, pace, action && !helper ? outfit : null, helper);
         }
         catch (Exception ex) { return new FastResult("", false, 0, 0, 0, "bad response: " + ex.GetType().Name); }
     }
@@ -292,6 +299,8 @@ public static partial class Program
                 parts.Add($"in region {sim.Name}{(sim.Name == "Peronaut" ? " (at home with David, the beach house)" : "")} at {p.X:0},{p.Y:0},{p.Z:0}");
             }
             if (!string.IsNullOrEmpty(lastNamedOutfit)) parts.Add($"wearing the outfit '{lastNamedOutfit}'");
+            var outfits = FastOutfitNamesSnapshot();
+            if (outfits.Count > 0) parts.Add($"your saved outfits: {string.Join(", ", outfits.Select(n => "'" + n + "'"))}");
             parts.Add(client?.Self?.SittingOn is uint s && s != 0 ? "sitting" : "standing");
             parts.Add(WanderOn ? $"wandering around the house ({wanderPhase}{(wanderPause != null ? ", paused" : "")})" : "not wandering");
             if (followId != UUID.Zero) parts.Add($"following {followName}");
@@ -316,6 +325,8 @@ public static partial class Program
             if (!im && QuietChatGuard() != null) return;
             // same filter as Notify: while nearby-quiet.txt exists, a visitor's nearby line only counts if it names Galatea
             if (!im && !david && File.Exists("/home/box/viewers/textclient/nearby-quiet.txt") && text.IndexOf("galat", StringComparison.OrdinalIgnoreCase) < 0) return;
+            // 2026-10-09 David: "look into" / "look in to" from him ALWAYS goes to the full routine (short ack, never the model)
+            if (david && FastLookIntoTrigger(text)) { FastLookIntoAck(cfg, from, name, text, msgId, im, imSession); return; }
             var key = FastKey();
             if (string.IsNullOrEmpty(key) && FastPostOverride == null) { fastLast = "no API key"; return; }
             fastPending[msgId] = DateTime.UtcNow.AddSeconds(cfg.TimeoutS + cfg.MaxDelayS + 2);   // API call + typing delay
@@ -325,12 +336,15 @@ public static partial class Program
             {
                 string outcome = "routine", typed = "";
                 FastResult r = null; long ms = 0; var sw = Stopwatch.StartNew();
+                Task<FastOutfitRun> outfitTask = null; bool keepHold = false;
                 try
                 {
                     Interlocked.Increment(ref fastCalls);
                     (r, ms) = await FastCall(cfg, body, key);
                     var dec = FastDecide(r, david);
                     if (dec != FastOutcome.Routine && RateGuard() is string rg) { outcome = "routine (" + rg + ")"; dec = FastOutcome.Routine; }
+                    // 2026-10-09 David: an outfit change he asks for starts here, ~1 s after his line (not ~60 s later in the routine)
+                    if (dec == FastOutcome.Ack && david && r.Outfit != null) outfitTask = FastOutfitStart(r.Outfit, text, msgId);
                     if (dec != FastOutcome.Routine)
                     {
                         // human-like pause, typing indicator on the whole time (David's line already started it)
@@ -343,7 +357,12 @@ public static partial class Program
                         }
                         typed = $", typed {r.Pace} {sw.ElapsedMilliseconds / 1000.0:0.0} s";
                     }
-                    if (dec == FastOutcome.Send) outcome = FastSend(from, name, r.Reply, msgId, im, imSession, claim: true) ? "sent" : "routine (send refused)";
+                    if (dec == FastOutcome.Ack && david && r.Outfit != null && FastOutfitBegin(cfg, r, from, name, text, msgId, im, imSession, outfitTask) is string ow)
+                    {
+                        // the change is already running (started right after the API answer, before the typing pause)
+                        outcome = ow; keepHold = true;
+                    }
+                    else if (dec == FastOutcome.Send) outcome = FastSend(from, name, r.Reply, msgId, im, imSession, claim: true) ? "sent" : "routine (send refused)";
                     else if (dec == FastOutcome.Ack)
                     {
                         if (FastSend(from, name, r.Reply, msgId, im, imSession, claim: false)) { fastAcks[msgId] = r.Reply; outcome = "ack, action left to the routine"; }
@@ -356,7 +375,7 @@ public static partial class Program
                 catch (Exception ex) { outcome = "routine (error " + ex.GetType().Name + ")"; }
                 finally
                 {
-                    fastPending.TryRemove(msgId, out _);
+                    if (!keepHold) fastPending.TryRemove(msgId, out _);
                     if (outcome == "sent") Interlocked.Increment(ref fastSent); else if (outcome.StartsWith("ack")) Interlocked.Increment(ref fastAcked); else Interlocked.Increment(ref fastFallbacks);
                     fastLast = $"{DateTime.Now:HH:mm:ss} {name} {(im ? "IM" : "nearby")} '{Short(text, 40)}' -> {outcome} in {ms} ms{typed}{(r != null && !string.IsNullOrEmpty(r.Reply) ? $" ('{Short(r.Reply, 60)}')" : "")}";
                     Log("fastchat", fastLast);
@@ -421,6 +440,37 @@ public static partial class Program
         catch (Exception ex) { Log("fastchat", "voice error: " + ex.GetBaseException().Message); return false; }
     }
 
+    // pure: David's guaranteed hand-off keyword ("look into", "look in to", any case / spacing)
+    static readonly System.Text.RegularExpressions.Regex FastLookIntoRx = new(@"\blook\s+in\s*to\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    internal static bool FastLookIntoTrigger(string text) => !string.IsNullOrEmpty(text) && FastLookIntoRx.IsMatch(text);
+    internal static readonly string[] FastLookIntoAcks = { "Okay babe, I'll look into it.", "On it, let me look into that, babe.", "Sure, I'll look into it, love." };
+
+    // short canned ack after a typing pause, unclaimed; the line goes to the routine with fast_ack (no API call)
+    static void FastLookIntoAck(FastCfg cfg, UUID from, string name, string text, long msgId, bool im, UUID imSession)
+    {
+        var ack = FastLookIntoAcks[Random.Shared.Next(FastLookIntoAcks.Length)];
+        int wait = FastTypingDelayMs(cfg, ack, "normal", 0, Random.Shared.NextDouble() * 2 - 1);
+        fastPending[msgId] = DateTime.UtcNow.AddMilliseconds(wait + 3000);
+        _ = Task.Run(async () =>
+        {
+            string outcome = "routine (look-into ack not sent)";
+            try
+            {
+                TypingStart(im); await Task.Delay(wait);
+                if (RateGuard() is string rg) outcome = "routine (" + rg + ")";
+                else if (FastSend(from, name, ack, msgId, im, imSession, claim: false)) { fastAcks[msgId] = ack; outcome = "look-into: ack, left to the routine"; }
+            }
+            catch (Exception ex) { outcome = "routine (error " + ex.GetType().Name + ")"; }
+            finally
+            {
+                fastPending.TryRemove(msgId, out _);
+                if (outcome.StartsWith("look")) Interlocked.Increment(ref fastAcked); else Interlocked.Increment(ref fastFallbacks);
+                fastLast = $"{DateTime.Now:HH:mm:ss} {name} {(im ? "IM" : "nearby")} '{Short(text, 40)}' -> {outcome}";
+                Log("fastchat", fastLast);
+            }
+        });
+    }
+
     // claim=true: like 'say --re <id>' / 'im --re <id>' (the routine skips the line); claim=false: an ack that leaves it open
     static bool FastSend(UUID to, string name, string reply, long msgId, bool im, UUID imSession, bool claim)
     {
@@ -464,7 +514,7 @@ public static partial class Program
         if (a.Length > 0 && a[0] == "test") return await FastTest(cfg, a.Skip(1).ToArray(), LoggedIn ? FastState() : null);
         if (cfg == null) return $"fast chat: {FastFile} missing or invalid (no persona?); all lines go to the routine";
         return $"fast chat {(cfg.Enabled ? "ON" : "OFF")} (model {cfg.Model}, max_tokens {cfg.MaxTokens}, timeout {cfg.TimeoutS:0.#} s, history {cfg.HistoryLines}, visitors {(cfg.Visitors ? "on" : "off")}, key {(string.IsNullOrEmpty(FastKey()) ? "MISSING" : "ok")}); " +
-               $"this process: {fastCalls} call(s), {fastSent} sent, {fastAcked} ack(s), {fastFallbacks} to the routine; in flight {fastPending.Count}; {FastUsageSummary(cfg)}; last: {fastLast}";
+               $"this process: {fastCalls} call(s), {fastSent} sent, {fastAcked} ack(s), {fastFallbacks} to the routine; in flight {fastPending.Count}; {FastUsageSummary(cfg)}; last: {fastLast}; last outfit: {fastOutfitLast}";
     }
 
     static string FastUsageSummary(FastCfg cfg)
@@ -503,7 +553,7 @@ public static partial class Program
         var (r, ms) = await FastCall(cfg, body, FastKey());
         FastUsage(cfg, from + " (test)", im, r, ms, "test");
         var dec = FastDecide(r, from == "David Nightingale");
-        return $"fastchat test ({(im ? "IM" : voice ? "voice" : "nearby")}, from {from}, {cfg.Model}): {ms} ms; reply '{r.Reply}', action={r.Action.ToString().ToLowerInvariant()}, pace={r.Pace} (typing ~{FastTypingDelayMs(cfg, r.Reply, r.Pace, 0, 0) / 1000.0:0.0} s) -> would {dec switch { FastOutcome.Send => "send + claim", FastOutcome.Ack => "send the ack and hand the action to the routine", _ => "leave it to the routine" }}" +
+        return $"fastchat test ({(im ? "IM" : voice ? "voice" : "nearby")}, from {from}, {cfg.Model}): {ms} ms; reply '{r.Reply}', action={r.Action.ToString().ToLowerInvariant()}, pace={r.Pace}, outfit={r.Outfit ?? "-"}, helper={r.Helper.ToString().ToLowerInvariant()} (typing ~{FastTypingDelayMs(cfg, r.Reply, r.Pace, 0, 0) / 1000.0:0.0} s) -> would {dec switch { FastOutcome.Send => "send + claim", FastOutcome.Ack => "send the ack and hand the action to the routine", _ => "leave it to the routine" }}" +
                $"{(r.Error != null ? " (" + r.Error + ")" : "")}; tokens {r.PromptTok} prompt ({r.CachedTok} cached) + {r.OutTok} out = ${FastCost(cfg, r.PromptTok, r.CachedTok, r.OutTok):0.00000}";
     }
 }

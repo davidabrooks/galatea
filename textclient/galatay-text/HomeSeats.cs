@@ -399,7 +399,9 @@ public static partial class Program
         // nav links: GOOSE 3-step stair beach<->deck, Burgundy pier path south
         int N(string p) => g.Places[p].node;
         bool Edge(string a, string b) => g.E.Any(e => (e.a == N(a) && e.b == N(b)) || (e.a == N(b) && e.b == N(a)));
-        C(Edge("deck-stair", "deck-top") && Edge("rowboat", "deck-stair") && Edge("deck-top", "mooring-deck"), "graph: beach (rowboat) <-> GOOSE 3-step stair <-> Mooring deck");
+        // 2026-10-09 stair centre-line fix: rowboat -> straight run-up node(s) on the stair centre line (y = deck-stair's y) -> stair foot
+        bool RunUp() { var np = GraphNodePath(g.E, N("rowboat"), N("deck-stair")); return np != null && np.Count <= 3 && np.Skip(1).SkipLast(1).All(k => Math.Abs(g.N[k].Y - g.N[N("deck-stair")].Y) < 0.05f); }
+        C(Edge("deck-stair", "deck-top") && RunUp() && Edge("deck-top", "mooring-deck"), "graph: beach (rowboat) <-> GOOSE 3-step stair <-> Mooring deck");
         // 2026-10-07 pier fix: pier -> pier-south / pier-end run along the long axis via ramp/axis nodes (no direct edges)
         bool PierPath(string a, string b) { var np = GraphNodePath(g.E, N(a), N(b)); return np != null && np.Skip(1).SkipLast(1).All(k => Math.Abs(g.N[k].X - 216.3f) < 0.2f); }
         C(Edge("pier-start", "pier") && PierPath("pier", "pier-south") && PierPath("pier", "pier-end"), "graph: Burgundy pier path south from the beach (along the axis)");

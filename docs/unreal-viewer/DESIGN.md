@@ -516,3 +516,11 @@ Galatea comes first because she's the daily user today. The agent API and her mi
     - **Cross-platform toolkit** (React Native, Flutter, .NET MAUI): one mobile code base with near-native UI. .NET MAUI can share C# with the bridge, and React Native can share skills and some code with the web UI. It's still a second UI code base next to the web client.
     - All three talk to the same platform-neutral bridge API (§6.1), so this can be decided late.
 16. **Vision spending:** what monthly cap for paid cloud renders (the placeholder is $10/month), and may I open Runpod and/or Modal accounts for the M1 spike? Should any agent besides Galatea ever get `vision.cloud`?
+
+## 11. More viewers to build later (added Oct 9, 2026)
+
+Besides the high-end Unreal client and the low-end web client above, David wants these later. All of them reuse the same bridge and agent API.
+
+- **Beginner viewer:** for people new to Second Life. It has a simple, guided interface that teaches the basics (moving, chatting, outfits, finding places) and hides advanced settings.
+- **Observer viewer:** made just for observing, for watching a place or an event without the full controls of a normal viewer.
+- **Most-common-system viewer:** built and tuned for the most common Second Life user's computer (the T4 profile in §1.1, sized from survey data), rather than for high-end or the weakest devices.

@@ -23,6 +23,9 @@
 // - Bounded retry (2026-10-05): up to 4 attempts with backoff (0/2/5/15 s) on 400/408/429/5xx and transport errors.
 //   Same JSON body (same msg_ids) is resent — no duplicate events. Final failure appends the body to the failed log
 //   (with the HTTP status / error). Response body is logged (truncated). The key is never logged.
+// - David fast path (2026-10-08): a conversation with a line from David: ~1.2 s single-line wait, burst 3 s quiet / 10 s max,
+//   3 s min interval (GT_WEBHOOK_DAVID_*). Lines the client answered itself (InstantReplies.cs) are never POSTed alone;
+//   next to an unanswered line they ride along as context with answered=true + my_reply.
 // - JSON: UTF-8 (UnsafeRelaxedJsonEscaping; no \uD800 surrogate pairs for emoji), null fields omitted.
 using System.Net.Http.Headers;
 using System.Text;
@@ -47,6 +50,12 @@ public static class Webhook
     public static TimeSpan MaxHold = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MAX_S", 60));        // burst: cap from the first held line
     public static TimeSpan MinInterval = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_MIN_INTERVAL_S", 15));
     public static TimeSpan Lease = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_LEASE_S", 60));        // reply lease per IM sender after a POST
+    // 2026-10-08 19:08 (David: "long delay before you answered me"): a held conversation with a line from David uses short
+    // timings: single line ~1.2 s, a 2-line burst goes as one POST after 3 s quiet (max 10 s), min 3 s after the last POST.
+    public static TimeSpan DavidDetect = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_DAVID_DETECT_S", 1.2));
+    public static TimeSpan DavidQuiet = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_DAVID_QUIET_S", 3));
+    public static TimeSpan DavidMaxHold = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_DAVID_MAX_S", 10));
+    public static TimeSpan DavidMinInterval = TimeSpan.FromSeconds(EnvS("GT_WEBHOOK_DAVID_MIN_INTERVAL_S", 3));
     static readonly Dictionary<string, (DateTime start, string fromId)> leases = new();         // conv key -> lease (UTC start)
     // pure (selftest-covered): is the reply lease still held? ends at my first IM to them after the POST, or after `lease`
     public static bool LeaseActive(DateTime startUtc, DateTime nowUtc, TimeSpan lease, DateTimeOffset? myLastImTo)
@@ -61,7 +70,7 @@ public static class Webhook
     static readonly TimeSpan ConfigRecheck = TimeSpan.FromSeconds(60);
 
     static readonly object gate = new();
-    sealed class Conv { public List<Ev> Evs = new(); public DateTime First, Last; public bool Burst; }
+    sealed class Conv { public List<Ev> Evs = new(); public DateTime First, Last; public bool Burst, David; }
     static readonly Dictionary<string, Conv> convs = new();
     static bool loopRunning;
     static int PendingCount() { lock (gate) return convs.Values.Sum(c => c.Evs.Count); }
@@ -109,6 +118,8 @@ public static class Webhook
         public string channel { get; init; }               // voice: "voice" (medium) or the session channel label
         public string trigger { get; init; }               // voice: "name" | "invitation" | "all" (why this wake fired)
         public string line { get; init; }                  // voice: the exact triggering line (reply to this straight away)
+        public bool? answered { get; init; }               // true = already answered by the client's instant reply (context only; never reply)
+        public string my_reply { get; init; }              // that instant reply's text
     }
 
     // pure: skip the debounce flush loop (voice is debounced upstream)
@@ -310,8 +321,9 @@ public static class Webhook
         lock (gate)
         {
             var k = ConvKey(type, fromId);
-            if (!convs.TryGetValue(k, out var c)) convs[k] = c = new Conv { First = now };
-            else if (!c.Burst && now - c.First < Detect) c.Burst = true; // another line inside the detect window -> burst
+            bool david = fromId == DavidId;
+            if (!convs.TryGetValue(k, out var c)) convs[k] = c = new Conv { First = now, David = david };
+            else { if (!c.Burst && now - c.First < (c.David || david ? DavidDetect : Detect)) c.Burst = true; c.David |= david; } // another line inside the detect window -> burst
             if (c.Evs.Count >= MaxEventsPerBatch) { droppedOverflow++; }
             else c.Evs.Add(ev);
             c.Last = now;
@@ -327,28 +339,50 @@ public static class Webhook
     public static bool Due(bool burst, DateTime first, DateTime last, DateTime now, TimeSpan detect, TimeSpan quiet, TimeSpan maxHold)
         => burst ? now - last >= quiet || now - first >= maxHold : now - first >= detect;
 
+    // pure: due with David's short timings when the conversation has a line from him
+    public static bool DueFor(bool david, bool burst, DateTime first, DateTime last, DateTime now) =>
+        david ? Due(burst, first, last, now, DavidDetect, DavidQuiet, DavidMaxHold) : Due(burst, first, last, now, Detect, Quiet, MaxHold);
+
+    // pure: drop lines already answered with '--re'. Lines answered by an instant reply stay in, marked answered=true with
+    // my_reply, but only when the batch still has an unanswered line (context for the routine); else nothing is POSTed.
+    public static List<Ev> FilterAnswered(List<Ev> batch, Func<Ev, bool> answered, Func<Ev, string> instantReply, out int dropped)
+    {
+        bool anyOpen = batch.Any(e => !answered(e));
+        var r = new List<Ev>();
+        foreach (var e in batch)
+        {
+            if (!answered(e)) { r.Add(e); continue; }
+            var ir = instantReply(e);
+            if (anyOpen && ir != null) r.Add(e with { answered = true, my_reply = ir });
+        }
+        dropped = batch.Count - r.Count;
+        return r;
+    }
+
     static async Task FlushLoop()
     {
         try
         {
             while (true)
             {
-                await Task.Delay(500);
+                await Task.Delay(250);
                 List<Ev> batch = null; int overflow = 0, nconv = 0;
                 lock (gate)
                 {
                     if (convs.Count == 0) { loopRunning = false; return; }
                     var now = DateTime.UtcNow;
                     foreach (var lk in leases.Where(l => !LeaseActive(l.Value.start, now, Lease, Core.LastMyImTo(l.Value.fromId))).Select(l => l.Key).ToList()) leases.Remove(lk);
-                    var due = convs.Where(kv => !leases.ContainsKey(kv.Key) && Due(kv.Value.Burst, kv.Value.First, kv.Value.Last, now, Detect, Quiet, MaxHold)).Select(kv => kv.Key).ToList();
-                    if (due.Count == 0 || now - lastPost < MinInterval) continue;
+                    var due = convs.Where(kv => !leases.ContainsKey(kv.Key) && DueFor(kv.Value.David, kv.Value.Burst, kv.Value.First, kv.Value.Last, now)).Select(kv => kv.Key).ToList();
+                    if (due.Count == 0 || now - lastPost < (due.Any(k => convs[k].David) ? DavidMinInterval : MinInterval)) continue;
                     batch = new List<Ev>();
                     foreach (var k in due) { batch.AddRange(convs[k].Evs); convs.Remove(k); }
                     // held lines already answered with 'im --re' / 'say --re' are not POSTed again (they stay in poll_events)
-                    int answered = batch.RemoveAll(ev => ev.msg_id is long mid && (
+                    batch = FilterAnswered(batch, ev => ev.msg_id is long mid && (
                         (ev.type == "im" && Core.AnsweredExplicitly(ev.from_id, mid)) ||
-                        (ev.type == "local_chat" && Core.ChatAnsweredExplicitly(ev.from_id, mid))));
-                    if (answered > 0) LogLocal($"lease: {answered} held line(s) already answered with 'im --re'/'say --re'; not POSTed");
+                        (ev.type == "local_chat" && Core.ChatAnsweredExplicitly(ev.from_id, mid))),
+                        ev => ev.msg_id is long mi ? Core.InstantReplyFor(mi) : null, out var answered);
+                    if (answered > 0) LogLocal($"lease: {answered} held line(s) already answered with 'im --re'/'say --re' or an instant reply; not POSTed");
+                    if (batch.Count > 0 && batch.All(ev => ev.answered == true)) batch.Clear();
                     foreach (var ev in batch.Where(ev => ev.type == "im" && !string.IsNullOrEmpty(ev.from_id))) leases[ConvKey("im", ev.from_id)] = (now, ev.from_id); // one run per sender
                     if (batch.Count == 0) continue;
                     nconv = due.Count; overflow = droppedOverflow; droppedOverflow = 0;

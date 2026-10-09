@@ -1,0 +1,139 @@
+{
+  "_about": "Instant replies (InstantReplies.cs): the client itself answers a few clear requests from David in nearby chat or IM within ~1 s, acts, and claims the line (like 'say --re <id>'), so the chat routine never answers it again. Read fresh on every line. Matching: lower-case, punctuation/emoji removed, leading/trailing 'fillers' stripped, then the rest must equal one of the phrases exactly. Lines with '?' or longer than max_chars always go to the routine. If the action fails (AO not ready, David not in view, she is seated for follow), nothing is said and the routine handles it. Set enabled=false to turn it all off.",
+  "enabled": true,
+  "max_chars": 60,
+  "fillers": [
+    "ok",
+    "okay",
+    "k",
+    "alright",
+    "all right",
+    "babe",
+    "baby",
+    "hun",
+    "honey",
+    "sweetie",
+    "sweetheart",
+    "love",
+    "dear",
+    "darling",
+    "galatea",
+    "gala",
+    "please",
+    "pls",
+    "plz",
+    "now",
+    "then",
+    "again",
+    "go ahead and",
+    "you can",
+    "you may",
+    "can you",
+    "could you",
+    "would you",
+    "hey",
+    "so",
+    "thanks",
+    "thank you",
+    "and",
+    "just",
+    "for me",
+    "for now",
+    "too"
+  ],
+  "greetings": [
+    "Hi babe! ",
+    "Hey babe, welcome back! ",
+    "Hi love! ",
+    "Hey you! "
+  ],
+  "commands": [
+    {
+      "action": "wander_start",
+      "phrases": [
+        "start wandering",
+        "keep wandering",
+        "continue wandering",
+        "resume wandering",
+        "go back to wandering",
+        "back to wandering",
+        "carry on wandering",
+        "keep on wandering",
+        "wander",
+        "wander around",
+        "go wander",
+        "go wander around",
+        "go wandering",
+        "start wandering around",
+        "keep wandering around",
+        "continue wandering around",
+        "resume your wandering",
+        "continue your wandering"
+      ],
+      "replies": [
+        "On it, babe!",
+        "Okay, back to wandering!",
+        "Sure thing, babe, off I go.",
+        "Will do!",
+        "Okay! See you around the house.",
+        "Off I go, babe!"
+      ]
+    },
+    {
+      "action": "wander_stop",
+      "phrases": [
+        "stop wandering",
+        "stop wandering around",
+        "quit wandering",
+        "no more wandering",
+        "stop your wandering",
+        "you can stop wandering"
+      ],
+      "replies": [
+        "Okay, I'll stop here.",
+        "Sure, babe, staying put.",
+        "Okay, done wandering for now.",
+        "Got it, I'll stay right here."
+      ]
+    },
+    {
+      "action": "follow",
+      "phrases": [
+        "follow me",
+        "come here",
+        "come over here",
+        "come to me",
+        "come with me",
+        "come along",
+        "come over",
+        "come here to me"
+      ],
+      "replies": [
+        "Coming, babe!",
+        "On my way!",
+        "Right behind you!",
+        "Coming!",
+        "Be right there, babe."
+      ]
+    },
+    {
+      "action": "follow_stop",
+      "phrases": [
+        "stop following",
+        "stop following me",
+        "you can stop following me",
+        "stay here",
+        "stay there",
+        "stay put",
+        "wait here",
+        "wait there"
+      ],
+      "replies": [
+        "Okay, I'll stay right here.",
+        "Staying put, babe.",
+        "Okay, I'll wait here.",
+        "Sure, I'll stay here."
+      ]
+    }
+  ]
+}

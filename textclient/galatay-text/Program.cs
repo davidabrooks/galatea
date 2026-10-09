@@ -475,6 +475,7 @@ public static partial class Program
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId);
                 WanderChatIn(e.SourceID, e.FromName, chatPos, false);
+                if (e.SourceID == DavidId && !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) TypingStart(false); // InstantReplies.cs
                 AutoFollowFromDavid(e.SourceID, e.Message); // "stop following" / "follow me" (AutoFollow.cs)
             }
         };
@@ -515,8 +516,9 @@ public static partial class Program
                         }
                         catch { }
                         Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist, msgId);
-                        if (!offline) AutoFollowFromDavid(im.FromAgentID, im.Message); // AutoFollow.cs
                         if (ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true); // old messages: no wander pause/approach/reply
+                        if (!offline && im.FromAgentID == DavidId && !TryInstantReply(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true)) TypingStart(true); // InstantReplies.cs (after the wander chat pause)
+                        if (!offline) AutoFollowFromDavid(im.FromAgentID, im.Message); // AutoFollow.cs
                     }
                     return;
                 case InstantMessageDialog.MessageFromObject:
@@ -1658,6 +1660,7 @@ public static partial class Program
   offers [all|selftest] | offers accept <n> [confirm] | offers decline <n>   pending inventory offers + friendship requests (never auto-accepted; non-allow-listed sender needs 'confirm' = David's OK)
   friend list | friend accept|decline <name> [confirm] | friend add <name> [confirm]   friendships (allow-list: David Nightingale, Sophie-Jeanne)
   lookat [status|mode head|private|audit on|off|selftest]   head-turn LookAt policy (LookAt.cs): head = short Respond turns at avatars she deliberately looks at, nothing else
+  instant [status|test <text>]   instant replies to a few clear requests from David (routes/_instant-replies.json, read fresh): act, reply, claim like say --re
   friendwatch [status|selftest|simulate]   David Nightingale online -> urgent 'david_login' webhook ~10 s later (10 min debounce); simulate = 'david_login_test'
   payprice <object uuid> | pay object <uuid> <L$> confirm | pay selftest   quick-pay buttons (read-only) / pay an object (needs confirm = David's OK; never over the balance)
   remind add <text> | remind list | remind done <n>   in-world reminders for David (/workspace/secondlife/inworld-reminders.md; pending ones ride on david_login)
@@ -1755,6 +1758,7 @@ public static partial class Program
                 HeadTurnForSay();   // someone nearby talking with her: a short head turn to them (LookAt.cs)
                 var (sent, skip) = ChatGuardedSay(t, rest, force, re);
                 if (!sent) return skip;
+                TypingStop("said in nearby chat");   // InstantReplies.cs
                 NoteGreetedFromOwnNearbySay(rest); // login/chat-routine hi to David: wander must not greet him again
                 NoteSpokeToNearby(t);              // anyone in chat range heard her: no wander greeting for 15 min
                 Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}");
@@ -1804,6 +1808,7 @@ public static partial class Program
                 // per-recipient duplicate guard (ImGuard.cs); also feeds the webhook dedupe hint (my_last_im_to_sender)
                 var (sent, skip) = ImGuardedSend(id.ToString(), NameOf(id), id == DavidId, force, () => client.Self.InstantMessage(id, text), null, headsup, re, text);
                 if (!sent) return skip;
+                if (id == DavidId) TypingStop("IM sent to David");   // InstantReplies.cs
                 Log("me-im", $"to {NameOf(id)} ({id}): {text}");
                 NoteGreeted(id); // UUID: outgoing IM partner is not a stranger-greet candidate
                 return $"sent to {NameOf(id)} ({id})";
@@ -1878,6 +1883,7 @@ public static partial class Program
                 if (cmd is "walk_path" or "goto_avatar" or "sit_near" or "walk_to" && WanderBlocksManualWalk) return "wander is running: 'wander pause' (or 'wander stop') first";
                 return await NavCmds(cmd, rest, a);
             case "wander": return await WanderCmds(a);
+            case "instant": return InstantCmdText(a);   // InstantReplies.cs
             case "quiet": return QuietCmds(a);
             case "pose": return await PoseCmd(a);
             case "exp": return await ExpCmd(a); // Experiences.cs

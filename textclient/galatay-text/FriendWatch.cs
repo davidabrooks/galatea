@@ -4,7 +4,7 @@
 // - Online notifications in the first 15 s after Galatea's own login are the server's "who is already online" list,
 //   not a login: they only set the baseline. At 15 s she checks his status once: online -> david_login, reason
 //   galatea_login (2026-10-04).
-// - ~10 s after he comes online, ONE urgent webhook event kind 'david_login' (his name + uuid + pending reminders) if Galatea is
+// - ~3 s (was 10 s until 2026-10-08) after he comes online, ONE urgent webhook event kind 'david_login' (his name + uuid + pending reminders) if Galatea is
 //   still logged in and he is still online. Debounce: at most one per 10 min (persisted in run/david-login.json), so a relog
 //   or a flapping status doesn't greet twice.
 // - 'friendwatch [status|selftest|simulate]': simulate fires the same path as kind 'david_login_test' (own debounce slot;
@@ -24,7 +24,7 @@ public static partial class Program
     const string DavidName = "David Nightingale";
     static readonly string RemindersPath = Env("GT_REMINDERS", "/workspace/secondlife/inworld-reminders.md");
     static readonly string DavidLoginState = Env("GT_DAVID_LOGIN_STATE", "/home/box/viewers/textclient/run/david-login.json");
-    static readonly TimeSpan GreetDelay = TimeSpan.FromSeconds(10), GreetDebounce = TimeSpan.FromMinutes(10), LoginBaseline = TimeSpan.FromSeconds(15);
+    static readonly TimeSpan GreetDelay = TimeSpan.FromSeconds(3), GreetDebounce = TimeSpan.FromMinutes(10), LoginBaseline = TimeSpan.FromSeconds(15);
     static DateTime myLoginAt = DateTime.MinValue, davidOnlineAt = DateTime.MinValue;
     static bool davidOnline; static int friendWatchHooked, friendPollRunning;
     static readonly Dictionary<string, DateTime> lastWake = new(); // kind -> last fired (UTC)
@@ -108,6 +108,8 @@ public static partial class Program
             lock (fwGate) { lastWake[kind] = DateTime.UtcNow; try { File.WriteAllText(DavidLoginState, JsonSerializer.Serialize(lastWake)); } catch { } }
             var pending = Reminders().Select((r, i) => (n: i + 1, r)).Where(x => x.r.pending).ToList();
             var text = DavidLoginText(simulated, atMyLogin, source, DateTime.Now, pending.Select(x => (x.n, x.r.text)).ToList());
+            if (!simulated && instantGreetAtUtc >= myLoginAt && instantGreetAtUtc >= davidOnlineAt && instantGreetAtUtc != DateTime.MinValue)
+                text += $" NOTE: I already greeted him in an instant reply at {instantGreetAtUtc.ToLocalTime():HH:mm:ss} PT (see chatlog); do not greet him again, only deliver reminders if any.";
             Log("friendwatch", $"{kind}: waking the chat routine ({pending.Count} pending reminder(s))");
             if (!simulated) NoteSpokeTo(DavidAgent, "david_login wake; the chat routine greets him"); // 19:38 double hi race
             Notify(kind, DavidName, DavidAgent, text, null);

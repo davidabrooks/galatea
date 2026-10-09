@@ -161,6 +161,7 @@ public static partial class Program
     // after any own nearby chat: everyone within that chat type's range heard her
     static void NoteSpokeToNearby(ChatType t)
     {
+        lastOwnNearbyChatAt = DateTimeOffset.Now;   // InstantReplies.cs: no login greeting folded in after this
         try
         {
             var me = client.Self.SimPosition;

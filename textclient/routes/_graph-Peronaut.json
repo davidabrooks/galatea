@@ -16,7 +16,7 @@
     [228.05, 82.5, 29.0],
     [228.1, 70.2, 29.0],
     [241.5, 73.8, 29.0],
-    [218.5, 74.0, 28.5],
+    [218.32, 75.2, 29.0],
     [228.24, 85.86, 26.86],
     [228.51, 89.16, 26.39],
     [231.49, 88.88, 26.44],
@@ -142,7 +142,7 @@
     "front": {"node": 9, "note": "outside front-double (north)"},
     "desk": {"node": 10, "note": "Dutchie maledom desk"},
     "east-deck": {"node": 11, "note": "east end of the bathroom past side-room-2, on the room centre line y 73.8 (enter only via side-room-2 doorway, then bath-centre 56)"},
-    "bed": {"node": 12, "note": "approach to MIRAGE bed in west wing (enter only via side-room-1 doorway)"},
+    "bed": {"node": 12, "note": "floor 0.4 m east of the MIRAGE bed (east edge x 217.92) and within 2.2 m of its root, so no extra step toward the bed (2026-10-09: the old 1.2 m step put her on top of it); enter only via side-room-1 doorway"},
     "front-steps": {"node": 13, "note": "down the first stairs outside the front doors (beach-stairs-up route pt 12)"},
     "east-stairs-top": {"node": 22, "note": "top of the east GOOSE deck stairs (recorded route)"},
     "east-stairs-bottom": {"node": 24, "note": "bottom of the east stairs, beach side"},
@@ -176,7 +176,7 @@
     {"name": "BackBone Playtime Bathroom Sink - Adult", "uuid": "406eeb80-c05f-2f82-0857-145b725da0f8", "min": [238.31, 75.03], "max": [242.52, 76.2], "source": "linkset child boxes, scene export-20261008-090334 (vanity cabinet x 239.17-241.54 reaches y 75.03; root plate 4.2x3.3x0.3 is the wall-mounted back)"},
     {"name": "Dutchie clawfoot bath tub adult", "uuid": "53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc", "min": [239.22, 71.29], "max": [241.96, 72.74], "source": "linkset child boxes, scene export-20261008-090334 (map: <240.6,72.0> size 2.7x1.2 rotZ 180)"},
     {"name": "BackBone Playtime Toilet", "uuid": "48b303e0-8dcc-58e2-39bf-23e9f9f895b9", "min": [233.05, 71.15], "max": [233.95, 72.45], "source": "map: <233.5,71.8> size 0.9x1.3 rotZ 180"},
-    {"name": "BENTO PHYSICS MIRAGE BED 1.0", "uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "min": [214.2, 72.7], "max": [217.3, 75.8], "source": "linkset child boxes, scene export-20261007-084458 (root 215.7,75.3 rotZ 90; headboard on the north wall y 75.8)"}
+    {"name": "BENTO PHYSICS MIRAGE BED 1.0", "uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "min": [214.46, 72.71], "max": [217.92, 76.16], "source": "linkset child boxes, scene export-20261009-082934 after David moved the bed (root 216.15,75.28 rotZ 90; headboard on the north wall y 76.16)"}
   ],
   "footprint_margin": 0.3,
   "narrow": [

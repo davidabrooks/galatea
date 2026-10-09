@@ -15,7 +15,7 @@ public static partial class Program
 {
     internal sealed record HomeSeatInfo(UUID Id, string Name, Vector3 Pos, string Level, string Group, string Special,
                                         List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander, Vector3? ChangeSpot = null,
-                                        (int min, int max)? StayS = null, Vector3? StandSpot = null);
+                                        (int min, int max)? StayS = null, Vector3? StandSpot = null, Vector3? Approach = null);
 
     internal static List<HomeSeatInfo> ParseHomeSeats(string json)
     {
@@ -44,12 +44,15 @@ public static partial class Program
             Vector3? ss = null;   // optional "stand_spot": clear floor point to step to right after standing (2026-10-08 sink)
             if (s.TryGetProperty("stand_spot", out var sp) && sp.ValueKind == JsonValueKind.Array && sp.GetArrayLength() >= 3)
                 ss = new Vector3((float)sp[0].GetDouble(), (float)sp[1].GetDouble(), (float)sp[2].GetDouble());
+            Vector3? ap = null;   // optional "approach": the clear floor point she walks to before sitting (2026-10-09 bed)
+            if (s.TryGetProperty("approach", out var av) && av.ValueKind == JsonValueKind.Array && av.GetArrayLength() >= 3)
+                ap = new Vector3((float)av[0].GetDouble(), (float)av[1].GetDouble(), (float)av[2].GetDouble());
             (int, int)? stay = null;   // optional "stay_s": [min, max] seconds for this seat (2026-10-08: toilet, sink 30-60)
             if (s.TryGetProperty("stay_s", out var sv) && sv.ValueKind == JsonValueKind.Array && sv.GetArrayLength() >= 2
                 && sv[0].ValueKind == JsonValueKind.Number && sv[1].ValueKind == JsonValueKind.Number
                 && sv[0].TryGetInt32(out var smin) && sv[1].TryGetInt32(out var smax) && smin > 0 && smax >= smin)
                 stay = (smin, smax);
-            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss));
+            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss, ap));
         }
         return res;
     }
@@ -98,19 +101,39 @@ public static partial class Program
     internal static string HomeSeatSpot(UUID id, IReadOnlyDictionary<UUID, HomeSeatInfo> infos) =>
         infos.TryGetValue(id, out var i) && !string.IsNullOrEmpty(i.Group) ? "group:" + i.Group : id.ToString();
 
-    // path to a seat: graph route to the nearest graph point + a final approach 1.2 m short of the seat
-    static (List<Vector3> pts, Vector3 pathPt, float fromPath, string err) HomeSeatRoute(Graph g, Vector3 from, Vector3 seat)
+    // path to a seat: graph route to the nearest graph point + a final approach (SeatFinalApproach: the seat's "approach"
+    // point if listed, else 1.2 m short of the seat, pushed out of any furniture footprint; 2026-10-09 she walked onto the bed)
+    static (List<Vector3> pts, Vector3 pathPt, float fromPath, string err) HomeSeatRoute(Graph g, Vector3 from, Vector3 seat, Vector3? approach = null)
     {
         var (q, d) = NearestOnGraph(g, seat);
         var (pts, err) = GraphRouteTo(g, from, q);
         if (err != null) return (null, q, d, err);
-        if (HDist(q, seat) > 2.2f)
-        {
-            var dir = Vector3.Normalize(new Vector3(q.X - seat.X, q.Y - seat.Y, 0));
-            pts.Add(new Vector3(seat.X + dir.X * 1.2f, seat.Y + dir.Y * 1.2f, Math.Min(q.Z, seat.Z + 0.6f)));
-        }
+        List<FurnitureBox> boxes;
+        try { var f = Path.Combine(RouteDir, "_graph-Peronaut.json"); boxes = File.Exists(f) ? ParseFurnitureBoxes(File.ReadAllText(f)) : new(); } catch { boxes = new(); }
+        var fin = SeatFinalApproach(q, seat, approach, boxes);
+        if (fin != null) pts.Add(fin.Value);
         return (pts, q, d, null);
     }
+
+    internal const float SeatApproachMargin = 0.3f;
+    // pure: the last point before sitting (null = the graph point is close enough). Never inside a furniture footprint
+    // (+ margin): the 1.2 m point is moved back toward the path until clear, or dropped.
+    internal static Vector3? SeatFinalApproach(Vector3 pathPt, Vector3 seat, Vector3? approach, IEnumerable<FurnitureBox> boxes)
+    {
+        if (approach != null) return HDist(pathPt, approach.Value) > 0.3f ? approach : null;
+        float total = HDist(pathPt, seat);
+        if (total <= 2.2f) return null;
+        var dir = Vector3.Normalize(new Vector3(pathPt.X - seat.X, pathPt.Y - seat.Y, 0));
+        float z = Math.Min(pathPt.Z, seat.Z + 0.6f);
+        for (float r = 1.2f; r < total - 0.3f; r += 0.1f)
+        {
+            var p = new Vector3(seat.X + dir.X * r, seat.Y + dir.Y * r, z);
+            if (InFurnitureMargin(p, boxes, SeatApproachMargin) == null) return p;
+        }
+        return null;
+    }
+    internal static FurnitureBox InFurnitureMargin(Vector3 p, IEnumerable<FurnitureBox> boxes, float m) =>
+        boxes?.FirstOrDefault(b => p.X >= b.X0 - m && p.X <= b.X1 + m && p.Y >= b.Y0 - m && p.Y <= b.Y1 + m);
 
     // ---- per-seat specials --------------------------------------------------------------------------------
     static string pendingDressOutfit; // set while undressed for the tub; dressed again once she stands

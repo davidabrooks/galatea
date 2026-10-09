@@ -304,6 +304,12 @@ public static partial class Program
     // couplesMode only when explicitCouples (David asked). recovery: restore path or leave/solo — never couples.
     static async Task<string> SeatPose(Primitive seat, string seatName, DateTime since, bool change, CancellationToken ct, bool explicitCouples = false, bool recovery = false, bool preferPgSolo = false)
     {
+        // 2026-10-09 David: on a listed boat only the boat allowlist ever presses buttons (never SYSTEM*/drive controls)
+        if (LoadHomeSeats().Any(i => i.Id == seat.ID && IsBoat(i)))
+        {
+            var (bok, bmsg) = await BoatPose(seat, seatName, ct);
+            return $"'{seatName}' boat: {(bok ? "chose " : "no pose: ")}{bmsg}";
+        }
         lastSeatPoseMenuAt = DateTime.Now; seatPoseMissingSince = null;
         bool shared = SeatHasOtherSitters(seat);
         bool davidHere = SeatHasDavid(seat);

@@ -15,13 +15,16 @@ public static partial class Program
 {
     internal sealed record HomeSeatInfo(UUID Id, string Name, Vector3 Pos, string Level, string Group, string Special,
                                         List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander, Vector3? ChangeSpot = null,
-                                        (int min, int max)? StayS = null, Vector3? StandSpot = null, Vector3? Approach = null);
+                                        (int min, int max)? StayS = null, Vector3? StandSpot = null, Vector3? Approach = null, string Mode = null);
 
     internal static List<HomeSeatInfo> ParseHomeSeats(string json)
     {
         var res = new List<HomeSeatInfo>();
         using var doc = JsonDocument.Parse(json);
-        if (!doc.RootElement.TryGetProperty("seats", out var seats)) return res;
+        // 2026-10-09 David: the boats at the Burgundy pier live in a separate "boats" array (mode "boat": teleport-sit, Boats.cs)
+        foreach (var arrName in new[] { "seats", "boats" })
+        {
+        if (!doc.RootElement.TryGetProperty(arrName, out var seats) || seats.ValueKind != JsonValueKind.Array) continue;
         foreach (var s in seats.EnumerateArray())
         {
             if (!s.TryGetProperty("uuid", out var u) || !UUID.TryParse(u.GetString(), out var id)) continue;
@@ -52,7 +55,10 @@ public static partial class Program
                 && sv[0].ValueKind == JsonValueKind.Number && sv[1].ValueKind == JsonValueKind.Number
                 && sv[0].TryGetInt32(out var smin) && sv[1].TryGetInt32(out var smax) && smin > 0 && smax >= smin)
                 stay = (smin, smax);
-            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss, ap));
+            var mode = Str("mode") ?? (arrName == "boats" ? BoatMode : null);
+            if (mode == BoatMode && BoatExcluded(Str("name"))) wander = false;   // never the submarine, whatever the file says
+            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss, ap, mode));
+        }
         }
         return res;
     }
@@ -340,8 +346,16 @@ public static partial class Program
         var infos = seats.ToDictionary(s => s.Id);
         UUID U(string s) => UUID.Parse(s);
         var front = g.N[g.Places["front"].node]; var beach = g.N[g.Places["beach"].node];
+        var boatSpot = ParseBoatSpot(File.ReadAllText(Path.Combine(dir, "_seats-peronaut-home.json")));
         foreach (var s in seats.Where(s => s.Wander))
         {
+            if (IsBoat(s))
+            {   // boats are reached at the pier spot (Boats.cs), not over the graph
+                var (bq, bd) = boatSpot == null ? (Vector3.Zero, 999f) : NearestOnGraph(g, boatSpot.Pos);
+                C(boatSpot != null && bd <= 1.5f && GraphRouteTo(g, beach, boatSpot.Pos).err == null && !BoatExcluded(s.Name),
+                  $"boat '{s.Name}' {s.Id.ToString()[..8]}: pier spot on the graph ({bd:F1} m) and reachable from the beach");
+                continue;
+            }
             var (q, d) = NearestOnGraph(g, s.Pos);
             bool level = Math.Abs(q.Z - s.Pos.Z) < 2.6f;
             var r1 = HomeSeatRoute(g, front, s.Pos); var r2 = HomeSeatRoute(g, beach, s.Pos);

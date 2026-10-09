@@ -3,7 +3,7 @@
 // take is answered by the client itself through the xAI chat completions API in a few seconds:
 //   system = persona from routes/_fast-chat.json (stable prefix, so it is prompt-cached) + current state,
 //   user   = the last N lines of THAT conversation only (nearby chat, or this one IM session; never mixed) + the new line.
-// The model answers JSON {"reply","action"}:
+// The model answers JSON {"reply","action","pace"} (pace quick/normal/slow/thoughtful sets the typing delay, FastTypingDelayMs):
 //   - action=false, reply non-empty: sent with say/IM and claimed exactly like 'say --re <id>' / 'im --re <id>', so the
 //     webhook never POSTs that line (it rides along as answered context next to another open line).
 //   - action=true (a request to DO something): the client never acts on the model's word. For David the short ack is sent
@@ -32,9 +32,15 @@ public static partial class Program
         public bool Enabled = true, Visitors = true; public string Model = "grok-4.20-0309-non-reasoning";
         public int MaxTokens = 120, HistoryLines = 20; public double Temperature = 0.8, TimeoutS = 8;
         public double PriceIn = 1.25, PriceCachedIn = 0.2, PriceOut = 2.5; public string Persona = "";
+        // human-like typing delay (2026-10-08 David: replies sometimes too fast; vary with the mood): total time since the
+        // incoming line = (base + per_word * words) * pace multiplier + jitter, capped (thoughtful has its own, higher cap)
+        public double TypingBaseS = 1.5, TypingPerWordS = 0.25, TypingMaxS = 6, TypingJitterS = 0.4;
+        public Dictionary<string, double> PaceMult = new() { ["quick"] = 0.6, ["normal"] = 1.0, ["slow"] = 1.4, ["thoughtful"] = 1.8 };
+        public Dictionary<string, double> PaceMaxS = new() { ["thoughtful"] = 10 };
+        public double MaxDelayS => PaceMaxS.Values.Append(TypingMaxS).Max();
     }
     internal sealed record FastLine(string Scope, string Speaker, string Text, bool Mine);
-    internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error);
+    internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error, string Pace = "normal");
 
     static string FastFile => Path.Combine(RouteDir, "_fast-chat.json");
     static string FastUsageFile => Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "fastchat-usage.jsonl");
@@ -65,6 +71,12 @@ public static partial class Program
             c.MaxTokens = I("max_tokens", 120, 16, 400); c.HistoryLines = I("history_lines", 20, 0, 60);
             c.Temperature = D("temperature", 0.8, 0, 2); c.TimeoutS = D("timeout_s", 8, 1, 20);
             c.PriceIn = D("price_in_per_m", 1.25, 0, 100); c.PriceCachedIn = D("price_cached_in_per_m", 0.2, 0, 100); c.PriceOut = D("price_out_per_m", 2.5, 0, 100);
+            c.TypingBaseS = D("typing_base_s", 1.5, 0, 10); c.TypingPerWordS = D("typing_per_word_s", 0.25, 0, 2);
+            c.TypingMaxS = D("typing_max_s", 6, 0, 20); c.TypingJitterS = D("typing_jitter_s", 0.4, 0, 3);
+            if (r.TryGetProperty("pace_multipliers", out var pm) && pm.ValueKind == JsonValueKind.Object)
+                foreach (var kv in pm.EnumerateObject()) if (kv.Value.TryGetDouble(out var mv)) c.PaceMult[kv.Name.ToLowerInvariant()] = Math.Clamp(mv, 0, 5);
+            if (r.TryGetProperty("pace_max_s", out var px) && px.ValueKind == JsonValueKind.Object)
+                foreach (var kv in px.EnumerateObject()) if (kv.Value.TryGetDouble(out var xv)) c.PaceMaxS[kv.Name.ToLowerInvariant()] = Math.Clamp(xv, 0, 20);
             if (r.TryGetProperty("persona", out var p))
                 c.Persona = p.ValueKind == JsonValueKind.Array ? string.Join("\n", p.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()))
                           : p.ValueKind == JsonValueKind.String ? p.GetString() : "";
@@ -175,11 +187,46 @@ public static partial class Program
             using var cd = JsonDocument.Parse(content);
             var reply = cd.RootElement.TryGetProperty("reply", out var rp) && rp.ValueKind == JsonValueKind.String ? rp.GetString() ?? "" : "";
             bool action = cd.RootElement.TryGetProperty("action", out var ac) && ac.ValueKind == JsonValueKind.True;
+            var pace = cd.RootElement.TryGetProperty("pace", out var pc) && pc.ValueKind == JsonValueKind.String ? pc.GetString() : null;
+            (reply, var tagPace) = FastStripPaceTag(reply);
+            pace = FastNormPace(pace ?? tagPace);
             reply = System.Text.RegularExpressions.Regex.Replace(reply, @"\s*\n\s*", " ").Trim();
             if (reply.Length > 300) reply = reply[..300].TrimEnd() + "…";
-            return new FastResult(reply, action, pt, ct, ot, null);
+            return new FastResult(reply, action, pt, ct, ot, null, pace);
         }
         catch (Exception ex) { return new FastResult("", false, 0, 0, 0, "bad response: " + ex.GetType().Name); }
+    }
+
+    static readonly string[] FastPaces = { "quick", "normal", "slow", "thoughtful" };
+    // pure: unknown / missing pace -> "normal"
+    internal static string FastNormPace(string p)
+    {
+        p = (p ?? "").Trim().Trim('[', ']', '(', ')').ToLowerInvariant();
+        return FastPaces.Contains(p) ? p : "normal";
+    }
+    // pure: a pace tag the model put into the text itself ("[pace: slow]", "(pace=quick)", "<pace>thoughtful</pace>") is
+    // removed from what gets sent; returns the tag's value (null if none)
+    static readonly System.Text.RegularExpressions.Regex FastPaceTagRx = new(@"\s*(?:\[\s*pace\s*[:=]\s*(\w+)\s*\]|\(\s*pace\s*[:=]\s*(\w+)\s*\)|<pace>\s*(\w+)\s*</pace>|\{\s*pace\s*[:=]\s*(\w+)\s*\})\s*",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    internal static (string text, string pace) FastStripPaceTag(string reply)
+    {
+        if (string.IsNullOrEmpty(reply)) return (reply ?? "", null);
+        string pace = null;
+        var t = FastPaceTagRx.Replace(reply, m => { pace ??= m.Groups.Cast<System.Text.RegularExpressions.Group>().Skip(1).FirstOrDefault(g => g.Success)?.Value; return " "; });
+        return (System.Text.RegularExpressions.Regex.Replace(t, @"\s{2,}", " ").Trim(), pace);
+    }
+    // pure: how long to keep "typing" before sending. Target total since the incoming line =
+    // (base + per_word * words) * pace multiplier + jitter (jitterUnit in -1..1), capped by the pace's cap; minus the time
+    // the API call already took. Never negative.
+    internal static int FastTypingDelayMs(FastCfg c, string reply, string pace, long elapsedMs, double jitterUnit)
+    {
+        pace = FastNormPace(pace);
+        int words = string.IsNullOrWhiteSpace(reply) ? 0 : reply.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length;
+        double mult = c.PaceMult.TryGetValue(pace, out var m) ? m : 1.0;
+        double cap = c.PaceMaxS.TryGetValue(pace, out var x) ? x : c.TypingMaxS;
+        double target = (c.TypingBaseS + c.TypingPerWordS * words) * mult + Math.Clamp(jitterUnit, -1, 1) * c.TypingJitterS;
+        target = Math.Clamp(target, 0, cap);
+        return (int)Math.Max(0, Math.Round(target * 1000 - elapsedMs));
     }
 
     internal enum FastOutcome { Send, Ack, Routine }
@@ -271,19 +318,31 @@ public static partial class Program
             if (!im && !david && File.Exists("/home/box/viewers/textclient/nearby-quiet.txt") && text.IndexOf("galat", StringComparison.OrdinalIgnoreCase) < 0) return;
             var key = FastKey();
             if (string.IsNullOrEmpty(key) && FastPostOverride == null) { fastLast = "no API key"; return; }
-            fastPending[msgId] = DateTime.UtcNow.AddSeconds(cfg.TimeoutS + 2);
+            fastPending[msgId] = DateTime.UtcNow.AddSeconds(cfg.TimeoutS + cfg.MaxDelayS + 2);   // API call + typing delay
             var scope = im ? "im:" + from : "nearby";
             var body = BuildFastRequest(cfg, FastState(), FastHistSnapshot(), scope, name, text, im);
             _ = Task.Run(async () =>
             {
-                string outcome = "routine";
-                FastResult r = null; long ms = 0;
+                string outcome = "routine", typed = "";
+                FastResult r = null; long ms = 0; var sw = Stopwatch.StartNew();
                 try
                 {
                     Interlocked.Increment(ref fastCalls);
                     (r, ms) = await FastCall(cfg, body, key);
                     var dec = FastDecide(r, david);
                     if (dec != FastOutcome.Routine && RateGuard() is string rg) { outcome = "routine (" + rg + ")"; dec = FastOutcome.Routine; }
+                    if (dec != FastOutcome.Routine)
+                    {
+                        // human-like pause, typing indicator on the whole time (David's line already started it)
+                        int wait = FastTypingDelayMs(cfg, r.Reply, r.Pace, sw.ElapsedMilliseconds, Random.Shared.NextDouble() * 2 - 1);
+                        if (wait > 0)
+                        {
+                            fastPending[msgId] = DateTime.UtcNow.AddMilliseconds(wait + 3000);
+                            if (david) TypingStart(im); else if (!im && !typingOn) TypingStart(false);
+                            await Task.Delay(wait);
+                        }
+                        typed = $", typed {r.Pace} {sw.ElapsedMilliseconds / 1000.0:0.0} s";
+                    }
                     if (dec == FastOutcome.Send) outcome = FastSend(from, name, r.Reply, msgId, im, imSession, claim: true) ? "sent" : "routine (send refused)";
                     else if (dec == FastOutcome.Ack)
                     {
@@ -299,7 +358,7 @@ public static partial class Program
                 {
                     fastPending.TryRemove(msgId, out _);
                     if (outcome == "sent") Interlocked.Increment(ref fastSent); else if (outcome.StartsWith("ack")) Interlocked.Increment(ref fastAcked); else Interlocked.Increment(ref fastFallbacks);
-                    fastLast = $"{DateTime.Now:HH:mm:ss} {name} {(im ? "IM" : "nearby")} '{Short(text, 40)}' -> {outcome} in {ms} ms{(r != null && !string.IsNullOrEmpty(r.Reply) ? $" ('{Short(r.Reply, 60)}')" : "")}";
+                    fastLast = $"{DateTime.Now:HH:mm:ss} {name} {(im ? "IM" : "nearby")} '{Short(text, 40)}' -> {outcome} in {ms} ms{typed}{(r != null && !string.IsNullOrEmpty(r.Reply) ? $" ('{Short(r.Reply, 60)}')" : "")}";
                     Log("fastchat", fastLast);
                     if (r != null) FastUsage(cfg, name, im, r, ms, outcome);
                 }
@@ -444,7 +503,7 @@ public static partial class Program
         var (r, ms) = await FastCall(cfg, body, FastKey());
         FastUsage(cfg, from + " (test)", im, r, ms, "test");
         var dec = FastDecide(r, from == "David Nightingale");
-        return $"fastchat test ({(im ? "IM" : voice ? "voice" : "nearby")}, from {from}, {cfg.Model}): {ms} ms; reply '{r.Reply}', action={r.Action.ToString().ToLowerInvariant()} -> would {dec switch { FastOutcome.Send => "send + claim", FastOutcome.Ack => "send the ack and hand the action to the routine", _ => "leave it to the routine" }}" +
+        return $"fastchat test ({(im ? "IM" : voice ? "voice" : "nearby")}, from {from}, {cfg.Model}): {ms} ms; reply '{r.Reply}', action={r.Action.ToString().ToLowerInvariant()}, pace={r.Pace} (typing ~{FastTypingDelayMs(cfg, r.Reply, r.Pace, 0, 0) / 1000.0:0.0} s) -> would {dec switch { FastOutcome.Send => "send + claim", FastOutcome.Ack => "send the ack and hand the action to the routine", _ => "leave it to the routine" }}" +
                $"{(r.Error != null ? " (" + r.Error + ")" : "")}; tokens {r.PromptTok} prompt ({r.CachedTok} cached) + {r.OutTok} out = ${FastCost(cfg, r.PromptTok, r.CachedTok, r.OutTok):0.00000}";
     }
 }

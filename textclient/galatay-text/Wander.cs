@@ -547,6 +547,7 @@ public static partial class Program
                 continue;
             }
             // 2026-10-08 David: wash hands at the bathroom sink after the toilet (WashHands.cs)
+            if (await LeaveBoatIfOnOne("moving on")) continue;   // still on a boat after a pause: teleport off, seated (Boats.cs)
             if (toiletSatAt != null && client.Self.SittingOn == 0 && pendingToilet == null) { wanderPhase = "washing hands"; await WashHandsIfDue(g, ct); continue; }
             if (wLegsUntilSit <= 0)
             {
@@ -668,7 +669,8 @@ public static partial class Program
             if (p == null || p.ParentID != 0 || p.PrimData.PCode != PCode.Prim) continue;
             if (!HomeWanderSeatAllowed(p.ID, infos)) continue;
             var (q, d) = NearestOnGraph(g, p.Position);
-            if (d > 6f) { dbg?.Add($"  - '{infos[p.ID].Name}' {p.ID} {P3(p.Position)}: {d:F1} m from the path graph"); continue; }
+            // boats (Boats.cs) float off the pier: reached by the pier spot + a sit from there, not over the graph
+            if (d > 6f && !IsBoat(infos[p.ID])) { dbg?.Add($"  - '{infos[p.ID].Name}' {p.ID} {P3(p.Position)}: {d:F1} m from the path graph"); continue; }
             raw.Add((p, q, d, true)); seen.Add(p.ID);
         }
         foreach (var i in infos.Values.Where(i => !seen.Contains(i.Id) && !raw.Any(r => r.p.ID == i.Id)))
@@ -732,6 +734,16 @@ public static partial class Program
         try { await BeachOutfitForTarget(g, seatPos, info?.Level, $"seat '{c.name}'", ct); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("bikini change walk interrupted (" + (wanderPause ?? "cancel") + ")"); return false; }
         if (wanderPause != null) return false;
+        // 2026-10-09 David: boats = to the pier spot (walk on the beach level, else teleport), then sit from there; no walk-up
+        bool boat = IsBoat(info);
+        if (boat)
+        {
+            var bspot = LoadBoatSpot();
+            if (bspot == null) { MarkSeatFailed(c, "no boat_spot in the seat list"); return false; }
+            if (!await BoatGoToSpot(g, bspot, ct)) { if (wanderPause == null) MarkSeatFailed(c, "could not reach the pier spot"); return false; }
+        }
+        else
+        {
         await StepToNarrowCentre(seatPos, $"to seat '{c.name}'", ct);
         var (pts, _, _, err) = HomeSeatRoute(g, client.Self.SimPosition, seatPos, info?.Approach);
         if (err != null) { MarkSeatFailed(c, "no route: " + err); return false; }
@@ -751,6 +763,7 @@ public static partial class Program
         // always walk to the seat (no sitting from afar or from another level)
         if (!ok && (HDist(here, seatPos) > 10f || Math.Abs(here.Z - seatPos.Z) > 3f)) { MarkSeatFailed(c, msg); return false; }
         if (!ok) WLog($"walk to the seat ended {HDist(here, seatPos):F1} m short ({msg}); trying to sit from here");
+        }
         var sim = Sim;
         if (Sitters(sim).ContainsKey(c.p.LocalID)) { MarkSeatFailed(c, "someone sat there first"); return false; }
         if (wanderPause != null) return false;
@@ -778,6 +791,7 @@ public static partial class Program
         await Task.Delay(1000, ct);
         if (client.Self.SittingOn == 0) { MarkSeatFailed(c, "sit failed: " + r); await DressAfterSeatIfPending(); return false; }
         wLastSeat = c.p.ID; wSits++;
+        if (boat) wOnBoatLocal = client.Self.SittingOn;
         WanderNoteLevel();
         var stay = forceStay > 0 ? forceStay : HomeSitStaySeconds(info, wRnd);   // toilet / sink: their seat-list stay_s (30-60 s)
         var t0 = DateTime.Now;
@@ -785,7 +799,14 @@ public static partial class Program
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
         bool menu = false, waterOn = false;
         var fixedMenu = forceMenu ?? HomeSeatMenu(info, wRnd);
-        if (fixedMenu != null)
+        if (boat)
+        {
+            var (bok, bmsg) = await BoatPose(c.p, c.name, ct);
+            WLog($"BOAT POSE '{c.name}': {(bok ? "" : "SKIP boat: ")}{bmsg}");
+            if (!bok) { MarkSeatFailed(c, "boat: " + bmsg); await BoatLeave("no Singles pose"); return false; }
+            menu = true;
+        }
+        else if (fixedMenu != null)
         {
             try { var pr = await SeatPosePath(c.p, c.name, fixedMenu, ct); WLog($"POSE (seat menu {string.Join(" > ", fixedMenu)}): {pr}"); }
             catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE menu error: " + ex.GetBaseException().Message); }
@@ -805,7 +826,7 @@ public static partial class Program
                 if (!changed && (DateTime.Now - t0).TotalSeconds >= changeAt && wanderPause == null && client.Self.SittingOn != 0)
                 {
                     changed = true;
-                    try { await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
+                    try { if (boat) WLog($"BOAT POSE change '{c.name}': {(await BoatPose(c.p, c.name, ct)).msg}"); else await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
                 }
             }
         }
@@ -817,9 +838,13 @@ public static partial class Program
         }
         var sat = (DateTime.Now - t0).TotalSeconds;
         if (wanderPause != null) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (interrupted: {wanderPause})"; WLog($"sit on '{c.name}' interrupted after {sat:F0} s ({wanderPause})"); return true; }
-        if (client.Self.SittingOn == 0) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (stood up by something else)"; WLog($"no longer seated after {sat:F0} s"); await StandOutAfterSeat(info, ct); await DressAfterSeatIfPending(); return true; }
+        if (client.Self.SittingOn == 0) { wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s (stood up by something else)"; WLog($"no longer seated after {sat:F0} s"); if (boat) await LeaveBoatIfOnOne("unseated"); else await StandOutAfterSeat(info, ct); await DressAfterSeatIfPending(); return true; }
+        if (boat) await BoatLeave("sit over");   // teleport while seated, never stand on the boat first
+        else
+        {
         await EnsureStandingForWalk(ct);
         await StandOutAfterSeat(info, ct);   // 2026-10-08 18:38: clear floor first (stood inside the sink cabinet)
+        }
         await DressAfterSeatIfPending();
         wLastSit = $"{t0:HH:mm:ss} '{c.name}' {c.p.ID} {sat:F0} s";
         WLog($"STOOD UP from '{c.name}' {c.p.ID} after {sat:F0} s; rejoining the path");

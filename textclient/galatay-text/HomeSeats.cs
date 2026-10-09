@@ -15,13 +15,16 @@ public static partial class Program
 {
     internal sealed record HomeSeatInfo(UUID Id, string Name, Vector3 Pos, string Level, string Group, string Special,
                                         List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander, Vector3? ChangeSpot = null,
-                                        (int min, int max)? StayS = null, Vector3? StandSpot = null, Vector3? Approach = null);
+                                        (int min, int max)? StayS = null, Vector3? StandSpot = null, Vector3? Approach = null, string Mode = null);
 
     internal static List<HomeSeatInfo> ParseHomeSeats(string json)
     {
         var res = new List<HomeSeatInfo>();
         using var doc = JsonDocument.Parse(json);
-        if (!doc.RootElement.TryGetProperty("seats", out var seats)) return res;
+        // 2026-10-09 David: the boats at the Burgundy pier live in a separate "boats" array (mode "boat": teleport-sit, Boats.cs)
+        foreach (var arrName in new[] { "seats", "boats" })
+        {
+        if (!doc.RootElement.TryGetProperty(arrName, out var seats) || seats.ValueKind != JsonValueKind.Array) continue;
         foreach (var s in seats.EnumerateArray())
         {
             if (!s.TryGetProperty("uuid", out var u) || !UUID.TryParse(u.GetString(), out var id)) continue;
@@ -52,7 +55,10 @@ public static partial class Program
                 && sv[0].ValueKind == JsonValueKind.Number && sv[1].ValueKind == JsonValueKind.Number
                 && sv[0].TryGetInt32(out var smin) && sv[1].TryGetInt32(out var smax) && smin > 0 && smax >= smin)
                 stay = (smin, smax);
-            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss, ap));
+            var mode = Str("mode") ?? (arrName == "boats" ? BoatMode : null);
+            if (mode == BoatMode && BoatExcluded(Str("name"))) wander = false;   // never the submarine, whatever the file says
+            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss, ap, mode));
+        }
         }
         return res;
     }

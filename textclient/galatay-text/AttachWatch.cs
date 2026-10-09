@@ -163,11 +163,33 @@ public static partial class Program
             var item = AttachItemId(p);
             if (item != UUID.Zero && SeatOffItems().ContainsKey(item)) { seatOffObjectIds[src] = 1; return true; }
             var n = p.Properties?.Name ?? "";
-            if (n.Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)) { seatOffObjectIds[src] = 1; return true; }
+            if (n.Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase) && AoSeatOffListed()) { seatOffObjectIds[src] = 1; return true; }
         }
         catch { }
         return false;
     }
+
+    // 2026-10-09 (David, AO stays on while seated): attach-block.txt is the source of truth. When the AO HUD is not listed there,
+    // the seated guard leaves its animations alone (furniture poses and the AO coexist as in a normal viewer). pure (selftest)
+    internal static bool AoLeftAloneWhileSeated(bool isAoHudSource, bool aoListedInAttachBlock) => isAoHudSource && !aoListedInAttachBlock;
+    static bool AoSeatOffListed()
+    {
+        try { var it = AoItem; return it != UUID.Zero && SeatOffItems().ContainsKey(it); } catch { return true; }
+    }
+    static bool IsAoHudSource(UUID src)
+    {
+        if (src == UUID.Zero) return false;
+        try
+        {
+            var sim = client.Network.CurrentSim; if (sim == null) return false;
+            var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == src);
+            if (p == null || p.ParentID != client.Self.LocalID) return false;
+            if ((p.Properties?.Name ?? "").Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)) return true;
+            var it = AttachItemId(p); return it != UUID.Zero && it == AoItem;
+        }
+        catch { return false; }
+    }
+    static bool AoExemptWhileSeated(UUID src) => AoLeftAloneWhileSeated(IsAoHudSource(src), AoSeatOffListed());
 
     static void NoteSeatOffAnim(UUID id, UUID src)
     {
@@ -183,6 +205,7 @@ public static partial class Program
             var id = kv.Key; var src = kv.Value.src;
             if (IsSeatSource(src) || keptPose.ContainsKey(id)) continue;
             if (IsTempAttachSource(src)) continue; // Experiences.cs: keep prop hold anims from temp attaches
+            if (AoExemptWhileSeated(src)) continue; // AO not in attach-block.txt: leave it running while seated
             bool linger = IsSeatOffLingerAnim(seatOffPlayedAnims.ContainsKey(id), seatOffObjectIds.ContainsKey(src) || IsSeatOffAttachmentSource(src));
             bool stand = IsDefaultStandOrWalk(id);
             if (!linger && !stand) continue;
@@ -229,6 +252,7 @@ public static partial class Program
         {
             if (IsTempAttachSource(src)) continue; // Experiences.cs: prop hold anims from temp attaches must keep playing
             if (block.Contains(id)) { client.Self.AnimationStop(id, true); Log("height", $"seated guard: stopped blocked anim {AnimName(id)} from {SrcDesc(src)}"); continue; }
+            if (AoExemptWhileSeated(src)) continue; // AO not in attach-block.txt: its anims coexist with the seat pose (no stop, no pose re-assert)
             if (IsDefaultStandOrWalk(id) && !IsSeatSource(src))
             { client.Self.AnimationStop(id, true); Log("height", $"seated guard: stopped stand/walk {AnimName(id)} from {SrcDesc(src)} while seated"); continue; }
             if (IsSeatOffLingerAnim(seatOffPlayedAnims.ContainsKey(id), seatOffObjectIds.ContainsKey(src) || IsSeatOffAttachmentSource(src)))
@@ -870,6 +894,7 @@ public static partial class Program
         C(!NeedsSeatPoseRecovery(false, 0, 0, 10.0), "standing -> no recover");
         // Regression labels for the two bugs David hit
         C(!ShouldDropKeptPose(true, false, 0), "REGRESSION 10:00:45: re-assert then AvatarAnimation must not drop the only seat pose");
+        C(AoLeftAloneWhileSeated(true, false) && !AoLeftAloneWhileSeated(true, true) && !AoLeftAloneWhileSeated(false, false), "AO HUD anims left alone while seated only when the AO is not in attach-block.txt (David 2026-10-09)");
         C(IsSeatOffLingerAnim(true, false), "REGRESSION 10:17: Martha AO stand 2af3a656 lingering after detach must be stopped while seated");
         return $"pose keeper selftest: {pass} pass, {fail} fail (offline)\n" + string.Join("\n", lines);
     }

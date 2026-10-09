@@ -61,7 +61,8 @@
     [233.6, 73.0, 29.0],
     [239.9, 73.6, 29.0],
     [235.2, 73.8, 29.0],
-    [220.6, 73.4, 29.0]
+    [220.6, 73.4, 29.0],
+    [221.64, 72.9, 29.0]
   ],
   "edges": [
     [0, 1, "living"],
@@ -126,7 +127,8 @@
     [42, 54, "toilet"],
     [56, 55, "tub"],
     [40, 57, "bedroom"],
-    [57, 12, "bedroom"]
+    [57, 12, "bedroom"],
+    [57, 58, "bedroom"]
   ],
   "places": {
     "home": {"node": 45, "note": "SL home / arrival point (sethome 2026-10-06), off the couch"},
@@ -142,6 +144,7 @@
     "front": {"node": 9, "note": "outside front-double (north)"},
     "desk": {"node": 10, "note": "Dutchie maledom desk"},
     "east-deck": {"node": 11, "note": "east end of the bathroom past side-room-2, on the room centre line y 73.8 (enter only via side-room-2 doorway, then bath-centre 56)"},
+    "makeup": {"node": 58, "note": "floor 0.5 m west of the Xplicit Makeup Table (placed by David 2026-10-09 against the bedroom east wall; footprint x 222.14-224.13); via bedroom node 57"},
     "bed": {"node": 12, "note": "floor 0.4 m east of the MIRAGE bed (east edge x 217.92) and within 2.2 m of its root, so no extra step toward the bed (2026-10-09: the old 1.2 m step put her on top of it); enter only via side-room-1 doorway"},
     "front-steps": {"node": 13, "note": "down the first stairs outside the front doors (beach-stairs-up route pt 12)"},
     "east-stairs-top": {"node": 22, "note": "top of the east GOOSE deck stairs (recorded route)"},
@@ -176,7 +179,8 @@
     {"name": "BackBone Playtime Bathroom Sink - Adult", "uuid": "406eeb80-c05f-2f82-0857-145b725da0f8", "min": [238.31, 75.03], "max": [242.52, 76.2], "source": "linkset child boxes, scene export-20261008-090334 (vanity cabinet x 239.17-241.54 reaches y 75.03; root plate 4.2x3.3x0.3 is the wall-mounted back)"},
     {"name": "Dutchie clawfoot bath tub adult", "uuid": "53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc", "min": [239.22, 71.29], "max": [241.96, 72.74], "source": "linkset child boxes, scene export-20261008-090334 (map: <240.6,72.0> size 2.7x1.2 rotZ 180)"},
     {"name": "BackBone Playtime Toilet", "uuid": "48b303e0-8dcc-58e2-39bf-23e9f9f895b9", "min": [233.05, 71.15], "max": [233.95, 72.45], "source": "map: <233.5,71.8> size 0.9x1.3 rotZ 180"},
-    {"name": "BENTO PHYSICS MIRAGE BED 1.0", "uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "min": [214.46, 72.71], "max": [217.92, 76.16], "source": "linkset child boxes, scene export-20261009-082934 after David moved the bed (root 216.15,75.28 rotZ 90; headboard on the north wall y 76.16)"}
+    {"name": "BENTO PHYSICS MIRAGE BED 1.0", "uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "min": [214.46, 72.71], "max": [217.92, 76.16], "source": "linkset child boxes, scene export-20261009-082934 after David moved the bed (root 216.15,75.28 rotZ 90; headboard on the north wall y 76.16)"},
+    {"name": "Xplicit Makeup Table (c,m)", "uuid": "71321f3c-1316-f031-a701-5b655dadd27c", "min": [222.14, 71.45], "max": [224.13, 73.45], "source": "linkset child boxes (table, mirror, stool; the invisible 3x3 m root sit plate left out), scene export-20261009-083529, rotZ -135"}
   ],
   "footprint_margin": 0.3,
   "narrow": [

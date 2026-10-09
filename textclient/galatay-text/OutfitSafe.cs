@@ -119,17 +119,9 @@ public static partial class Program
             foreach (var hid in ExtraHudsOff(worn, target.Select(t => t.Item).ToHashSet(), ToplessExtras().Select(e => e.id))) if (!detach.Contains(hid)) detach.Add(hid);
             foreach (var n in notes) sb.AppendLine("  " + n);
 
-            // 1) attachments off first (so a new hair never lands on top of the old one)
-            foreach (var id in detach)
-            {
-                var nm = worn.FirstOrDefault(w => w.Item == id)?.Name ?? id.ToString();
-                var r = await DetachItemAsync(id, "outfit swap");
-                sb.AppendLine($"  off: '{nm}'");
-                Log("outfit", $"swap '{folder.Name}': detach '{nm}' {id}: {r}");
-            }
-            if (detach.Count > 0) await Task.Delay(1500, ct);
-
-            // 2) wearables: body parts replace by type, clothing layers swapped
+            // plan the wearables first (body parts replace by type, clothing layers swapped), then run everything in one
+            // batch (RedressFast.OutfitSwapOrder): old attachments off together, layer + COF changes in one go each, the bake
+            // right away (2026-10-08: the bikini change waited LibreMetaverse's 5 s debounce after each layer's COF link)
             var wears = items.OfType<InventoryWearable>().ToList();
             var tBody = wears.Where(w => w.AssetType == AssetType.Bodypart).ToList();
             var tCloth = wears.Where(w => w.AssetType != AssetType.Bodypart).ToList();
@@ -152,10 +144,6 @@ public static partial class Program
             var removeCloth = new List<InventoryItem>();
             foreach (var cid in LayersNotInOutfit(curCloth.Select(c => c.ItemID), tClothIds)) // incl. system Alpha layers
             { var it = await FetchItemRO(cid, ct); if (it != null) removeCloth.Add(it); }
-            // COF links first: the library rebuilds its wearables from the COF after a bake, so a layer whose COF link
-            // survives the removal comes straight back (16:59 'Jiyoo tubetop': 5 layers "off" were all still worn).
-            foreach (var it in removeCloth) { await RemoveCofLinksForItem(it.UUID, "outfit swap", ct); sb.AppendLine($"  layer off: '{it.Name}'"); }
-            if (removeCloth.Count > 0) client.Appearance.RemoveFromOutfit(removeCloth);
             var replacedBody = new List<UUID>();
             foreach (var b in tBody)
             {
@@ -164,17 +152,51 @@ public static partial class Program
             }
             var curIds = cur.Select(w => w.ItemID).ToHashSet();
             var addCloth = tCloth.Where(c => !curIds.Contains(c.UUID)).Cast<InventoryItem>().ToList();
-            if (tBody.Count > 0) client.Appearance.AddToOutfit(tBody.Cast<InventoryItem>().ToList(), true);
-            if (addCloth.Count > 0) { client.Appearance.AddToOutfit(addCloth, false); foreach (var c in addCloth) sb.AppendLine($"  layer on: '{c.Name}'"); }
+            var removeIds = removeCloth.Select(r => r.UUID).ToHashSet();
+            var wornLayersAfterRemoval = cur.Where(w => !removeIds.Contains(w.ItemID)).Select(w => (w.ItemID, w.WearableType)).ToList();
+            var t0 = DateTime.Now;
+
+            foreach (var step in OutfitSwapOrder(detach.Count, removeCloth.Count, tBody.Count, addCloth.Count, attach.Count))
+                switch (step)
+                {
+                    case SwapStep.DetachAll: // attachments off first (so a new hair never lands on top of the old one)
+                        foreach (var id in detach)
+                        {
+                            var nm = worn.FirstOrDefault(w => w.Item == id)?.Name ?? id.ToString();
+                            var r = DetachItem(id, "outfit swap");
+                            sb.AppendLine($"  off: '{nm}'");
+                            Log("outfit", $"swap '{folder.Name}': detach '{nm}' {id}: {r}");
+                        }
+                        break;
+                    case SwapStep.LayersOff:
+                        client.Appearance.RemoveFromOutfit(removeCloth);
+                        foreach (var it in removeCloth) sb.AppendLine($"  layer off: '{it.Name}'");
+                        break;
+                    case SwapStep.BodyOn: client.Appearance.AddToOutfit(tBody.Cast<InventoryItem>().ToList(), true); break;
+                    case SwapStep.LayersOn:
+                        client.Appearance.AddToOutfit(addCloth, false);
+                        foreach (var c in addCloth) sb.AppendLine($"  layer on: '{c.Name}'");
+                        break;
+                    // COF links: the library rebuilds its wearables from the COF after a bake, so a layer whose COF link
+                    // survives the removal comes straight back (16:59 'Jiyoo tubetop')
+                    case SwapStep.CofLinksOff: sb.AppendLine("  " + await CofLinksOffBatch(detach.Concat(removeIds), "outfit swap", ct)); break;
+                    case SwapStep.CofLinksOn:
+                        var descs = LayerLinkDescs(addCloth.OfType<InventoryWearable>().Select(w => (w.UUID, w.WearableType)), wornLayersAfterRemoval);
+                        sb.AppendLine("  " + await CofLinksOnBatch(addCloth, descs, "outfit swap", ct));
+                        break;
+                    case SwapStep.RebakeNow: sb.AppendLine($"  {await RebakeNow($"outfit '{folder.Name}'")} at +{(DateTime.Now - t0).TotalSeconds:F1} s"); break;
+                    case SwapStep.AttachAll: // ADD, never replace; a short pause after the detaches first
+                        if (detach.Count > 0) { var left = 1500 - (int)(DateTime.Now - t0).TotalMilliseconds; if (left > 0) await Task.Delay(left, ct); }
+                        foreach (var id in attach)
+                        {
+                            var it = objs.First(o => o.UUID == id);
+                            client.Appearance.Attach(it, AttachmentPoint.Default, false);
+                            sb.AppendLine($"  on: '{it.Name}'");
+                        }
+                        break;
+                }
             foreach (var old in replacedBody.Distinct()) await RemoveCofLinksForItem(old, "outfit swap (body part replaced)", ct);
 
-            // 3) attachments on (ADD, never replace)
-            foreach (var id in attach)
-            {
-                var it = objs.First(o => o.UUID == id);
-                client.Appearance.Attach(it, AttachmentPoint.Default, false);
-                sb.AppendLine($"  on: '{it.Name}'");
-            }
             // wait for them to show up (max 20 s)
             for (int i = 0; i < 40 && attach.Count > 0; i++)
             {
@@ -430,6 +452,7 @@ public static partial class Program
                     int changed = 0;
                     for (int i = 0; i < 10 && changed == 0; i++) { await Task.Delay(500, ct); changed = TexIdsChanged(before, SnapshotTextures(clothingItems)).Count; }
                     if (changed > 0) await Task.Delay(1000, ct);
+                    SaveHudLastItems(hud.UUID, clothingItems, newPick: false); // these items now show it: next re-dress skips the HUD
                     sb.Append($"kept remembered '{last}' ({(changed > 0 ? $"re-applied, {changed} prim(s) changed" : "already showing")}); ");
                     Log("hud", $"'{hud.Name}' keep remembered '{last}': {(changed > 0 ? $"re-applied, {changed} prims changed" : "already showing")}");
                 }
@@ -462,7 +485,7 @@ public static partial class Program
                 }
                 applied = changed > 0;
                 { var aft = SnapshotTextures(clothingItems); foreach (var lid in TexIdsChanged(before, aft)) Log("hud", $"'{hud.Name}' prim {lid} faces {before[lid]} -> {aft[lid]}"); }
-                if (applied) { await Task.Delay(1000, ct); SaveHudLastPick(hud.UUID, pick.Label); } // let multi-prim pieces finish
+                if (applied) { await Task.Delay(1000, ct); SaveHudLastPick(hud.UUID, pick.Label); SaveHudLastItems(hud.UUID, clothingItems, newPick: true); } // let multi-prim pieces finish
                 var how = pick.UsesSt ? $"face {pick.Face} st {pick.S:F3},{pick.T:F3}" : $"link {pick.Link} local {pick.Local}";
                 sb.Append($"picked '{pick.Label}' (of {opts.Count}{(last != null ? $", last was '{last}'" : "")}) -> {(applied ? $"applied ({changed} prim(s) changed texture)" : "no visible change")}; ");
                 Log("hud", $"'{hud.Name}' pick '{pick.Label}' {how}: {(applied ? $"applied, {changed} prims changed" : "no change seen")}");
@@ -573,8 +596,18 @@ public static partial class Program
         foreach (var sp in PartitionHudSpecs(LoadClothingHudSpecs(), items.Select(i => i.UUID).ToHashSet()).skip)
         { done.Add((sp.Hud, HudLastPick(sp.Hud))); sb.AppendLine($"  '{sp.HudName}': single color, HUD step skipped"); }
         if (huds.Count == 0) return sb.Length > 0 ? sb.ToString().TrimEnd() : $"no clothing HUDs found for '{folder.Name}'";
+        var wornNow = keepColor ? WornPrims().Select(AttachItemId).Where(u => u != UUID.Zero).ToHashSet() : null;
         foreach (var (hud, clothing, spec) in huds.OrderBy(h => h.spec?.Matches == true ? 1 : 0))
         {
+            // same outfit re-dressed: the very same items still carry the remembered colour, so no HUD at all (RedressFast.cs)
+            var skipWhy = RedressHudSkipReason(keepColor, HudLastPick(hud.UUID), HudLastItems(hud.UUID), clothing, wornNow);
+            if (skipWhy != null)
+            {
+                sb.AppendLine($"  '{hud.Name}': HUD step skipped ({skipWhy})");
+                Log("hud", $"'{hud.Name}' re-dress: HUD step skipped ({skipWhy})");
+                done.Add((hud.UUID, HudLastPick(hud.UUID)));
+                continue;
+            }
             sb.AppendLine("  " + await HudRandomize(hud, clothing, ct, spec, keepColor, done));
             done.Add((hud.UUID, HudLastPick(hud.UUID)));
         }

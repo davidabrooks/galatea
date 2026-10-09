@@ -370,6 +370,7 @@ public static partial class Program
         animLogUntil = DateTime.Now.AddMinutes(10);
         _ = Task.Run(() => RefreshMutes(20000));
         _ = Task.Run(FetchOfflineIms); // IMs stored while logged out / session dead (OfflineIm.cs)
+        _ = Task.Run(ActiveGroupAfterLogin); // routes/_active-group.json: saved active group (or none) (ActiveGroup.cs)
         _ = Task.Run(ResurfaceRestoredOffers); // restored group invites: re-check + urgent webhook again ~45 s after login (OfferStore.cs)
         OutfitZonesLoad();
         _ = Task.Run(DailyOutfitAfterLogin); // once per PT calendar day: random non-Bikini outfit (OutfitZones.cs)
@@ -1659,6 +1660,7 @@ public static partial class Program
   upload texture <maxL$> <file.j2c> <name>   ONE paid texture upload (NewFileAgentInventory), max L$50, one-shot marker
   displayname get | displayname set <name>
   group list | group info <group uuid>   current groups / group profile (name, open enrollment, fee, members)
+  group activate <none|group name|uuid>   set the active group (tag); saved to routes/_active-group.json and re-applied at each login
   group join <group uuid>     joins ONLY if open enrollment and fee L$0 (profile checked first); reports JoinGroupReply + balance
   group invites [all|selftest] pending group invitations (group, inviter, role, fee, session); kept across restarts, urgent webhook; auto-accept ONLY 'Sunrise Suites' at L$0 from shadowknight.falconer/andyandroid (then sethome if in Peronaut)
   group accept <n|group name> [confirm] [force] | group decline <n|group name>   accept only David/Sophie/the Peronaut rental group; others need 'confirm' (David's OK); fee > L$0 or unknown needs 'force'

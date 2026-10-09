@@ -329,10 +329,10 @@ public static partial class Program
             var sb = new StringBuilder($"current groups ({groups.Count}; {(fresh ? "fresh server reply" : currentGroupsAt == DateTime.MinValue ? "no reply, no cache" : $"no reply, cached {currentGroupsAt:HH:mm:ss}")}):\n");
             foreach (var g in groups.Values.OrderBy(g => g.Name))
                 sb.AppendLine($"  {g.ID} '{g.Name}' title='{g.MemberTitle}' accept_notices={g.AcceptNotices} list_in_profile={g.ListInProfile} contribution={g.Contribution}");
-            var act = client.Self.ActiveGroup;
-            sb.Append($"active group: {(act == UUID.Zero ? "none" : groups.TryGetValue(act, out var ag) ? $"'{ag.Name}' ({act}), active title '{ag.MemberTitle}'" : act.ToString())}");
+            sb.Append(ActiveGroupLine(groups));
             return sb.ToString();
         }
+        if (sub == "activate") return await GroupActivateCmd(a);
         if (sub == "invites") return a.Length > 1 && a[1] == "selftest" ? GroupInvitesSelfTest() : GroupInvitesText(a.Length > 1 && a[1] == "all");
         if (sub == "accept" || sub == "decline") return await GroupInviteRespondCmd(a, sub == "accept");
         if ((sub == "info" || sub == "join") && a.Length >= 2 && UUID.TryParse(a[1], out var id))
@@ -369,7 +369,7 @@ public static partial class Program
             return $"join '{gp.Name}' ({id}): JoinGroupReply={(ok.HasValue ? (ok.Value ? "SUCCESS" : "FAILURE") : "no reply within 20 s")}; " +
                    $"in current groups afterwards: {(member ? "yes" : "no")}{(fresh ? "" : " (group list not refreshed)")}; balance L${bal0?.ToString() ?? "?"} -> L${bal1?.ToString() ?? "?"}";
         }
-        return "usage: group list | group info <group uuid> | group join <group uuid> | group invites [all|selftest] | group accept <n|group name> [confirm] [force] | group decline <n|group name>";
+        return "usage: group list | group activate <none|group name|uuid> | group info <group uuid> | group join <group uuid> | group invites [all|selftest] | group accept <n|group name> [confirm] [force] | group decline <n|group name>";
     }
 
     // ---- picks ----------------------------------------------------------

@@ -243,9 +243,20 @@ public static partial class Program
             keptPose.TryRemove(id, out _);
             Log("height", $"pose keeper: dropped stale copy of {AnimName(id)} (seat sourced a different pose or copy already stopped)");
         }
-        var seatAnims = seatSourced.Count > 0
-            ? seatSourced.ToList()
-            : now.Keys.Where(k => keptPose.ContainsKey(k)).ToList();
+        bool davidSeat = poseDavidOnSeat;
+        // 2026-10-09: with David on the seat never fall back to a kept copy of her old solo pose (StayWithDavid.cs)
+        var seatAnims = KeeperReassertSet(seatSourced, now.Keys.Where(k => keptPose.ContainsKey(k)).ToList(), davidSeat);
+        if (davidSeat)
+        {
+            foreach (var (id, src, restart) in started)
+                if (PoseChangeIsDavids(true, IsSeatSource(src), restart, (DateTime.Now - lastSeatPoseMenuAt).TotalSeconds))
+                {
+                    Log("height", $"pose: seat started {AnimName(id)} while David is on my seat and I pressed nothing — his pick; keeping it");
+                    foreach (var k in keptPose.Keys.ToList()) if (!seatSourced.Contains(k)) { try { client.Self.AnimationStop(k, true); } catch { } keptPose.TryRemove(k, out _); }
+                    DavidSeatHoldCheck(true, "he changed my pose from the seat menu");
+                    break;
+                }
+        }
         StopSeatOffAndStandOverlays(now, "while seated");
         bool interloper = false;
         foreach (var (id, src, restart) in started)
@@ -539,6 +550,7 @@ public static partial class Program
         var seatSourced = cur.Count(kv => IsSeatSource(kv.Value.src));
         var keptPlaying = cur.Keys.Count(k => keptPose.ContainsKey(k));
         if (seatSourced > 0 || keptPlaying > 0) { seatPoseMissingSince = null; return; }
+        if (poseDavidOnSeat) { seatPoseMissingSince = null; return; }   // 2026-10-09: David picks; no auto recovery over him
         // occupancy just flipped: AVsitter often restarts anims — do not treat a brief gap as "pose lost"
         if (InSharedFlipGrace(poseSharedChangedAt, DateTime.Now, PoseSharedFlipGraceS))
         { seatPoseMissingSince = null; return; }

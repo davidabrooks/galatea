@@ -73,6 +73,7 @@
     <Compile Include="../galatay-text/NarrowPath.cs" Link="Core/NarrowPath.cs" />
     <Compile Include="../galatay-text/HomeSafety.cs" Link="Core/HomeSafety.cs" />
     <Compile Include="../galatay-text/LevelDwell.cs" Link="Core/LevelDwell.cs" />
+    <Compile Include="../galatay-text/StayWithDavid.cs" Link="Core/StayWithDavid.cs" />
     <Compile Include="../galatay-text/WashHands.cs" Link="Core/WashHands.cs" />
     <Compile Include="../galatay-text/Boats.cs" Link="Core/Boats.cs" />
     <Compile Include="../galatay-text/FastLayers.cs" Link="Core/FastLayers.cs" />

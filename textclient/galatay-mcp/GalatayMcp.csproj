@@ -70,6 +70,7 @@
     <Compile Include="../galatay-text/LevelDwell.cs" Link="Core/LevelDwell.cs" />
     <Compile Include="../galatay-text/WashHands.cs" Link="Core/WashHands.cs" />
     <Compile Include="../galatay-text/FastLayers.cs" Link="Core/FastLayers.cs" />
+    <Compile Include="../galatay-text/RedressFast.cs" Link="Core/RedressFast.cs" />
     <Compile Include="../galatay-text/SeatStandOut.cs" Link="Core/SeatStandOut.cs" />
     <Compile Include="../galatay-text/WanderRest.cs" Link="Core/WanderRest.cs" />
     <Compile Include="../galatay-text/LookAt.cs" Link="Core/LookAt.cs" />

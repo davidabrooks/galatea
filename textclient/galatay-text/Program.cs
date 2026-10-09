@@ -298,6 +298,7 @@ public static partial class Program
         var guard = SessionGuard();
         if (guard != null) { Log("login", "refused: " + guard); return "REFUSED: " + guard; }
         shuttingDown = false;
+        GridClient.CapsConnectCallback = SlConnectAsync;   // SlDns.cs: SL hosts the box DNS proxies -> DoH + real IP (routes/_net.json)
         client = new GridClient();
         // GT_HANDSHAKE_FLAGS (hex): RegionHandshakeReply flags; 0x7 = LibreMetaverse's "cache empty, send full updates for everything"
         if (uint.TryParse(Env("GT_HANDSHAKE_FLAGS", "").Replace("0x", ""), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hsf))

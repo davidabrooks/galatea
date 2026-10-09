@@ -37,7 +37,7 @@
     [220.8, 58.5, 21.8],
     [215.8, 57.7, 21.2],
     [213.1, 57.6, 21.8],
-    [210.6, 58.8, 21.8],
+    [212.85, 57.35, 21.8],
     [220.0, 50.5, 21.0],
     [216.3, 51.9, 21.2],
     [216.3, 44.6, 22.3],
@@ -156,7 +156,7 @@
     "rowboat": {"node": 30, "note": "by the Marsh rowboat (her trace 16:42)"},
     "deck-stair": {"node": 31, "note": "foot of GOOSE deck stair 3 steps 5c560cf2 (214.2,57.6)"},
     "deck-top": {"node": 32, "note": "top of the 3-step stair on the Mooring deck (David 16:43)"},
-    "mooring-deck": {"node": 33, "note": "GOOSE Mooring deck 3d06b3e3 by the Nutmeg poolside chairs"},
+    "mooring-deck": {"node": 33, "note": "GOOSE Mooring deck 3d06b3e3, SE corner just past the 3-step stair top (2026-10-09: moved out of the Dutchie hot tub that replaced the poolside chairs; tub bbox x 208.81-212.22 y 57.64-61.05 + 0.5 m)"},
     "beach-sw": {"node": 34, "note": "SW beach toward the Burgundy pier"},
     "pier-start": {"node": 35, "note": "start of the Burgundy pier (her trace 16:45)"},
     "pier": {"node": 36, "note": "first Burgundy pier bench (David 16:45)"},
@@ -180,7 +180,8 @@
     {"name": "Dutchie clawfoot bath tub adult", "uuid": "53f8929b-0abc-6e12-fac9-f9d6f9bfe6bc", "min": [239.22, 71.29], "max": [241.96, 72.74], "source": "linkset child boxes, scene export-20261008-090334 (map: <240.6,72.0> size 2.7x1.2 rotZ 180)"},
     {"name": "BackBone Playtime Toilet", "uuid": "48b303e0-8dcc-58e2-39bf-23e9f9f895b9", "min": [233.05, 71.15], "max": [233.95, 72.45], "source": "map: <233.5,71.8> size 0.9x1.3 rotZ 180"},
     {"name": "BENTO PHYSICS MIRAGE BED 1.0", "uuid": "cdedb159-2e61-e54d-6045-283a58d25015", "min": [214.46, 72.71], "max": [217.92, 76.16], "source": "linkset child boxes, scene export-20261009-082934 after David moved the bed (root 216.15,75.28 rotZ 90; headboard on the north wall y 76.16)"},
-    {"name": "Xplicit Makeup Table (c,m)", "uuid": "71321f3c-1316-f031-a701-5b655dadd27c", "min": [222.14, 71.45], "max": [224.13, 73.45], "source": "linkset child boxes (table, mirror, stool; the invisible 3x3 m root sit plate left out), scene export-20261009-083529, rotZ -135"}
+    {"name": "Xplicit Makeup Table (c,m)", "uuid": "71321f3c-1316-f031-a701-5b655dadd27c", "min": [222.14, 71.45], "max": [224.13, 73.45], "source": "linkset child boxes (table, mirror, stool; the invisible 3x3 m root sit plate left out), scene export-20261009-083529, rotZ -135"},
+    {"name": "Dutchie hot tub Adult", "uuid": "a631d7bb-3363-ff63-a121-95e154362cd7", "min": [208.81, 57.64], "max": [212.22, 61.05], "margin": 0.5, "source": "linkset child boxes, scene export-20261009-084553 (root 210.51,59.35 size 2.42x1.08x2.40, turned 45 deg on the deck: tub body a diamond, this is its bounding box; the 3.1 m floor mat at z 20.64-20.70 is flat and left out); 2026-10-09 08:49 she walked into it on the old mooring-deck node 33 (210.6,58.8 = inside the tub)"}
   ],
   "footprint_margin": 0.3,
   "narrow": [

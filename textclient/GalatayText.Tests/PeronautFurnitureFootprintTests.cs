@@ -37,6 +37,34 @@ public class PeronautFurnitureFootprintTests
         Assert.False(SegmentHitsBox(0, 0, 3, 3, 4, -1, 6, 1));
     }
 
+    // per-footprint "margin" wins (2026-10-09 hot tub 0.5 m); stairs >= 1 m (2026-10-07 David: turn >= 1 m past the stair foot)
+    static double FootMargin(JsonElement f, double m) =>
+        f.TryGetProperty("margin", out var fm) ? fm.GetDouble() : f.GetProperty("name").GetString()!.Contains("stairs") ? Math.Max(m, 1.0) : m;
+
+    [Fact]
+    public void No_Peronaut_node_is_inside_a_footprint_and_the_hot_tub_is_mapped()
+    {
+        // 2026-10-09 08:49: mooring-deck node 33 (210.6,58.8) was inside the Dutchie hot tub; she walked into it
+        using var doc = Graph(); var g = doc.RootElement;
+        double m = g.TryGetProperty("footprint_margin", out var mm) ? mm.GetDouble() : 0.3;
+        var feet = g.GetProperty("furniture_footprints").EnumerateArray().ToList();
+        var tub = feet.Single(f => f.GetProperty("uuid").GetString() == "a631d7bb-3363-ff63-a121-95e154362cd7");
+        Assert.True(FootMargin(tub, m) >= 0.5);
+        var bad = new List<string>(); int i = 0;
+        foreach (var n in g.GetProperty("nodes").EnumerateArray())
+        {
+            double x = n[0].GetDouble(), y = n[1].GetDouble();
+            foreach (var f in feet)
+            {
+                var mn = f.GetProperty("min"); var mx = f.GetProperty("max"); double fm = FootMargin(f, m);
+                if (x >= mn[0].GetDouble() - fm && x <= mx[0].GetDouble() + fm && y >= mn[1].GetDouble() - fm && y <= mx[1].GetDouble() + fm)
+                    bad.Add($"node {i} x {f.GetProperty("name").GetString()}");
+            }
+            i++;
+        }
+        Assert.True(bad.Count == 0, "nodes inside furniture: " + string.Join("; ", bad));
+    }
+
     [Fact]
     public void No_Peronaut_edge_crosses_living_room_furniture()
     {
@@ -54,7 +82,7 @@ public class PeronautFurnitureFootprintTests
             foreach (var f in feet)
             {
                 var mn = f.GetProperty("min"); var mx = f.GetProperty("max");
-                double fm = f.GetProperty("name").GetString()!.Contains("stairs") ? Math.Max(m, 1.0) : m; // 2026-10-07 David: turn >= 1 m past the stair foot
+                double fm = FootMargin(f, m);
                 if (SegmentHitsBox(nodes[a].x, nodes[a].y, nodes[b].x, nodes[b].y, mn[0].GetDouble() - fm, mn[1].GetDouble() - fm, mx[0].GetDouble() + fm, mx[1].GetDouble() + fm))
                     bad.Add($"{a}-{b} {e[2].GetString()} x {f.GetProperty("name").GetString()}");
             }

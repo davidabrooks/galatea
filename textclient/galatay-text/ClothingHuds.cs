@@ -19,7 +19,7 @@ public static partial class Program
     // pick in the same outfit -> only these buttons (code = first word of the label); no rule -> MatchDefault
     internal sealed record HudMatchRule(UUID Hud, string When, List<string> Pick);
     internal sealed record ClothingHudSpec(UUID Hud, string HudName, List<UUID> Clothing, string LabelRx, HudGrid Grid, Dictionary<string, string> LabelNames,
-                                           List<HudMatchRule> Match = null, List<string> MatchDefault = null)
+                                           List<HudMatchRule> Match = null, List<string> MatchDefault = null, bool SingleColor = false)
     {
         public bool Matches => Match is { Count: > 0 } || MatchDefault is { Count: > 0 };
     }
@@ -74,10 +74,20 @@ public static partial class Program
                 }
             var mdef = t.TryGetProperty("match_default", out var md) ? Strs(md) : new();
             res.Add(new ClothingHudSpec(hud, t.TryGetProperty("hud_name", out var hn) ? hn.GetString() ?? "" : "", cloth, rx, grid, names,
-                                        match.Count > 0 ? match : null, mdef.Count > 0 ? mdef : null));
+                                        match.Count > 0 ? match : null, mdef.Count > 0 ? mdef : null,
+                                        t.TryGetProperty("single_color", out var sc) && sc.ValueKind == JsonValueKind.True));
         }
         // one spec per HUD (a later duplicate adds its clothing to the first)
         return res.GroupBy(r => r.Hud).Select(gp => gp.First() with { Clothing = gp.SelectMany(x => x.Clothing).Distinct().ToList() }).ToList();
+    }
+
+    // Pure (2026-10-08 18:38, David: "Are you trying to change the color of this top even though it only has one?"):
+    // the mapped HUDs an outfit's pieces need pressed vs single-color pieces whose HUD step is skipped entirely
+    // (no attach, no press, no verify wait); a skipped piece still counts as mapped, so no folder-HUD fallback either.
+    internal static (List<ClothingHudSpec> press, List<ClothingHudSpec> skip) PartitionHudSpecs(IEnumerable<ClothingHudSpec> specs, ISet<UUID> outfitItems)
+    {
+        var inOutfit = (specs ?? Enumerable.Empty<ClothingHudSpec>()).Where(sp => sp.Clothing.Any(outfitItems.Contains)).ToList();
+        return (inOutfit.Where(sp => !sp.SingleColor).ToList(), inOutfit.Where(sp => sp.SingleColor).ToList());
     }
 
     // clothing item -> HUD (every listed piece, Bikini top and panties both -> the Spicy Bikini HUD)

@@ -134,7 +134,8 @@ public static partial class Program
                     else
                     {
                         string desc = "";
-                        if (it is InventoryWearable w) { int same = 0; foreach (var l in cofLinks) { var t = await FetchItemRO(l.AssetUUID, ct); if (t is InventoryWearable tw && tw.WearableType == w.WearableType) same++; } desc = $"@{(int)w.WearableType * 100 + same}"; }
+                        // numbered from the wearables in memory (2026-10-08: fetching every COF link took ~22 s per layer)
+                        if (it is InventoryWearable w) desc = LayerLinkDescs(new[] { (w.UUID, w.WearableType) }, WornLayerTypes())[w.UUID];
                         InventoryItem made = null; string err = "";
                         try { using var lt = CancellationTokenSource.CreateLinkedTokenSource(ct); lt.CancelAfter(20000); made = await client.Inventory.CreateLinkAsync(cof.UUID, it.UUID, it.Name, desc, it.InventoryType, UUID.Random(), lt.Token); }
                         catch (Exception ex) { err = ex.GetBaseException().Message; }

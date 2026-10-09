@@ -733,7 +733,7 @@ public static partial class Program
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { client.Self.AutoPilotCancel(); WLog("bikini change walk interrupted (" + (wanderPause ?? "cancel") + ")"); return false; }
         if (wanderPause != null) return false;
         await StepToNarrowCentre(seatPos, $"to seat '{c.name}'", ct);
-        var (pts, _, _, err) = HomeSeatRoute(g, client.Self.SimPosition, seatPos);
+        var (pts, _, _, err) = HomeSeatRoute(g, client.Self.SimPosition, seatPos, info?.Approach);
         if (err != null) { MarkSeatFailed(c, "no route: " + err); return false; }
         var poly = new Poly(pts);
         var o = new RouteOpts { Label = $"home wander to seat '{c.name}'", Idle = true };

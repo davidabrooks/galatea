@@ -99,8 +99,9 @@ public static partial class Program
     static async Task<bool> BoatTeleportToSpot(BoatSpot s, string why)
     {
         var r = await Exec(FormattableString.Invariant($"teleport {HomeWanderRegion} {s.Pos.X:F2} {s.Pos.Y:F2} {s.Pos.Z:F2}"));
-        await Task.Delay(1500);
-        var ok = InPeronaut && NearBoatSpot(client.Self.SimPosition, s);
+        // a same-region teleport can report "Teleport started" as a failure while it lands fine: judge by position (up to 6 s)
+        bool ok = false;
+        for (int i = 0; i < 12 && !ok; i++) { await Task.Delay(500); ok = InPeronaut && NearBoatSpot(client.Self.SimPosition, s); }
         WLog($"BOAT teleport to the pier spot{(s.Landmark != null ? $" ('{s.Landmark}')" : "")} ({why}): {r}; {(ok ? "there" : "NOT there")} at {P3(client.Self.SimPosition)}");
         return ok;
     }
@@ -197,6 +198,8 @@ public static partial class Program
             await Task.Delay(3000);
             if (!await BoatTeleportToSpot(s, "leaving the boat (retry): " + why)) WLog("BOAT leave: teleport failed twice; she is still at " + P3(client.Self.SimPosition));
         }
+        // the seat-off rule re-wears the AO after the teleport unseats her; give it a moment before the next walk
+        try { if (!await AoWaitActive(15000, CancellationToken.None)) WLog("BOAT leave: AO not active yet (the walk guard waits/restores)"); } catch { }
     }
 
     // still on a boat when the loop wants to move on (after a pause, a restart of the loop ...)

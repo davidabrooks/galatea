@@ -346,8 +346,16 @@ public static partial class Program
         var infos = seats.ToDictionary(s => s.Id);
         UUID U(string s) => UUID.Parse(s);
         var front = g.N[g.Places["front"].node]; var beach = g.N[g.Places["beach"].node];
+        var boatSpot = ParseBoatSpot(File.ReadAllText(Path.Combine(dir, "_seats-peronaut-home.json")));
         foreach (var s in seats.Where(s => s.Wander))
         {
+            if (IsBoat(s))
+            {   // boats are reached at the pier spot (Boats.cs), not over the graph
+                var (bq, bd) = boatSpot == null ? (Vector3.Zero, 999f) : NearestOnGraph(g, boatSpot.Pos);
+                C(boatSpot != null && bd <= 1.5f && GraphRouteTo(g, beach, boatSpot.Pos).err == null && !BoatExcluded(s.Name),
+                  $"boat '{s.Name}' {s.Id.ToString()[..8]}: pier spot on the graph ({bd:F1} m) and reachable from the beach");
+                continue;
+            }
             var (q, d) = NearestOnGraph(g, s.Pos);
             bool level = Math.Abs(q.Z - s.Pos.Z) < 2.6f;
             var r1 = HomeSeatRoute(g, front, s.Pos); var r2 = HomeSeatRoute(g, beach, s.Pos);

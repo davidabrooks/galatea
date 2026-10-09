@@ -1,0 +1,100 @@
+diff --git a/LibreMetaverse/Caps.cs b/LibreMetaverse/Caps.cs
+index 182e2804..3f15b726 100644
+--- a/LibreMetaverse/Caps.cs
++++ b/LibreMetaverse/Caps.cs
+@@ -265,40 +265,72 @@ namespace LibreMetaverse
+             "InventoryAPIv3",
+             "LibraryAPIv3"
+         };
+-        private async Task MakeSeedRequestAsync()
+-        {
+-            if (Simulator == null || !Simulator.Client.Network.Connected) { return; }
++        /// <summary>galatea: most seed request attempts before the caps system gives up for this region.</summary>
++        public const int SeedMaxAttempts = 8;
+ 
+-            try
+-            {
+-                var (response, data) = await Simulator.Client.HttpCapsClient.PostAsync(_SeedCapsURI, OSDFormat.Xml, Caps.AllCapabilities, _HttpCts.Token);
+-                SeedRequestCompleteHandler(response, data, null);
+-            }
+-            catch (Exception ex)
+-            {
+-                SeedRequestCompleteHandler(null, null, ex);
+-            }
++        /// <summary>galatea: delay before retry number <paramref name="attempt"/> (1-based count of failures so far):
++        /// 1 s, 2 s, 4 s, 8 s, 16 s, then 30 s.</summary>
++        public static int SeedRetryDelayMs(int attempt)
++        {
++            if (attempt < 1) attempt = 1;
++            return Math.Min(30000, 1000 << Math.Min(attempt - 1, 5));
+         }
+ 
+-        private void SeedRequestCompleteHandler(HttpResponseMessage? response, byte[]? responseData, Exception? error)
++        /// <summary>galatea: retry a failed seed request only while not shut down, not a 404 and under the attempt cap.</summary>
++        public static bool ShouldRetrySeed(int failedAttempts, bool cancelled, bool notFound)
++            => !cancelled && !notFound && failedAttempts < SeedMaxAttempts;
++
++        // galatea: the upstream retry cancelled+disposed _HttpCts and then called MakeSeedRequestAsync again with that
++        // same dead token. PostAsync then fails synchronously, the catch calls the handler, the handler calls
++        // MakeSeedRequestAsync... unbounded synchronous recursion -> "Stack overflow." (SIGABRT, 2026-10-08 20:14:05).
++        // Now: one loop, never cancels the shared CTS on a retry, awaits a capped backoff, and gives up after
++        // SeedMaxAttempts or when Disconnect() cancelled the CTS.
++        private async Task MakeSeedRequestAsync()
+         {
+-            if (error != null)
++            for (int attempt = 1; ; attempt++)
+             {
+-                if (response != null && response.StatusCode == HttpStatusCode.NotFound)
++                if (Simulator == null || !Simulator.Client.Network.Connected) { return; }
++                HttpResponseMessage? response = null;
++                byte[]? data = null;
++                Exception? error = null;
++                try
++                {
++                    var token = _HttpCts.Token; // throws ObjectDisposedException after Disconnect()
++                    (response, data) = await Simulator.Client.HttpCapsClient.PostAsync(_SeedCapsURI, OSDFormat.Xml, Caps.AllCapabilities, token).ConfigureAwait(false);
++                }
++                catch (ObjectDisposedException) { return; }
++                catch (Exception ex) { error = ex; }
++
++                if (error == null)
++                {
++                    SeedRequestCompleteHandler(response, data, null);
++                    return;
++                }
++
++                bool notFound = response != null && response.StatusCode == HttpStatusCode.NotFound;
++                bool cancelled;
++                try { cancelled = _HttpCts.IsCancellationRequested; } catch (ObjectDisposedException) { cancelled = true; }
++                if (notFound)
+                 {
+                     Logger.Error("Seed capability returned a 404, capability system is aborting");
++                    return;
+                 }
+-                else
++                if (!ShouldRetrySeed(attempt, cancelled, notFound))
+                 {
+-                    Logger.Warn($"Seed capability returned {(response == null ? "no response" : response.StatusCode.ToString())}. Trying again.");
+-                    // Retry the seed request after disposing/renewing the previous CTS to avoid using canceled token
+-                    DisposalHelper.SafeCancelAndDispose(_HttpCts, (m, e) => { if (e != null) Logger.Debug(m, e); else Logger.Debug(m); });
+-                    // Create a fresh CTS for retry
+-                    // Note: _HttpCts is readonly, so we cannot reassign; instead, call MakeSeedRequest only if the original CTS hasn't been disposed.
+-                    _ = MakeSeedRequestAsync();
++                    if (!cancelled)
++                        Logger.Error($"Seed capability failed {attempt} times ({error.GetType().Name}: {error.Message}); giving up for {Simulator}");
++                    return;
+                 }
+-                return;
++                int delay = SeedRetryDelayMs(attempt);
++                Logger.Warn($"Seed capability returned {(response == null ? "no response" : response.StatusCode.ToString())} ({error.GetType().Name}). Trying again in {delay / 1000.0:0.#} s (attempt {attempt + 1}/{SeedMaxAttempts}).");
++                try { await Task.Delay(delay, _HttpCts.Token).ConfigureAwait(false); }
++                catch (Exception) { return; } // cancelled or disposed by Disconnect()
+             }
++        }
++
++        private void SeedRequestCompleteHandler(HttpResponseMessage? response, byte[]? responseData, Exception? error)
++        {
++            if (error != null) return; // galatea: retries are handled by the loop in MakeSeedRequestAsync
+ 
+             try
+             {

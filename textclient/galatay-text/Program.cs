@@ -130,6 +130,7 @@ public static partial class Program
             Events.Enqueue(new EventItem(now.ToString("yyyy-MM-dd HH:mm:ss"), kind, msg));
             while (Events.Count > 2000) Events.TryDequeue(out _);
         }
+        FastNote(kind, msg);   // FastChat.cs: per-conversation history for the fast reply path
     }
 
     // ---- session guard (never kick Firestorm or another galatay client) ----
@@ -212,6 +213,11 @@ public static partial class Program
         Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
         Directory.CreateDirectory(Path.GetDirectoryName(SockPath)!);
 
+        if (args.Length > 0 && args[0] == "--fastchat-test")   // FastChat.cs: offline dry run (no login, nothing sent)
+        {
+            Console.WriteLine(await FastTest(LoadFastCfg(), args.Skip(1).ToArray(), null));
+            return 0;
+        }
         if (args.Contains("--check"))
         {
             string pw = "";
@@ -475,7 +481,11 @@ public static partial class Program
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId);
                 WanderChatIn(e.SourceID, e.FromName, chatPos, false);
-                if (e.SourceID == DavidId && !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) TypingStart(false); // InstantReplies.cs
+                if (e.SourceID != DavidId || !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) // InstantReplies.cs
+                {
+                    if (e.SourceID == DavidId) TypingStart(false);
+                    if (e.Type != ChatType.Shout) TryFastChat(e.SourceID, e.FromName, e.Message, chatId, false, UUID.Zero); // FastChat.cs
+                }
                 AutoFollowFromDavid(e.SourceID, e.Message); // "stop following" / "follow me" (AutoFollow.cs)
             }
         };
@@ -517,7 +527,11 @@ public static partial class Program
                         catch { }
                         Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist, msgId);
                         if (ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true); // old messages: no wander pause/approach/reply
-                        if (!offline && im.FromAgentID == DavidId && !TryInstantReply(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true)) TypingStart(true); // InstantReplies.cs (after the wander chat pause)
+                        if (!offline && (im.FromAgentID != DavidId || !TryInstantReply(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true))) // InstantReplies.cs (after the wander chat pause)
+                        {
+                            if (im.FromAgentID == DavidId) TypingStart(true);
+                            TryFastChat(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true, im.IMSessionID); // FastChat.cs (same IM session)
+                        }
                         if (!offline) AutoFollowFromDavid(im.FromAgentID, im.Message); // AutoFollow.cs
                     }
                     return;
@@ -1584,6 +1598,7 @@ public static partial class Program
   help | status | where
   say [--re <msg id[,id..]>] [--force] <text> | shout ... | whisper ... | chan <n> <text>
   say --re <msg id[,id..]> <text>   claim-and-send for nearby chat (msg_id from the webhook / chatlog); refused if any id was already answered
+  fastchat [status | test [--im|--voice] [--from First_Last] <line>]   fast API replies (routes/_fast-chat.json); test = dry run, nothing sent
   chatlog [name] [n=20]   READ-ONLY nearby chat + message ids / answered state (never says)
   chatguard [selftest]   nearby-chat duplicate / claim-and-send guard (ChatGuard.cs)
   im [--headsup|--force] <First Last|username|uuid|""Name""> <text>   per-recipient guard: 'skipped: ...' if I IMed them < 5 s ago or already answered their latest IM (David: only the 5 s window); --headsup = ONE short 'please wait' note per their latest IM (still 5 s window); --force = manual/David-directed only
@@ -1884,6 +1899,7 @@ public static partial class Program
                 return await NavCmds(cmd, rest, a);
             case "wander": return await WanderCmds(a);
             case "instant": return InstantCmdText(a);   // InstantReplies.cs
+            case "fastchat": return await FastChatCmd(a);   // FastChat.cs
             case "quiet": return QuietCmds(a);
             case "pose": return await PoseCmd(a);
             case "exp": return await ExpCmd(a); // Experiences.cs

@@ -120,6 +120,7 @@ public static class Webhook
         public string line { get; init; }                  // voice: the exact triggering line (reply to this straight away)
         public bool? answered { get; init; }               // true = already answered by the client's instant reply (context only; never reply)
         public string my_reply { get; init; }              // that instant reply's text
+        public string fast_ack { get; init; }              // FastChat.cs: I already sent this short ack; do the asked action, do not ack again
     }
 
     // pure: skip the debounce flush loop (voice is debounced upstream)
@@ -359,6 +360,12 @@ public static class Webhook
         return r;
     }
 
+    // pure: FastChat.cs has a line of this conversation in flight (held at most its timeout + 2 s)
+    public static bool Held(IEnumerable<Ev> evs, Func<long, bool> hold) => evs.Any(e => e.msg_id is long m && hold(m));
+    // pure: lines the fast path only acknowledged carry fast_ack (the routine does the action without a second ack)
+    public static List<Ev> WithFastAcks(List<Ev> batch, Func<long, string> ack) =>
+        batch.Select(e => e.msg_id is long m && e.answered != true && ack(m) is string a ? e with { fast_ack = a } : e).ToList();
+
     static async Task FlushLoop()
     {
         try
@@ -372,7 +379,7 @@ public static class Webhook
                     if (convs.Count == 0) { loopRunning = false; return; }
                     var now = DateTime.UtcNow;
                     foreach (var lk in leases.Where(l => !LeaseActive(l.Value.start, now, Lease, Core.LastMyImTo(l.Value.fromId))).Select(l => l.Key).ToList()) leases.Remove(lk);
-                    var due = convs.Where(kv => !leases.ContainsKey(kv.Key) && DueFor(kv.Value.David, kv.Value.Burst, kv.Value.First, kv.Value.Last, now)).Select(kv => kv.Key).ToList();
+                    var due = convs.Where(kv => !leases.ContainsKey(kv.Key) && !Held(kv.Value.Evs, Core.FastHold) && DueFor(kv.Value.David, kv.Value.Burst, kv.Value.First, kv.Value.Last, now)).Select(kv => kv.Key).ToList();
                     if (due.Count == 0 || now - lastPost < (due.Any(k => convs[k].David) ? DavidMinInterval : MinInterval)) continue;
                     batch = new List<Ev>();
                     foreach (var k in due) { batch.AddRange(convs[k].Evs); convs.Remove(k); }
@@ -381,6 +388,7 @@ public static class Webhook
                         (ev.type == "im" && Core.AnsweredExplicitly(ev.from_id, mid)) ||
                         (ev.type == "local_chat" && Core.ChatAnsweredExplicitly(ev.from_id, mid))),
                         ev => ev.msg_id is long mi ? Core.InstantReplyFor(mi) : null, out var answered);
+                    batch = WithFastAcks(batch, Core.FastAckFor);
                     if (answered > 0) LogLocal($"lease: {answered} held line(s) already answered with 'im --re'/'say --re' or an instant reply; not POSTed");
                     if (batch.Count > 0 && batch.All(ev => ev.answered == true)) batch.Clear();
                     foreach (var ev in batch.Where(ev => ev.type == "im" && !string.IsNullOrEmpty(ev.from_id))) leases[ConvKey("im", ev.from_id)] = (now, ev.from_id); // one run per sender

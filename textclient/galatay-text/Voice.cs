@@ -609,7 +609,11 @@ public static partial class Program
         UUID.TryParse(string.IsNullOrEmpty(primary.SpeakerId) ? null : primary.SpeakerId, out var fromId);
         double? dist = null;
         try { if (fromId != UUID.Zero && client?.Self != null && FindAvatarAnySim(fromId) is { } nb) dist = Math.Round(Vector3.Distance(nb.pos, client.Self.SimPosition), 1); } catch { }
-        Notify("voice", primary.Speaker, fromId, text, dist, null, parcel, ctx, channel ?? "voice", trigger, primary.Text);
+        // FastChat.cs: answer in seconds when it can; the webhook POST only when the fast path hands the line on
+        void Post(string ack) => Notify("voice", primary.Speaker, fromId, text, dist, null, parcel,
+            ack == null ? ctx : $"[I already acknowledged this in nearby chat: '{ack}'. Do the asked action; do not acknowledge again.] " + ctx, channel ?? "voice", trigger, primary.Text);
+        var transcript = context.Concat(batch.Where(b => b != primary)).OrderBy(b => b.At).Select(b => (b.Speaker, b.Text)).ToList();
+        if (!TryFastVoice(fromId, primary.Speaker, primary.Text, transcript, Post)) Post(null);
         VLog($"wake ({VWakeMode.ToString().ToLowerInvariant()}/{trigger}): {batch.Count} line(s) from {primary.Speaker}" + (ctx != null ? " (+ context)" : ""));
     }
 

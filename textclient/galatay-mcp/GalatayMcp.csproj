@@ -22,6 +22,7 @@
     <Compile Include="../galatay-text/NavWalk.cs" Link="Core/NavWalk.cs" />
     <Compile Include="../galatay-text/NavPlan.cs" Link="Core/NavPlan.cs" />
     <Compile Include="../galatay-text/GroupPicks.cs" Link="Core/GroupPicks.cs" />
+    <Compile Include="../galatay-text/ActiveGroup.cs" Link="Core/ActiveGroup.cs" />
     <Compile Include="../galatay-text/RegionRestart.cs" Link="Core/RegionRestart.cs" />
     <Compile Include="../galatay-text/RouteNav.cs" Link="Core/RouteNav.cs" />
     <Compile Include="../galatay-text/Wander.cs" Link="Core/Wander.cs" />

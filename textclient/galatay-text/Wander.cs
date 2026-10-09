@@ -32,7 +32,7 @@ public static partial class Program
     static readonly object wLock = new();
     static CancellationTokenSource wanderCts, legCts;
     static Task wanderTask;
-    static volatile string wanderPause;          // null | "greet" (15 s reply window) | "chat" | "hold" | "user"
+    static volatile string wanderPause;          // null | "greet" (15 s reply window) | "chat" | "hold" | "user" | "david" (seated with David, StayWithDavid.cs)
     static DateTime wGreetWaitUntil; static UUID wGreetWho; static string wGreetWhoName;
     static volatile string wanderPhase = "off";
     static volatile bool wanderResumeAfterRestart;
@@ -359,6 +359,8 @@ public static partial class Program
     }
     static void SetPauseNow(string reason, string why)
     {
+        var cur = wanderPause;
+        if (PauseAfterRequest(cur, reason) != reason) { WLog($"staying in the 'david' hold (not switching to {reason}: {why})"); return; }   // StayWithDavid.cs
         wanderPause = reason; wPausedAt = DateTime.Now;
         legCts?.Cancel(); try { client.Self.AutoPilotCancel(); } catch { }
         WLog($"PAUSE ({reason}): {why}");
@@ -525,6 +527,11 @@ public static partial class Program
                     if (DateTime.Now >= wGreetWaitUntil && wanderPause == "greet")
                     { wanderPause = null; WLog($"no reply from {wGreetWhoName} within 15 s: continuing the loop"); continue; }
                     await Task.Delay(500, ct); continue;
+                }
+                if (pause == "david")   // StayWithDavid.cs: seated with David; resume ~30 s after he leaves the seat
+                {
+                    if (DavidSeatHoldTick() && wanderPause == "david") { wanderPause = null; continue; }
+                    await Task.Delay(1000, ct); continue;
                 }
                 if (pause == "chat")
                 {
@@ -881,6 +888,11 @@ public static partial class Program
                         continue;
                     }
                     await Task.Delay(500, ct); continue;
+                }
+                if (pause == "david")   // StayWithDavid.cs
+                {
+                    if (DavidSeatHoldTick() && wanderPause == "david") { wanderPause = null; continue; }
+                    await Task.Delay(1000, ct); continue;
                 }
                 if (pause == "chat")
                 {

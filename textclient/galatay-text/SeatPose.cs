@@ -181,7 +181,7 @@ public static partial class Program
     // true when another avatar (not ME) is seated on this seat's root.
     static bool SeatHasOtherSitters(Primitive seat) => SeatSitterNames(seat).Any(n => n != "ME");
     // true when David Nightingale specifically shares this seat with me.
-    static bool SeatHasDavid(Primitive seat) => SitterListHasDavid(SeatSitterNames(seat));
+    static bool SeatHasDavid(Primitive seat) => SitterListHasDavid(SeatSitterNames(seat)) || DavidOnMySeatNow();
 
     // Track alone/shared flips. Do NOT hard-clear kept anim copies on a flip: that + AVsitter's brief restart
     // looked like "no seat pose for 3 s" and pose recovery then auto-picked Couples (2026-10-05 Lalou sofa).
@@ -208,6 +208,11 @@ public static partial class Program
     {
         bool was = poseDavidOnSeat;
         poseDavidOnSeat = davidHere;
+        if (!was && davidHere)
+        {
+            Log("height", "pose: David sat on my seat (same linkset) — he chooses the pose; wander holds while he stays");
+            DavidSeatHoldCheck(true, "he sat on the same linkset");   // StayWithDavid.cs
+        }
         if (was && !davidHere && PosePathIsCouples(wLastPosePath) && client?.Self?.SittingOn != 0)
         {
             var gen = System.Threading.Interlocked.Increment(ref poseDavidLeftSwitchGen);
@@ -319,7 +324,7 @@ public static partial class Program
         // Wander / pose default / recovery: always prefer Solo*/SINGLE* and skip adult when a solo menu exists
         // (2026-10-06 Mirage Fist* was not couples-named and won over Solo* without preferPgSolo).
         if (!couplesMode) preferPgSolo = true;
-        if (recovery && wLastPosePath.Count > 0 && !PosePathIsCouples(wLastPosePath))
+        if (recovery && !davidHere && wLastPosePath.Count > 0 && !PosePathIsCouples(wLastPosePath))
         {
             var rest = await SeatPosePath(seat, seatName, wLastPosePath.ToList(), ct);
             if (rest.Contains("restored") || rest.Contains("already") || rest.Contains("chose"))
@@ -327,7 +332,7 @@ public static partial class Program
             WLog("POSE recovery: path restore failed (" + rest + "); falling back to solo/leave");
         }
         // ONLY while David himself shares the seat: he chooses poses (other sitters do not block solo)
-        if (DavidChoosesPoses(davidHere, explicitCouples) && !recovery)
+        if (DavidChoosesPoses(davidHere, explicitCouples))   // 2026-10-09: recovery too (never re-assert her solo over his pick)
         {
             var m = $"'{seatName}': David is on this seat — not auto-picking a pose (he chooses; use 'pose couples' only if he asks)";
             WLog("POSE " + m); return m;
@@ -385,7 +390,7 @@ public static partial class Program
             shared = SeatHasOtherSitters(seat);
             davidHere = SeatHasDavid(seat);
             NotePoseSeatShared(shared, davidHere);
-            if (DavidChoosesPoses(davidHere, explicitCouples) && !recovery)
+            if (DavidChoosesPoses(davidHere, explicitCouples))
             {
                 var m = $"'{seatName}': David joined mid-pick — stopping (he chooses poses)";
                 WLog("POSE " + m); return m;

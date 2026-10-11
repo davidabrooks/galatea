@@ -331,6 +331,7 @@ public static partial class Program
         client.Throttle.Land = 200000; client.Throttle.Task = 1338000; // task = object updates; LMV max. Warehouse 21 (2026-10-05): 1000 -> 1338 kbps took 49 -> 89 objects/s
         client.Throttle.Texture = 50000; client.Throttle.Asset = 100000;
         Hook();
+        _ = Task.Run(FeetLoop); // foot pose follows worn heels (FeetAuto.cs)
         HookAttachWatch(); // own AvatarAnimation watch with sources (AttachWatch.cs)
         HookExperiences(); // Experience perms + temp attaches (Experiences.cs)
         HookGroups(); // current-groups cache + JoinGroupReply log (GroupPicks.cs)
@@ -1964,6 +1965,7 @@ public static partial class Program
             case "thev": return await TheVCmd(rest);
             case "wear": case "rez": case "take": case "offer": return await WearOpsCmd(cmd, a);
             case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...] | inv mkdir <parent uuid> <name> | inv move <uuid> <dest folder uuid> | inv move undo";
+            case "feet": return await FeetCmd(a);
             case "outfit": return await OutfitCmd(a);
             case "bikini":
                 if (a.Length >= 1 && a[0] == "on") return await BikiniOn();

@@ -490,7 +490,7 @@ public static partial class Program
                 try { if (chatPos != Vector3.Zero) dist = Math.Round(Vector3.Distance(chatPos, client.Self.SimPosition), 1); } catch { }
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId);
-                WanderChatIn(e.SourceID, e.FromName, chatPos, false);
+                WanderChatIn(e.SourceID, e.FromName, chatPos, false, e.Message);
                 if (e.SourceID != DavidId || !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) // InstantReplies.cs
                 {
                     if (e.SourceID == DavidId) TypingStart(false);
@@ -536,7 +536,7 @@ public static partial class Program
                         }
                         catch { }
                         Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist, msgId);
-                        if (ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true); // old messages: no wander pause/approach/reply
+                        if (ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true, im.Message); // old messages: no wander pause/approach/reply
                         if (!offline && (im.FromAgentID != DavidId || !TryInstantReply(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true))) // InstantReplies.cs (after the wander chat pause)
                         {
                             if (im.FromAgentID == DavidId) TypingStart(true);

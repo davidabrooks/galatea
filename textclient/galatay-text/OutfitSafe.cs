@@ -197,7 +197,8 @@ public static partial class Program
             foreach (var step in OutfitSwapOrder(detach.Count, removeCloth.Count, tBody.Count, addCloth.Count, attach.Count))
                 switch (step)
                 {
-                    case SwapStep.DetachAll: // attachments off first (so a new hair never lands on top of the old one)
+                    case SwapStep.DetachAll: // old attachments off AFTER the new ones went on (never undressed if interrupted)
+                        if (attach.Count > 0) { for (int w = 0; w < 16 && !attach.All(a => WornPrims().Any(p => AttachItemId(p) == a)); w++) await Task.Delay(500, ct); }
                         foreach (var id in detach)
                         {
                             var nm = worn.FirstOrDefault(w => w.Item == id)?.Name ?? id.ToString();
@@ -224,7 +225,6 @@ public static partial class Program
                         break;
                     case SwapStep.RebakeNow: sb.AppendLine($"  {await RebakeNow($"outfit '{folder.Name}'")} at +{(DateTime.Now - t0).TotalSeconds:F1} s"); break;
                     case SwapStep.AttachAll: // ADD, never replace; a short pause after the detaches first
-                        if (detach.Count > 0) { var left = 1500 - (int)(DateTime.Now - t0).TotalMilliseconds; if (left > 0) await Task.Delay(left, ct); }
                         foreach (var id in attach)
                         {
                             var it = objs.First(o => o.UUID == id);

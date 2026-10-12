@@ -152,3 +152,15 @@ public class QuickReloginStandTests
         Assert.Equal("last", Program.ChooseLoginStart("home", DateTime.UtcNow.AddMinutes(-2), DateTime.UtcNow));
     }
 }
+
+public class ComeRequestTests
+{
+    [Fact]
+    public void Hearing_checks_do_not_move_her_only_clear_requests_do()
+    {
+        foreach (var t in new[] { "can you hear me babe?", "hi babe", "how are you?", "testing", "are you there?", "come on, really?" == "" ? "" : "nice outfit" })
+            Assert.False(Program.IsComeRequest(t), t);
+        foreach (var t in new[] { "come here babe", "Come to me", "come over here", "come down to the beach", "join me", "get over here", "come sit with me" })
+            Assert.True(Program.IsComeRequest(t), t);
+    }
+}

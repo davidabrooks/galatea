@@ -368,7 +368,7 @@ public static partial class Program
 
     // ---- chat hooks (called from Program.Hook) -------------------------------------------------------
     static void WanderOwnChat() { wLastOwnChat = DateTime.Now; }
-    static void WanderChatIn(UUID id, string name, Vector3 pos, bool im)
+    static void WanderChatIn(UUID id, string name, Vector3 pos, bool im, string text = null)
     {
         try
         {
@@ -388,7 +388,9 @@ public static partial class Program
             if (p == "rest") { WLog($"{name} spoke while she rests: chat pause (the rest picks up again after the chat if she is still seated)"); p = null; }
             bool newSpeaker = p == null || wSpeaker != id;
             wSpeaker = id; wSpeakerName = name; wSpeakerPos = pos;
-            if (dist >= 0 && dist <= 40f) wApproachPending = true;
+            // 2026-10-12 16:13 "can you hear me babe?" walked her to the beach: only a clear come request walks her over
+            if (dist >= 0 && dist <= 40f && IsComeRequest(text)) wApproachPending = true;
+            else if (dist >= 0 && dist <= 40f) WLog($"chat from {name}: not a come request; replying in place (no approach)");
             if (p == null) SetPause("chat", $"{(im ? "IM" : "nearby chat")} from {name}{(dist >= 0 ? $" ({dist:F0} m)" : " (not nearby)")}; waiting for the conversation (auto-resume after 3 min quiet)");
             else if (newSpeaker) WLog($"chat pause: now following {name}{(dist >= 0 ? $" ({dist:F0} m)" : "")}");
         }
@@ -1118,6 +1120,8 @@ public static partial class Program
         if (d <= 3.5f && sameLevel) { if (client.Self.SittingOn == 0) client.Self.Movement.TurnToward(sp); WLog($"approach: {wSpeakerName} already {d:F1} m away: facing and waiting"); return; }
         if (client.Self.SittingOn != 0) { WLog($"approach: seated; {wSpeakerName} is {d:F1} m away{(sameLevel ? "" : " on another level")}: staying seated"); return; }
         var g = LoadGraph(HomeWanderRegion);
+        // going to David on the beach: bikini in the bedroom first (human only), like every beach trip
+        if (!AndroidWorn()) { await BeachOutfitForTarget(g, sp, null, $"approach {wSpeakerName}", ct); me = client.Self.SimPosition; }
         var (pts, err) = PlanHomeApproach(g, me, sp, 2.5f);
         if (err != null) { WLog($"approach REFUSED ({wSpeakerName} at {P3(sp)}): {err}; waiting here"); return; }
         var poly = new Poly(pts);

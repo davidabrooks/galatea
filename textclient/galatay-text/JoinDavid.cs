@@ -45,4 +45,7 @@ public static partial class Program
         }
         catch (Exception ex) { var m = "join David prep: " + ex.GetBaseException().Message; Log("outfit", m); return m; }
     }
+    static readonly System.Text.RegularExpressions.Regex ComeRx = new(@"(?<![a-z])(come\s+(here|over|down|up|back|to\s+me|join|sit|see|with\s+me|outside|inside|to\s+the\s+\w+)|get\s+over\s+here|join\s+me|over\s+here\s+(babe|baby|honey|love|please)?|come\s*!|come$|follow\s+me|walk\s+with\s+me)(?![a-z])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    // pure: an explicit request to come to the speaker (a "can you hear me?" check is not)
+    internal static bool IsComeRequest(string text) => !string.IsNullOrWhiteSpace(text) && ComeRx.IsMatch(text.Trim());
 }

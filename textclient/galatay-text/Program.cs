@@ -593,6 +593,11 @@ public static partial class Program
             {   // unexpected (NetworkTimeout, kicked, ...): keep the wander flag, exit 75 so the supervisor logs back in
                 try { WanderOnShutdown(); } catch { }
                 ExitCode = ExitRelaunch; Log("disconnect", $"unexpected disconnect: exit {ExitRelaunch} for a relaunch by the supervisor");
+                if (KickedElsewhere(e.Message))
+                {   // 2026-10-11 17:28/17:30: two sessions of this account kept kicking each other (box update); tell the supervisor to back off
+                    try { File.WriteAllText(KickedMarkerPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {e.Message}\n"); } catch { }
+                    Log("disconnect", "kicked by a login of this account elsewhere: marker written, the supervisor waits longer before logging back in");
+                }
             }
             if (!shuttingDown) { shuttingDown = true; if (ExitOnLogout) cts.Cancel(); }
         };
@@ -600,6 +605,11 @@ public static partial class Program
         client.Avatars.UUIDNameReply += (s, e) => { foreach (var kv in e.Names) Remember(kv.Value, kv.Key); };
         client.Friends.FriendshipOffered += (s, e) => { /* ignored on purpose (logged via IM handler) */ };
     }
+
+    // pure (tests): the SL message when the same account logs in from somewhere else
+    internal static bool KickedElsewhere(string msg) =>
+        msg != null && System.Text.RegularExpressions.Regex.IsMatch(msg, @"log(ged)?\s*in\s+from\s+another\s+location|logging\s+in\s+from\s+another", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static string KickedMarkerPath => Path.Combine(AppContext.BaseDirectory, "..", "run", "kicked-elsewhere");
 
     // ---- periodic work (follow) ---------------------------------------
     // 2026-10-04 (David in front of her, `avatars` empty): the sim sends avatars only within the draw distance (Far, 128 m) of

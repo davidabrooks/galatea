@@ -59,3 +59,9 @@ public class KissTests
         Assert.DoesNotContain(k, p.detach);
     }
 }
+
+public class KickedElsewhereTests
+{
+    [Fact] public void DetectsSlMessage() => Assert.True(Program.KickedElsewhere("The system has logged you out because you are attempting to log in from another location."));
+    [Fact] public void IgnoresOtherDisconnects() { Assert.False(Program.KickedElsewhere("Network timeout")); Assert.False(Program.KickedElsewhere(null)); }
+}

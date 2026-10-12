@@ -86,17 +86,28 @@ public static partial class Program
         var it = await FetchItemRO(id, ct);
         if (it is not InventoryWearable w || w.AssetType != AssetType.Bodypart) return $"item {id} is not a body part";
         if (want != null && w.WearableType != want) return $"'{it.Name}' is a {w.WearableType}, not a {want}";
-        client.Appearance.AddToOutfit(new List<InventoryItem> { it }, true);
-        await Task.Delay(4000, ct);
+        // COF first (2026-10-11: AddToOutfit alone sometimes made no COF link for a body part, leaving NO shape link):
+        // link the new part, drop the old same-type links, then rebuild the appearance from the COF
         string note = "";
         var cof = await CofFolder(ct);
-        if (cof != null)
+        if (cof == null) return "COF not found; nothing changed";
+        var links = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>().Where(l => l.ParentUUID == cof.UUID && l.IsLink()).ToList();
+        if (!links.Any(l => l.AssetUUID == it.UUID))
         {
-            var stale = new List<InventoryItem>();
-            foreach (var l in (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>().Where(l => l.ParentUUID == cof.UUID && l.IsLink() && l.AssetUUID != it.UUID))
-                if (await FetchItemRO(l.AssetUUID, ct) is InventoryWearable tw && tw.AssetType == AssetType.Bodypart && tw.WearableType == w.WearableType) stale.Add(l);
-            if (stale.Count > 0) { await client.Inventory.RemoveItemsAsync(stale.Select(l => l.UUID), ct); note = $"; removed {stale.Count} old {w.WearableType} COF link(s): {string.Join(", ", stale.Select(l => l.Name))}"; }
+            InventoryItem made = null;
+            try { using var lt = CancellationTokenSource.CreateLinkedTokenSource(ct); lt.CancelAfter(20000); made = await client.Inventory.CreateLinkAsync(cof.UUID, it.UUID, it.Name, "", it.InventoryType, UUID.Random(), lt.Token); }
+            catch (Exception ex) { return $"COF link for '{it.Name}' failed: {ex.GetBaseException().Message}; nothing removed"; }
+            if (made == null) return $"COF link for '{it.Name}' was not created; nothing removed";
+            note += "; COF link added";
         }
+        var stale = new List<InventoryItem>();
+        foreach (var l in links.Where(l => l.AssetUUID != it.UUID))
+            if (await FetchItemRO(l.AssetUUID, ct) is InventoryWearable tw && tw.AssetType == AssetType.Bodypart && tw.WearableType == w.WearableType) stale.Add(l);
+        if (stale.Count > 0) { await client.Inventory.RemoveItemsAsync(stale.Select(l => l.UUID), ct); note += $"; removed {stale.Count} old {w.WearableType} COF link(s): {string.Join(", ", stale.Select(l => l.Name))}"; }
+        client.Appearance.AddToOutfit(new List<InventoryItem> { it }, true);
+        await Task.Delay(3000, ct);
+        try { await client.Appearance.RequestSetAppearance(true); } catch (Exception ex) { note += "; rebake error " + ex.GetBaseException().Message; }
+        await Task.Delay(3000, ct);
         var now = client.Appearance.GetWearables().FirstOrDefault(x => x.WearableType == w.WearableType);
         Log("wear", $"wear bodypart '{it.Name}' {it.UUID}; worn {w.WearableType} now {now?.ItemID}{note}");
         return (now?.ItemID == it.UUID ? $"wearing {w.WearableType} '{it.Name}'" : $"asked to wear '{it.Name}', worn {w.WearableType} is still {now?.ItemID}") + note;

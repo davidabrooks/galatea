@@ -95,6 +95,7 @@ public static partial class Program
             try { client.Self.AutoPilotCancel(); } catch { }
             try { if (WanderOn) StopWander("watchdog relogin (flag kept, resumes after the relaunch)", clearFlag: false); } catch { }
             shuttingDown = true; ExitCode = ExitRelaunch;
+            try { LastOnlineHeartbeat(force: true); } catch { }
             try { if (client?.Network?.Connected == true) { var l = Task.Run(() => client.Network.Logout()); l.Wait(10000); } } catch { }
             try { if (File.Exists(LockPath) && File.ReadAllText(LockPath).Trim() == Environment.ProcessId.ToString()) File.Delete(LockPath); } catch { }
             done.Set();

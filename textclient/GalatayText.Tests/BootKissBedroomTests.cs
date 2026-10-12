@@ -116,3 +116,16 @@ public class DutchieDeskTests
         Assert.False(Program.SexualPosesAllowed(true, "Peronaut", new[] { new UUID("44ce5a36-c1c7-4a68-ac9a-635ddfff6233") }, new UUID("44ce5a36-c1c7-4a68-ac9a-635ddfff6233")));
     }
 }
+
+public class LoginStartTests
+{
+    static readonly DateTime Now = new(2026, 10, 12, 22, 55, 0, DateTimeKind.Utc);
+    [Fact] public void Short_absence_logs_in_at_last_location() => Assert.Equal("last", Program.ChooseLoginStart("home", Now.AddMinutes(-3), Now));
+    [Fact] public void Long_absence_uses_home_bedroom() => Assert.Equal("home", Program.ChooseLoginStart("home", Now.AddMinutes(-45), Now));
+    [Fact] public void No_heartbeat_or_future_stamp_uses_configured()
+    {
+        Assert.Equal("home", Program.ChooseLoginStart("home", null, Now));
+        Assert.Equal("home", Program.ChooseLoginStart("home", Now.AddMinutes(5), Now));
+        Assert.Equal("home", Program.ChooseLoginStart("home", Now.AddMinutes(-30), Now));
+    }
+}

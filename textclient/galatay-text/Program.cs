@@ -347,7 +347,10 @@ public static partial class Program
         if (string.IsNullOrEmpty(password)) { Log("error", "password empty; refusing to log in"); return "FAILED: password empty"; }
         var lp = client.Network.DefaultLoginParams(First, Last, password, Channel, Version);
         password = null;
-        lp.Start = startOverride ?? Start; lp.URI = LoginUri; startOverride = null;
+        var lastOn = ReadLastOnline();
+        var chosen = startOverride ?? ChooseLoginStart(Start, lastOn, DateTime.UtcNow);
+        if (startOverride == null && chosen != Start) Log("login", $"offline only {(DateTime.UtcNow - lastOn.Value).TotalMinutes:F0} min (< {ShortAbsence.TotalMinutes:F0}): starting at the last location, not '{Start}'");
+        lp.Start = chosen; lp.URI = LoginUri; startOverride = null;
         Log("login", $"logging in {First} {Last} to '{lp.Start}' via {LoginUri} (channel {Channel} {Version})");
         var sw = Stopwatch.StartNew();
         bool ok;
@@ -417,6 +420,7 @@ public static partial class Program
         {
             if (client?.Network?.Connected == true)
             {
+                LastOnlineHeartbeat(force: true);
                 var t = Task.Run(() => client.Network.Logout());
                 await Task.WhenAny(t, Task.Delay(15000));
             }
@@ -634,6 +638,7 @@ public static partial class Program
             // follow itself runs in FollowLoop (Follow.cs, 250 ms: standoff point, bands, doors)
             try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
             try { CameraAnchorTick(); } catch { }
+            try { LastOnlineHeartbeat(); } catch { }
             try { NeighborTick(); } catch (Exception ex) { Log("regions", "tick error: " + ex.GetBaseException().Message); } // Neighbors.cs crossing watch + neighbor cap
             try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } // OutfitZones.cs beach/house
             try { await Task.Delay(1000, cts.Token); } catch { }

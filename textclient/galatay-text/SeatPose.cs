@@ -173,7 +173,12 @@ public static partial class Program
     }
     static bool PoseIsCouplesNamed(string raw) => PoseCouplesName.IsMatch(PoseBare(raw));
     static bool PoseIsSoloMenu(string raw) => PoseSoloMenuName.IsMatch(PoseBare(raw));
-    static bool PoseIsAdultMenu(string raw) => PoseAdultMenuName.IsMatch(PoseBare(raw));
+    // David 2026-10-12 15:24 (Lalou Ultra Sofa: Solo > Solo Couch > Sexy sit picked by solo wander): sexual / suggestive
+    // pose and menu NAMES are never auto-picked, even inside a Solo menu. Word list from the Lalou catalogue's sexual names;
+    // strong words match inside run-together names too (FoldFuck, CreamyCunt, Analwork, DeepThroat).
+    static readonly Regex PoseSexualWord = new(@"(?<![a-z])(sexy|sex\w*|seduc\w*|sensual\w*|naughty|tease\w*|teasing|horny|lust\w*|kink\w*|nude|naked|strip\w*|boobs?|breasts?|tits?|ass|butt|blow|suck\w*|lick\w*|cowgirl|doggy|grind\w*|hump\w*|ride\s*me|rodeo|milking|diddl\w*|juicy|drenched|pleasure|passion|bang|queened|deliver\w*ass|69|cuni\w*|cunn\w*|bop|wet|moan\w*|orgasm\w*|climax\w*|spread\w*|bend\s*over|touch(?:ing)?\s*(?:him|her|me))(?![a-z])|fuck|cunt|anal|clit|dick|cock|dildo|vibrat|throat|creamy|sticky|pussy|penis|vagina|jizz|cum(?![a-z]*ul)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static bool PoseIsSexualNamed(string raw) => PoseSexualWord.IsMatch(PoseBare(raw));
+    static bool PoseIsAdultMenu(string raw) => PoseAdultMenuName.IsMatch(PoseBare(raw)) || PoseIsSexualNamed(raw);
     static bool PoseIsMale(string raw) => PoseMaleSkip.IsMatch(PoseBare(raw));
     static bool PoseIsBackButton(string raw)
     {

@@ -14,6 +14,9 @@
     <NoWarn>$(NoWarn);CS8632;CS0618;CS7022</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../galatay-text/BedroomChange.cs" Link="Core/BedroomChange.cs" />
+    <Compile Include="../galatay-text/BootMatch.cs" Link="Core/BootMatch.cs" />
+    <Compile Include="../galatay-text/KissDetect.cs" Link="Core/KissDetect.cs" />
     <Compile Include="../galatay-text/Program.cs" Link="Core/Program.cs" />
     <Compile Include="../galatay-text/LandDiag.cs" Link="Core/LandDiag.cs" />
     <Compile Include="../galatay-text/HeightGuard.cs" Link="Core/HeightGuard.cs" />

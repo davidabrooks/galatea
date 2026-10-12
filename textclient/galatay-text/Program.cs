@@ -350,6 +350,7 @@ public static partial class Program
         var lastOn = ReadLastOnline();
         var chosen = startOverride ?? ChooseLoginStart(Start, lastOn, DateTime.UtcNow);
         if (startOverride == null && chosen != Start) Log("login", $"offline only {(DateTime.UtcNow - lastOn.Value).TotalMinutes:F0} min (< {ShortAbsence.TotalMinutes:F0}): starting at the last location, not '{Start}'");
+        quickLogin = startOverride == null && chosen == "last" && Start != "last";
         lp.Start = chosen; lp.URI = LoginUri; startOverride = null;
         Log("login", $"logging in {First} {Last} to '{lp.Start}' via {LoginUri} (channel {Channel} {Version})");
         var sw = Stopwatch.StartNew();
@@ -371,6 +372,7 @@ public static partial class Program
         EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
         VisitorWatchStart(); // visitor_arrival wakes at home (VisitorArrival.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
+        _ = Task.Run(AfterQuickLogin); // quick relog: floor spot beside the furniture, never re-sit (LoginStart.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);
         _ = Task.Run(() => RefreshMutes(20000));

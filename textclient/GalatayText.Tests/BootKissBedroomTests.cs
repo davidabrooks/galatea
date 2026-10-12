@@ -136,3 +136,19 @@ public class HandPoseTests
     [Fact] public void Other_poses_relaxed() { foreach (var p in new[] { "F waits", "Meh", "lay 3", "Sit 2" }) Assert.Equal("relaxed", Program.HandPoseFor(new[] { "SOLO F*", p }).name); }
     [Fact] public void Grid_st() { var (s, t) = Program.HandPoseSt(12, true); Assert.InRange(s, 0.81f, 0.83f); Assert.Equal(0.75f, t); Assert.Equal(0.25f, Program.HandPoseSt(1, false).t); }
 }
+
+public class QuickReloginStandTests
+{
+    static Program.HomeSeatInfo Seat(string n, Vector3 pos, Vector3? stand) => new(UUID.Random(), n, pos, "upper", null, null, null, null, UUID.Zero, true, StandSpot: stand);
+    [Fact]
+    public void Seated_quick_relog_steps_beside_nearest_furniture_never_sits()
+    {
+        var bed = Seat("bed", new Vector3(216.15f, 75.28f, 27.9f), new Vector3(218.32f, 75.2f, 29f));
+        var sofa = Seat("sofa", new Vector3(228f, 65.7f, 28.7f), null);
+        var s = Program.QuickReloginSeatNear(new Vector3(216.8f, 74.6f, 29.6f), new[] { bed, sofa });
+        Assert.Equal("bed", s.Name);
+        Assert.Null(Program.QuickReloginSeatNear(new Vector3(228f, 65.7f, 29f), new[] { bed, sofa })); // no floor spot known: stand in place
+        Assert.Null(Program.QuickReloginSeatNear(new Vector3(200f, 60f, 29f), new[] { bed, sofa }));
+        Assert.Equal("last", Program.ChooseLoginStart("home", DateTime.UtcNow.AddMinutes(-2), DateTime.UtcNow));
+    }
+}

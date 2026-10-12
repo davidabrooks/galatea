@@ -56,6 +56,19 @@ public static partial class Program
     public static double PoseSharedFlipGraceS = 15;
     public static double PoseRecoveryMissingS = 8; // was 3; brief AVsitter swaps were false positives
 
+    // David 2026-10-12: per-seat poses wander never picks (props that cannot line up with her). seat id -> pose names.
+    // Nutmeg. Porch Rocking Chair: f_reading rezzes its book where no avatar could read it (phone poses stay allowed).
+    internal static readonly Dictionary<UUID, string[]> SeatPoseSkip = new()
+    {
+        [new UUID("c78d42b6-c75c-df84-aa8c-8f78cbd2cb6c")] = new[] { "f_reading" },
+    };
+    // pure: menu labels minus this seat's skipped poses (case-insensitive, '*' submenu marker ignored)
+    internal static List<string> SeatPoseFilter(UUID seat, List<string> labels)
+    {
+        if (labels == null || !SeatPoseSkip.TryGetValue(seat, out var skip)) return labels;
+        return labels.Where(l => !skip.Any(x => string.Equals(PoseBare(l ?? ""), x, StringComparison.OrdinalIgnoreCase))).ToList();
+    }
+
     // pure: automatic paths never pick couples; only explicit 'pose couples' (David asked).
     public static bool AutoMayPickCouples(bool explicitCouplesRequest) => explicitCouplesRequest;
 
@@ -395,7 +408,7 @@ public static partial class Program
                 var m = $"'{seatName}': David joined mid-pick — stopping (he chooses poses)";
                 WLog("POSE " + m); return m;
             }
-            var (pick, sub, why) = PickPoseButton(d.ButtonLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0);
+            var (pick, sub, why) = PickPoseButton(SeatPoseFilter(seat.ID, d.ButtonLabels), current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0);
             if (pick == null)
             {
                 var m = $"'{seatName}': {why}; keeping the current pose {current ?? "?"}";

@@ -1,5 +1,5 @@
 // ShapeCopy.cs (2026-10-11, David: an 'Android' copy of her shape with a smaller bust; never edit the saved Petite shape)
-// inv copy <item uuid> <new name>   copy a wearable (shape, skin, clothing layer) next to the original under a new name;
+// inv copy <item uuid> <new name>   copy a wearable (shape, skin, clothing layer) or an object (2026-10-12: backup before edits) next to the original under a new name;
 //                                    a copied shape is added to routes/_editable-shapes.txt so 'shape set' may edit it
 // shape wear <shape item uuid>       wear a shape (body part replace), e.g. the copy
 // shape set [@"<shape name>"] <slider> <0-100>   edits the WORN shape only if it is the Petite shape or listed in _editable-shapes.txt;
@@ -57,7 +57,8 @@ public static partial class Program
         var it = await FetchItemRO(id, ct);
         if (it == null) return $"item {id} not found";
         if (it.IsLink()) return $"'{it.Name}' is a link; copy the original item";
-        if (it is not InventoryWearable w) return $"'{it.Name}' is not a wearable (inv copy is for shapes, skins and clothing layers)";
+        if (it is not InventoryWearable && it is not InventoryObject) return $"'{it.Name}' is not a wearable or object (inv copy is for shapes, skins, clothing layers and objects)";
+        var w = it as InventoryWearable;
         if ((it.Permissions.OwnerMask & PermissionMask.Copy) == 0) return $"refused: '{it.Name}' is no-copy";
         var sibs = await ReadFolderRO(it.ParentUUID, ct);
         if (sibs.Any(k => string.Equals(k.Name, name, StringComparison.OrdinalIgnoreCase))) return $"refused: '{name}' already exists in that folder";
@@ -66,7 +67,7 @@ public static partial class Program
         catch (Exception ex) { return "copy failed: " + ex.GetBaseException().Message; }
         if (made == null) return "copy failed: the server returned no item";
         string note = "";
-        if (w.WearableType == WearableType.Shape)
+        if (w?.WearableType == WearableType.Shape)
         {
             try { File.AppendAllText(EditableShapesFile, name + "\n"); note = "; added to routes/_editable-shapes.txt (shape set may edit it)"; } catch (Exception ex) { note = "; could not update _editable-shapes.txt: " + ex.Message; }
         }

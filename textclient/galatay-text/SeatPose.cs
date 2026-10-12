@@ -24,7 +24,7 @@ public static partial class Program
     // picked Fist* > fist 2 labeled [solo] but it was a couples anim). Explicit 'pose couples' may still enter these.
     // 2026-10-07 19:39 (Beach Hammock ADULT: Adults* > 5Adults picked as solo): letter-only boundaries so digits next
     // to the word still match ("5Adults", "Couple2"); adds mirror / love / hers / M&F-pair terms.
-    static readonly Regex PoseCouplesName = new(@"(?<![a-z])(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair\w*|[2-9]\s*p|fist|spank\w*|sex|lovemak\w*|love(?:rs?)?|intimate|make.?out|grind|straddl\w*|entwine|entangl\w*|mirror\w*|hers|his\s*(?:&|and|n)\s*hers)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex PoseCouplesName = new(@"(?<![a-z])(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair\w*|[2-9]\s*p|fist|spank\w*|sex|lovemak\w*|love(?:rs?)?|intimate|make.?out|grind|straddl\w*|entwine|entangl\w*|mirror\w*|hers|his\s*(?:&|and|n)\s*hers|him|for\s+her)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Solo submenu names (Trompe Loeil Reiley etc. use SINGLE*).
     // Prefix match so "SinglesSet*" counts (19:39 hammock); Sit / Relax-type menus count as solo too.
     static readonly Regex PoseSoloMenuName = new(@"(?<![a-z])(?:singles?|solo|alone|relax|(?:sit(?:s|ting)?|one\s*p|1p)(?![a-z]))", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -61,11 +61,19 @@ public static partial class Program
     internal static readonly Dictionary<UUID, string[]> SeatPoseSkip = new()
     {
         [new UUID("c78d42b6-c75c-df84-aa8c-8f78cbd2cb6c")] = new[] { "f_reading" },
+        // David 2026-10-12 15:50: Dutchie maledom desk only in the submissive role: never [SWAP] (would put her in the dom seat)
+        [new UUID("1b9ab440-3b52-b827-2eae-7de92fb69cfb")] = new[] { "[SWAP]", "SWAP" },
     };
+    internal static readonly UUID DutchieDesk = new("1b9ab440-3b52-b827-2eae-7de92fb69cfb");
+    // dom-role buttons on sub-only seats are dropped too (dom / master / male role names)
+    static readonly Regex DomRoleName = new(@"(?<![a-z])(dom\w*|master|mistress|male|sir)(?![a-z])|\(m\)", RegexOptions.IgnoreCase);
+    internal static bool SeatIsSubOnly(UUID seat) => seat == DutchieDesk;
     // pure: menu labels minus this seat's skipped poses (case-insensitive, '*' submenu marker ignored)
     internal static List<string> SeatPoseFilter(UUID seat, List<string> labels)
     {
-        if (labels == null || !SeatPoseSkip.TryGetValue(seat, out var skip)) return labels;
+        if (labels == null) return labels;
+        if (SeatIsSubOnly(seat)) labels = labels.Where(l => !DomRoleName.IsMatch(l ?? "")).ToList();
+        if (!SeatPoseSkip.TryGetValue(seat, out var skip)) return labels;
         return labels.Where(l => !skip.Any(x => string.Equals(PoseBare(l ?? ""), x, StringComparison.OrdinalIgnoreCase))).ToList();
     }
 

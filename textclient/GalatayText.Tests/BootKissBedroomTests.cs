@@ -73,3 +73,46 @@ public class BedroomChangeTests
         Assert.False(Program.NeedsBedroomWalk("Naberrie", new Vector3(10, 10, 20), false));
     }
 }
+
+public class JoinDavidBeachTests
+{
+    static Vector3 Beach() { for (int x = 0; x < 256; x += 4) for (int y = 0; y < 256; y += 4) { var v = new Vector3(x, y, 21); if (Program.OutfitZoneFor("Peronaut", v, false) == "beach") return v; } throw new Exception("no beach"); }
+    static readonly Vector3 House = new(219.9f, 72.7f, 29f);
+
+    [Fact] public void Human_joining_David_on_beach_puts_bikini_on_first() => Assert.True(Program.JoinDavidNeedsBikini(false, false, "Peronaut", Beach()));
+    [Fact] public void Android_stays_as_is() => Assert.False(Program.JoinDavidNeedsBikini(true, false, "Peronaut", Beach()));
+    [Fact] public void Not_on_beach_or_already_bikini_or_elsewhere_does_nothing()
+    {
+        Assert.False(Program.JoinDavidNeedsBikini(false, false, "Peronaut", House));
+        Assert.False(Program.JoinDavidNeedsBikini(false, true, "Peronaut", Beach()));
+        Assert.False(Program.JoinDavidNeedsBikini(false, false, "Naberrie", Beach()));
+        Assert.False(Program.JoinDavidNeedsBikini(false, false, "Peronaut", null));
+    }
+    [Fact] public void Names_David() { Assert.True(Program.NamesDavid("David")); Assert.True(Program.NamesDavid("David Nightingale")); Assert.False(Program.NamesDavid("Davide Rossi")); }
+}
+
+public class DutchieDeskTests
+{
+    static readonly List<string> Menu = new() { "Cuddle/Kiss*", "[SWAP]", "On desk*", "Please him*", "Satisfy him*", "On chair*", "Work for him*", "Serve him*", "Amuse him*", "Dom*", "Master (m)" };
+
+    [Fact]
+    public void Desk_never_offers_swap_or_dom_role()
+    {
+        var f = Program.SeatPoseFilter(Program.DutchieDesk, Menu);
+        Assert.DoesNotContain("[SWAP]", f); Assert.DoesNotContain("Dom*", f); Assert.DoesNotContain("Master (m)", f);
+        Assert.Contains("On desk*", f);
+    }
+
+    [Fact]
+    public void Desk_partner_poses_stay_skipped_solo_even_when_sexual_allowed()
+    {
+        var f = Program.SeatPoseFilter(Program.DutchieDesk, Menu);
+        for (int i = 0; i < 60; i++)
+        {
+            var p = Program.PickPoseButton(f, null, new Random(i), allowSexual: true).pick;
+            Assert.True(p == null || !p.Contains("him") && !p.Contains("Kiss") && p != "[SWAP]", p);
+        }
+        // the sexual rule still decides: android / others present -> no sexual menus at all
+        Assert.False(Program.SexualPosesAllowed(true, "Peronaut", new[] { new UUID("44ce5a36-c1c7-4a68-ac9a-635ddfff6233") }, new UUID("44ce5a36-c1c7-4a68-ac9a-635ddfff6233")));
+    }
+}

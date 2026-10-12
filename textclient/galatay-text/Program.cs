@@ -554,8 +554,9 @@ public static partial class Program
                         else if (autoLure)
                         {
                             Log("lure", $"teleport offer from {im.FromAgentName} ('{im.Message}'): ACCEPTING (allow-listed)");
-                            client.Self.TeleportLureRespond(im.FromAgentID, im.IMSessionID, true);
-                            pendingLure = null;
+                            var lf = im.FromAgentID; var ls = im.IMSessionID; pendingLure = null;
+                            if (lf == DavidId) _ = Task.Run(async () => { var pr = await JoinDavidBeachPrep("lure"); if (pr != null) Log("lure", pr); client.Self.TeleportLureRespond(lf, ls, true); });
+                            else client.Self.TeleportLureRespond(lf, ls, true);
                         }
                         else Log("lure", $"teleport offer from {im.FromAgentName} ('{im.Message}'): pending; send 'accept' to go");
                     }
@@ -1920,7 +1921,8 @@ public static partial class Program
             case "crossing": case "crossings": return CrossingCmd(a);   // Crossing.cs: fast hand-over switch + timelines
             case "walk_path": case "goto_avatar": case "sit_near": case "walk_status": case "walk_stop": case "map": case "terrain": case "walk_to":
                 if (cmd is "walk_path" or "goto_avatar" or "sit_near" or "walk_to" && WanderBlocksManualWalk) return "wander is running: 'wander pause' (or 'wander stop') first";
-                return await NavCmds(cmd, rest, a);
+                { string prep = cmd == "goto_avatar" && NamesDavid(rest) ? await JoinDavidBeachPrep("goto_avatar") : null;
+                  var nr = await NavCmds(cmd, rest, a); return prep == null ? nr : prep + "\n" + nr; }
             case "wander": return await WanderCmds(a);
             case "instant": return InstantCmdText(a);   // InstantReplies.cs
             case "fastchat": return await FastChatCmd(a);   // FastChat.cs
@@ -2097,6 +2099,7 @@ public static partial class Program
                 var ok = await client.Self.GoHomeAsync();
                 return ok ? $"home: {client.Network.CurrentSim?.Name}" : $"go home failed: {client.Self.TeleportMessage}";
             }
+            case "follow" when NamesDavid(rest): { var prep = await JoinDavidBeachPrep("follow"); var fr = FollowCmd(rest); return prep == null ? fr : prep + "\n" + fr; }
             case "follow": return FollowCmd(rest);   // Follow.cs
             case "accept":
             {

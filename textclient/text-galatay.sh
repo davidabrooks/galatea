@@ -97,7 +97,7 @@ case "${1:-}" in
       [[ -f "$STOPF" ]] && { slog "stop requested: not (re)launching"; break; }
       now=$(date +%s); keep=(); for t in "${relaunches[@]}"; do (( now - t < 3600 )) && keep+=("$t"); done; relaunches=("${keep[@]}")
       if (( n > 0 )); then
-        if (( ${#relaunches[@]} >= 5 )); then slog "more than 5 relaunches within an hour: giving up (start it again by hand)"; break; fi
+        if (( ${#relaunches[@]} >= ${GT_MAX_RELAUNCH_HOUR:-12} )); then slog "more than ${GT_MAX_RELAUNCH_HOUR:-12} relaunches within an hour: giving up (start it again by hand)"; break; fi
         back=$(( 15 * (1 << ${#relaunches[@]}) )); (( back > 300 )) && back=300
         # kicked by another login of this account (client wrote run/kicked-elsewhere): wait 5 min so the other session
         # (an old box instance, Firestorm) settles instead of the two kicking each other every minute (2026-10-11 17:28/17:30)

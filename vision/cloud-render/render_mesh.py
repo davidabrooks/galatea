@@ -154,7 +154,8 @@ def _material(b, slots, cut):
         # SL sky ambient: albedo x amblit, as emission so walls and roofs don't shade it (see amblit())
         if p.inputs["Base Color"].links: L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])
         else: L(tint.outputs["Color"], p.inputs["Emission Color"])
-        p.inputs["Emission Strength"].default_value = AMB
+        # PBR metal reflects instead of scattering: sky ambient as albedo emission washed chrome to flat paint (2026-10-11)
+        p.inputs["Emission Strength"].default_value = AMB * (1 - 0.8 * float(mat.get("metallic", 0))) if mat.get("pbr") else AMB
     # Opaque clothes must depth-test solid: always-HASHED let body BOM show through jeans/tops (Scentual90).
     if mode in ("none", "emissive"):
         m.blend_method = "OPAQUE"

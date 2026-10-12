@@ -511,7 +511,7 @@ public static partial class Program
             else if (keepColor) { sb.Append($"no remembered color ('{last ?? "-"}'): left as is; "); Log("hud", $"'{hud.Name}' keep mode, no remembered button '{last ?? "-"}': not recoloring"); }
             var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase); bool applied = false;
             string matchWhy = null;
-            var pickFrom = keepColor ? opts : HudMatchOptions(opts, spec, matchTo, out matchWhy);
+            var pickFrom = keepColor ? opts : hud.UUID == BootHud ? BootOptionsForTop(opts, matchTo, out matchWhy) : HudMatchOptions(opts, spec, matchTo, out matchWhy);
             if (!keepColor && matchWhy != null) { sb.Append($"color match ({matchWhy}): {pickFrom.Count} of {opts.Count}; "); Log("hud", $"'{hud.Name}' color match {matchWhy}: [{string.Join(", ", pickFrom.Select(o => o.Label))}]"); }
             for (int attempt = 0; attempt < 3 && !applied && !keepColor; attempt++)
             {

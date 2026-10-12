@@ -335,6 +335,7 @@ public static partial class Program
         HookAttachWatch(); // own AvatarAnimation watch with sources (AttachWatch.cs)
         HookExperiences(); // Experience perms + temp attaches (Experiences.cs)
         HookGroups(); // current-groups cache + JoinGroupReply log (GroupPicks.cs)
+        HookKissDetect(); // David kisses her via the Real Kisser -> "kissed" webhook event (KissDetect.cs)
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
         HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
@@ -1993,12 +1994,21 @@ public static partial class Program
             case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...] | inv mkdir <parent uuid> <name> | inv move <uuid> <dest folder uuid> | inv move undo";
             case "feet": return await FeetCmd(a);
             case "kiss": return KissCmd(rest);
+            case "outfit" when a.Length >= 2 && a[0] == "wear":
+            {
+                bool force = a.Any(x => x.Equals("force", StringComparison.OrdinalIgnoreCase)); a = a.Where(x => !x.Equals("force", StringComparison.OrdinalIgnoreCase)).ToArray();
+                var pre = await ChangeInBedroomFirst("outfit " + string.Join(' ', a[1..]), force);
+                return (pre == null ? "" : pre + "\n") + await OutfitCmd(a);
+            }
             case "outfit": return await OutfitCmd(a);
-            case "bikini":
-                if (a.Length >= 1 && a[0] == "on") return await BikiniOn(auto: false);
-                if (a.Length >= 1 && a[0] == "off") return await BikiniOff();
-                if (a.Length >= 1 && a[0] == "selftest") return BikiniSelfTest();
-                return "usage: bikini on|off|selftest";
+            case "bikini" when a.Length >= 1 && (a[0] == "on" || a[0] == "off") && !a.Contains("force"):
+            {
+                var pre = await ChangeInBedroomFirst("bikini " + a[0], false);
+                return (pre == null ? "" : pre + "\n") + await BikiniDispatch(a);
+            }
+            case "bikini" when a.Contains("force"): return await BikiniDispatch(a.Where(x => x != "force").ToArray());
+            case "bikini": return await BikiniDispatch(a);
+
             case "sitguard":
                 if (a.Length == 1 && (a[0] == "on" || a[0] == "off")) sitGuard = a[0] == "on";
                 return $"sit guard {(sitGuard ? "on" : "off")}; last check: {lastHeightCheck}";

@@ -85,6 +85,9 @@ def cached_bakes(d, only, cap, work):
     import glob, concurrent.futures as cf
     cache = f"{work}/bakecache"; os.makedirs(cache, exist_ok=True)
     todo, hits, n = [], 0, 0
+    have = {os.path.basename(f)[5:-4] for f in glob.glob(f"{d}/bake-*.j2c")}
+    for old in glob.glob(f"{work}/tex/bake-*.png"):  # 2026-10-11: drop bakes from earlier exports (stale alpha hid David's legs)
+        if os.path.basename(old)[5:-4].split(".")[0] not in have: os.remove(old)
     for f in glob.glob(f"{d}/bake-*.j2c"):
         k = os.path.basename(f)[5:-4]
         if only is not None and k not in only or not handler.BAKE_KEY.fullmatch(k): continue

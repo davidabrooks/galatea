@@ -493,7 +493,9 @@ if kind == "scene":
     # elsewhere) or an old mesh.json -> floor cast. ponytail: hover isn't exported (0); ceiling = sitting heights ~0.2 m high
     def place(o, px, py, pz):  # -> (floor under it, LL mesh z0 or None); cast before any avatar is built
         return floor_at(px, py, pz), (pz + o["agent_off"] if o.get("agent_off") is not None else None)
+    seated_keep = os.environ.get("GT_SEATED") == "1"   # 2026-10-11: seated avatars keep their agent height (no floor snap)
     def z0_of(fl, ll, lo):
+        if seated_keep and ll is not None: return ll
         return fl - lo if ll is None or abs(ll + lo - fl) < 0.35 else ll
     placed = [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll = place(M, x, y, g[2]); ll = None if av else ll

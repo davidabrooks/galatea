@@ -21,6 +21,15 @@ namespace GalatayText;
 public static partial class Program
 {
     // bake name in the appearance-service URL, by AvatarTextureIndex (names as in the LL viewer's appearance dictionary)
+    // 2026-10-11: a seated avatar's rotation is relative to its seat prim; compose up the link chain to world (couch turned 90 deg -> renders faced wrong).
+    internal static Quaternion SeatWorldRot(Simulator sim, uint parent, Quaternion local) =>
+        SeatWorldRot(id => sim.ObjectsPrimitives.TryGetValue(id, out var p) ? (p.Rotation, p.ParentID) : null, parent, local);
+    internal static Quaternion SeatWorldRot(Func<uint, (Quaternion rot, uint parent)?> prim, uint parent, Quaternion local)
+    {
+        var r = local;
+        for (int i = 0; i < 8 && parent != 0 && prim(parent) is { } p; i++) { r = p.rot * r; parent = p.parent; }
+        return r;
+    }
     static readonly (int te, string name)[] Bakes = { (8, "head"), (9, "upper"), (10, "lower"), (11, "eyes"), (19, "skirt"), (20, "hair"),
                                                        (40, "leftarm"), (41, "leftleg"), (42, "aux1"), (43, "aux2"), (44, "aux3") };
 
@@ -306,7 +315,7 @@ public static partial class Program
         if (self != null) foreach (var (te, name) in Bakes) jobs.Add((-1, te, name));
         for (int i = 0; i < avList.Count; i++)
         {
-            if (AttachState(dressed[i].exp, dressed[i].have) != "complete") continue;
+            if (AttachState(dressed[i].exp, dressed[i].have) is not ("complete" or "partial")) continue;   // 2026-10-11: partial (one late attachment) still needs fresh bakes, else a stale cached bake (old alpha layers) hides body parts
             var need = BakesNeeded(wornTex.TryGetValue(avKeys[i], out var ts) ? ts : Enumerable.Empty<UUID>());
             foreach (var (te, name) in Bakes) if (need.Contains(name)) jobs.Add((i, te, name));
         }
@@ -325,7 +334,7 @@ public static partial class Program
             var (av, ap) = avList[i];
             avatars.Add(new OSDMap
             {
-                ["pos"] = OSD.FromVector3(ap), ["rot"] = OSD.FromQuaternion(av.Rotation), ["agent_id"] = OSD.FromUUID(av.ID), ["name"] = av.Name ?? "",
+                ["pos"] = OSD.FromVector3(ap), ["rot"] = OSD.FromQuaternion(SeatWorldRot(views[avKeys[i].si].Item1, av.ParentID, av.Rotation)), ["seated"] = av.ParentID != 0, ["agent_id"] = OSD.FromUUID(av.ID), ["name"] = av.Name ?? "",
                 ["local_id"] = unchecked((int)Id(avKeys[i].si, av.LocalID)), ["visual_params"] = Params(av), ["bakes"] = BakeMap(i), ["anims"] = AnimsOf(av.ID),
                 ["dressed"] = AttachState(dressed[i].exp, dressed[i].have), ["attach_expected"] = dressed[i].exp, ["attach_have"] = dressed[i].have,
             });
@@ -368,7 +377,7 @@ public static partial class Program
         {
             ["materials"] = mats, ["gltf_overrides"] = gltf, ["visual_params"] = vparams, ["environment"] = env,
             ["sun_dir"] = OSD.FromVector3(client.Grid.SunDirection),
-            ["region"] = sim.Name, ["agent_id"] = OSD.FromUUID(me.AgentID), ["me"] = new OSDMap { ["pos"] = OSD.FromVector3(myPos), ["rot"] = OSD.FromQuaternion(me.SimRotation), ["sitting_on"] = (int)me.SittingOn, ["anims"] = AnimsOf(me.AgentID) },
+            ["region"] = sim.Name, ["agent_id"] = OSD.FromUUID(me.AgentID), ["me"] = new OSDMap { ["pos"] = OSD.FromVector3(myPos), ["rot"] = OSD.FromQuaternion(SeatWorldRot(sim, me.SittingOn, me.SimRotation)), ["sitting_on"] = (int)me.SittingOn, ["anims"] = AnimsOf(me.AgentID) },
             ["water_height"] = sim.WaterHeight, ["terrain"] = views.Count > 1 ? TerrainGridMerged(views) : TerrainGrid(sim),
             ["neighbor_regions"] = new OSDArray(views.Skip(1).Select(v => (OSD)new OSDMap { ["name"] = v.sim.Name, ["offset"] = OSD.FromVector3(v.off) }).ToList()),
             ["radius"] = r, ["bakes"] = bakes, ["avatars"] = avatars, ["exported_at"] = DateTime.Now.ToString("o"),

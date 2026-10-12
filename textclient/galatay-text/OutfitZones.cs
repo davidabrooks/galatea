@@ -182,7 +182,7 @@ public static partial class Program
             var z = client.Self.SimPosition.Z;
             var lpos = client.Self.SimPosition;
             bool onBeach = OutfitZoneFor(region, lpos, false) == "beach" || (beachMode && OutfitZoneFor(region, lpos, true) == "beach");
-            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null, AndroidWorn());
+            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null, await AndroidWornSettled());
             Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT)");
             if (plan == "keep-android") { zoneArmed = true; return; }   // android body: keep the outfit; the daily stays pending for a human login
             string pick = null; bool freshPick = false; var wornBefore = lastNamedOutfit;

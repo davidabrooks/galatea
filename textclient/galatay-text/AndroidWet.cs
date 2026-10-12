@@ -14,4 +14,11 @@ public static partial class Program
 
     // pure: keep a seat unless an android body is worn and the seat is a wet spot
     internal static bool AndroidSeatAllowed(bool android, string name, string special) => !android || !AndroidWetSpot(name, special);
+
+    // after login the worn prims' names may not be fetched yet (13:07 first deploy: plan "keep", not "keep-android")
+    static async Task<bool> AndroidWornSettled()
+    {
+        try { var w = WornPrims(); await EnsureProperties(Sim, w); return w.Any(p => IsAndroidFamily(BodyFamily(p.Properties?.Name))); }
+        catch { return AndroidWorn(); }
+    }
 }

@@ -95,9 +95,12 @@ public static partial class Program
         return await HudRandomize(hud, spec.Clothing, ct, spec); // OutfitSafe.cs: random among all colors/patterns (not the last one), verify, detach
     }
 
-    static async Task<string> BikiniOn()
+    // auto: wander/zone/shower/boat callers. The Bikini is a LaraX outfit, so they leave an android look alone (2026-10-11);
+    // 'bikini on' typed by hand still wears it.
+    static async Task<string> BikiniOn(bool auto = true)
     {
         if (!LoggedIn) return "not logged in";
+        if (auto && AndroidWorn()) { Log("outfit", "bikini skipped: android body worn"); return "bikini skipped: android body worn (the Bikini is a LaraX outfit)"; }
         using var cts = new CancellationTokenSource(120000); var ct = cts.Token;
         var sb = new StringBuilder();
         // Prefer full My Outfits Bikini (or Spicy pre-rename); else clothing swap. Then HUD random among all D/W/T.

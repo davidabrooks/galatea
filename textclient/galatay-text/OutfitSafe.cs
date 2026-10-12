@@ -35,6 +35,22 @@ public static partial class Program
         return null;
     }
 
+    // 2026-10-11 (Android outfits): which mesh-body family a body piece belongs to; switching outfits takes the other
+    // family's pieces off (Naked -> Android left the LaraX body on under Kay). null = not a body piece.
+    static readonly Regex KayBodyRx = new(@"^\s*MISAKI\s*-\s*Kay\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex CalistaBodyRx = new(@"^\s*CALISTA\s+body", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex LaraXBodyRx = new(@"Maitreya\s+Mesh\s*Body|^\s*The V\b.*LaraX", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    internal static string BodyFamily(string name)
+    {
+        name ??= "";
+        if (KayBodyRx.IsMatch(name)) return "kay";
+        if (CalistaBodyRx.IsMatch(name)) return "calista";
+        if (LaraXBodyRx.IsMatch(name)) return "larax";
+        return null;
+    }
+    internal static bool IsAndroidFamily(string fam) => fam is "kay" or "calista";
+    static bool AndroidWorn() { try { return WornPrims().Any(p => IsAndroidFamily(BodyFamily(p.Properties?.Name))); } catch { return false; } }
+
     internal sealed record WornAtt(UUID Item, string Name, bool Hud);
     internal sealed record TargetObj(UUID Item, string Name);
 
@@ -45,10 +61,13 @@ public static partial class Program
         var notes = new List<string>();
         var tIds = target.Select(t => t.Item).ToHashSet();
         var tGroups = target.Select(t => OutfitGroup(t.Name)).Where(g => g != null).ToHashSet();
+        var tFams = target.Select(t => BodyFamily(t.Name)).Where(f => f != null).ToHashSet();
         var detach = new List<UUID>();
         foreach (var w in worn)
         {
             if (w.Hud || protectedIds.Contains(w.Item) || tIds.Contains(w.Item)) continue;
+            var wf = BodyFamily(w.Name);
+            if (wf != null && tFams.Count > 0 && !tFams.Contains(wf)) { detach.Add(w.Item); notes.Add($"other body '{w.Name}' comes off ({wf} -> {string.Join("/", tFams)})"); continue; }
             var g = OutfitGroup(w.Name);
             if (g != null && !tGroups.Contains(g)) { notes.Add($"keep current {g} '{w.Name}' (outfit has no {g})"); continue; }
             detach.Add(w.Item);
@@ -215,6 +234,9 @@ public static partial class Program
                         break;
                 }
             foreach (var old in replacedBody.Distinct()) await RemoveCofLinksForItem(old, "outfit swap (body part replaced)", ct);
+            // body parts need their own COF link: the bake is rebuilt from the COF, and without one the skin went missing
+            // (2026-10-11 Naked -> Android: VELOUR skin link removed, Misaki never linked -> no skin)
+            if (tBody.Count > 0) sb.AppendLine("  body parts: " + await CofLinksOnBatch(tBody.Cast<InventoryItem>().ToList(), new Dictionary<UUID, string>(), "outfit swap (body parts)", ct));
 
             // wait for them to show up (max 20 s)
             for (int i = 0; i < 40 && attach.Count > 0; i++)
@@ -250,10 +272,19 @@ public static partial class Program
                 sb.AppendLine($"  layer retry on: {string.Join(", ", again.Select(a => "'" + a.Name + "'"))}");
                 await Task.Delay(3000, ct);
             }
-            var cofSync = await CofSyncAddMissing(ct, removedIds, addCloth.Select(c => c.UUID));
+            var cofSync = await CofSyncAddMissing(ct, removedIds, addCloth.Select(c => c.UUID).Concat(tBody.Select(b => b.UUID)));
+            // body parts actually worn? (the library's list after the bake) -> re-send once
+            try
+            {
+                await Task.Delay(1500, ct);
+                var haveB = client.Appearance.GetWearables().Select(w => w.ItemID).ToHashSet();
+                var missB = tBody.Where(b => !haveB.Contains(b.UUID)).Cast<InventoryItem>().ToList();
+                if (missB.Count > 0) { client.Appearance.AddToOutfit(missB, true); sb.AppendLine($"  body part retry on: {string.Join(", ", missB.Select(b => "'" + b.Name + "'"))}"); await Task.Delay(2000, ct); await client.Appearance.RequestSetAppearance(true); }
+            }
+            catch (Exception ex) { Log("outfit", "body part check: " + ex.Message); }
             sb.AppendLine("  " + cofSync);
             // a layer linked only now missed the bake already requested: ask for one more so the sim (and the library) wear it
-            if (addCloth.Count > 0 && cofSync.Contains("added links"))
+            if ((addCloth.Count > 0 || tBody.Count > 0) && cofSync.Contains("added links"))
                 try { await client.Appearance.RequestSetAppearance(true); sb.AppendLine("  rebake requested (new COF links)"); } catch (Exception ex) { Log("outfit", "rebake: " + ex.Message); }
             RememberNamedOutfit(folder.Name);
             Log("outfit", $"wore outfit '{folder.Name}' safely: {detach.Count} off, {attach.Count} on, {removeCloth.Count} layers off, {addCloth.Count} layers on, {tBody.Count} body parts");

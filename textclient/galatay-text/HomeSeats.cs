@@ -166,8 +166,9 @@ public static partial class Program
                 atts.Add((id, nm));
             }
             List<AppearanceManager.WearableData> cur; try { cur = client.Appearance.GetWearables().ToList(); } catch { cur = new(); }
-            var layers = new List<InventoryItem>();
-            foreach (var w in cur.Where(w => UndressLayerTypes.Contains(w.WearableType)).GroupBy(w => w.ItemID).Select(x => x.First()))
+            var layers = new List<InventoryItem>(); bool android = AndroidWorn();
+            // android (Kay/CALISTA) look: its alpha hides the human ears -> alphas stay; no LaraX extras later
+            foreach (var w in cur.Where(w => UndressLayerTypes.Contains(w.WearableType) && !(android && w.WearableType == WearableType.Alpha)).GroupBy(w => w.ItemID).Select(x => x.First()))
             { var it = await FetchItemRO(w.ItemID, ct); if (it != null) layers.Add(it); }
             foreach (var step in UndressOrder(atts.Count, layers.Count, 0, orphanCheck: false))
                 switch (step)
@@ -183,6 +184,7 @@ public static partial class Program
         finally { outfitChangeUntil = DateTime.Now.AddSeconds(15); }
         var res = sb.Length == 0 ? "nothing to take off" : sb.ToString().TrimEnd(' ', ';');
         WLog("UNDRESS before the tub: " + res);
+        if (AndroidWorn()) { WLog("undress: android body worn, no LaraX extras (The V)"); return res + "; android body: LaraX extras skipped"; }
         try { res += "; " + await ToplessExtrasOn(ct); } catch (Exception ex) { WLog("topless extras on failed: " + ex.GetBaseException().Message); }
         return res;
     }

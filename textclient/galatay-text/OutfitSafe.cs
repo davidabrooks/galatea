@@ -78,6 +78,7 @@ public static partial class Program
     static HashSet<UUID> OutfitProtectedIds()
     {
         var s = new HashSet<UUID> { RetiredAwpAo };
+        foreach (var k in KeepAttachedIds()) s.Add(k);   // routes/_keep-attached.txt (Real Kisser): never detached by outfit/undress/bikini
         try { var ao = AoItem; if (ao != UUID.Zero) s.Add(ao); } catch { }
         foreach (var p in WornPrims())
         {
@@ -86,6 +87,24 @@ public static partial class Program
             { var it = AttachItemId(p); if (it != UUID.Zero) s.Add(it); }
         }
         return s;
+    }
+
+    // routes/_keep-attached.txt: "<item uuid> [name]" per line, '#' comments; worn attachments that no outfit swap,
+    // undress or bikini change ever takes off (2026-10-11 David: the Real Kisser stays on like the head and body)
+    internal static List<UUID> ParseKeepAttached(string txt)
+    {
+        var l = new List<UUID>();
+        foreach (var line in (txt ?? "").Split('\n'))
+        {
+            var t = line.Trim(); if (t.Length == 0 || t.StartsWith("#")) continue;
+            if (UUID.TryParse(t.Split(' ', '\t')[0], out var u) && u != UUID.Zero) l.Add(u);
+        }
+        return l;
+    }
+    static List<UUID> KeepAttachedIds()
+    {
+        try { var f = Path.Combine(RouteDir, "_keep-attached.txt"); return File.Exists(f) ? ParseKeepAttached(File.ReadAllText(f)) : new(); }
+        catch { return new(); }
     }
 
     static async Task<List<InventoryItem>> ResolveOutfitItems(InventoryFolder folder, CancellationToken ct)

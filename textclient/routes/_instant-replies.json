@@ -134,6 +134,35 @@
         "Okay, I'll wait here.",
         "Sure, I'll stay here."
       ]
+    },
+    {
+      "action": "kiss",
+      "phrases": [
+        "kiss me",
+        "give me a kiss",
+        "give me a kiss baby",
+        "kiss",
+        "kisses",
+        "kiss me baby",
+        "come kiss me",
+        "can i have a kiss",
+        "i want a kiss",
+        "another kiss",
+        "one more kiss",
+        "kiss me again",
+        "give me another kiss",
+        "smooch",
+        "smooch me",
+        "mwah",
+        "pucker up"
+      ],
+      "replies": [
+        "Mwah! 💋",
+        "Come here, you 💋",
+        "Mmm, gladly 💋",
+        "*kisses you* 💋",
+        "Always 💋"
+      ]
     }
   ]
 }

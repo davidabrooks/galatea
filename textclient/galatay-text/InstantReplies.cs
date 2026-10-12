@@ -173,6 +173,11 @@ public static partial class Program
                 var r = FollowCmd(dav.av.Name);
                 return (r.StartsWith("following"), r);
             }
+            case "kiss":
+            {
+                var r = KissCmd("David");
+                return (r.StartsWith("kissed"), r);
+            }
             case "follow_stop":
                 if (!followingDavid) return (false, "not following him");
                 return (true, FollowCmd("off"));

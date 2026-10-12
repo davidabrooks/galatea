@@ -1644,6 +1644,7 @@ public static partial class Program
   door try [filter|uuid]      full door sequence: touch, walk into, dialog Open / locked check, back up 1.5 m + re-approach +-0.5 m; every attempt logged [door] | door selftest
   accept | decline            pending teleport offer (allow-list only)
   dialog <button label>       answer the last script dialog (e.g. AVsitter pose menu)
+  kiss [name] [lips|cheek]    kiss David (default) via his worn Real Kisser: face + touch its lips prim, ~instant | kiss status
   touch <object uuid>         touch an object (seat/HUD) so it opens its own menu (NOT the AO HUD: a touch toggles it off)
   pose [change|couples|path A>B>C|selftest]   solo random by default (never auto-couples); 'pose couples' only if David asks; 'pose path' restores an exact menu path
   exp [list|status|refresh|selftest] | exp info|allow|block|forget <id>   Experience Tools: auto-grant land/allowlist (AVsitter); TEMP props in worn; Debit never granted
@@ -1966,6 +1967,7 @@ public static partial class Program
             case "wear": case "rez": case "take": case "return": case "delete": case "offer": return await WearOpsCmd(cmd, a);
             case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...] | inv mkdir <parent uuid> <name> | inv move <uuid> <dest folder uuid> | inv move undo";
             case "feet": return await FeetCmd(a);
+            case "kiss": return KissCmd(rest);
             case "outfit": return await OutfitCmd(a);
             case "bikini":
                 if (a.Length >= 1 && a[0] == "on") return await BikiniOn();

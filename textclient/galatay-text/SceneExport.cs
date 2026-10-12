@@ -199,11 +199,28 @@ public static partial class Program
         s.Write(System.Text.Encoding.UTF8.GetBytes(rest.Length > 2 ? "]," + rest[1..] : "]}"));
     }
 
+    // 2026-10-11: nearby avatars' attachment faces can be stale (object cache / missed TE update): David's body HUD had
+    // un-hidden his legs in-world, yet the export still had those faces at alpha 0, so renders cut him off at the hips.
+    // Re-request close avatars' attachment prims (RequestMultipleObjects, the viewer's normal read-only request) and wait briefly.
+    static async Task RefreshNearbyAttachmentFaces(float radius)
+    {
+        var sim = Sim; var me = client.Self; if (sim == null) return;
+        var near = sim.ObjectsAvatars.Values.Where(av => av != null && av.LocalID != me.LocalID
+            && Vector3.Distance(PositionHelper.GetAvatarPosition(sim, av), me.SimPosition) <= radius).Select(av => av.LocalID).ToHashSet();
+        if (near.Count == 0) return;
+        var prims = sim.ObjectsPrimitives.Values.ToList(); var byId = prims.ToDictionary(p => p.LocalID);
+        uint RootParent(Primitive p) { var q = p; for (int i = 0; i < 8 && q.ParentID != 0 && byId.TryGetValue(q.ParentID, out var up); i++) q = up; return q.ParentID; }
+        var ids = prims.Where(p => near.Contains(RootParent(p))).Select(p => p.LocalID).ToList();
+        for (int k = 0; k < ids.Count; k += 200) try { client.Objects.RequestObjects(sim, ids.Skip(k).Take(200).ToList()); } catch { }
+        if (ids.Count > 0) await Task.Delay(int.TryParse(Env("GT_LOOK_REFRESH_MS", "2000"), out var ms) ? ms : 2000);
+    }
+
     static async Task<string> SceneExport(string[] a)
     {
         float r = 48;
         if (a.Length > 1 && (!float.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out r) || r <= 0 || r > 128))
             return "usage: scene export [radius 1-128]";
+        if (Env("GT_LOOK_REFRESH_ATTACH", "on") != "off") await RefreshNearbyAttachmentFaces(Math.Min(r, 12f));
         var sw = System.Diagnostics.Stopwatch.StartNew(); var stages = new List<string>();
         void Stage(string name, string detail = "") { stages.Add($"{name}={sw.Elapsed.TotalSeconds:F1}{detail}"); sw.Restart(); }
         var sim = Sim; var me = client.Self;
@@ -377,7 +394,7 @@ public static partial class Program
         {
             ["materials"] = mats, ["gltf_overrides"] = gltf, ["visual_params"] = vparams, ["environment"] = env,
             ["sun_dir"] = OSD.FromVector3(client.Grid.SunDirection),
-            ["region"] = sim.Name, ["agent_id"] = OSD.FromUUID(me.AgentID), ["me"] = new OSDMap { ["pos"] = OSD.FromVector3(myPos), ["rot"] = OSD.FromQuaternion(SeatWorldRot(sim, me.SittingOn, me.SimRotation)), ["sitting_on"] = (int)me.SittingOn, ["anims"] = AnimsOf(me.AgentID) },
+            ["region"] = sim.Name, ["agent_id"] = OSD.FromUUID(me.AgentID), ["me"] = new OSDMap { ["pos"] = OSD.FromVector3(myPos), ["rot"] = OSD.FromQuaternion(me.SimRotation), ["sitting_on"] = (int)me.SittingOn, ["anims"] = AnimsOf(me.AgentID) },
             ["water_height"] = sim.WaterHeight, ["terrain"] = views.Count > 1 ? TerrainGridMerged(views) : TerrainGrid(sim),
             ["neighbor_regions"] = new OSDArray(views.Skip(1).Select(v => (OSD)new OSDMap { ["name"] = v.sim.Name, ["offset"] = OSD.FromVector3(v.off) }).ToList()),
             ["radius"] = r, ["bakes"] = bakes, ["avatars"] = avatars, ["exported_at"] = DateTime.Now.ToString("o"),

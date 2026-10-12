@@ -4,6 +4,7 @@
 //   via the region's ModifyMaterialParams capability (what the viewer's Build tool sends). Clears any GLTF override on those faces.
 //   Refuses prims that are not part of her own worn attachments and HUDs. Logs the previous per-face material ids (undo).
 //   basetex=<texture uuid>: GLTF override replacing only the material's base colour texture (e.g. the face's own texture)
+//   override=<file>: a full GLTF override JSON (as the viewer sends; texture uri ffffffff-ffff-ffff-ffff-ffffffffffff = slot cleared)
 // material undo <prim local id>   restore the per-face ids saved before the last 'material set' on that object (run/material-undo.json; none = cleared, i.e. the original)
 // material get <prim local id>   per-face PBR material ids the sim reports for that prim (RenderMaterial extra param)
 using System.Text;
@@ -14,7 +15,7 @@ namespace GalatayText;
 
 public static partial class Program
 {
-    internal record MaterialSetArgs(uint LocalId, List<int>? Faces, UUID Asset, UUID BaseTex = default);   // Faces null = all faces
+    internal record MaterialSetArgs(uint LocalId, List<int>? Faces, UUID Asset, UUID BaseTex = default, string? OverrideJson = null);   // Faces null = all faces
 
     internal static (MaterialSetArgs? a, string? err) ParseMaterialSetArgs(string rest)
     {
@@ -23,7 +24,16 @@ public static partial class Program
         UUID baseTex = UUID.Zero;
         var bt = t.FirstOrDefault(x => x.StartsWith("basetex=", StringComparison.OrdinalIgnoreCase));
         if (bt != null) { if (!UUID.TryParse(bt[8..], out baseTex) || baseTex == UUID.Zero) return (null, $"bad basetex '{bt}'"); t.Remove(bt); }
-        if (t.Count != 3) return (null, usage + " [basetex=<texture uuid>]");
+        string? ovr = null;
+        var ov = t.FirstOrDefault(x => x.StartsWith("override=", StringComparison.OrdinalIgnoreCase));
+        if (ov != null)
+        {
+            t.Remove(ov); var path = ov[9..];
+            try { ovr = File.ReadAllText(path); if (OSDParser.DeserializeJson(ovr) is not OSDMap) return (null, $"override file {path} is not a JSON object"); }
+            catch (Exception ex) { return (null, $"override file {path}: {ex.Message}"); }
+        }
+        if (bt != null && ov != null) return (null, "use basetex= or override=, not both");
+        if (t.Count != 3) return (null, usage + " [basetex=<texture uuid> | override=<gltf override json file>]");
         var ls = t[0].StartsWith("local:", StringComparison.OrdinalIgnoreCase) ? t[0][6..] : t[0];
         if (!uint.TryParse(ls, out var lid) || lid == 0) return (null, $"bad prim local id '{t[0]}' (see 'worn links')");
         List<int>? faces = null;
@@ -42,7 +52,8 @@ public static partial class Program
         if (t[2].Equals("none", StringComparison.OrdinalIgnoreCase)) asset = UUID.Zero;
         else if (!UUID.TryParse(t[2], out asset) || asset == UUID.Zero) return (null, $"bad material uuid '{t[2]}'");
         if (asset == UUID.Zero && baseTex != UUID.Zero) return (null, "basetex needs a material uuid");
-        return (new MaterialSetArgs(lid, faces, asset, baseTex), null);
+        if (asset == UUID.Zero && ovr != null) return (null, "override needs a material uuid");
+        return (new MaterialSetArgs(lid, faces, asset, baseTex, ovr), null);
     }
 
     // the LLSD array the ModifyMaterialParams cap takes (llgltfmateriallist.cpp flushUpdatesOnce): one entry per face
@@ -51,11 +62,11 @@ public static partial class Program
     internal static string BaseTexOverrideJson(UUID tex) =>
         "{\"asset\":{\"version\":\"2.0\"},\"images\":[{\"uri\":\"" + tex + "\"}],\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}],\"textures\":[{\"source\":0}]}";
 
-    internal static OSDArray MaterialSetPayload(UUID objectId, IEnumerable<int> faces, UUID asset, UUID baseTex = default)
+    internal static OSDArray MaterialSetPayload(UUID objectId, IEnumerable<int> faces, UUID asset, UUID baseTex = default, string? overrideJson = null)
     {
         var arr = new OSDArray();
         foreach (var f in faces)
-            arr.Add(new OSDMap { ["object_id"] = OSD.FromUUID(objectId), ["side"] = OSD.FromInteger(f), ["asset_id"] = OSD.FromUUID(asset), ["gltf_json"] = OSD.FromString(baseTex == UUID.Zero ? "" : BaseTexOverrideJson(baseTex)) });
+            arr.Add(new OSDMap { ["object_id"] = OSD.FromUUID(objectId), ["side"] = OSD.FromInteger(f), ["asset_id"] = OSD.FromUUID(asset), ["gltf_json"] = OSD.FromString(overrideJson ?? (baseTex == UUID.Zero ? "" : BaseTexOverrideJson(baseTex))) });
         return arr;
     }
 
@@ -148,14 +159,14 @@ public static partial class Program
         try
         {
             using var t = new CancellationTokenSource(20000);
-            var (resp, data) = await client.HttpCapsClient.PostAsync(cap, OSDFormat.Xml, MaterialSetPayload(p.ID, faces, a.Asset, a.BaseTex), t.Token);
+            var (resp, data) = await client.HttpCapsClient.PostAsync(cap, OSDFormat.Xml, MaterialSetPayload(p.ID, faces, a.Asset, a.BaseTex, a.OverrideJson), t.Token);
             http = (int)resp.StatusCode; body = data == null ? "" : Encoding.UTF8.GetString(data);
         }
         catch (Exception ex) { return "ModifyMaterialParams failed: " + ex.GetBaseException().Message; }
         bool ok = http == 200 && !body.Contains("<key>success</key><boolean>false", StringComparison.OrdinalIgnoreCase) && !body.Contains("<key>success</key><false", StringComparison.OrdinalIgnoreCase);
         string msg = "";
         try { if (OSDParser.Deserialize(body) is OSDMap m) { if (m.ContainsKey("success")) ok = ok && m["success"].AsBoolean(); if (m.ContainsKey("message")) msg = m["message"].AsString(); } } catch { }
-        Log("material", $"set local {p.LocalID} obj {p.ID} '{p.Properties?.Name}' faces {string.Join(',', faces)} -> {(a.Asset == UUID.Zero ? "none" : a.Asset)}{(a.BaseTex == UUID.Zero ? "" : " basetex " + a.BaseTex)}: HTTP {http} ok={ok} {msg}; BEFORE {before}");
+        Log("material", $"set local {p.LocalID} obj {p.ID} '{p.Properties?.Name}' faces {string.Join(',', faces)} -> {(a.Asset == UUID.Zero ? "none" : a.Asset)}{(a.BaseTex == UUID.Zero ? "" : " basetex " + a.BaseTex)}{(a.OverrideJson == null ? "" : " override " + a.OverrideJson)}: HTTP {http} ok={ok} {msg}; BEFORE {before}");
         await Task.Delay(2500);
         return $"{(ok ? "applied" : "FAILED")} {(a.Asset == UUID.Zero ? "none (cleared)" : a.Asset.ToString())} on local {p.LocalID} '{p.Properties?.Name}' faces {string.Join(',', faces)} (HTTP {http}{(msg.Length > 0 ? ", " + msg : "")})\n" +
                $"  before: {before}\n  now:    {FormatRenderMaterials(p.RenderMaterials, n)}\n  undo:   material undo {p.LocalID}";

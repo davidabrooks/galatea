@@ -77,3 +77,17 @@ public class MaterialBaseTexTests
         Assert.NotNull(Program.ParseMaterialSetArgs("42 0 none basetex=07a908ef-ec37-d0d3-e061-8510eefab89b").err);
     }
 }
+
+public class MaterialOverrideFileTests
+{
+    [Fact]
+    public void Override_file_is_sent_verbatim_and_must_be_json()
+    {
+        var f = System.IO.Path.GetTempFileName(); System.IO.File.WriteAllText(f, "{\"asset\":{\"version\":\"2.0\"}}");
+        var (a, err) = Program.ParseMaterialSetArgs($"42 0 adfa8a26-bc47-f5e6-1cd1-586eb1fead26 override={f}");
+        Assert.Null(err);
+        Assert.Equal("{\"asset\":{\"version\":\"2.0\"}}", ((OSDMap)Program.MaterialSetPayload(UUID.Random(), new[] { 0 }, a!.Asset, a.BaseTex, a.OverrideJson)[0])["gltf_json"].AsString());
+        System.IO.File.WriteAllText(f, "nope");
+        Assert.NotNull(Program.ParseMaterialSetArgs($"42 0 adfa8a26-bc47-f5e6-1cd1-586eb1fead26 override={f}").err);
+    }
+}

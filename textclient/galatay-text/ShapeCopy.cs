@@ -74,16 +74,31 @@ public static partial class Program
         return $"copied '{it.Name}' -> '{made.Name}' item {made.UUID} (same folder){note}";
     }
 
-    static async Task<string> ShapeWearCmd(string arg)
+    static Task<string> ShapeWearCmd(string arg) => BodyPartWearCmd(arg, WearableType.Shape);
+
+    // wear a body part (shape/skin/eyes/hair base), replacing the one of the same type, and drop the old type's COF
+    // link(s) so the Current Outfit (and an outfit saved from it) holds exactly one (2026-10-11: 'shape wear' left the
+    // Petite shape's COF link next to the copy's)
+    internal static async Task<string> BodyPartWearCmd(string arg, WearableType? want)
     {
-        if (!UUID.TryParse((arg ?? "").Trim(), out var id)) return "usage: shape wear <shape item uuid>";
+        if (!UUID.TryParse((arg ?? "").Trim(), out var id)) return "usage: wear bodypart <item uuid> | shape wear <shape item uuid>";
         using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
         var it = await FetchItemRO(id, ct);
-        if (it is not InventoryWearable w || w.WearableType != WearableType.Shape) return $"item {id} is not a shape";
+        if (it is not InventoryWearable w || w.AssetType != AssetType.Bodypart) return $"item {id} is not a body part";
+        if (want != null && w.WearableType != want) return $"'{it.Name}' is a {w.WearableType}, not a {want}";
         client.Appearance.AddToOutfit(new List<InventoryItem> { it }, true);
         await Task.Delay(4000, ct);
-        var now = client.Appearance.GetWearables().FirstOrDefault(x => x.WearableType == WearableType.Shape);
-        Log("shape", $"wear shape '{it.Name}' {it.UUID}; worn shape item now {now?.ItemID}");
-        return now?.ItemID == it.UUID ? $"wearing shape '{it.Name}'" : $"asked to wear '{it.Name}', worn shape item is still {now?.ItemID} (check 'shape get')";
+        string note = "";
+        var cof = await CofFolder(ct);
+        if (cof != null)
+        {
+            var stale = new List<InventoryItem>();
+            foreach (var l in (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>().Where(l => l.ParentUUID == cof.UUID && l.IsLink() && l.AssetUUID != it.UUID))
+                if (await FetchItemRO(l.AssetUUID, ct) is InventoryWearable tw && tw.AssetType == AssetType.Bodypart && tw.WearableType == w.WearableType) stale.Add(l);
+            if (stale.Count > 0) { await client.Inventory.RemoveItemsAsync(stale.Select(l => l.UUID), ct); note = $"; removed {stale.Count} old {w.WearableType} COF link(s): {string.Join(", ", stale.Select(l => l.Name))}"; }
+        }
+        var now = client.Appearance.GetWearables().FirstOrDefault(x => x.WearableType == w.WearableType);
+        Log("wear", $"wear bodypart '{it.Name}' {it.UUID}; worn {w.WearableType} now {now?.ItemID}{note}");
+        return (now?.ItemID == it.UUID ? $"wearing {w.WearableType} '{it.Name}'" : $"asked to wear '{it.Name}', worn {w.WearableType} is still {now?.ItemID}") + note;
     }
 }

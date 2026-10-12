@@ -62,3 +62,18 @@ public class MaterialUndoTests
         Assert.Equal(UUID.Zero, ((OSDMap)arr[1])["asset_id"].AsUUID());
     }
 }
+
+public class MaterialBaseTexTests
+{
+    [Fact]
+    public void Basetex_option_puts_a_base_colour_override_in_gltf_json()
+    {
+        var tex = new UUID("07a908ef-ec37-d0d3-e061-8510eefab89b");
+        var (a, err) = Program.ParseMaterialSetArgs("42 0 adfa8a26-bc47-f5e6-1cd1-586eb1fead26 basetex=07a908ef-ec37-d0d3-e061-8510eefab89b");
+        Assert.Null(err); Assert.Equal(tex, a!.BaseTex);
+        var j = ((OSDMap)Program.MaterialSetPayload(UUID.Random(), new[] { 0 }, a.Asset, a.BaseTex)[0])["gltf_json"].AsString();
+        var doc = (OSDMap)OSDParser.DeserializeJson(j);
+        Assert.Equal(tex.ToString(), ((OSDMap)((OSDArray)doc["images"])[0])["uri"].AsString());
+        Assert.NotNull(Program.ParseMaterialSetArgs("42 0 none basetex=07a908ef-ec37-d0d3-e061-8510eefab89b").err);
+    }
+}

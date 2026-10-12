@@ -463,7 +463,7 @@ public static partial class Program
                 var r = await SeatPosePath(seat, seatName, full, ct);
                 var m2 = $"'{seatName}' {seat.ID}: chose {string.Join(" > ", full)} (naked first; {why}): {r}";
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", full)} [solo, sexual allowed]";
-                WLog("POSE " + m2); return m2;
+                WLog("POSE " + m2); HandPoseForPathAsync(full, seatName); return m2;
             }
             var idx = d.ButtonLabels.IndexOf(pick);
             if (!sub) ClearKeptPoseCopies();
@@ -480,7 +480,7 @@ public static partial class Program
                 var mode = couplesMode ? " [couples/explicit]" : " [solo]";
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", path)}{tag}{mode}";
                 var m = $"'{seatName}' {seat.ID}: chose {string.Join(" > ", path)} (was {current ?? "?"}; {why}){tag}";
-                WLog("POSE " + m); return m;
+                WLog("POSE " + m); HandPoseForPathAsync(path, $"{seatName}: {string.Join(" > ", path)}"); return m;
             }
             d = await WaitSeatDialog(seat, t1, 5000, ct);
             if (d == null) { var m = $"'{seatName}': submenu '{pick}' did not open"; WLog("POSE " + m); return m; }

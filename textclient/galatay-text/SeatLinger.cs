@@ -76,6 +76,7 @@ public static partial class Program
         bool swap = newSeat != 0;
         int n = StopSeatLingerers($"sit ended: {why}", srcs, anims, swap, recheck: false);
         if (swap) return;
+        if (WanderOn) _ = Task.Run(async () => { await Task.Delay(3000); if (client.Self.SittingOn == 0) await SetHandPose(HandRelaxedCol, "relaxed", "stood up"); });
         _ = Task.Run(async () =>
         {
             foreach (var (wait, at) in new[] { (2000, "2 s"), (3000, "5 s") })

@@ -129,3 +129,10 @@ public class LoginStartTests
         Assert.Equal("home", Program.ChooseLoginStart("home", Now.AddMinutes(-30), Now));
     }
 }
+
+public class HandPoseTests
+{
+    [Fact] public void Prop_poses_grip() { foreach (var p in new[] { "reading", "f_talkphone", "laptop", "selfie", "Coffee*" }) Assert.Equal("grip", Program.HandPoseFor(new[] { "SOLO F*", p }).name); }
+    [Fact] public void Other_poses_relaxed() { foreach (var p in new[] { "F waits", "Meh", "lay 3", "Sit 2" }) Assert.Equal("relaxed", Program.HandPoseFor(new[] { "SOLO F*", p }).name); }
+    [Fact] public void Grid_st() { var (s, t) = Program.HandPoseSt(12, true); Assert.InRange(s, 0.81f, 0.83f); Assert.Equal(0.75f, t); Assert.Equal(0.25f, Program.HandPoseSt(1, false).t); }
+}

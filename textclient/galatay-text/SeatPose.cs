@@ -69,6 +69,26 @@ public static partial class Program
         return labels.Where(l => !skip.Any(x => string.Equals(PoseBare(l ?? ""), x, StringComparison.OrdinalIgnoreCase))).ToList();
     }
 
+    // David 2026-10-12 15:30: sexual poses NEVER while an android outfit is worn; in a human outfit only when the
+    // only other avatar in Peronaut (and its neighbour regions) is David. Taking one = stand, wear Naked (Real Kisser
+    // stays), sit again, then the pose. Couples poses stay skipped on solo paths either way.
+    internal static bool SexualPosesAllowed(bool androidWorn, string region, IEnumerable<UUID> otherAvatars, UUID davidId)
+    {
+        if (androidWorn) return false;
+        if (!string.Equals(region, "Peronaut", StringComparison.OrdinalIgnoreCase)) return false;
+        var o = (otherAvatars ?? Enumerable.Empty<UUID>()).Distinct().ToList();
+        return o.Count == 1 && o[0] == davidId;
+    }
+    static List<UUID> OtherAvatarsAround()
+    {
+        var me = client.Self.AgentID; var ids = new HashSet<UUID>();
+        try { foreach (var kv in coarseBy.ToArray()) foreach (var k in kv.Value.Keys) if (k != me) ids.Add(k); } catch { }
+        try { foreach (var sim in client.Network.Simulators.ToArray()) foreach (var a in sim.ObjectsAvatars.Values) if (a != null && a.ID != me) ids.Add(a.ID); } catch { }
+        return ids.ToList();
+    }
+    static bool SexualPosesAllowedNow() { try { return SexualPosesAllowed(AndroidWorn(), client.Network.CurrentSim?.Name, OtherAvatarsAround(), DavidId); } catch { return false; } }
+    internal static bool PosePathIsSexual(IEnumerable<string> path) => (path ?? Enumerable.Empty<string>()).Any(l => PoseIsSexualNamed(l) || PoseAdultMenuName.IsMatch(PoseBare(l)));
+
     // pure: automatic paths never pick couples; only explicit 'pose couples' (David asked).
     public static bool AutoMayPickCouples(bool explicitCouplesRequest) => explicitCouplesRequest;
 
@@ -242,7 +262,7 @@ public static partial class Program
     // pure: which button to press (null = nothing suitable). submenu = AVsitter '*' label.
     // couplesMode: ONLY for explicit 'pose couples'. !couplesMode (default/recovery/wander): skip couples even if shared.
     // inSubmenu: already inside a submenu she chose (depth > 0); the "no clearly solo option" rule is for the top menu.
-    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false)
+    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false, bool allowSexual = false)
     {
         var ok = new List<string>(); var skipped = new List<string>(); bool risky = false;
         bool seatSel = PoseMenuLooksLikeSeatSelect(labels);
@@ -263,7 +283,8 @@ public static partial class Program
             else
             {
                 // solo mode: never couples / adult / intimate names (19:39 Adults* > 5Adults)
-                if (PoseIsCouplesNamed(l) || PoseIsAdultMenu(l)) { skipped.Add(l); risky = true; continue; }
+                if (PoseIsCouplesNamed(l)) { skipped.Add(l); risky = true; continue; }
+                if (PoseIsAdultMenu(l) && !allowSexual) { skipped.Add(l); risky = true; continue; }
             }
             ok.Add(l);
         }
@@ -402,6 +423,8 @@ public static partial class Program
                 WLog("POSE " + m); return m;
             }
         }
+        bool allowSexual = !couplesMode && SexualPosesAllowedNow();
+        if (allowSexual) WLog($"POSE '{seatName}': sexual poses allowed (human outfit, only David around)");
         for (int depth = 0; depth < 3; depth++)
         {
             if (client.Self.SittingOn == 0 || (WanderOn && wanderPause != null)) { WLog($"POSE '{seatName}': stopped choosing (no longer seated or paused)"); return "aborted"; }
@@ -413,11 +436,26 @@ public static partial class Program
                 var m = $"'{seatName}': David joined mid-pick — stopping (he chooses poses)";
                 WLog("POSE " + m); return m;
             }
-            var (pick, sub, why) = PickPoseButton(SeatPoseFilter(seat.ID, d.ButtonLabels), current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0);
+            var (pick, sub, why) = PickPoseButton(SeatPoseFilter(seat.ID, d.ButtonLabels), current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual);
             if (pick == null)
             {
                 var m = $"'{seatName}': {why}; keeping the current pose {current ?? "?"}";
                 WLog("POSE " + m); return m;
+            }
+            if (!sub && allowSexual && PosePathIsSexual(path.Append(pick.Trim())))
+            {
+                var full = path.Append(pick.Trim()).ToList();
+                if (!SexualPosesAllowedNow()) { var m0 = $"'{seatName}': sexual pose {string.Join(" > ", full)} no longer allowed (someone else around / android); keeping {current ?? "?"}"; WLog("POSE " + m0); return m0; }
+                WLog($"POSE '{seatName}': sexual pose {string.Join(" > ", full)}: stand, wear Naked, sit again first");
+                client.Self.Stand(); await Task.Delay(2500, ct);
+                var w = await OutfitWearNamed("Naked", true); WLog($"POSE naked-first: {w}");
+                await Task.Delay(3000, ct);
+                if (!SexualPosesAllowedNow()) { var m1 = $"'{seatName}': someone else arrived while undressing; not taking the sexual pose"; WLog("POSE " + m1); return m1; }
+                client.Self.RequestSit(seat.ID, Vector3.Zero); await Task.Delay(1200, ct); client.Self.Sit(); await Task.Delay(3000, ct);
+                var r = await SeatPosePath(seat, seatName, full, ct);
+                var m2 = $"'{seatName}' {seat.ID}: chose {string.Join(" > ", full)} (naked first; {why}): {r}";
+                wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", full)} [solo, sexual allowed]";
+                WLog("POSE " + m2); return m2;
             }
             var idx = d.ButtonLabels.IndexOf(pick);
             if (!sub) ClearKeptPoseCopies();

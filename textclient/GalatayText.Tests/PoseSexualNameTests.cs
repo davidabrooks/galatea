@@ -36,3 +36,36 @@ public class PoseSexualNameTests
     [InlineData("f_sit2")] [InlineData("Hang out")] [InlineData("Listening")] [InlineData("Relaxing")] [InlineData("Seat")] [InlineData("Pretty")]
     public void Neutral_names_stay(string name) => Assert.Equal(name, Program.PickPoseButton(new List<string> { name }, null, new Random(1), inSubmenu: true).pick);
 }
+
+public class SexualPoseRuleTests
+{
+    static readonly LibreMetaverse.UUID David = new("44ce5a36-c1c7-4a68-ac9a-635ddfff6233");
+
+    [Fact]
+    public void Android_outfit_blocks_sexual_poses_even_with_only_David()
+        => Assert.False(Program.SexualPosesAllowed(true, "Peronaut", new[] { David }, David));
+
+    [Fact]
+    public void Human_outfit_with_only_David_allows_and_needs_naked_first()
+    {
+        Assert.True(Program.SexualPosesAllowed(false, "Peronaut", new[] { David, David }, David));
+        Assert.True(Program.PosePathIsSexual(new[] { "Solo*", "Solo Couch*", "Sexy sit" }));
+        Assert.True(Program.PosePathIsSexual(new[] { "Solo*", "Solo Adult*", "Feeling" }));
+        Assert.False(Program.PosePathIsSexual(new[] { "Solo*", "Solo Couch*", "Meh" }));
+        // with permission the picker may choose it; couples names stay out
+        var menu = new List<string> { "Sexy sit", "Together", "Cuddles*" };
+        bool sawSexy = false;
+        for (int i = 0; i < 100; i++) { var p = Program.PickPoseButton(menu, null, new Random(i), inSubmenu: true, allowSexual: true).pick; Assert.NotEqual("Together", p); Assert.NotEqual("Cuddles*", p); sawSexy |= p == "Sexy sit"; }
+        Assert.True(sawSexy);
+    }
+
+    [Fact]
+    public void Human_outfit_with_others_or_alone_or_elsewhere_blocks()
+    {
+        var other = LibreMetaverse.UUID.Random();
+        Assert.False(Program.SexualPosesAllowed(false, "Peronaut", new[] { David, other }, David));
+        Assert.False(Program.SexualPosesAllowed(false, "Peronaut", new LibreMetaverse.UUID[0], David));
+        Assert.False(Program.SexualPosesAllowed(false, "Naberrie", new[] { David }, David));
+        for (int i = 0; i < 50; i++) Assert.NotEqual("Sexy sit", Program.PickPoseButton(new List<string> { "Sexy sit", "Meh" }, null, new Random(i), inSubmenu: true, allowSexual: false).pick);
+    }
+}

@@ -722,6 +722,12 @@ public static partial class Program
         var infos = LoadHomeSeats().GroupBy(i => i.Id).ToDictionary(x => x.Key, x => x.First());
         // 2026-10-07: no 'quiet >= 10 m' preference (it skewed picks to the far patio chairs); the 3 m avatar rule stays
         var pool = cands;
+        if (force == null && AndroidWorn())
+        {
+            int before = pool.Count;
+            pool = pool.Where(c => { infos.TryGetValue(c.p.ID, out var ai); return AndroidSeatAllowed(true, ai?.Name ?? c.name, ai?.Special); }).ToList();
+            if (pool.Count < before) WLog($"sit: android body worn, skipped {before - pool.Count} wet spot(s) (toilet/tub/shower/hot tub)");
+        }
         if (pool.Count == 0) { WLog("sit: no free home seat right now (skipping this time)"); return false; }
         // 2026-10-08 level dwell: seats on the level she is staying on; busy seats there mean a walk instead, not a level switch
         string SeatLevel(SeatCand c) => HomeLevelOf(c.p.Position, infos.TryGetValue(c.p.ID, out var si) ? si.Level : null);

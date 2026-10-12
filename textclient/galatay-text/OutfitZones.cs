@@ -157,8 +157,10 @@ public static partial class Program
 
     // Login order (David 16:16): settle, decide beach/house FIRST, then the daily pick. On the beach: keep / put on the
     // Bikini and save the daily pick for the walk up to the house. Not on the beach: wear the daily pick (once per PT day).
-    internal static string LoginOutfitPlan(bool onBeach, bool bikiniWorn, bool dailyPending, string rememberedForHouse)
+    // 2026-10-12 David: logged in wearing an android body (Kay/CALISTA, BodyFamily) -> no daily/random outfit or colour pick, keep it
+    internal static string LoginOutfitPlan(bool onBeach, bool bikiniWorn, bool dailyPending, string rememberedForHouse, bool androidWorn = false)
     {
+        if (androidWorn) return "keep-android";
         if (onBeach) return (bikiniWorn ? "keep-bikini" : "bikini-on") + (dailyPending ? "+daily-deferred" : "");
         if (dailyPending) return "daily-wear";
         return string.IsNullOrWhiteSpace(rememberedForHouse) ? "keep" : "restore-remembered";
@@ -180,8 +182,9 @@ public static partial class Program
             var z = client.Self.SimPosition.Z;
             var lpos = client.Self.SimPosition;
             bool onBeach = OutfitZoneFor(region, lpos, false) == "beach" || (beachMode && OutfitZoneFor(region, lpos, true) == "beach");
-            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null);
+            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null, AndroidWorn());
             Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT)");
+            if (plan == "keep-android") { zoneArmed = true; return; }   // android body: keep the outfit; the daily stays pending for a human login
             string pick = null; bool freshPick = false; var wornBefore = lastNamedOutfit;
             if (dailyPending)
             {

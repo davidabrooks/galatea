@@ -1702,6 +1702,7 @@ public static partial class Program
   glow set <prim local id> <faces 0,2|all> <0..1> | glow get <local id>   legacy glow on faces of one prim of her own worn attachment (TextureEntry update; logs before)
   fullbright set <prim local id> <faces 0,2|all> <on|off> | fullbright get <local id>   fullbright on faces of one prim of her own worn attachment (logs before)
   color set <prim local id> <faces 0,2|all> <r> <g> <b> | color get <local id>   tint (0..255, alpha kept) on faces of one prim of her own worn attachment (logs before)
+  texture set <prim local id> <faces 0,2|all> <texture uuid> | texture get <local id>   texture id on faces of one prim of her own worn attachment (logs before)
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
   shape get [filter] | shape set [@""<name>""] <slider|param id> <0-100>   worn shape sliders; set only on the Petite shape or a copy in routes/_editable-shapes.txt (backup in shape-backups/, upload + rebake)
   shape wear <shape item uuid>   wear a shape (body part replace)
@@ -1958,6 +1959,7 @@ public static partial class Program
             case "glow": return await GlowCmd(rest);
             case "fullbright": return await FullbrightCmd(rest);
             case "color": case "colour": return await ColorCmd(rest);
+            case "texture" when a.Length > 0 && (a[0] == "set" || a[0] == "get"): return await TextureCmd(rest);
             case "shape": return await ShapeCmd(a);
             case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a, rest);
             case "inv" when a.Length >= 1 && a[0] == "trash": return await InvTrashCmd(rest.Substring(rest.IndexOf("trash", StringComparison.Ordinal) + 5));

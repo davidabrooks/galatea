@@ -66,6 +66,7 @@
     <Compile Include="../galatay-text/GlowSet.cs" Link="Core/GlowSet.cs" />
     <Compile Include="../galatay-text/FullbrightSet.cs" Link="Core/FullbrightSet.cs" />
     <Compile Include="../galatay-text/ColorSet.cs" Link="Core/ColorSet.cs" />
+    <Compile Include="../galatay-text/TextureSet.cs" Link="Core/TextureSet.cs" />
     <Compile Include="../galatay-text/AndroidWet.cs" Link="Core/AndroidWet.cs" />
     <Compile Include="../galatay-text/FriendWatch.cs" Link="Core/FriendWatch.cs" />
     <Compile Include="../galatay-text/VisitorArrival.cs" Link="Core/VisitorArrival.cs" />

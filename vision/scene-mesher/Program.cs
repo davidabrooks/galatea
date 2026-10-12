@@ -329,6 +329,7 @@ static class Mesher
         var me = ((OSDMap)doc["me"])["pos"].AsVector3();
         // avatar-local: undo her rotation around her agent position (z moves into the mesh frame with agentOff in PoseAvatar)
         Vector3? lookAt = null; var agentOff = new ConcurrentDictionary<string, float>();  // per avatar owner: mesh z 0 relative to agent z
+        var agentOffSeated = new ConcurrentDictionary<string, float>();
         if (lookArg is { Length: 3 })
             lookAt = (new Vector3(lookArg[0], lookArg[1], lookArg[2]) - me) * Quaternion.Conjugate(((OSDMap)doc["me"])["rot"].AsQuaternion());
         string only = args.Length > 2 ? args[2] : "all";
@@ -604,6 +605,8 @@ static class Mesher
             // mesh frame that is: mesh z 0 at agent z - bodysize/2 - rest foot z. ponytail: hover (AppearanceHover) not exported = 0
             var rest = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>(); Skeleton.World(overrides, shape, null, default, rest, null, lockScale);
             float Rz(string j) => rest[j].Pos.Z;
+            // seated (LLVOAvatar::updateCharacter): a sitter's pelvis sits AT the agent position, no body-size/foot offset
+            agentOffSeated[owner] = -Rz("mPelvis");
             agentOff[owner] = -0.5f * (Rz("mHead") - Rz("mFootLeft") + MathF.Sqrt(2) * (Rz("mSkull") - Rz("mHead"))) - Rz("mFootLeft");
             frames = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>();
             var world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos, lockScale);
@@ -687,7 +690,7 @@ static class Mesher
                 var ap = av["pos"].AsVector3();
                 // placeholder when export held no attachment prims: render_mesh draws a bake-textured stand-in so every
                 // nearby avatar still shows (Warehouse 21: 34 in the export, only 1 had attachments on the wire)
-                otherAt[ai] = new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f), placeholder = !worn, bake_prefix = id[..8], dressed = av.ContainsKey("dressed") ? av["dressed"].AsString() : null };
+                otherAt[ai] = new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], agent_off_seated = agentOffSeated[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f), placeholder = !worn, bake_prefix = id[..8], dressed = av.ContainsKey("dressed") ? av["dressed"].AsString() : null };
                 Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}{(worn ? "" : " (no attachments: placeholder)")}");
             });
         others.AddRange(otherAt);
@@ -700,7 +703,7 @@ static class Mesher
                 outMeta.Add(new { group = b.Group, tex = b.Tex, rgba = b.Rgba, fullbright = b.Fullbright, mat = b.Mat, nv = b.P.Count / 3, ni = b.I.Count, offset = off });
                 off += (b.P.Count + b.N.Count + b.T.Count + b.I.Count) * 4L;
             }
-        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, bones = frames == null ? null : Bones(frames), others }));
+        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, agent_off_seated = agentOffSeated.TryGetValue("me", out var mso) ? mso : (float?)null, bones = frames == null ? null : Bones(frames), others }));
         Phase("write");
         Console.Error.WriteLine("timing: " + string.Join(", ", phases));
         Console.WriteLine($"{batches.Count} batches, {outMeta.Sum(m => ((dynamic)m).nv)} vertices, {off / 1048576.0:F1} MB; " + string.Join(", ", stats.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}")));

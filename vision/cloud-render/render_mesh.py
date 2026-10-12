@@ -491,9 +491,10 @@ if kind == "scene":
     # (LL estimate within 0.35 m of the floor under her) keeps its lowest vertex on that floor; otherwise (sitting, hovering,
     # a seat or table under her) the LL placement wins instead of standing her on whatever the cast hit. GT_AV (moved
     # elsewhere) or an old mesh.json -> floor cast. ponytail: hover isn't exported (0); ceiling = sitting heights ~0.2 m high
+    seated_keep = os.environ.get("GT_SEATED") == "1"   # 2026-10-11: seated avatars: pelvis at agent position, no floor snap
     def place(o, px, py, pz):  # -> (floor under it, LL mesh z0 or None); cast before any avatar is built
-        return floor_at(px, py, pz), (pz + o["agent_off"] if o.get("agent_off") is not None else None)
-    seated_keep = os.environ.get("GT_SEATED") == "1"   # 2026-10-11: seated avatars keep their agent height (no floor snap)
+        off = o.get("agent_off_seated") if seated_keep and o.get("agent_off_seated") is not None else o.get("agent_off")
+        return floor_at(px, py, pz), (pz + off if off is not None else None)
     def z0_of(fl, ll, lo):
         if seated_keep and ll is not None: return ll
         return fl - lo if ll is None or abs(ll + lo - fl) < 0.35 else ll

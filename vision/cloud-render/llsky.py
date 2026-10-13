@@ -36,7 +36,10 @@ def params(f):
             "glow": z0(f.get("glow", [5, 0.001, -0.48]))[:3], "cloud_shadow": f.get("cloud_shadow") or 0.0,
             "ambient": z0(f.get("ambient") or lh.get("ambient") or [0.25, 0.25, 0.25])[:3],
             "sunlight": z0(f.get("sunlight_color", [0.734, 0.782, 0.9]))[:3],
-            "moon": f.get("moon_brightness") or 0.0, "stars": f.get("star_brightness") or 0.0}
+            "moon": f.get("moon_brightness") or 0.0, "stars": f.get("star_brightness") or 0.0,
+            # clouds (photo hd): Windlight's "cloud coverage" is cloud_shadow; density = cloud_pos_density1 z
+            "cloud_color": z0(f.get("cloud_color", [0.41, 0.41, 0.41]))[:3], "cloud_scale": f.get("cloud_scale", 0.42) or 0.0,
+            "cloud_density": (z0(f.get("cloud_pos_density1", [1, 0.53, 1])) + [1, 1, 1])[2]}
 
 def mix(a, b, t):
     return {k: ([x + (y - x) * t for x, y in zip(v, b[k])] if isinstance(v, list) else v + (b[k] - v) * t) for k, v in a.items()}
@@ -82,6 +85,7 @@ def env_at(doc):
     hz = lambda f: z0(f.get("legacy_haze", {}).get("blue_horizon", [0.3, 0.4, 0.6]))
     out = {"frac": frac, "sun_dir": sun, "sunlight": p["sunlight"], "ambient": p["ambient"], "cloud_shadow": p["cloud_shadow"],
            "horizon": [x + (y - x) * w for x, y in zip(hz(a), hz(b))][:3], "zenith": p["blue_density"], "moon": p["moon"]}
+    out["clouds"] = {"color": p["cloud_color"], "coverage": p["cloud_shadow"], "density": p["cloud_density"], "scale": p["cloud_scale"]}
     if moon: out["moon_dir"] = moon
     if sun[2] < 0:   # night: the sky as the viewer draws it, lit by the moon (if up) and the sky ambient
         up = bool(moon) and moon[2] >= 0

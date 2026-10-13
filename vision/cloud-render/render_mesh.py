@@ -413,6 +413,7 @@ def sky_backdrop(w, env, night):
         st3 = nt.nodes.new("ShaderNodeMath"); st3.operation = "MULTIPLY"; st3.inputs[1].default_value = 0.9 * ns["stars"]; L(st2.outputs[0], st3.inputs[0])
         ad = nt.nodes.new("ShaderNodeMix"); ad.data_type = "RGBA"; ad.blend_type = "ADD"; ad.inputs["Factor"].default_value = 1.0
         L(col, ad.inputs["A"]); L(st3.outputs[0], ad.inputs["B"]); col = ad.outputs["Result"]
+    if os.environ.get("GT_HD") == "1": col = sky_hd(nt, co, sp, col, env, night)
     seen = nt.nodes.new("ShaderNodeBackground"); L(col, seen.inputs["Color"]); seen.inputs["Strength"].default_value = s
     lp = nt.nodes.new("ShaderNodeLightPath"); mm = nt.nodes.new("ShaderNodeMath"); mm.operation = "MAXIMUM"
     L(lp.outputs["Is Camera Ray"], mm.inputs[0]); L(lp.outputs["Is Glossy Ray"], mm.inputs[1])
@@ -422,6 +423,65 @@ def sky_backdrop(w, env, night):
     # render, 2.9 -> 6.3 s on the Ahern look); BSDF rays that escape still see the flat colour
     try: w.cycles.sampling_method = "NONE"
     except (AttributeError, TypeError): pass
+
+def sky_hd(nt, co, sp, col, env, night):
+    """photo hd (2026-10-13): what the SL sky adds on top of the gradient: the region's cloud layer (EEP cloud colour,
+    coverage, density, scale; flat dome projection, fading at the horizon), the sun's haze glow and disc by day, the
+    moon disc by night. ponytail: procedural noise, not the region's cloud texture; no cloud lighting or scrolling"""
+    L = nt.links.new
+    def node(kind, **kw):
+        n = nt.nodes.new(kind)
+        for k, v in kw.items(): setattr(n, k, v)
+        return n
+    def math_(op, a, b=None, clamp=False):
+        n = node("ShaderNodeMath", operation=op, use_clamp=clamp)
+        for i, v in enumerate((a, b)):
+            if v is None: continue
+            if isinstance(v, (int, float)): n.inputs[i].default_value = v
+            else: L(v, n.inputs[i])
+        return n.outputs[0]
+    def mixc(f, a, b, blend="MIX"):
+        m = node("ShaderNodeMix", data_type="RGBA", blend_type=blend)
+        if isinstance(f, (int, float)): m.inputs["Factor"].default_value = f
+        else: L(f, m.inputs["Factor"])
+        for k, v in (("A", a), ("B", b)):
+            if isinstance(v, (list, tuple)): m.inputs[k].default_value = (*v[:3], 1)
+            else: L(v, m.inputs[k])
+        return m.outputs["Result"]
+    cl = env.get("clouds") or {}
+    cov = float(cl.get("coverage", 0)); dens = float(cl.get("density", 1))
+    if cov > 0.01 and dens > 0.01:
+        # dome projection: xy / (z + 0.08); EEP cloud_scale ~0.42 -> features a few hundred metres across
+        dz = math_("ADD", sp.outputs["Z"], 0.08); vx = math_("DIVIDE", sp.outputs["X"], dz); vy = math_("DIVIDE", sp.outputs["Y"], dz)
+        cv = node("ShaderNodeCombineXYZ"); L(vx, cv.inputs[0]); L(vy, cv.inputs[1])
+        nz = node("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 1.2 / max(0.05, float(cl.get("scale", 0.42))); nz.inputs["Detail"].default_value = 6
+        L(cv.outputs[0], nz.inputs["Vector"])
+        mr = node("ShaderNodeMapRange", interpolation_type="SMOOTHSTEP"); L(nz.outputs["Fac"], mr.inputs["Value"])
+        mr.inputs["From Min"].default_value = 0.56 - 0.4 * cov; mr.inputs["From Max"].default_value = 0.76 - 0.4 * cov
+        hz = node("ShaderNodeMapRange"); L(sp.outputs["Z"], hz.inputs["Value"]); hz.inputs["From Min"].default_value = 0.02; hz.inputs["From Max"].default_value = 0.25
+        k = math_("MULTIPLY", math_("MULTIPLY", mr.outputs["Result"], hz.outputs["Result"]), min(1.0, dens))
+        h, zc, _ = sky_seen(env, night)
+        lit = [min(1.0, c * (0.25 if night else 1.0) * (sum(h) / 3 * 2.2 + 0.25)) for c in cl.get("color", [0.41] * 3)]
+        col = mixc(k, col, lit)
+    up = [nt.nodes.new("ShaderNodeCombineXYZ")]
+    def disc(dirv, cos_r, colr, strength):
+        cx = up[0] if not hasattr(disc, "used") else nt.nodes.new("ShaderNodeCombineXYZ"); disc.used = True
+        for i in range(3): cx.inputs[i].default_value = dirv[i]
+        dp = node("ShaderNodeVectorMath", operation="DOT_PRODUCT"); L(co.outputs["Generated"], dp.inputs[0]); L(cx.outputs[0], dp.inputs[1])
+        return dp.outputs["Value"]
+    cam = node("ShaderNodeLightPath").outputs["Is Camera Ray"]   # discs/glow for the camera only: in glossy rays they were fireflies
+    if not night:
+        sun = env["sun_dir"]; sl = env.get("sunlight", [1, 1, 1]); pk = max(max(sl), 1e-3)
+        d = disc(sun, 0, sl, 1)
+        glow = math_("MULTIPLY", math_("MULTIPLY", math_("POWER", math_("MAXIMUM", d, 0.0), 24.0), 0.35), cam)
+        col = mixc(glow, col, [c / pk for c in sl], "ADD")
+        sd = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(0.6))), cam)
+        col = mixc(sd, col, [c / pk * 8 for c in sl])
+    elif env.get("moon_dir") and env["moon_dir"][2] > 0:
+        d = disc(env["moon_dir"], 0, None, 1)
+        md = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(0.9))), cam)
+        col = mixc(md, col, [0.55 * max(0.3, env.get("moon", 0.5))] * 3)
+    return col
 
 def water():
     """The region's water plane (export: water_height), 4 km across so it meets the sky at the horizon. Shaded without
@@ -449,16 +509,66 @@ def water():
     L(em.outputs[0], nt.nodes["Material Output"].inputs["Surface"])
     ob.data.materials.append(m); ob.visible_shadow = False; ob.visible_diffuse = False; ob.visible_glossy = False
 
+TERRAIN_FALLBACK = [(0.33, 0.27, 0.18), (0.22, 0.30, 0.12), (0.30, 0.30, 0.24), (0.38, 0.37, 0.35)]  # dirt, grass, mountain, rock
+
+def terrain_layers(verts, comps):
+    """LLVLComposition: per vertex, which of the region's 4 detail textures (0..3, fractional = blend): (height - start) * 4 /
+    range, start and range bilinear across the region's corners (00 SW, 01 NW, 10 SE, 11 NE). The viewer adds noise; the
+    shader does (Noise texture). A vertex outside every region uses the nearest region's values."""
+    out = []
+    for x, y, z in verts:
+        c = min(comps, key=lambda c: max(0, abs(x - c["offset"][0] - 128) - 128) + max(0, abs(y - c["offset"][1] - 128) - 128))
+        u = min(1, max(0, (x - c["offset"][0]) / 256)); v = min(1, max(0, (y - c["offset"][1]) / 256))
+        bil = lambda a: a[0] * (1 - u) * (1 - v) + a[1] * (1 - u) * v + a[2] * u * (1 - v) + a[3] * u * v
+        out.append(min(3.0, max(0.0, (z - bil(c["start"])) * 4 / max(bil(c["range"]), 1e-3))))
+    return out
+
 def terrain():
-    # ponytail: one flat green material, a 4 m grid, this region only; a point with no land data sits at 20 m;
-    # ceiling = no terrain textures, no neighbouring regions
+    # quick looks: one flat green material, a 4 m grid; a point with no land data sits at 20 m
+    # photo hd (2026-10-13): the region's own detail textures blended by height (LL's composition), no faces where there is
+    # no land data (old exports: no green slab), none wholly under water (the sea covers them; the sky stays visible)
     t = json.load(open(f"{jobdir}/terrain.json")); nx, ny, st = t["nx"], t["ny"], t["step"]
     if nx < 2: return
-    verts = [(t.get("x0", 0) + i * st, t.get("y0", 0) + j * st, t["heights"][j][i] if t["heights"][j][i] is not None else 20.0) for j in range(ny) for i in range(nx)]
-    faces = [(j * nx + i, j * nx + i + 1, (j + 1) * nx + i + 1, (j + 1) * nx + i) for j in range(ny - 1) for i in range(nx - 1)]
+    hd = os.environ.get("GT_HD") == "1"; H = t["heights"]; wh = M.get("water_height")
+    verts = [(t.get("x0", 0) + i * st, t.get("y0", 0) + j * st, H[j][i] if H[j][i] is not None else 20.0) for j in range(ny) for i in range(nx)]
+    faces = []
+    for j in range(ny - 1):
+        for i in range(nx - 1):
+            q = (j * nx + i, j * nx + i + 1, (j + 1) * nx + i + 1, (j + 1) * nx + i)
+            if hd:
+                hs = [H[j][i], H[j][i + 1], H[j + 1][i + 1], H[j + 1][i]]
+                if any(h is None for h in hs) or (wh is not None and max(hs) < wh - 1.0): continue
+            faces.append(q)
     me = bpy.data.meshes.new("terrain"); me.from_pydata(verts, [], faces); ob = bpy.data.objects.new("terrain", me); sc.collection.objects.link(ob)
     ob.visible_diffuse = False; ob.visible_glossy = False   # backdrop only, like the far prims (see build)
-    m = bpy.data.materials.new("ground"); m.use_nodes = True; m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.24, 0.30, 0.14, 1); me.materials.append(m)
+    m = bpy.data.materials.new("ground"); m.use_nodes = True; nt = m.node_tree; p = nt.nodes["Principled BSDF"]; L = nt.links.new
+    comps = t.get("composition") if hd else None
+    if not comps:
+        p.inputs["Base Color"].default_value = (0.24, 0.30, 0.14, 1); me.materials.append(m); return
+    for poly in me.polygons: poly.use_smooth = True
+    lay = me.attributes.new("tlayer", "FLOAT", "POINT"); lay.data.foreach_set("value", terrain_layers(verts, comps))
+    p.inputs["Roughness"].default_value = 0.9
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    sc_ = nt.nodes.new("ShaderNodeVectorMath"); sc_.operation = "SCALE"; sc_.inputs["Scale"].default_value = 1 / 12.0   # one tile per 12 m (RenderTerrainScale)
+    L(geo.outputs["Position"], sc_.inputs[0])
+    cols = []
+    for k, path in enumerate(comps[0].get("paths") or [None] * 4):
+        if path and os.path.exists(path):
+            im = nt.nodes.new("ShaderNodeTexImage"); im.image = bpy.data.images.load(path); L(sc_.outputs[0], im.inputs["Vector"]); cols.append(im.outputs["Color"])
+        else:
+            rgb = nt.nodes.new("ShaderNodeRGB"); rgb.outputs[0].default_value = (*TERRAIN_FALLBACK[k], 1); cols.append(rgb.outputs[0])
+    at = nt.nodes.new("ShaderNodeAttribute"); at.attribute_name = "tlayer"
+    nz = nt.nodes.new("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 0.15; L(geo.outputs["Position"], nz.inputs["Vector"])
+    nm = nt.nodes.new("ShaderNodeMath"); nm.operation = "MULTIPLY_ADD"; L(nz.outputs["Fac"], nm.inputs[0]); nm.inputs[1].default_value = 1.2; nm.inputs[2].default_value = -0.6
+    lv = nt.nodes.new("ShaderNodeMath"); lv.operation = "ADD"; L(at.outputs["Fac"], lv.inputs[0]); L(nm.outputs[0], lv.inputs[1])
+    c = cols[0]
+    for k in (1, 2, 3):
+        f = nt.nodes.new("ShaderNodeMath"); f.operation = "SUBTRACT"; f.use_clamp = True; L(lv.outputs[0], f.inputs[0]); f.inputs[1].default_value = k - 1
+        mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; L(f.outputs[0], mx.inputs["Factor"]); L(c, mx.inputs["A"]); L(cols[k], mx.inputs["B"]); c = mx.outputs["Result"]
+    L(c, p.inputs["Base Color"])
+    if AMB > 0: L(c, p.inputs["Emission Color"]); p.inputs["Emission Strength"].default_value = AMB   # SL sky ambient, as for prims
+    me.materials.append(m)
+    log("terrain hd", len(faces), "faces", "regions", len(comps), "textures", sum(1 for x in comps[0].get("paths") or [] if x))
 
 gpu_setup(); views = []
 

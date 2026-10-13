@@ -63,6 +63,7 @@
     <Compile Include="../galatay-text/NewCmds.cs" Link="Core/NewCmds.cs" />
     <Compile Include="../galatay-text/ShapeCopy.cs" Link="Core/ShapeCopy.cs" />
     <Compile Include="../galatay-text/MaterialSet.cs" Link="Core/MaterialSet.cs" />
+    <Compile Include="../galatay-text/AndroidWet.cs" Link="Core/AndroidWet.cs" />
     <Compile Include="../galatay-text/FriendWatch.cs" Link="Core/FriendWatch.cs" />
     <Compile Include="../galatay-text/VisitorArrival.cs" Link="Core/VisitorArrival.cs" />
     <Compile Include="../galatay-text/Pay.cs" Link="Core/Pay.cs" />

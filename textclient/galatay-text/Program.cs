@@ -1698,6 +1698,7 @@ public static partial class Program
   sethome                     set home to the current spot; prints the server's reply (e.g. refused off your own/group land)
   parcel [x y]                teleport routing, landing point, owner/group and whether Galatay may ignore the landing point
   worn links <attachment|ao>  every prim of a worn attachment/HUD: link no., local id, name, description, faces, touch flag
+  material set <prim local id> <faces 0,2|all> <pbr material uuid|none> | material get <local id>   PBR material on faces of one prim of her own worn attachment (ModifyMaterialParams; logs undo)
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
   shape get [filter] | shape set [@""<name>""] <slider|param id> <0-100>   worn shape sliders; set only on the Petite shape or a copy in routes/_editable-shapes.txt (backup in shape-backups/, upload + rebake)
   shape wear <shape item uuid>   wear a shape (body part replace)
@@ -1950,6 +1951,7 @@ public static partial class Program
             case "worn" when a.Length >= 2 && a[0] == "tex": { var it = UUID.TryParse(a[1], out var wid) ? wid : UUID.Zero; var sb2 = new System.Text.StringBuilder(); foreach (var kv in SnapshotTextures(new[] { it })) sb2.AppendLine($"local {kv.Key}: {kv.Value}"); return sb2.Length == 0 ? "not worn / no prims" : sb2.ToString().TrimEnd(); } // READ-ONLY: face texture UUIDs (default;f0;f1..) per prim of a worn item
             case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));
             case "touch-attachment": case "touchatt": return await TouchAttachment(rest);
+            case "material": return await MaterialCmd(rest);
             case "shape": return await ShapeCmd(a);
             case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a, rest);
             case "inv" when a.Length >= 1 && a[0] == "trash": return await InvTrashCmd(rest.Substring(rest.IndexOf("trash", StringComparison.Ordinal) + 5));

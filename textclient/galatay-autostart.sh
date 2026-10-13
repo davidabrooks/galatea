@@ -8,6 +8,7 @@
 # this script fully detached (own session, no stdio), so it acts as the boot hook.
 #
 # What it does (once per boot; /tmp is empty after a reboot):
+#   - waits for the box-store copy-in (/tmp/sand-copy-in-status.json phase done) so the marker below is really there
 #   - nothing if run/deliberate-stop exists (set by 'text-galatay.sh stop' or a logout command; cleared by a manual start)
 #   - nothing if the client is already up (pgrep -x galatay-text / supervisor pid file) or Firestorm is running
 #   - waits for the network (TCP to the SL login server, up to 10 min) and for the box clock/timezone to settle
@@ -18,12 +19,12 @@
 set -uo pipefail
 SELF=$(readlink -f "$0")
 CTL=/home/box/viewers/text-galatay.sh
-RUN=/home/box/viewers/textclient/run
+RUN=${GT_RUN:-/home/box/viewers/textclient/run}
 MARK="$RUN/deliberate-stop"; SUPF="$RUN/supervisor.pid"
-ALOG=/workspace/secondlife/textclient.autostart.log
-GT_LOG=/workspace/secondlife/textclient.log
-STAMP=/tmp/galatay-autostart.boot      # decision made this boot
-LOCK=/tmp/galatay-autostart.lock
+ALOG=${GT_AUTOSTART_LOG:-/workspace/secondlife/textclient.autostart.log}
+GT_LOG=${GT_AUTOSTART_GTLOG:-/workspace/secondlife/textclient.log}
+STAMP=${GT_AUTOSTART_STAMP:-/tmp/galatay-autostart.boot}     # decision made this boot
+LOCK=${GT_AUTOSTART_LOCK:-/tmp/galatay-autostart.lock}
 LOGIN_HOST=login.agni.lindenlab.com
 
 if [[ "${1:-}" == "--detach" ]]; then
@@ -33,7 +34,7 @@ if [[ "${1:-}" == "--detach" ]]; then
   exit 0
 fi
 
-[[ "$(id -un)" == box ]] || { echo "must run as user box (is $(id -un)); doing nothing"; exit 0; }
+[[ "$(id -un)" == box || -n "${GT_AUTOSTART_TEST_STOP:-}" ]] || { echo "must run as user box (is $(id -un)); doing nothing"; exit 0; }
 export HOME=/home/box USER=box LOGNAME=box
 export PATH="/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 mkdir -p "$(dirname "$ALOG")"
@@ -52,7 +53,7 @@ say "autostart run (uptime ${up_s} s, pid $$)"
 # .venv dirs after a reboot and the backups skip them, so rebuild it from scripts/requirements.txt, detached so it never
 # delays the client start (added 2026-09-27; log lines "[venv]" in this autostart log).
 EV=/workspace/secondlife/scripts/ensure-venv.sh
-[[ -x "$EV" ]] && setsid -f "$EV" >/dev/null 2>&1 </dev/null
+[[ -x "$EV" && -z "${GT_AUTOSTART_TEST_STOP:-}" ]] && setsid -f "$EV" >/dev/null 2>&1 </dev/null
 
 check_down_reasons() {   # prints a reason and returns 0 if we must not start
   if [[ -f "$MARK" ]]; then echo "deliberate-stop marker present ($(head -1 "$MARK")): not starting her"; return 0; fi
@@ -62,6 +63,29 @@ check_down_reasons() {   # prints a reason and returns 0 if we must not start
   if pgrep -x do-not-directly >/dev/null; then echo "Firestorm is running (same account): not starting the text client"; return 0; fi
   return 1
 }
+# 2026-10-13: wait for the box-store copy-in to finish before deciding. After a reboot /home/box and /workspace are
+# re-hydrated file by file over several minutes (11:45 boot: done ~11:52), and the connector (and so this hook) starts
+# meanwhile; at 11:49:41 run/deliberate-stop simply wasn't copied back yet, so she was logged in despite a deliberate stop.
+# Status file: /tmp/sand-copy-in-status.json ("phase":"done" when complete). Absent file = an older box without copy-in
+# status: wait GT_AUTOSTART_NOSTATUS_S (default 600 s of uptime) instead. Not done within GT_AUTOSTART_HYDRATE_S (default
+# 30 min): do not start (a deliberate stop must never be overridden by a half-restored disk).
+HYD=${GT_COPYIN_STATUS:-/tmp/sand-copy-in-status.json}
+hydrated() { [[ -f "$HYD" ]] && grep -q '"phase"[[:space:]]*:[[:space:]]*"done"' "$HYD"; }
+wait_hydrated() {
+  local limit=${GT_AUTOSTART_HYDRATE_S:-1800} t0=$SECONDS noted=0
+  while ! hydrated; do
+    if [[ ! -f "$HYD" ]] && (( $(cut -d. -f1 /proc/uptime) >= ${GT_AUTOSTART_NOSTATUS_S:-600} )); then
+      say "no copy-in status file; uptime past ${GT_AUTOSTART_NOSTATUS_S:-600} s: treating the disk as restored"; return 0; fi
+    (( noted )) || { say "waiting for the box-store copy-in to finish before checking the deliberate-stop marker"; noted=1; }
+    (( SECONDS - t0 >= limit )) && return 1
+    sleep "${GT_AUTOSTART_POLL_S:-5}"
+  done
+  (( noted )) && say "copy-in finished after $(( SECONDS - t0 )) s"
+  return 0
+}
+if ! wait_hydrated; then log "box-store copy-in not finished after ${GT_AUTOSTART_HYDRATE_S:-1800} s: not starting her (start by hand if wanted)"; decide "copy-in unfinished"; exit 0; fi
+[[ -n "${GT_AUTOSTART_TEST_STOP:-}" ]] && { check_down_reasons; exit $?; }   # tests: report the decision only
+
 if why=$(check_down_reasons); then log "$why"; decide "$why"; exit 0; fi
 
 # boot settle: the box sets its timezone/clock ~1-2 min after boot (10:23:46 today); logs should be in PT

@@ -32,12 +32,15 @@ public static class McpProgram
         builder.Services.AddMcpServer().WithStdioServerTransport().WithTools<SlTools>();
         var app = builder.Build();
         Webhook.Init();
-        if (Environment.GetEnvironmentVariable("GT_AUTOLOGIN") == "1")
+        // GT_AUTOLOGIN honours the deliberate-stop marker like the boot autostart (2026-10-13); the login tool stays explicit
+        if (Environment.GetEnvironmentVariable("GT_AUTOLOGIN") == "1" && !AutoLoginBlocked(Environment.GetEnvironmentVariable("GT_STOP_MARKER") ?? "/home/box/viewers/textclient/run/deliberate-stop"))
             _ = Task.Run(async () => await Core.LoginAsync());
         await app.RunAsync();
         if (Core.LoggedIn) await Core.Shutdown("MCP host closed stdin");
         return 0;
     }
+
+    internal static bool AutoLoginBlocked(string marker) => File.Exists(marker);
 }
 
 [McpServerToolType]

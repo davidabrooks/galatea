@@ -33,6 +33,9 @@ AMB = amblit(M.get("env")) if kind == "scene" else 0.0  # face/body portraits ha
 _mf = f"{jobdir}/tex-manifest.json"
 MANIFEST = json.load(open(_mf)) if os.path.exists(_mf) else {}
 TEX_PATHS = MANIFEST.get("paths", {}); ALPHA_SIDECAR = MANIFEST.get("alpha", {})
+HIDE_BATCH = set(os.environ.get("GT_DEBUG_HIDE_BATCH", "").split(","))
+SELF_REFLECT = os.environ.get("GT_SELF_REFLECT") == "1"
+NOGLOSSY = [k for k in os.environ.get("GT_DEBUG_NOGLOSSY", "").split(",") if k]
 ALPHA_CACHE = {}  # name -> (has_cutout, amax)
 def _alpha_stats(image):
     if image.name not in ALPHA_CACHE:
@@ -243,6 +246,7 @@ def build(group, bones=None, lining=True):
     min_tris = int(os.environ.get("GT_MIN_TRIS", "0"))  # look around: drop dust (nav still sees big obstacles)
     for bi, b in mine:
         if bi in drop: continue
+        if str(bi) in HIDE_BATCH: continue   # diagnosis: GT_DEBUG_HIDE_BATCH=45,60
         nv, ni = b["nv"], b["ni"]
         P, N, T, I = arrays(b)
         if min_tris and ni // 3 < min_tris and not b["group"].startswith("avatar"):
@@ -276,6 +280,11 @@ def build(group, bones=None, lining=True):
         # the near scene lights exactly as before the backdrop (ponytail: no bounce light off far walls; ceiling = a sunlit
         # building across the water doesn't brighten her side of the deck)
         if group == "far": ob.visible_diffuse = False; ob.visible_glossy = False
+        # SL reflections come from reflection probes / the sky environment, which never capture avatars: chrome on her chest
+        # mirrored her own chin and neck skin as a brown blur (2026-10-13, 4K photo; quick looks too). Avatars (hers and
+        # others') are therefore invisible to glossy rays; the scene and sky still reflect. GT_SELF_REFLECT=1 = old behaviour.
+        if group.startswith("avatar") and not SELF_REFLECT: ob.visible_glossy = False
+        if NOGLOSSY and any(k in b["tex"] for k in NOGLOSSY): ob.visible_glossy = False   # diagnosis: GT_DEBUG_NOGLOSSY=bake:,<uuid>
         p3 = P.reshape(-1, 3); lo = np.minimum(lo, p3.min(0)); hi = np.maximum(hi, p3.max(0)); n += nt
     log(group, "triangles", n, "bbox", lo.round(2).tolist(), hi.round(2).tolist())
     return lo, hi, obs

@@ -335,6 +335,7 @@ public static partial class Program
         HookAttachWatch(); // own AvatarAnimation watch with sources (AttachWatch.cs)
         HookExperiences(); // Experience perms + temp attaches (Experiences.cs)
         HookGroups(); // current-groups cache + JoinGroupReply log (GroupPicks.cs)
+        HookHandBones(); // HandBones.cs: per-avatar animation lists for the finger-bone check
         HookKissDetect(); // David kisses her via the Real Kisser -> "kissed" webhook event (KissDetect.cs)
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
         HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
@@ -489,8 +490,9 @@ public static partial class Program
                 double? dist = null;
                 try { if (chatPos != Vector3.Zero) dist = Math.Round(Vector3.Distance(chatPos, client.Self.SimPosition), 1); } catch { }
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
+                bool lapReq = LapRequestIn(e.SourceID, e.Message, chatId, false);   // LapAuto.cs: before the webhook sees the line
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId);
-                WanderChatIn(e.SourceID, e.FromName, chatPos, false, e.Message);
+                if (!lapReq) WanderChatIn(e.SourceID, e.FromName, chatPos, false, e.Message);
                 if (e.SourceID != DavidId || !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) // InstantReplies.cs
                 {
                     if (e.SourceID == DavidId) TypingStart(false);
@@ -535,8 +537,9 @@ public static partial class Program
                                 dist = Math.Round(Vector3.Distance(PositionHelper.GetAvatarPosition(sim, av), client.Self.SimPosition), 1);
                         }
                         catch { }
+                        bool lapReq = !offline && ImAutoReact(im) && LapRequestIn(im.FromAgentID, im.Message, msgId, true);   // LapAuto.cs
                         Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist, msgId);
-                        if (ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true, im.Message); // old messages: no wander pause/approach/reply
+                        if (!lapReq && ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true, im.Message); // old messages: no wander pause/approach/reply
                         if (!offline && (im.FromAgentID != DavidId || !TryInstantReply(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true))) // InstantReplies.cs (after the wander chat pause)
                         {
                             if (im.FromAgentID == DavidId) TypingStart(true);

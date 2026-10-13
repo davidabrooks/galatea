@@ -18,6 +18,8 @@
     <Compile Include="../galatay-text/LoginStart.cs" Link="Core/LoginStart.cs" />
     <Compile Include="../galatay-text/JoinDavid.cs" Link="Core/JoinDavid.cs" />
     <Compile Include="../galatay-text/SitFixes.cs" Link="Core/SitFixes.cs" />
+    <Compile Include="../galatay-text/LapAuto.cs" Link="Core/LapAuto.cs" />
+    <Compile Include="../galatay-text/HandBones.cs" Link="Core/HandBones.cs" />
     <Compile Include="../galatay-text/BedroomChange.cs" Link="Core/BedroomChange.cs" />
     <Compile Include="../galatay-text/BootMatch.cs" Link="Core/BootMatch.cs" />
     <Compile Include="../galatay-text/KissDetect.cs" Link="Core/KissDetect.cs" />

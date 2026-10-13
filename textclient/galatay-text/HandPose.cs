@@ -68,14 +68,15 @@ public static partial class Program
     static void HandPoseForPathAsync(System.Collections.Generic.IEnumerable<string> path, string why)
     {
         var (col, name) = HandPoseFor(path);
-        _ = Task.Run(async () => { await Task.Delay(2000); await SetHandPose(col, name, why); });
+        _ = Task.Run(async () => { await Task.Delay(2000); await SetHandPose(col, name, why); HandsVerifyAfterPose(why); });   // HandBones.cs check
     }
 
     static async Task<string> HandsCmd(string[] a)
     {
         if (a.Length == 0 || a[0] == "status") return "hands: last " + handLast;
+        if (a[0] == "check") return await HandsCheckCmd(string.Join(" ", a.Skip(1)));
         var m = a[0].ToLowerInvariant() switch { "grip" => HandGripCol, "relaxed" => HandRelaxedCol, "point" => HandPointCol, "fist" => HandFistCol, _ => int.TryParse(a[0], out var c) && c is >= 1 and <= 14 ? c : -1 };
-        if (m < 0) return "usage: hands grip|relaxed|point|fist|<1-14>|status";
+        if (m < 0) return "usage: hands grip|relaxed|point|fist|<1-14>|status|check [avatar]";
         return await SetHandPose(m, a[0], "command");
     }
 }

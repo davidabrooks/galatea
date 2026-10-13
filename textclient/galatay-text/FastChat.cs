@@ -40,7 +40,7 @@ public static partial class Program
         public double MaxDelayS => PaceMaxS.Values.Append(TypingMaxS).Max();
     }
     internal sealed record FastLine(string Scope, string Speaker, string Text, bool Mine);
-    internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error, string Pace = "normal", string Outfit = null, bool Helper = false);
+    internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error, string Pace = "normal", string Outfit = null, bool Helper = false, bool Kiss = false);
 
     static string FastFile => Path.Combine(RouteDir, "_fast-chat.json");
     static string FastUsageFile => Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "fastchat-usage.jsonl");
@@ -194,12 +194,15 @@ public static partial class Program
             // 2026-10-09: outfit = "random" | "top_color" | "<saved outfit name>" (FastOutfit.cs validates it; null = none)
             var outfit = cd.RootElement.TryGetProperty("outfit", out var of) && of.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(of.GetString()) ? of.GetString().Trim() : null;
             if (outfit != null && (outfit.Equals("null", StringComparison.OrdinalIgnoreCase) || outfit.Equals("none", StringComparison.OrdinalIgnoreCase))) outfit = null;
+            // 2026-10-11: kiss=true -> the client kisses David itself (Kiss.cs); the line is then a normal claimed reply, not an action
+            bool kiss = cd.RootElement.TryGetProperty("kiss", out var ks) && ks.ValueKind == JsonValueKind.True && !helper && outfit == null;
+            if (kiss) action = false;
             var pace = cd.RootElement.TryGetProperty("pace", out var pc) && pc.ValueKind == JsonValueKind.String ? pc.GetString() : null;
             (reply, var tagPace) = FastStripPaceTag(reply);
             pace = FastNormPace(pace ?? tagPace);
             reply = System.Text.RegularExpressions.Regex.Replace(reply, @"\s*\n\s*", " ").Trim();
             if (reply.Length > 300) reply = reply[..300].TrimEnd() + "…";
-            return new FastResult(reply, action, pt, ct, ot, null, pace, action && !helper ? outfit : null, helper);
+            return new FastResult(reply, action, pt, ct, ot, null, pace, action && !helper ? outfit : null, helper, kiss);
         }
         catch (Exception ex) { return new FastResult("", false, 0, 0, 0, "bad response: " + ex.GetType().Name); }
     }
@@ -345,6 +348,8 @@ public static partial class Program
                     if (dec != FastOutcome.Routine && RateGuard() is string rg) { outcome = "routine (" + rg + ")"; dec = FastOutcome.Routine; }
                     // 2026-10-09 David: an outfit change he asks for starts here, ~1 s after his line (not ~60 s later in the routine)
                     if (dec == FastOutcome.Ack && david && r.Outfit != null) outfitTask = FastOutfitStart(r.Outfit, text, msgId);
+                    // 2026-10-11 David: a kiss (asked for, or when the mood fits) happens right away, David only
+                    if (david && r.Kiss && dec == FastOutcome.Send) { try { Log("fastchat", "kiss: " + KissCmd("David")); } catch (Exception kx) { Log("fastchat", "kiss failed: " + kx.Message); } }
                     if (dec != FastOutcome.Routine)
                     {
                         // human-like pause, typing indicator on the whole time (David's line already started it)

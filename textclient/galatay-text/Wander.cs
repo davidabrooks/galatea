@@ -604,6 +604,7 @@ public static partial class Program
                 wLegsUntilSit--;
                 lastPlace = target;
                 WanderNoteLevel();
+                await WanderKissMaybe(ct);   // Kiss.cs: occasional kiss when David stands close by
                 wTarget = null;   // picked at the next leg (after any sit), from the level the dwell says
             }
             else

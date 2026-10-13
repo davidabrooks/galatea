@@ -1726,6 +1726,7 @@ public static partial class Program
   throttle [task <kbps>]      show / set the UDP object-update throttle (AgentThrottle; max 1338 kbps task)
   interest [status|360|default]   SL interest list mode per region (360 = stream everything around her, not just the camera frustum)
   look [self [front|back|left|right|<deg>|all]|around|at <name>] [fast] [far]  READ-ONLY (far: +96 m backdrop): scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
+  photo hd [self|view|<name>] [landscape|portrait]  READ-ONLY: 4K still for David (3840x2160 / 2160x3840, Cycles+denoise, ~3-5 min CPU) -> PNG+JPG in /workspace/secondlife/photos, paths logged as [look]
   texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG
   vendor look <name filter> [radius]   nearby objects matching name/hover text (default 20 m): face PNGs + index.json in textures/scan-*/
@@ -1965,6 +1966,7 @@ public static partial class Program
             case "parcel": return await ParcelCmd(a);
             case "scene" when a.Length > 0 && a[0] == "export": return await SceneExport(a);
             case "look": return await LookCmd(a);
+            case "photo": return await PhotoCmd(a);
             case "texture" when a.Length > 0 && a[0] == "save": case "faces": case "vendor" when a.Length > 0 && a[0] == "look": return await TextureCmds(cmd, a, rest);
             case "worn" when a.Length >= 2 && a[0] == "tex": { var it = UUID.TryParse(a[1], out var wid) ? wid : UUID.Zero; var sb2 = new System.Text.StringBuilder(); foreach (var kv in SnapshotTextures(new[] { it })) sb2.AppendLine($"local {kv.Key}: {kv.Value}"); return sb2.Length == 0 ? "not worn / no prims" : sb2.ToString().TrimEnd(); } // READ-ONLY: face texture UUIDs (default;f0;f1..) per prim of a worn item
             case "worn" when a.Length >= 2 && a[0] == "links": return await WornLinks(rest.Substring(rest.IndexOf("links") + 5).Trim().Trim('"'));

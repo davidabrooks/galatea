@@ -62,7 +62,20 @@ def fetch_tex(uuid, outdir, cap=512):
         to_png(urllib.request.urlopen(CDN + uuid, timeout=20).read(), path, cap)
         return uuid, path, None
     except Exception as e:
-        return uuid, None, str(e)[:120]
+        best = cached_fallback(uuid, outdir)  # CDN down/offline: the largest size already cached beats plain colour
+        return (uuid, best, None) if best else (uuid, None, str(e)[:120])
+
+def cached_fallback(uuid, outdir):
+    """Largest cached <uuid>.<cap>.png (e.g. a 1024 copy when an HD photo asks for 4096 and the CDN can't be reached)."""
+    best = None
+    try:
+        for f in os.listdir(outdir):
+            if f.startswith(uuid + ".") and f.endswith(".png") and f[len(uuid) + 1:-4].isdigit():
+                c = int(f[len(uuid) + 1:-4])
+                if best is None or c > best[0]: best = (c, os.path.join(outdir, f))
+    except OSError:
+        return None
+    return best[1] if best else None
 
 def blender(args, timeout, env=None):
     t = time.time()

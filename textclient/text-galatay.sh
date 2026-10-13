@@ -95,6 +95,7 @@ case "${1:-}" in
     relaunches=(); n=0
     while :; do
       [[ -f "$STOPF" ]] && { slog "stop requested: not (re)launching"; break; }
+      (( n > 0 )) && [[ -f "$MARK" ]] && { slog "deliberate-stop marker present: not relaunching"; break; }
       now=$(date +%s); keep=(); for t in "${relaunches[@]}"; do (( now - t < 3600 )) && keep+=("$t"); done; relaunches=("${keep[@]}")
       if (( n > 0 )); then
         if (( ${#relaunches[@]} >= ${GT_MAX_RELAUNCH_HOUR:-12} )); then slog "more than ${GT_MAX_RELAUNCH_HOUR:-12} relaunches within an hour: giving up (start it again by hand)"; break; fi
@@ -104,6 +105,7 @@ case "${1:-}" in
         if [[ -f "$RUN/kicked-elsewhere" ]]; then slog "kicked by another login of this account ($(head -c 120 "$RUN/kicked-elsewhere" | tr -d '\n')): waiting 300 s"; rm -f "$RUN/kicked-elsewhere"; back=300; fi
         slog "relaunching in ${back} s (relaunch $(( ${#relaunches[@]} + 1 )) in the last hour)"
         sleep "$back"; [[ -f "$STOPF" ]] && { slog "stop requested during backoff"; break; }
+        [[ -f "$MARK" ]] && { slog "deliberate-stop marker set during backoff: not relaunching"; break; }
         relaunches+=("$(date +%s)")
         [[ -f "$CONSOLE" ]] && mv -f "$CONSOLE" "$CONSOLE.prev"
       fi

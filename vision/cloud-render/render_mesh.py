@@ -4,7 +4,7 @@ blender -b --factory-startup --python render_mesh.py -- <jobdir> {scene|face|bod
 jobdir holds mesh.json, mesh.bin, terrain.json and tex/<uuid>.png, tex/bake-<name>.png.
 Galatea's rigged attachments are in bind pose (= SL's default T-pose), in avatar space (+X forward, feet near z=0).
 """
-import bpy, json, math, os, sys, time
+import bpy, json, math, os, re, sys, time
 import numpy as np
 from mathutils import Vector
 
@@ -291,6 +291,11 @@ def gpu_setup():
         sc.cycles.samples = int(os.environ.get("GT_SAMPLES", "64"))
         sc.cycles.use_denoising = os.environ.get("GT_DENOISE", "1") != "0" and sc.cycles.samples >= 24
         sc.cycles.transparent_max_bounces = 8 if sc.cycles.samples < 24 else 16
+        if os.environ.get("GT_HD") == "1":   # `photo hd` (2026-10-13): stills for David, quality over speed
+            sc.cycles.use_adaptive_sampling = True; sc.cycles.adaptive_threshold = 0.01
+            sc.cycles.denoiser = "OPENIMAGEDENOISE"; sc.cycles.denoising_input_passes = "RGB_ALBEDO_NORMAL"
+            sc.cycles.max_bounces = 8; sc.cycles.diffuse_bounces = 4; sc.cycles.glossy_bounces = 4
+            sc.cycles.transparent_max_bounces = 32; sc.cycles.filter_width = 1.5   # pixel filter = anti-aliasing
         log("cycles device", sc.cycles.device)
     elif engine == "WORKBENCH":  # flat preview: textures, no lighting model (cheapest; CPU/llvmpipe friendly)
         sc.render.engine = "BLENDER_WORKBENCH"; sc.display.shading.color_type = "TEXTURE"; sc.display.shading.light = "STUDIO"
@@ -583,7 +588,10 @@ else:
     world(0.5)
 sc.view_settings.view_transform = "Standard"  # SL shows textures as plain sRGB
 sc.view_settings.exposure = float(os.environ.get("GT_EXPOSURE", "0"))
-sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90
+if out.lower().endswith(".png"):   # `photo hd`: lossless master (look.py writes the high-quality JPG from it)
+    sc.render.image_settings.file_format = "PNG"; sc.render.image_settings.color_mode = "RGB"; sc.render.image_settings.compression = 15
+else:
+    sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90
 log("build seconds", round(time.time() - T0, 1))
 views = views or [None]
 # keep the synced scene (BVH, ~1 GB of images with the backdrop) between the views of one job: each view re-synced it,
@@ -594,8 +602,8 @@ sc.render.use_persistent_data = len(views) > 1 and os.environ.get("GT_PERSIST", 
 for i, v in enumerate(views):
     if isinstance(v, tuple) and v[0] == "body":  # body side views: rotate the camera/light rig, name the file by side
         rig.rotation_euler = (0, 0, math.radians(v[1]))
-        sc.render.filepath = out.replace(".jpg", f"-{v[2]}.jpg")
+        sc.render.filepath = re.sub(r"\.(jpg|png)$", rf"-{v[2]}.\1", out)
     else:
         if i: set_view(v)
-        sc.render.filepath = out if len(views) == 1 else out.replace(".jpg", f"-{i}.jpg")
+        sc.render.filepath = out if len(views) == 1 else re.sub(r"\.(jpg|png)$", rf"-{i}.\1", out)
     t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)

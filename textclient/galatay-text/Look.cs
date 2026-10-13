@@ -38,7 +38,29 @@ public static partial class Program
         return outp.Count is > 0 and <= 8 ? string.Join(",", outp) : null;
     }
 
-    static async Task<string> LookCmd(string[] a)
+    // pure (test): `photo hd [self|view|<avatar or object>] [landscape|portrait]` -> (look mode, target, orientation or "" = mode default), null = invalid
+    internal static (string mode, string target, string orient)? PhotoHdArgs(string[] a)
+    {
+        if (a.Length == 0 || a[0].ToLowerInvariant() != "hd") return null;
+        var w = a[1..].ToList(); string orient = "";
+        if (w.Count > 0 && w[^1].ToLowerInvariant() is "landscape" or "portrait") { orient = w[^1].ToLowerInvariant(); w.RemoveAt(w.Count - 1); }
+        if (w.Count == 0 || (w.Count == 1 && w[0].ToLowerInvariant() == "view")) return ("view", null, orient);
+        if (w.Count == 1 && w[0].ToLowerInvariant() == "self") return ("self", null, orient);
+        return ("at", string.Join(" ", w), orient);
+    }
+
+    // `photo hd ...` (2026-10-13, David): a 4K still for David, separate from her quick looks (look.py --hd: 3840x2160 or 2160x3840,
+    // Cycles + denoise, full-res textures, soft shadows; PNG + JPG in /workspace/secondlife/photos). Minutes on the CPU, so it always
+    // returns before it finishes and logs the paths as [look].
+    static Task<string> PhotoCmd(string[] a)
+    {
+        var p = PhotoHdArgs(a);
+        if (p == null) return Task.FromResult("usage: photo hd [self|view|<avatar or object name>] [landscape|portrait]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait)");
+        var la = p.Value.mode == "view" ? Array.Empty<string>() : p.Value.mode == "self" ? new[] { "self" } : new[] { "at", p.Value.target };
+        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd");
+    }
+
+    static async Task<string> LookCmd(string[] a, string hd = null)
     {
         const string usage = "usage: look [self [front|back|left|right|<degrees>|all]|around|at <avatar or object name>] [fast] [far]";
         bool fast = a.Contains("fast"), far = a.Contains("far"); var w = a.Where(x => x != "fast" && x != "far").ToArray();
@@ -76,6 +98,7 @@ public static partial class Program
             if (fast) psi.ArgumentList.Add("--fast");
             if (far) psi.ArgumentList.Add("--far");
             if (views != null) psi.ArgumentList.Add("--views=" + views);
+            if (hd != null) psi.ArgumentList.Add(hd);
             // the client-side stages, so look.py's timing summary covers the whole look
             psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
             psi.Environment["GT_LOOK_EXPORT_S"] = lastExportStages;   // export sub-stages, e.g. prims=1.2(20696),bakes=3.4(...)
@@ -85,7 +108,7 @@ public static partial class Program
             pr.BeginOutputReadLine(); pr.BeginErrorReadLine();
             string Result() { lock (outText) lock (errText) return pr.ExitCode == 0 ? outText.ToString().Trim() : $"look failed (exit {pr.ExitCode}): {(errText.ToString() + outText).Trim()}"; }
             var done = pr.WaitForExitAsync().ContinueWith(_ => { var r = Result(); Log("look", $"{mode} {string.Join(" ", w.Skip(1))}: {r.Replace('\n', ' ')}"); lookGate.Release(); return r; });
-            int wait = int.TryParse(Env("GT_LOOK_WAIT_S", "75"), out var ws) && ws > 0 ? ws : 75;
+            int wait = hd != null ? 5 : int.TryParse(Env("GT_LOOK_WAIT_S", "75"), out var ws) && ws > 0 ? ws : 75;
             if (await Task.WhenAny(done, Task.Delay(TimeSpan.FromSeconds(Math.Max(1, wait - sw.Elapsed.TotalSeconds)))) == done) return await done;
             return $"look: still rendering after {sw.Elapsed.TotalSeconds:F0} s (pid {pr.Id}); the image path(s) will be logged as [look] in the client log";
         }

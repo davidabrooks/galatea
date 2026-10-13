@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """`look` for the text client: a `scene export` dir -> mesh (scene-mesher) -> CPU Cycles render(s) of what's around her.
 usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far] [--views=front,back,left,right,<deg>|all]
+             [--hd[=landscape|portrait]]
+  --hd    4K photo for David (not her quick vision look): 3840x2160 (portrait 2160x3840; self defaults to portrait),
+          Cycles with more samples, adaptive sampling + OpenImageDenoise, full-res textures and bakes, soft studio
+          shadows. PNG + quality-95 JPG in GT_PHOTO_OUT (/workspace/secondlife/photos), photo-<stamp>-<mode>.png/.jpg
   view    over her shoulder, along her facing        around  4 views (front, left, back, right)
   self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
   --views (self) only the full body, from each listed side / angle (degrees counter-clockwise from her front: 90 = her
@@ -23,6 +27,17 @@ BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.2.3-linux-x64/ble
 OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
 VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
+PHOTO_OUT = os.environ.get("GT_PHOTO_OUT", "/workspace/secondlife/photos")
+HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
+
+def hd_settings(arg, mode):
+    """--hd[=landscape|portrait] -> (orientation, env for the HD render) or (None, {}) when absent. Quality knobs only:
+    her normal looks never pass --hd, so they keep their small, fast settings."""
+    if arg is None: return None, {}
+    o = (arg or ("portrait" if mode == "self" else "landscape")).lower()
+    if o not in HD_RES: raise ValueError(f"unknown photo preset '{arg}' (landscape or portrait)")
+    return o, {"GT_HD": "1", "GT_RES": HD_RES[o], "GT_SAMPLES": os.environ.get("GT_HD_SAMPLES", "96"), "GT_DENOISE": "1",
+               "GT_STUDIO_SHADOW": "1", "GT_TEX_CAP_AVATAR": "4096", "GT_TEX_CAP_SCENE": "4096"}
 
 SIDES = ("front", "back", "left", "right")
 def body_views(arg):
@@ -161,11 +176,16 @@ def crowd_summary(others):
 
 def main(a):
     fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
+    hd_arg = next(((x.split("=", 1)[1] if "=" in x else "") for x in a if x == "--hd" or x.startswith("--hd=")), None)
+    a = [x for x in a if not (x == "--hd" or x.startswith("--hd="))]
     vw = next((x.split("=", 1)[1] for x in a if x.startswith("--views=")), ""); a = [x for x in a if not x.startswith("--views=")]
     try: bviews = body_views(vw)
     except ValueError as e: sys.exit(str(e))
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
+    try: hd, hd_env = hd_settings(hd_arg, mode)
+    except ValueError as e: sys.exit(str(e))
+    if hd: fast = False; os.environ.update({k: v for k, v in hd_env.items() if k.startswith("GT_TEX_CAP")})
     doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
     # her surroundings: whole objects reaching within 30 m (Highest LOD within 12); with --far also objects out to 96 m,
     # those centred beyond 30 m as backdrop at a screen-size LOD; `self` meshes her alone. --roots=32: the 32 m export's
@@ -186,7 +206,7 @@ def main(a):
     json.dump(far and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)
     # bakes: only agents in this mesh (not every bake-*.j2c in a crowded export — was ~55–100 s)
     t = time.time()
-    bake_cap = 256 if mode == "around" else (512 if fast else 1024)
+    bake_cap = 2048 if hd else 256 if mode == "around" else (512 if fast else 1024)
     only = bake_keys(meta, doc)
     n_bake, bake_hits = cached_bakes(d, only, bake_cap, WORK)
     times["bakes"] = round(time.time() - t, 1)
@@ -212,11 +232,12 @@ def main(a):
         else:
             near = [o["name"] for o in meta.get("others", [])] + sorted({p["name"] for p in doc["prims"] if p.get("name")})[:20]
             sys.exit(f"nothing called '{target}' in view; avatars/objects: {', '.join(near) or 'none'}")
-    os.makedirs(OUT, exist_ok=True); stamp = time.strftime("%Y%m%d-%H%M%S"); outs = []
-    for kind in ((["body"] if bviews else ["face", "body"]) if mode == "self" else ["scene"]):
-        out = f"{OUT}/look-{stamp}-{mode}{'-' + kind if mode == 'self' else ''}.jpg"; t = time.time()
+    out_dir = PHOTO_OUT if hd else OUT
+    os.makedirs(out_dir, exist_ok=True); stamp = time.strftime("%Y%m%d-%H%M%S"); outs = []
+    for kind in ((["body"] if bviews or hd else ["face", "body"]) if mode == "self" else ["scene"]):
+        out = f"{out_dir}/{'photo' if hd else 'look'}-{stamp}-{mode}{'-' + kind if mode == 'self' and not hd else ''}.{'png' if hd else 'jpg'}"; t = time.time()
         env = {**os.environ, "GT_SAMPLES": "8" if fast else "12" if mode == "around" else "48", **({"GT_VIEW": view} if view else {}),
-               **({"GT_BODY_VIEWS": bviews} if kind == "body" and bviews else {})}
+               **({"GT_BODY_VIEWS": bviews} if kind == "body" and bviews else {}), **hd_env}
         if mode == "around":
             env.setdefault("GT_RES", "640x360")
             env.setdefault("GT_NOSKY", "1")
@@ -231,6 +252,10 @@ def main(a):
         rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
         build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
         if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
+        if hd:   # high-quality JPG next to each PNG master
+            from PIL import Image
+            for p in list(got):
+                Image.open(p).convert("RGB").save(p[:-4] + ".jpg", quality=95, subsampling=0, optimize=True); got.append(p[:-4] + ".jpg")
         outs += got; times[kind] = round(time.time() - t, 1)
         if build is not None: times["build"] = build
         times["render_views"] = rend
@@ -242,7 +267,7 @@ def main(a):
     pre = dict(kv.split("=") for kv in os.environ.get("GT_LOOK_PRE_S", "").split(",") if "=" in kv)  # Look.cs: wait, export
     for k_, v_ in pre.items(): times["client_" + k_] = float(v_)
     if os.environ.get("GT_LOOK_EXPORT_S"): times["client_export_stages"] = export_stages(os.environ["GT_LOOK_EXPORT_S"])
-    print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "seconds": times, "total": round(time.time() - t0, 1), "total_with_client": round(time.time() - t0 + sum(float(v_) for v_ in pre.values()), 1),
+    print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "hd": hd, "seconds": times, "total": round(time.time() - t0, 1), "total_with_client": round(time.time() - t0 + sum(float(v_) for v_ in pre.values()), 1),
                       "others": [o["name"] for o in meta.get("others", [])], "avatars": crowd, "textures": info["textures"], "bakes": n_bake, "bake_cache_hits": bake_hits}
                      | ({"mesh_warnings": mesh_warn} if mesh_warn else {})))
 

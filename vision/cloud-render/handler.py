@@ -8,6 +8,27 @@ import base64, concurrent.futures as cf, glob, gzip, io, json, lzma, os, re, sub
 from PIL import Image
 
 CDN = "http://asset-cdn.glb.agni.lindenlab.com/?texture_id="
+
+CDN_HOST = "asset-cdn.glb.agni.lindenlab.com"
+_CDN_IPS = None
+def _cdn_ips():
+    """2026-10-11: box egress blocks connections to DNS names (system DNS -> 198.18.0.1), so resolve the CDN by
+    DNS-over-HTTPS to 1.1.1.1 (by IP) and GET the IP with a Host header; empty list = use the name (other hosts)."""
+    global _CDN_IPS
+    if _CDN_IPS is None:
+        try:
+            r = urllib.request.Request("https://1.1.1.1/dns-query?name=" + CDN_HOST + "&type=A", headers={"accept": "application/dns-json"})
+            _CDN_IPS = [a["data"] for a in json.load(urllib.request.urlopen(r, timeout=8)).get("Answer", []) if a.get("type") == 1]
+        except Exception:
+            _CDN_IPS = []
+    return _CDN_IPS
+def _cdn_get(uuid):
+    for ip in _cdn_ips()[:2]:
+        try:
+            return urllib.request.urlopen(urllib.request.Request("http://" + ip + "/?texture_id=" + uuid, headers={"Host": CDN_HOST}), timeout=20).read()
+        except Exception:
+            pass
+    return urllib.request.urlopen(CDN + uuid, timeout=20).read()
 BLENDER = os.environ.get("BLENDER", "blender")
 WORKER_T0 = time.time()
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")  # trust boundary: ids become paths and URLs
@@ -59,7 +80,7 @@ def fetch_tex(uuid, outdir, cap=512):
         except Exception:
             pass
     try:
-        to_png(urllib.request.urlopen(CDN + uuid, timeout=20).read(), path, cap)
+        to_png(_cdn_get(uuid), path, cap)
         return uuid, path, None
     except Exception as e:
         best = cached_fallback(uuid, outdir)  # CDN down/offline: the largest size already cached beats plain colour

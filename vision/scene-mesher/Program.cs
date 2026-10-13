@@ -252,8 +252,12 @@ static class Mesher
     internal static string CachePath(string root, string kind, UUID id) =>
         root == null || id == UUID.Zero || kind.IndexOfAny(new[] { '/', '\\', '.' }) >= 0 ? null : Path.Combine(root, kind, id.ToString()[..2], id.ToString());
     static int cacheHits, cacheMisses;
+    static string ExportDir = "";
     static async Task<byte[]> Get(string kind, UUID id)
     {
+        // 2026-10-11: PBR material assets come with the export (the client fetches them; the box can't reach the CDN by name)
+        if (kind == "material" && ExportDir.Length > 0 && File.Exists(Path.Combine(ExportDir, $"material-{id}.bin")))
+            try { var eb = await File.ReadAllBytesAsync(Path.Combine(ExportDir, $"material-{id}.bin")); if (eb.Length > 0) return eb; } catch { }
         var path = CachePath(CacheDir, kind, id);
         if (path != null && File.Exists(path)) { try { var b = await File.ReadAllBytesAsync(path); if (b.Length > 0) { Interlocked.Increment(ref cacheHits); return b; } } catch { } }
         byte[] data;
@@ -264,8 +268,62 @@ static class Mesher
         return data;
     }
 
+    // GLTF material override (LL semantics: a field still at the GLTF default is "not overridden"; a null/zero texture
+    // id keeps the base map) merged onto the base PBR material of one face. Pure: --pbr-selftest.
+    internal static void ApplyGltfOverride(Dictionary<string, object> m, OSDMap ov, ref string tex, ref float[] rgba)
+    {
+        static bool Near(double a, double b) => Math.Abs(a - b) < 1e-4;
+        if (ov.TryGetValue("base_color", out var bc) && bc is OSDArray ba && ba.Count >= 4)
+        {
+            var c = new[] { (float)ba[0].AsReal(), (float)ba[1].AsReal(), (float)ba[2].AsReal(), (float)ba[3].AsReal() };
+            if (!(Near(c[0], 1) && Near(c[1], 1) && Near(c[2], 1) && Near(c[3], 1))) rgba = c;
+        }
+        if (ov.TryGetValue("metallic", out var mt) && !Near(mt.AsReal(), 1)) m["metallic"] = (float)mt.AsReal();
+        if (ov.TryGetValue("roughness", out var ro) && !Near(ro.AsReal(), 1)) m["roughness"] = (float)ro.AsReal();
+        if (ov.TryGetValue("emissive", out var em) && em is OSDArray ea && ea.Count >= 3 && (ea[0].AsReal() > 0 || ea[1].AsReal() > 0 || ea[2].AsReal() > 0))
+            m["emissive"] = new[] { (float)ea[0].AsReal(), (float)ea[1].AsReal(), (float)ea[2].AsReal() };
+        if (ov.TryGetValue("alpha_mode", out var am) && am.AsInteger() != 0) m["alpha"] = am.AsInteger() switch { 1 => "blend", 2 => "mask", _ => m["alpha"] };
+        if (ov.TryGetValue("alpha_cutoff", out var ac) && !Near(ac.AsReal(), 0.5) && m["alpha"] as string == "mask") m["cutoff"] = (float)ac.AsReal();
+        if (ov.TryGetValue("textures", out var tx) && tx is OSDArray ta)
+        {
+            string T(int i) => i < ta.Count && ta[i].Type != OSDType.Unknown && ta[i].AsUUID() != UUID.Zero ? ta[i].AsUUID().ToString() : null;
+            if (T(0) is string b) tex = b; if (T(1) is string n) m["normal"] = n; if (T(2) is string r) m["mr"] = r; if (T(3) is string e) m["emissive_tex"] = e;
+        }
+    }
+
+    // the sim's material asset is LLSD (binary or xml) {"version", "type", "data": "<glTF json>"}; AssetMaterial wants the json
+    internal static byte[] UnwrapMaterial(byte[] d)
+    {
+        try
+        {
+            var head = System.Text.Encoding.ASCII.GetString(d, 0, Math.Min(d.Length, 32));
+            OSD o = head.StartsWith("<? LLSD/Binary") || head.StartsWith("<?llsd/binary") ? OSDParser.DeserializeLLSDBinary(d)
+                  : head.TrimStart().StartsWith("<") ? OSDParser.DeserializeLLSDXml(d) : null;
+            if (o is OSDMap m && m.ContainsKey("data")) return System.Text.Encoding.UTF8.GetBytes(m["data"].AsString());
+        }
+        catch { }
+        return d;
+    }
+
+    static bool PbrSelftest()
+    {
+        var wrapped = OSDParser.SerializeLLSDBinary(new OSDMap { ["version"] = "1.1", ["type"] = "GLTF 2.0", ["data"] = "{\"materials\":[{}]}" });
+        if (System.Text.Encoding.UTF8.GetString(UnwrapMaterial(wrapped)) != "{\"materials\":[{}]}") return false;
+        var m = new Dictionary<string, object> { ["alpha"] = "none", ["metallic"] = 0f, ["roughness"] = 0.8f, ["normal"] = "n0" };
+        string tex = "base"; var rgba = new[] { 0.9f, 0.9f, 0.9f, 1f };
+        var ov = new OSDMap { ["base_color"] = new OSDArray { 1, 1, 1, 1 }, ["metallic"] = 1, ["roughness"] = 0.2, ["emissive"] = new OSDArray { 0, 0, 0 },
+            ["textures"] = new OSDArray { new OSD(), OSD.FromUUID(new UUID("11111111-1111-1111-1111-111111111111")), new OSD(), new OSD() } };
+        ApplyGltfOverride(m, ov, ref tex, ref rgba);
+        bool ok = (float)m["metallic"] == 0f && Math.Abs((float)m["roughness"] - 0.2f) < 1e-4 && tex == "base" && rgba[0] == 0.9f && (string)m["normal"] == "11111111-1111-1111-1111-111111111111";
+        var ov2 = new OSDMap { ["base_color"] = new OSDArray { 0.2, 0.3, 0.4, 1 }, ["metallic"] = 0.5, ["textures"] = new OSDArray { OSD.FromUUID(new UUID("22222222-2222-2222-2222-222222222222")) } };
+        ApplyGltfOverride(m, ov2, ref tex, ref rgba);
+        ok &= Math.Abs(rgba[0] - 0.2f) < 1e-4 && Math.Abs((float)m["metallic"] - 0.5f) < 1e-4 && tex == "22222222-2222-2222-2222-222222222222";
+        return ok;
+    }
+
     static async Task<int> Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--pbr-selftest") { bool pok = PbrSelftest(); Console.WriteLine(pok ? "pbr selftest ok" : "pbr selftest FAILED"); return pok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--skin-selftest") { bool sok = SkinSelftest(); Console.WriteLine(sok ? "skin selftest ok" : "skin selftest FAILED"); return sok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--lod-selftest") { bool lok = LodSelftest(); Console.WriteLine(lok ? "lod selftest ok" : "lod selftest FAILED"); return lok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--selftest")  // default skeleton sanity: pelvis ~1.07 m, head ~1.75 m, arms out (T-pose)
@@ -324,7 +382,7 @@ static class Mesher
         // shape differs from what it shows (a hull over a doorway, a phantom-looking curtain that is solid)
         bool nav = args.Contains("--nav"); args = args.Where(a => a != "--nav").ToArray();
         if (args.Length < 1 || !File.Exists(Path.Combine(args[0], "scene.json"))) { Console.Error.WriteLine("usage: scene-mesher <export dir> [near_m]"); return 2; }
-        string dir = args[0]; float near = args.Length > 1 ? float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 20;
+        string dir = args[0]; ExportDir = dir; float near = args.Length > 1 ? float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 20;
         var doc = (OSDMap)OSDParser.DeserializeJson(File.ReadAllText(Path.Combine(dir, "scene.json")));
         var me = ((OSDMap)doc["me"])["pos"].AsVector3();
         // avatar-local: undo her rotation around her agent position (z moves into the mesh frame with agentOff in PoseAvatar)
@@ -377,8 +435,9 @@ static class Mesher
         // PBR (GLTF) material assets, per face, from the RenderMaterial extra param the export records
         var pbr = new ConcurrentDictionary<UUID, AssetMaterial>();
         await Parallel.ForEachAsync(prims.Where(o => o.ContainsKey("render_materials")).SelectMany(o => ((OSDMap)o["render_materials"]).Values.Select(v => v.AsUUID())).Distinct(),
-            async (id, _) => { var d = await Get("material", id); var m = d == null ? null : new AssetMaterial(id, d); if (m != null && m.Decode()) pbr[id] = m; });
+            async (id, _) => { var d = await Get("material", id); var m = d == null ? null : new AssetMaterial(id, UnwrapMaterial(d)); if (m != null && m.Decode()) pbr[id] = m; });
         var legacy = doc.ContainsKey("materials") ? (OSDMap)doc["materials"] : new OSDMap();
+        var gltfOv = doc.ContainsKey("gltf_overrides") && doc["gltf_overrides"] is OSDMap gom ? gom : new OSDMap();
         Console.WriteLine($"assets: {assets.Count(a => a.Value != null)}/{assets.Count} fetched ({cacheHits} from the disk cache), {pbr.Count} pbr, {legacy.Count} legacy materials");
         Phase("fetch");
 
@@ -465,6 +524,8 @@ static class Mesher
                 tex = U(T(AssetMaterial.TEXTURE_BASE_COLOR)) ?? "none"; var c = g.BaseColorFactor; rgba = new[] { c.R, c.G, c.B, c.A };
                 m["normal"] = U(T(AssetMaterial.TEXTURE_NORMAL)); m["mr"] = U(T(AssetMaterial.TEXTURE_METALLIC_ROUGHNESS)); m["emissive_tex"] = U(T(AssetMaterial.TEXTURE_EMISSIVE));
                 m["metallic"] = g.MetallicFactor; m["roughness"] = g.RoughnessFactor; m["emissive"] = new[] { g.EmissiveFactor.X, g.EmissiveFactor.Y, g.EmissiveFactor.Z }; m["pbr"] = true;
+                if (o.ContainsKey("localid") && gltfOv.TryGetValue(o["localid"].AsUInteger().ToString(), out var po) && po is OSDMap pf && pf.TryGetValue(face.ToString(), out var fo) && fo is OSDMap ov)
+                    ApplyGltfOverride(m, ov, ref tex, ref rgba);
             }
             else if (te.MaterialID != UUID.Zero && legacy.TryGetValue(te.MaterialID.ToString(), out var lo) && lo is OSDMap l)
             {

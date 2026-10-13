@@ -250,7 +250,7 @@ public static partial class Program
         var scenePath = Path.Combine(dir, "scene.json");
         var primPart = Path.Combine(dir, "prims.part");
         int nPrims = 0, mine = 0, theirs = 0;
-        var matIds = new HashSet<UUID>(); var gltf = new OSDMap();
+        var matIds = new HashSet<UUID>(); var gltf = new OSDMap(); var pbrIds = new HashSet<UUID>();
         var wornTex = new Dictionary<(int, uint), HashSet<UUID>>();   // (region index, wearer LocalID) -> texture ids on its attachments
         using (var part = new FileStream(primPart, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
         for (int si = 0; si < views.Count; si++)
@@ -267,7 +267,7 @@ public static partial class Program
                 if (root.ParentID == 0 && Vector3.Distance(root.Position + off, myPos) > r && !(p == root && GroundSlab(p.Position + off, p.Rotation, p.Scale, myPos, r))) continue;
                 if (p.PrimData.PCode != PCode.Prim) continue;                 // trees/grass (PCode Tree/Grass) have no volume data
                 var o = (OSDMap)p.GetOSD();
-                if (p.RenderMaterials is { Count: > 0 } rms) { var m = new OSDMap(); foreach (var (f, id) in rms) m[f.ToString()] = OSD.FromUUID(id); o["render_materials"] = m; }
+                if (p.RenderMaterials is { Count: > 0 } rms) { var m = new OSDMap(); foreach (var (f, id) in rms) m[f.ToString()] = OSD.FromUUID(id); o["render_materials"] = m; if (attachedToMe || wearer.av != null || pbrIds.Count < 300) foreach (var id in rms.Values) if (id != UUID.Zero) pbrIds.Add(id); }
                 if (attachedToMe) { o["attached_to_me"] = true; o["attach_point"] = (int)root.PrimData.AttachmentPoint; mine++; }
                 else if (wearer.av != null)
                 {
@@ -373,7 +373,8 @@ public static partial class Program
             foreach (var id in missing) if (mc.TryGetValue(id.ToString(), out var m)) mats[id.ToString()] = m;
             if (matFetched > 0) SaveMatCache();
         }
-        Stage("materials", $"({matIds.Count} ids, {matIds.Count - missing.Count} cached, {matFetched} fetched)");
+        int pbrN = await ExportPbrAssets(dir, pbrIds);
+        Stage("materials", $"(pbr assets {pbrN}/{pbrIds.Count}; {matIds.Count} ids, {matIds.Count - missing.Count} cached, {matFetched} fetched)");
 
         var vparams = self == null ? new OSDMap() : Params(self);
         OSD env; var parcelId = await ParcelIdAt(sim, myPos);
@@ -473,6 +474,37 @@ public static partial class Program
             }
         }
         return (minX, minY, m);
+    }
+
+    // 2026-10-11: base GLTF (PBR) material assets of exported faces, written next to scene.json as material-<id>.bin for
+    // scene-mesher (the public asset CDN answers 502 for material_id, so only the sim's asset service has them). Kept in a
+    // disk cache: an asset id names fixed content.
+    static readonly string PbrCacheDir = Env("GT_PBR_CACHE", "/workspace/secondlife/vision/pbr-cache");
+    internal static string PbrFileName(UUID id) => $"material-{id}.bin";
+    static async Task<int> ExportPbrAssets(string dir, IEnumerable<UUID> ids)
+    {
+        int n = 0;
+        try { Directory.CreateDirectory(PbrCacheDir); } catch { }
+        await Parallel.ForEachAsync(ids, new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (id, _) =>
+        {
+            var cached = Path.Combine(PbrCacheDir, PbrFileName(id)); byte[] data = null;
+            try { if (File.Exists(cached)) data = await File.ReadAllBytesAsync(cached); } catch { }
+            if (data is not { Length: > 0 })
+            {
+                try
+                {
+                    // ViewerAsset cap directly: LibreMetaverse's RequestAssetAsync has no "material" type name
+                    var cap = client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset") ?? throw new InvalidOperationException("no ViewerAsset cap");
+                    var dl = client.Assets.HttpDownloadManager.QueueDownloadAsync(new Uri($"{cap}?material_id={id}"));
+                    var (resp, body) = await dl.WaitAsync(TimeSpan.FromSeconds(20));
+                    if (resp != null && resp.IsSuccessStatusCode) data = body; else Log("look", $"pbr material {id}: HTTP {(int?)resp?.StatusCode}");
+                    if (data is { Length: > 0 }) { var tmp = cached + "." + Guid.NewGuid().ToString("N")[..8]; await File.WriteAllBytesAsync(tmp, data); File.Move(tmp, cached, true); }
+                }
+                catch (Exception ex) { Log("look", $"pbr material {id}: {ex.GetBaseException().Message}"); }
+            }
+            if (data is { Length: > 0 }) { try { await File.WriteAllBytesAsync(Path.Combine(dir, PbrFileName(id)), data); Interlocked.Increment(ref n); } catch { } }
+        });
+        return n;
     }
 
     static OSDMap GltfOsd(AssetMaterial m) => new()

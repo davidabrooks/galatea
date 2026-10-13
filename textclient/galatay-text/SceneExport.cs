@@ -42,8 +42,13 @@ public static partial class Program
         AnimClock[e.AvatarID] = e.Animations.GroupBy(x => x.AnimationID).ToDictionary(g => g.Key, g =>
             prev.TryGetValue(g.Key, out var o) && o.seq == g.First().AnimationSequence ? o : (g.First().AnimationSequence, DateTime.Now));
     };
-    static string AnimsOf(UUID av) => AnimClock.TryGetValue(av, out var m)
-        ? string.Join(",", m.OrderBy(kv => kv.Value.since).Select(kv => $"{kv.Key}@{(DateTime.Now - kv.Value.since).TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)}")) : "";
+    static string AnimsOf(UUID av) => AnimClock.TryGetValue(av, out var m) ? AnimsOrdered(m, DateTime.Now) : "";
+    // 2026-10-11: start order, ties (all first seen at once, e.g. someone already posed when she arrived) broken by the
+    // server's sequence number (later start = higher seq), not by UUID: the mesher lets the later of two equal-priority
+    // animations win a joint, and UUID order bent David's genital bones into his leg.
+    internal static string AnimsOrdered(IReadOnlyDictionary<UUID, (int seq, DateTime since)> m, DateTime now) =>
+        string.Join(",", m.OrderBy(kv => kv.Value.since).ThenBy(kv => kv.Value.seq)
+            .Select(kv => $"{kv.Key}@{(now - kv.Value.since).TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)}"));
 
 
     // Before a look/export: wait for nearby avatars to finish loading their attachments (David 2026-10-05: like the orange

@@ -18,7 +18,36 @@ using Vector3 = LibreMetaverse.Vector3;
 static class Mesher
 {
     const string Cdn = "http://asset-cdn.glb.agni.lindenlab.com/";
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    // 2026-10-11: box egress blocks connections to DNS *names* (since 2026-10-08 20:13 PT; system DNS answers 198.18.0.1),
+    // so CDN fetches of new mesh assets failed and new clothing was missing from looks. Resolve hosts by DNS-over-HTTPS
+    // to 1.1.1.1 (by IP) and connect to the real address; system DNS is the fallback.
+    static readonly ConcurrentDictionary<string, System.Net.IPAddress[]> DohCache = new();
+    static async Task<System.Net.IPAddress[]> Resolve(string host, CancellationToken ct)
+    {
+        if (DohCache.TryGetValue(host, out var c)) return c;
+        try
+        {
+            using var h = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"https://1.1.1.1/dns-query?name={host}&type=A");
+            req.Headers.Add("accept", "application/dns-json");
+            var js = System.Text.Json.JsonDocument.Parse(await (await h.SendAsync(req, ct)).Content.ReadAsStringAsync(ct));
+            var ips = js.RootElement.TryGetProperty("Answer", out var ans) ? ans.EnumerateArray().Where(a => a.GetProperty("type").GetInt32() == 1)
+                .Select(a => System.Net.IPAddress.Parse(a.GetProperty("data").GetString())).ToArray() : Array.Empty<System.Net.IPAddress>();
+            if (ips.Length > 0) return DohCache[host] = ips;
+        }
+        catch { }
+        return DohCache[host] = await System.Net.Dns.GetHostAddressesAsync(host, ct);
+    }
+    static readonly HttpClient Http = new(new SocketsHttpHandler
+    {
+        ConnectCallback = async (ctx, ct) =>
+        {
+            var ips = await Resolve(ctx.DnsEndPoint.Host, ct);
+            var sock = new System.Net.Sockets.Socket(System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp) { NoDelay = true };
+            try { await sock.ConnectAsync(ips, ctx.DnsEndPoint.Port, ct); return new System.Net.Sockets.NetworkStream(sock, true); }
+            catch { sock.Dispose(); throw; }
+        }
+    }) { Timeout = TimeSpan.FromSeconds(30) };
     // the "use baked texture" placeholder UUIDs (constants from the SL viewer) -> appearance-service bake names
     static readonly Dictionary<UUID, string> BakeOf = new()
     {
@@ -689,6 +718,8 @@ static class Mesher
                 frames = new(); world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos, lockScale);
                 Console.WriteLine($"look-at: turn {2 * MathF.Acos(Math.Min(1, Math.Abs(q.W))) * 180 / MathF.PI:F0} deg; head off target {before:F0} -> {Off():F0} deg");
             }
+            if (Environment.GetEnvironmentVariable("GT_DUMP_JOINTS") is string dj) foreach (var jn in dj.Split(','))
+                if (frames.TryGetValue(jn, out var fj)) Console.WriteLine($"joint {owner[..Math.Min(8, owner.Length)]} {jn} pos {fj.Pos} rest {rest[jn].Pos}");
             // non-rigged attachments: root prim sits at its attach point (avatar_lad.xml offset/rotation) on that point's joint
             var points = lad.AttachmentPoints.ToDictionary(ap => ap.Id);
             foreach (var (_, p, fm) in unrigged.Where(x => x.Item1 == owner))

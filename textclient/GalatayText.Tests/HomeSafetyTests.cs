@@ -82,7 +82,7 @@ public class HomeSafetyTests
         Assert.Equal("change-here", Program.IndoorBikiniPlan(true, false, true, false));
         Assert.Equal("none", Program.IndoorBikiniPlan(true, true, true, false));        // already in the bikini
         Assert.Equal("none", Program.IndoorBikiniPlan(false, false, true, false));
-        Assert.Equal("none", Program.IndoorBikiniPlan(true, false, false, true));       // already on the beach: zone safety net
+        Assert.Equal("detour-indoors", Program.IndoorBikiniPlan(true, false, false, true));   // 2026-10-13: on the beach: up to the bedroom, never in place
         Assert.Equal("ARTi tubetop", Program.BeachRememberChoice("ARTi tubetop", null));
         Assert.Equal("Jani tshirt", Program.BeachRememberChoice("Bikini", "Jani tshirt"));
         Assert.Null(Program.BeachRememberChoice("Bikini", "Spicy"));

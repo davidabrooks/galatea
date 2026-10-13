@@ -24,7 +24,7 @@ public static partial class Program
     // picked Fist* > fist 2 labeled [solo] but it was a couples anim). Explicit 'pose couples' may still enter these.
     // 2026-10-07 19:39 (Beach Hammock ADULT: Adults* > 5Adults picked as solo): letter-only boundaries so digits next
     // to the word still match ("5Adults", "Couple2"); adds mirror / love / hers / M&F-pair terms.
-    static readonly Regex PoseCouplesName = new(@"(?<![a-z])(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair\w*|[2-9]\s*p|fist|spank\w*|sex|lovemak\w*|love(?:rs?)?|intimate|make.?out|grind|straddl\w*|entwine|entangl\w*|mirror\w*|hers|his\s*(?:&|and|n)\s*hers)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex PoseCouplesName = new(@"(?<![a-z])(couples?|cuddl\w*|kiss\w*|hugs?|hugging|spoon\w*|snuggl\w*|romanc\w*|lap|together|partners?|duo|pair\w*|[2-9]\s*p|fist|spank\w*|sex|lovemak\w*|love(?:rs?)?|intimate|make.?out|grind|straddl\w*|entwine|entangl\w*|mirror\w*|hers|his\s*(?:&|and|n)\s*hers|him|for\s+her)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Solo submenu names (Trompe Loeil Reiley etc. use SINGLE*).
     // Prefix match so "SinglesSet*" counts (19:39 hammock); Sit / Relax-type menus count as solo too.
     static readonly Regex PoseSoloMenuName = new(@"(?<![a-z])(?:singles?|solo|alone|relax|(?:sit(?:s|ting)?|one\s*p|1p)(?![a-z]))", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -55,6 +55,47 @@ public static partial class Program
     // David 2026-10-05: after a partner sits/stands, AVsitter often restarts anims; wait before "pose lost" recovery.
     public static double PoseSharedFlipGraceS = 15;
     public static double PoseRecoveryMissingS = 8; // was 3; brief AVsitter swaps were false positives
+
+    // David 2026-10-12: per-seat poses wander never picks (props that cannot line up with her). seat id -> pose names.
+    // Nutmeg. Porch Rocking Chair: f_reading rezzes its book where no avatar could read it (phone poses stay allowed).
+    internal static readonly Dictionary<UUID, string[]> SeatPoseSkip = new()
+    {
+        [new UUID("c78d42b6-c75c-df84-aa8c-8f78cbd2cb6c")] = new[] { "f_reading" },
+        // David 2026-10-12 15:50: Dutchie maledom desk only in the submissive role: never [SWAP] (would put her in the dom seat)
+        [new UUID("1b9ab440-3b52-b827-2eae-7de92fb69cfb")] = new[] { "[SWAP]", "SWAP" },
+    };
+    internal static readonly UUID DutchieDesk = new("1b9ab440-3b52-b827-2eae-7de92fb69cfb");
+    // dom-role buttons on sub-only seats are dropped too (dom / master / male role names)
+    static readonly Regex DomRoleName = new(@"(?<![a-z])(dom\w*|master|mistress|male|sir)(?![a-z])|\(m\)", RegexOptions.IgnoreCase);
+    internal static bool SeatIsSubOnly(UUID seat) => seat == DutchieDesk;
+    // pure: menu labels minus this seat's skipped poses (case-insensitive, '*' submenu marker ignored)
+    internal static List<string> SeatPoseFilter(UUID seat, List<string> labels)
+    {
+        if (labels == null) return labels;
+        if (SeatIsSubOnly(seat)) labels = labels.Where(l => !DomRoleName.IsMatch(l ?? "")).ToList();
+        if (!SeatPoseSkip.TryGetValue(seat, out var skip)) return labels;
+        return labels.Where(l => !skip.Any(x => string.Equals(PoseBare(l ?? ""), x, StringComparison.OrdinalIgnoreCase))).ToList();
+    }
+
+    // David 2026-10-12 15:30: sexual poses NEVER while an android outfit is worn; in a human outfit only when the
+    // only other avatar in Peronaut (and its neighbour regions) is David. Taking one = stand, wear Naked (Real Kisser
+    // stays), sit again, then the pose. Couples poses stay skipped on solo paths either way.
+    internal static bool SexualPosesAllowed(bool androidWorn, string region, IEnumerable<UUID> otherAvatars, UUID davidId)
+    {
+        if (androidWorn) return false;
+        if (!string.Equals(region, "Peronaut", StringComparison.OrdinalIgnoreCase)) return false;
+        var o = (otherAvatars ?? Enumerable.Empty<UUID>()).Distinct().ToList();
+        return o.Count == 1 && o[0] == davidId;
+    }
+    static List<UUID> OtherAvatarsAround()
+    {
+        var me = client.Self.AgentID; var ids = new HashSet<UUID>();
+        try { foreach (var kv in coarseBy.ToArray()) foreach (var k in kv.Value.Keys) if (k != me) ids.Add(k); } catch { }
+        try { foreach (var sim in client.Network.Simulators.ToArray()) foreach (var a in sim.ObjectsAvatars.Values) if (a != null && a.ID != me) ids.Add(a.ID); } catch { }
+        return ids.ToList();
+    }
+    static bool SexualPosesAllowedNow() { try { return SexualPosesAllowed(AndroidWorn(), client.Network.CurrentSim?.Name, OtherAvatarsAround(), DavidId); } catch { return false; } }
+    internal static bool PosePathIsSexual(IEnumerable<string> path) => (path ?? Enumerable.Empty<string>()).Any(l => PoseIsSexualNamed(l) || PoseAdultMenuName.IsMatch(PoseBare(l)));
 
     // pure: automatic paths never pick couples; only explicit 'pose couples' (David asked).
     public static bool AutoMayPickCouples(bool explicitCouplesRequest) => explicitCouplesRequest;
@@ -160,7 +201,12 @@ public static partial class Program
     }
     static bool PoseIsCouplesNamed(string raw) => PoseCouplesName.IsMatch(PoseBare(raw));
     static bool PoseIsSoloMenu(string raw) => PoseSoloMenuName.IsMatch(PoseBare(raw));
-    static bool PoseIsAdultMenu(string raw) => PoseAdultMenuName.IsMatch(PoseBare(raw));
+    // David 2026-10-12 15:24 (Lalou Ultra Sofa: Solo > Solo Couch > Sexy sit picked by solo wander): sexual / suggestive
+    // pose and menu NAMES are never auto-picked, even inside a Solo menu. Word list from the Lalou catalogue's sexual names;
+    // strong words match inside run-together names too (FoldFuck, CreamyCunt, Analwork, DeepThroat).
+    static readonly Regex PoseSexualWord = new(@"(?<![a-z])(sexy|sex\w*|seduc\w*|sensual\w*|naughty|tease\w*|teasing|horny|lust\w*|kink\w*|nude|naked|strip\w*|boobs?|breasts?|tits?|ass|butt|blow|suck\w*|lick\w*|cowgirl|doggy|grind\w*|hump\w*|ride\s*me|rodeo|milking|diddl\w*|juicy|drenched|pleasure|passion|bang|queened|deliver\w*ass|69|cuni\w*|cunn\w*|bop|wet|moan\w*|orgasm\w*|climax\w*|spread\w*|bend\s*over|touch(?:ing)?\s*(?:him|her|me))(?![a-z])|fuck|cunt|anal|clit|dick|cock|dildo|vibrat|throat|creamy|sticky|pussy|penis|vagina|jizz|cum(?![a-z]*ul)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static bool PoseIsSexualNamed(string raw) => PoseSexualWord.IsMatch(PoseBare(raw));
+    static bool PoseIsAdultMenu(string raw) => PoseAdultMenuName.IsMatch(PoseBare(raw)) || PoseIsSexualNamed(raw);
     static bool PoseIsMale(string raw) => PoseMaleSkip.IsMatch(PoseBare(raw));
     static bool PoseIsBackButton(string raw)
     {
@@ -224,7 +270,7 @@ public static partial class Program
     // pure: which button to press (null = nothing suitable). submenu = AVsitter '*' label.
     // couplesMode: ONLY for explicit 'pose couples'. !couplesMode (default/recovery/wander): skip couples even if shared.
     // inSubmenu: already inside a submenu she chose (depth > 0); the "no clearly solo option" rule is for the top menu.
-    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false)
+    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false, bool allowSexual = false)
     {
         var ok = new List<string>(); var skipped = new List<string>(); bool risky = false;
         bool seatSel = PoseMenuLooksLikeSeatSelect(labels);
@@ -245,7 +291,8 @@ public static partial class Program
             else
             {
                 // solo mode: never couples / adult / intimate names (19:39 Adults* > 5Adults)
-                if (PoseIsCouplesNamed(l) || PoseIsAdultMenu(l)) { skipped.Add(l); risky = true; continue; }
+                if (PoseIsCouplesNamed(l)) { skipped.Add(l); risky = true; continue; }
+                if (PoseIsAdultMenu(l) && !allowSexual) { skipped.Add(l); risky = true; continue; }
             }
             ok.Add(l);
         }
@@ -384,6 +431,8 @@ public static partial class Program
                 WLog("POSE " + m); return m;
             }
         }
+        bool allowSexual = !couplesMode && SexualPosesAllowedNow();
+        if (allowSexual) WLog($"POSE '{seatName}': sexual poses allowed (human outfit, only David around)");
         for (int depth = 0; depth < 3; depth++)
         {
             if (client.Self.SittingOn == 0 || (WanderOn && wanderPause != null)) { WLog($"POSE '{seatName}': stopped choosing (no longer seated or paused)"); return "aborted"; }
@@ -395,11 +444,26 @@ public static partial class Program
                 var m = $"'{seatName}': David joined mid-pick — stopping (he chooses poses)";
                 WLog("POSE " + m); return m;
             }
-            var (pick, sub, why) = PickPoseButton(d.ButtonLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0);
+            var (pick, sub, why) = PickPoseButton(SeatPoseFilter(seat.ID, d.ButtonLabels), current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual);
             if (pick == null)
             {
                 var m = $"'{seatName}': {why}; keeping the current pose {current ?? "?"}";
                 WLog("POSE " + m); return m;
+            }
+            if (!sub && allowSexual && PosePathIsSexual(path.Append(pick.Trim())))
+            {
+                var full = path.Append(pick.Trim()).ToList();
+                if (!SexualPosesAllowedNow()) { var m0 = $"'{seatName}': sexual pose {string.Join(" > ", full)} no longer allowed (someone else around / android); keeping {current ?? "?"}"; WLog("POSE " + m0); return m0; }
+                WLog($"POSE '{seatName}': sexual pose {string.Join(" > ", full)}: stand, wear Naked, sit again first");
+                client.Self.Stand(); await Task.Delay(2500, ct);
+                var w = await OutfitWearNamed("Naked", true); WLog($"POSE naked-first: {w}");
+                await Task.Delay(3000, ct);
+                if (!SexualPosesAllowedNow()) { var m1 = $"'{seatName}': someone else arrived while undressing; not taking the sexual pose"; WLog("POSE " + m1); return m1; }
+                client.Self.RequestSit(seat.ID, Vector3.Zero); await Task.Delay(1200, ct); client.Self.Sit(); await Task.Delay(3000, ct);
+                var r = await SeatPosePath(seat, seatName, full, ct);
+                var m2 = $"'{seatName}' {seat.ID}: chose {string.Join(" > ", full)} (naked first; {why}): {r}";
+                wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", full)} [solo, sexual allowed]";
+                WLog("POSE " + m2); HandPoseForPathAsync(full, seatName); return m2;
             }
             var idx = d.ButtonLabels.IndexOf(pick);
             if (!sub) ClearKeptPoseCopies();
@@ -416,7 +480,7 @@ public static partial class Program
                 var mode = couplesMode ? " [couples/explicit]" : " [solo]";
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", path)}{tag}{mode}";
                 var m = $"'{seatName}' {seat.ID}: chose {string.Join(" > ", path)} (was {current ?? "?"}; {why}){tag}";
-                WLog("POSE " + m); return m;
+                WLog("POSE " + m); HandPoseForPathAsync(path, $"{seatName}: {string.Join(" > ", path)}"); return m;
             }
             d = await WaitSeatDialog(seat, t1, 5000, ct);
             if (d == null) { var m = $"'{seatName}': submenu '{pick}' did not open"; WLog("POSE " + m); return m; }

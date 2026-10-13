@@ -120,6 +120,7 @@ public static class Webhook
         public string line { get; init; }                  // voice: the exact triggering line (reply to this straight away)
         public bool? answered { get; init; }               // true = already answered by the client's instant reply (context only; never reply)
         public string my_reply { get; init; }              // that instant reply's text
+        public string auto_action { get; init; }           // LapAuto.cs: the client already does the asked action itself (e.g. sit_lap); only reply, never act
         public string fast_ack { get; init; }              // FastChat.cs: I already sent this short ack; do the asked action, do not ack again
     }
 
@@ -366,6 +367,10 @@ public static class Webhook
     public static List<Ev> WithFastAcks(List<Ev> batch, Func<long, string> ack) =>
         batch.Select(e => e.msg_id is long m && e.answered != true && ack(m) is string a ? e with { fast_ack = a } : e).ToList();
 
+    // pure: lines the client acts on by itself carry auto_action (the routine must not repeat the action)
+    public static List<Ev> WithAutoActions(List<Ev> batch, Func<long, string> act) =>
+        batch.Select(e => e.msg_id is long m && act(m) is string a ? e with { auto_action = a } : e).ToList();
+
     static async Task FlushLoop()
     {
         try
@@ -389,6 +394,7 @@ public static class Webhook
                         (ev.type == "local_chat" && Core.ChatAnsweredExplicitly(ev.from_id, mid))),
                         ev => ev.msg_id is long mi ? Core.InstantReplyFor(mi) : null, out var answered);
                     batch = WithFastAcks(batch, Core.FastAckFor);
+                    batch = WithAutoActions(batch, Core.AutoActionFor);
                     if (answered > 0) LogLocal($"lease: {answered} held line(s) already answered with 'im --re'/'say --re' or an instant reply; not POSTed");
                     if (batch.Count > 0 && batch.All(ev => ev.answered == true)) batch.Clear();
                     foreach (var ev in batch.Where(ev => ev.type == "im" && !string.IsNullOrEmpty(ev.from_id))) leases[ConvKey("im", ev.from_id)] = (now, ev.from_id); // one run per sender

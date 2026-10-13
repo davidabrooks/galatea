@@ -42,7 +42,8 @@ public class RedressSkipHudTests
     public void Outfit_wear_batches_and_bakes_before_the_new_attachments()
     {
         var o = OutfitSwapOrder(detach: 2, layersOff: 3, bodyParts: 4, layersOn: 0, attach: 2);
-        Assert.Equal(new[] { SwapStep.DetachAll, SwapStep.LayersOff, SwapStep.BodyOn, SwapStep.CofLinksOff, SwapStep.RebakeNow, SwapStep.AttachAll }, o);
+        Assert.Equal(new[] { SwapStep.BodyOn, SwapStep.AttachAll, SwapStep.DetachAll, SwapStep.LayersOff, SwapStep.CofLinksOff, SwapStep.RebakeNow }, o);
+        Assert.True(o.IndexOf(SwapStep.AttachAll) < o.IndexOf(SwapStep.DetachAll)); // new on before old off: never undressed mid-swap
         Assert.Equal(o.Count, o.Distinct().Count()); // one batch each, no per-layer step
         var back = OutfitSwapOrder(2, 0, 4, 3, 2);   // bikini off: leg alphas back on, linked in one batch, baked at once
         Assert.True(back.IndexOf(SwapStep.LayersOn) < back.IndexOf(SwapStep.CofLinksOn));

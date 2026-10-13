@@ -62,17 +62,19 @@ public static partial class Program
     // Pure: the order of an outfit wear (the bikini on/off included). Old attachments all detached at once, layer changes
     // sent together, COF links removed / added in one batch each, the bake right away; new attachments only after that
     // (and after the short pause that keeps a new hair from landing on the old one).
+    // 2026-10-12 16:13 (beach swap interrupted by a 96 s freeze left her naked): put the NEW things on first, then take
+    // the old ones off, so an interrupted swap leaves her wearing both outfits, never nothing.
     internal static List<SwapStep> OutfitSwapOrder(int detach, int layersOff, int bodyParts, int layersOn, int attach)
     {
         var s = new List<SwapStep>();
-        if (detach > 0) s.Add(SwapStep.DetachAll);
-        if (layersOff > 0) s.Add(SwapStep.LayersOff);
         if (bodyParts > 0) s.Add(SwapStep.BodyOn);
         if (layersOn > 0) s.Add(SwapStep.LayersOn);
+        if (attach > 0) s.Add(SwapStep.AttachAll);
+        if (detach > 0) s.Add(SwapStep.DetachAll);
+        if (layersOff > 0) s.Add(SwapStep.LayersOff);
         if (detach > 0 || layersOff > 0) s.Add(SwapStep.CofLinksOff);
         if (layersOn > 0) s.Add(SwapStep.CofLinksOn);
         if (layersOff > 0 || layersOn > 0) s.Add(SwapStep.RebakeNow);
-        if (attach > 0) s.Add(SwapStep.AttachAll);
         return s;
     }
 }

@@ -335,6 +335,8 @@ public static partial class Program
         HookAttachWatch(); // own AvatarAnimation watch with sources (AttachWatch.cs)
         HookExperiences(); // Experience perms + temp attaches (Experiences.cs)
         HookGroups(); // current-groups cache + JoinGroupReply log (GroupPicks.cs)
+        HookHandBones(); // HandBones.cs: per-avatar animation lists for the finger-bone check
+        HookKissDetect(); // David kisses her via the Real Kisser -> "kissed" webhook event (KissDetect.cs)
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
         HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
@@ -346,7 +348,11 @@ public static partial class Program
         if (string.IsNullOrEmpty(password)) { Log("error", "password empty; refusing to log in"); return "FAILED: password empty"; }
         var lp = client.Network.DefaultLoginParams(First, Last, password, Channel, Version);
         password = null;
-        lp.Start = startOverride ?? Start; lp.URI = LoginUri; startOverride = null;
+        var lastOn = ReadLastOnline();
+        var chosen = startOverride ?? ChooseLoginStart(Start, lastOn, DateTime.UtcNow);
+        if (startOverride == null && chosen != Start) Log("login", $"offline only {(DateTime.UtcNow - lastOn.Value).TotalMinutes:F0} min (< {ShortAbsence.TotalMinutes:F0}): starting at the last location, not '{Start}'");
+        quickLogin = startOverride == null && chosen == "last" && Start != "last";
+        lp.Start = chosen; lp.URI = LoginUri; startOverride = null;
         Log("login", $"logging in {First} {Last} to '{lp.Start}' via {LoginUri} (channel {Channel} {Version})");
         var sw = Stopwatch.StartNew();
         bool ok;
@@ -367,6 +373,7 @@ public static partial class Program
         EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
         VisitorWatchStart(); // visitor_arrival wakes at home (VisitorArrival.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
+        _ = Task.Run(AfterQuickLogin); // quick relog: floor spot beside the furniture, never re-sit (LoginStart.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);
         _ = Task.Run(() => RefreshMutes(20000));
@@ -416,6 +423,7 @@ public static partial class Program
         {
             if (client?.Network?.Connected == true)
             {
+                LastOnlineHeartbeat(force: true);
                 var t = Task.Run(() => client.Network.Logout());
                 await Task.WhenAny(t, Task.Delay(15000));
             }
@@ -482,8 +490,9 @@ public static partial class Program
                 double? dist = null;
                 try { if (chatPos != Vector3.Zero) dist = Math.Round(Vector3.Distance(chatPos, client.Self.SimPosition), 1); } catch { }
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
+                bool lapReq = LapRequestIn(e.SourceID, e.Message, chatId, false);   // LapAuto.cs: before the webhook sees the line
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId);
-                WanderChatIn(e.SourceID, e.FromName, chatPos, false);
+                if (!lapReq) WanderChatIn(e.SourceID, e.FromName, chatPos, false, e.Message);
                 if (e.SourceID != DavidId || !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) // InstantReplies.cs
                 {
                     if (e.SourceID == DavidId) TypingStart(false);
@@ -493,7 +502,7 @@ public static partial class Program
             }
         };
         client.Self.IM += (s, e) => HandleIm(e.IM);
-        client.Self.AlertMessage += (s, e) => Log("alert", e.Message);
+        client.Self.AlertMessage += (s, e) => { NoteAlertForSit(e.Message); Log("alert", e.Message); };
         HookRest();
     }
 
@@ -528,8 +537,9 @@ public static partial class Program
                                 dist = Math.Round(Vector3.Distance(PositionHelper.GetAvatarPosition(sim, av), client.Self.SimPosition), 1);
                         }
                         catch { }
+                        bool lapReq = !offline && ImAutoReact(im) && LapRequestIn(im.FromAgentID, im.Message, msgId, true);   // LapAuto.cs
                         Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist, msgId);
-                        if (ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true); // old messages: no wander pause/approach/reply
+                        if (!lapReq && ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true, im.Message); // old messages: no wander pause/approach/reply
                         if (!offline && (im.FromAgentID != DavidId || !TryInstantReply(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true))) // InstantReplies.cs (after the wander chat pause)
                         {
                             if (im.FromAgentID == DavidId) TypingStart(true);
@@ -553,8 +563,9 @@ public static partial class Program
                         else if (autoLure)
                         {
                             Log("lure", $"teleport offer from {im.FromAgentName} ('{im.Message}'): ACCEPTING (allow-listed)");
-                            client.Self.TeleportLureRespond(im.FromAgentID, im.IMSessionID, true);
-                            pendingLure = null;
+                            var lf = im.FromAgentID; var ls = im.IMSessionID; pendingLure = null;
+                            if (lf == DavidId) _ = Task.Run(async () => { var pr = await JoinDavidBeachPrep("lure"); if (pr != null) Log("lure", pr); client.Self.TeleportLureRespond(lf, ls, true); });
+                            else client.Self.TeleportLureRespond(lf, ls, true);
                         }
                         else Log("lure", $"teleport offer from {im.FromAgentName} ('{im.Message}'): pending; send 'accept' to go");
                     }
@@ -632,6 +643,7 @@ public static partial class Program
             // follow itself runs in FollowLoop (Follow.cs, 250 ms: standoff point, bands, doors)
             try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
             try { CameraAnchorTick(); } catch { }
+            try { LastOnlineHeartbeat(); } catch { }
             try { NeighborTick(); } catch (Exception ex) { Log("regions", "tick error: " + ex.GetBaseException().Message); } // Neighbors.cs crossing watch + neighbor cap
             try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } // OutfitZones.cs beach/house
             try { await Task.Delay(1000, cts.Token); } catch { }
@@ -1632,7 +1644,7 @@ public static partial class Program
   detach <item> | attach <item> [point]   reversible; logged; detach also removes COF link(s) (seat-off/AO-restore keep COF); attach-block.txt items off while seated, re-worn on stand
   attach move <item|obj|name> <dx> <dy> <dz> [hudok] [force]   nudge worn attachment root by metres in attachment-local frame (±0.1 m/axis; HUD needs hudok; all-RIGGED mesh refused unless force: rigged mesh follows the skeleton, a move is invisible); logged with undo
   attach pos <item|obj|name>   print worn attachment root local position + rotation, rigged-mesh prim count, owner modify perms (quote names with spaces)
-  walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | walk_status | walk_stop   walking navigation (never teleports; add --fly to allow the stuck fly hop once)
+  walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | sit_lap <avatar> | walk_status | walk_stop   walking navigation (never teleports; add --fly to allow the stuck fly hop once)
   nav [status|doors|places|reload|selftest] | nav door <name> [touch] | nav plan|to <x,y|place|door|avatar>[;...]   grid planner (routes/_nav-*.json)
   nofly [on|off]   walking never flies (default on)
   map [radius] [x y] | terrain <x> <y>   planning data: objects with size/rotation, ground height
@@ -1919,7 +1931,9 @@ public static partial class Program
             case "crossing": case "crossings": return CrossingCmd(a);   // Crossing.cs: fast hand-over switch + timelines
             case "walk_path": case "goto_avatar": case "sit_near": case "walk_status": case "walk_stop": case "map": case "terrain": case "walk_to":
                 if (cmd is "walk_path" or "goto_avatar" or "sit_near" or "walk_to" && WanderBlocksManualWalk) return "wander is running: 'wander pause' (or 'wander stop') first";
-                return await NavCmds(cmd, rest, a);
+                { string prep = cmd is "goto_avatar" or "sit_near" && NamesDavid(TakeFlyFlag(rest, out _)) ? await JoinDavidBeachPrep(cmd) : null;
+                  var nr = await NavCmds(cmd, rest, a); return prep == null ? nr : prep + "\n" + nr; }
+            case "sit_lap": return await SitLapCmd(rest);   // SitFixes.cs: sit on the avatar's seat + lap pose
             case "wander": return await WanderCmds(a);
             case "instant": return InstantCmdText(a);   // InstantReplies.cs
             case "fastchat": return await FastChatCmd(a);   // FastChat.cs
@@ -1993,12 +2007,22 @@ public static partial class Program
             case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...] | inv mkdir <parent uuid> <name> | inv move <uuid> <dest folder uuid> | inv move undo";
             case "feet": return await FeetCmd(a);
             case "kiss": return KissCmd(rest);
+            case "hands": return await HandsCmd(a);
+            case "outfit" when a.Length >= 2 && a[0] == "wear":
+            {
+                bool force = a.Any(x => x.Equals("force", StringComparison.OrdinalIgnoreCase)); a = a.Where(x => !x.Equals("force", StringComparison.OrdinalIgnoreCase)).ToArray();
+                var pre = await ChangeInBedroomFirst("outfit " + string.Join(' ', a[1..]), force);
+                return (pre == null ? "" : pre + "\n") + await OutfitCmd(a);
+            }
             case "outfit": return await OutfitCmd(a);
-            case "bikini":
-                if (a.Length >= 1 && a[0] == "on") return await BikiniOn(auto: false);
-                if (a.Length >= 1 && a[0] == "off") return await BikiniOff();
-                if (a.Length >= 1 && a[0] == "selftest") return BikiniSelfTest();
-                return "usage: bikini on|off|selftest";
+            case "bikini" when a.Length >= 1 && (a[0] == "on" || a[0] == "off") && !a.Contains("force"):
+            {
+                var pre = await ChangeInBedroomFirst("bikini " + a[0], false);
+                return (pre == null ? "" : pre + "\n") + await BikiniDispatch(a);
+            }
+            case "bikini" when a.Contains("force"): return await BikiniDispatch(a.Where(x => x != "force").ToArray());
+            case "bikini": return await BikiniDispatch(a);
+
             case "sitguard":
                 if (a.Length == 1 && (a[0] == "on" || a[0] == "off")) sitGuard = a[0] == "on";
                 return $"sit guard {(sitGuard ? "on" : "off")}; last check: {lastHeightCheck}";
@@ -2087,6 +2111,7 @@ public static partial class Program
                 var ok = await client.Self.GoHomeAsync();
                 return ok ? $"home: {client.Network.CurrentSim?.Name}" : $"go home failed: {client.Self.TeleportMessage}";
             }
+            case "follow" when NamesDavid(rest): { var prep = await JoinDavidBeachPrep("follow"); var fr = FollowCmd(rest); return prep == null ? fr : prep + "\n" + fr; }
             case "follow": return FollowCmd(rest);   // Follow.cs
             case "accept":
             {

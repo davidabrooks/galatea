@@ -82,7 +82,7 @@ public static partial class Program
     // pure: "none" | "change-here" (inside: change in the living room) | "detour-indoors" (outside: walk back into the living
     // room first, change there, then on to the beach). Already in the beach zone: "none" (the zone safety net changes her).
     internal static string IndoorBikiniPlan(bool beachBound, bool bikiniWorn, bool indoorsNow, bool inBeachZoneNow) =>
-        !beachBound || bikiniWorn ? "none" : indoorsNow ? "change-here" : inBeachZoneNow ? "none" : "detour-indoors";
+        !beachBound || bikiniWorn ? "none" : indoorsNow ? "change-here" : "detour-indoors";   // 2026-10-13: on the beach too: up to the bedroom, never in place
     // pure: the clothed outfit to come back to (never the bikini itself)
     internal static string BeachRememberChoice(string lastNamed, string beachRemembered)
     {
@@ -112,19 +112,18 @@ public static partial class Program
 
     // before a beach-bound wander walk: walk to the bedroom change spot (clear of the bed and the doorway) and put the
     // Bikini on there (2026-10-08 12:22 David: "go in the bedroom to change in/out of your bikini")
-    static async Task BikiniIndoorsIfBeachBound(Graph g, Vector3 target, string seatLevel, string what, CancellationToken ct)
+    static async Task BikiniIndoorsIfBeachBound(Graph g, Vector3 target, string seatLevel, string what, CancellationToken ct, bool manual = false)
     {
         var me = client.Self.SimPosition;
         var plan = IndoorBikiniPlan(BeachBound(target, seatLevel), BikiniWorn(), IndoorsAtHome(me), OutfitZoneFor("Peronaut", me, false) == "beach");
         if (plan == "none")
         {
-            if (BeachBound(target, seatLevel) && !BikiniWorn()) WLog($"beach-bound ({what}) but already in the beach zone (at {P3(me)}): the beach zone will change her");
-            return;
+                        return;
         }
         WLog($"beach-bound ({what}) from {(plan == "detour-indoors" ? "outside the house" : "inside")} (at {P3(me)}): to the {BikiniChangePlace(g)} to change first");
-        if (!await WalkToChangeSpot(g, "to put the bikini on", ct)) return;
+        if (!await WalkToChangeSpot(g, "to put the bikini on", ct, manual)) return;
         if (!InBedroom(client.Self.SimPosition) && IndoorsAtHome(client.Self.SimPosition)) WLog($"bikini: walk ended short of the bedroom at {P3(client.Self.SimPosition)} (still indoors): changing here");
-        if (!IndoorsAtHome(client.Self.SimPosition)) { WLog("bikini: not inside the house after the walk; the beach zone will change her on arrival"); return; }
+        if (!IndoorsAtHome(client.Self.SimPosition)) { WLog("bikini: not inside the house after the walk; no change outside the bedroom"); return; }
         beachOutfitBusy = true;
         try
         {

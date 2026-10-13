@@ -112,7 +112,7 @@ public class WanderApprovedRulesTests
         Assert.Equal("none", Program.ZoneTickAction("beach", true, true, false, Own(null), now, guard));
         Assert.Equal("mark-beach", Program.ZoneTickAction("beach", false, true, false, Own(null), now, noGuard));
         // the bedroom plan leaves a beach-level start to the safety net, and changes indoors otherwise
-        Assert.Equal("none", Program.IndoorBikiniPlan(true, false, false, true));
+        Assert.Equal("detour-indoors", Program.IndoorBikiniPlan(true, false, false, true));   // 2026-10-13: on the beach: up to the bedroom, never in place
         Assert.Equal("change-here", Program.IndoorBikiniPlan(true, false, true, false));
         Assert.Equal("detour-indoors", Program.IndoorBikiniPlan(true, false, false, false));
     }

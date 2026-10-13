@@ -132,7 +132,7 @@ public static partial class Program
     }
 
     // walk to the bedroom change spot; false when interrupted (pause / cancel)
-    static async Task<bool> WalkToChangeSpot(Graph g, string why, CancellationToken ct)
+    static async Task<bool> WalkToChangeSpot(Graph g, string why, CancellationToken ct, bool manual = false)
     {
         var spotName = BikiniChangePlace(g);
         var spot = g.N[g.Places[spotName].node];
@@ -149,11 +149,11 @@ public static partial class Program
             WLog($"change spot ({spotName}): {(ok ? "reached" : "not reached")} ({msg})");
             if (!ok && msg.Contains("AO not active")) { wanderPause = "ao"; wPausedAt = DateTime.Now; return false; }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && !manual)
         { client.Self.AutoPilotCancel(); WLog($"walk to the change spot interrupted ({wanderPause ?? "cancel"})"); return false; }
         finally { wLegHasGoal = false; }
         if (UnderHouse(client.Self.SimPosition)) await UnderHouseRecover(g, "walk to the change spot", ct);
-        return wanderPause == null;
+        return manual || wanderPause == null;   // manual callers (join David, bedroom-first) do not care about a wander hold
     }
 
     // back into the remembered outfit (colors kept), bikini HUD off. The wander calls this in the bedroom.

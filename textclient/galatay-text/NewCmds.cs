@@ -538,7 +538,7 @@ public static partial class Program
             if (err != null) return err;
             IReadOnlyDictionary<int, float> live = null;
             try { var me = Sim.ObjectsAvatars.Values.FirstOrDefault(v => v.ID == client.Self.AgentID); if (me?.VisualParameters?.Length > 0) live = me.DecodeVisualParams(); } catch { }
-            var sb = new StringBuilder($"worn shape '{item.Name}' item {item.UUID} asset {item.AssetUUID} modify={((item.Permissions.OwnerMask & PermissionMask.Modify) != 0 ? "yes" : "NO")}{(item.Name == AllowedShapeName ? "" : " (NOT the editable shape: set is refused)")}\n");
+            var sb = new StringBuilder($"worn shape '{item.Name}' item {item.UUID} asset {item.AssetUUID} modify={((item.Permissions.OwnerMask & PermissionMask.Modify) != 0 ? "yes" : "NO")}{(ShapeEditRefusal(item.Name, null, EditableShapes(), AllowedShapeName) == null ? "" : " (NOT an editable shape: set is refused)")}\n");
             foreach (var vp in VisualParams.Params.Values.Where(v => v.Group == 0 && string.Equals(v.Wearable, "shape", StringComparison.OrdinalIgnoreCase)).OrderBy(v => string.IsNullOrEmpty(v.Label) ? v.Name : v.Label))
             {
                 if (filter.Length > 0 && !(vp.Label ?? "").Contains(filter, StringComparison.OrdinalIgnoreCase) && !(vp.Name ?? "").Contains(filter, StringComparison.OrdinalIgnoreCase) && vp.ParamID.ToString() != filter) continue;
@@ -548,16 +548,18 @@ public static partial class Program
             }
             return sb.ToString().TrimEnd();
         }
+        if (a[0] == "wear") return await ShapeWearCmd(a.Length > 1 ? a[1] : "");
         if (a[0] == "set" && a.Length >= 3 && float.TryParse(a[^1], NumberStyles.Float, IC2, out var slider))
         {
-            var key = string.Join(' ', a.Skip(1).Take(a.Length - 2)).Trim('"');
+            var (target, key) = SplitShapeTarget(string.Join(' ', a.Skip(1).Take(a.Length - 2)));
+
             var vpn = FindShapeParam(key);
             if (vpn == null) return $"no single shape slider '{key}' (see 'shape get <filter>'; label or param id)";
             var vp = vpn.Value;
             if (slider < 0 || slider > 100) return "slider value must be 0..100";
             var (wd, item, data, bp, err) = await WornShape(ct);
             if (err != null) return err;
-            if (item.Name != AllowedShapeName) return $"refused: the worn shape is '{item.Name}', only '{AllowedShapeName}' may be edited";
+            if (ShapeEditRefusal(item.Name, target, EditableShapes(), AllowedShapeName) is string refused) return refused;
             if ((item.Permissions.OwnerMask & PermissionMask.Modify) == 0) return $"refused: '{item.Name}' is no-modify";
             float oldW = bp.Params.TryGetValue(vp.ParamID, out var ow) ? ow : vp.DefaultValue;
             float newW = vp.MinValue + slider / 100f * (vp.MaxValue - vp.MinValue);
@@ -607,6 +609,6 @@ public static partial class Program
             Log("shape", res);
             return res;
         }
-        return "usage: shape get [filter] | shape set <slider label|param id> <0-100>";
+        return "usage: shape get [filter] | shape wear <item uuid> | shape set [@\"<worn shape name>\"] <slider label|param id> <0-100>";
     }
 }

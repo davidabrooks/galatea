@@ -1699,7 +1699,10 @@ public static partial class Program
   parcel [x y]                teleport routing, landing point, owner/group and whether Galatay may ignore the landing point
   worn links <attachment|ao>  every prim of a worn attachment/HUD: link no., local id, name, description, faces, touch flag
   touch-attachment <attachment|ao> <link no.|prim name|local:<id>> [face] [st=u,v]   press one HUD button / prim face (quote names with spaces)
-  shape get [filter] | shape set <slider|param id> <0-100>   worn shape sliders; set ONLY on 'Galatea Petite shape - Jani short neck' (backup in shape-backups/, upload + rebake)
+  shape get [filter] | shape set [@""<name>""] <slider|param id> <0-100>   worn shape sliders; set only on the Petite shape or a copy in routes/_editable-shapes.txt (backup in shape-backups/, upload + rebake)
+  shape wear <shape item uuid>   wear a shape (body part replace)
+  wear bodypart <item uuid>   wear a skin/shape/eyes/hair base, replacing the same type (old COF link removed)
+  inv copy <item uuid> <new name>   copy a wearable next to the original; a copied shape becomes editable by 'shape set'
   scene export [radius]       READ-ONLY: prims (shapes, sculpt/mesh ids, faces) within radius + my attachments + my bakes -> /workspace/secondlife/vision/export-*/ (SceneExport.cs)
   crowd [radius]             READ-ONLY: per nearby avatar, attachments received vs the sim's list (complete/partial/bare), map-only avatars, interest mode (Crowd.cs)
   far [metres]               show / set the draw distance the sim streams within (AgentUpdate Far; default 128)
@@ -1951,6 +1954,8 @@ public static partial class Program
             case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a, rest);
             case "inv" when a.Length >= 1 && a[0] == "trash": return await InvTrashCmd(rest.Substring(rest.IndexOf("trash", StringComparison.Ordinal) + 5));
             case "inv" when a.Length >= 2 && a[0] == "ls": return await WearOpsCmd("invls", a[1..]);
+            case "wear" when a.Length >= 2 && a[0] == "bodypart": return await BodyPartWearCmd(a[1], null);
+            case "inv" when a.Length >= 1 && a[0] == "copy": return await InvCopyCmd(rest.Substring(rest.IndexOf("copy", StringComparison.Ordinal) + 4));
             case "inv" when a.Length >= 1 && a[0] == "move": return await InvMoveCmd(a[1..]);
             case "inv" when a.Length >= 1 && a[0] == "mkdir": return await InvMkdirCmd(rest.Substring(rest.IndexOf("mkdir", StringComparison.Ordinal) + 5));
             case "inv" when a.Length == 2 && a[0] == "read":

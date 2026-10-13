@@ -84,9 +84,9 @@ public static partial class Program
                     && Vector3.Distance(p.Position, client.Self.SimPosition) <= 32) : null;
                 if (av != null) HeadTurnTo(av.ID, "look at"); else if (ob != null) HeadTurnToPoint(ob.Position, "look at");
             }
-            float er = mode == "self" ? 8 : far ? 96 : 32;
+            float er = hd != null ? (far ? 96 : 32) : mode == "self" ? 8 : far ? 96 : 32;   // photo hd: always her surroundings, `self` too
             var tWait = sw.Elapsed.TotalSeconds;
-            if (mode != "self") await EnsureNearbyAttachments(er);   // wait for nearby avatars' attachments (stand-ins for the rest)
+            if (mode != "self" || hd != null) await EnsureNearbyAttachments(er);   // wait for nearby avatars' attachments (stand-ins for the rest)
             tWait = sw.Elapsed.TotalSeconds - tWait; var tEx = sw.Elapsed.TotalSeconds;
             var ex = await SceneExport(new[] { "export", er.ToString(CultureInfo.InvariantCulture) });   // far: backdrop beyond 30 m (look.py --far)
             tEx = sw.Elapsed.TotalSeconds - tEx;

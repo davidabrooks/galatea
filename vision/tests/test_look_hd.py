@@ -30,3 +30,13 @@ def test_cached_fallback_picks_largest(tmp_path):
     for c in (256, 1024, 512): (tmp_path / f"{u}.{c}.png").write_bytes(b"x")
     assert handler.cached_fallback(u, str(tmp_path)).endswith(".1024.png")
     assert handler.cached_fallback("nope", str(tmp_path)) is None
+
+def test_hd_scene_samples_default():
+    assert look.hd_settings("", "self")[1]["GT_SAMPLES"] == os.environ.get("GT_HD_SAMPLES", "24")
+
+def test_hd_self_renders_the_scene_not_the_studio():
+    src = open(os.path.join(ROOT, "look.py")).read()
+    assert 'photo_self = bool(hd) and mode == "self"' in src and 'view = "portrait" if photo_self' in src
+    assert 'if mode == "self" and not hd else ["scene"]' in src
+    rm = open(os.path.join(ROOT, "cloud-render", "render_mesh.py")).read()
+    assert 'if view.startswith("portrait"):' in rm

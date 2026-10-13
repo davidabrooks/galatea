@@ -3,8 +3,9 @@
 usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far] [--views=front,back,left,right,<deg>|all]
              [--hd[=landscape|portrait]]
   --hd    4K photo for David (not her quick vision look): 3840x2160 (portrait 2160x3840; self defaults to portrait),
-          Cycles with more samples, adaptive sampling + OpenImageDenoise, full-res textures and bakes, soft studio
-          shadows. PNG + quality-95 JPG in GT_PHOTO_OUT (/workspace/secondlife/photos), photo-<stamp>-<mode>.png/.jpg
+          always in the real scene (self too: framed on her whole body from in front, no studio backdrop), with
+          terrain, water and the export's sky/sun (96 m backdrop when the export reaches it), adaptive sampling +
+          OpenImageDenoise, full-res textures and bakes (~5 min on 8 CPUs for a furnished room). PNG + quality-95 JPG in GT_PHOTO_OUT (/workspace/secondlife/photos), photo-<stamp>-<mode>.png/.jpg
   view    over her shoulder, along her facing        around  4 views (front, left, back, right)
   self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
   --views (self) only the full body, from each listed side / angle (degrees counter-clockwise from her front: 90 = her
@@ -36,7 +37,7 @@ def hd_settings(arg, mode):
     if arg is None: return None, {}
     o = (arg or ("portrait" if mode == "self" else "landscape")).lower()
     if o not in HD_RES: raise ValueError(f"unknown photo preset '{arg}' (landscape or portrait)")
-    return o, {"GT_HD": "1", "GT_RES": HD_RES[o], "GT_SAMPLES": os.environ.get("GT_HD_SAMPLES", "96"), "GT_DENOISE": "1",
+    return o, {"GT_HD": "1", "GT_RES": HD_RES[o], "GT_SAMPLES": os.environ.get("GT_HD_SAMPLES", "24"), "GT_DENOISE": "1",
                "GT_STUDIO_SHADOW": "1", "GT_TEX_CAP_AVATAR": "4096", "GT_TEX_CAP_SCENE": "4096"}
 
 SIDES = ("front", "back", "left", "right")
@@ -187,10 +188,16 @@ def main(a):
     except ValueError as e: sys.exit(str(e))
     if hd: fast = False; os.environ.update({k: v for k, v in hd_env.items() if k.startswith("GT_TEX_CAP")})
     doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
+    # photo hd: always the real surroundings (David 2026-10-13: no studio backdrop, `self` too): scene path with
+    # terrain, water, sky from the export's environment; the 96 m backdrop when the export reaches that far
+    photo_self = bool(hd) and mode == "self"
+    if hd: far = far or float(doc.get("radius") or 0) >= 96; terrain_hd = True
+    else: terrain_hd = False
+    mmode = "view" if photo_self else mode
     # her surroundings: whole objects reaching within 30 m (Highest LOD within 12); with --far also objects out to 96 m,
     # those centred beyond 30 m as backdrop at a screen-size LOD; `self` meshes her alone. --roots=32: the 32 m export's
     # linksets even from a 96 m export (an older client that still exports 96 m)
-    args = mesher_args(d, mode, me, far)
+    args = mesher_args(d, mmode, me, far)
     if mode == "at":  # she turns her head toward the target (scene-mesher --look); an avatar's head ~0.7 m above its agent position
         av = next((v for v in doc.get("avatars", []) if target in str(v.get("name", "")).lower() and "pos" in v), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
@@ -200,10 +207,10 @@ def main(a):
     if r.returncode: sys.exit("scene-mesher failed: " + mesher_error(r.stderr or r.stdout))
     mesh_warn = [l for l in (r.stderr or "").splitlines() if l.startswith("warning:")]
     times["mesh"] = round(time.time() - t0, 1)
-    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["backdrop"] = far
-    if far: meta["water_height"] = doc.get("water_height")
+    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["backdrop"] = far or bool(hd)   # photo hd: the sky gradient too
+    if far or terrain_hd: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
-    json.dump(far and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)
+    json.dump((far or terrain_hd) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)
     # bakes: only agents in this mesh (not every bake-*.j2c in a crowded export — was ~55–100 s)
     t = time.time()
     bake_cap = 2048 if hd else 256 if mode == "around" else (512 if fast else 1024)
@@ -223,7 +230,7 @@ def main(a):
     bake_paths = {"bake:" + k: f"{WORK}/tex/bake-{k}.png" for k in only if os.path.exists(f"{WORK}/tex/bake-{k}.png")}
     n_scanned = write_manifest(WORK, {**info.get("tex_paths", {}), **bake_paths})
     times["manifest"] = round(time.time() - t, 1)
-    view = VIEWS.get(mode)
+    view = "portrait" if photo_self else VIEWS.get(mode)
     if mode == "at":  # an avatar's name (mesh.json "others") or an object's name (scene.json root prims), first substring match
         who = next((o["name"] for o in meta.get("others", []) if target in o["name"].lower()), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
@@ -234,7 +241,7 @@ def main(a):
             sys.exit(f"nothing called '{target}' in view; avatars/objects: {', '.join(near) or 'none'}")
     out_dir = PHOTO_OUT if hd else OUT
     os.makedirs(out_dir, exist_ok=True); stamp = time.strftime("%Y%m%d-%H%M%S"); outs = []
-    for kind in ((["body"] if bviews or hd else ["face", "body"]) if mode == "self" else ["scene"]):
+    for kind in ((["body"] if bviews else ["face", "body"]) if mode == "self" and not hd else ["scene"]):
         out = f"{out_dir}/{'photo' if hd else 'look'}-{stamp}-{mode}{'-' + kind if mode == 'self' and not hd else ''}.{'png' if hd else 'jpg'}"; t = time.time()
         env = {**os.environ, "GT_SAMPLES": "8" if fast else "12" if mode == "around" else "48", **({"GT_VIEW": view} if view else {}),
                **({"GT_BODY_VIEWS": bviews} if kind == "body" and bviews else {}), **hd_env}

@@ -1985,7 +1985,7 @@ public static partial class Program
             case "kiss": return KissCmd(rest);
             case "outfit": return await OutfitCmd(a);
             case "bikini":
-                if (a.Length >= 1 && a[0] == "on") return await BikiniOn();
+                if (a.Length >= 1 && a[0] == "on") return await BikiniOn(auto: false);
                 if (a.Length >= 1 && a[0] == "off") return await BikiniOff();
                 if (a.Length >= 1 && a[0] == "selftest") return BikiniSelfTest();
                 return "usage: bikini on|off|selftest";

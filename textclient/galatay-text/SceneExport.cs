@@ -402,6 +402,7 @@ public static partial class Program
             ["sun_dir"] = OSD.FromVector3(client.Grid.SunDirection),
             ["region"] = sim.Name, ["agent_id"] = OSD.FromUUID(me.AgentID), ["me"] = new OSDMap { ["pos"] = OSD.FromVector3(myPos), ["rot"] = OSD.FromQuaternion(me.SimRotation), ["sitting_on"] = (int)me.SittingOn, ["anims"] = AnimsOf(me.AgentID) },
             ["water_height"] = sim.WaterHeight, ["terrain"] = views.Count > 1 ? TerrainGridMerged(views) : TerrainGrid(sim),
+            ["terrain_composition"] = new OSDArray(views.Select(v => (OSD)TerrainComposition(v.sim, v.off)).ToList()),
             ["neighbor_regions"] = new OSDArray(views.Skip(1).Select(v => (OSD)new OSDMap { ["name"] = v.sim.Name, ["offset"] = OSD.FromVector3(v.off) }).ToList()),
             ["radius"] = r, ["bakes"] = bakes, ["avatars"] = avatars, ["exported_at"] = DateTime.Now.ToString("o"),
         };
@@ -433,6 +434,16 @@ public static partial class Program
         }
         return new OSDMap { ["x0"] = 0, ["y0"] = 0, ["step"] = step, ["nx"] = n, ["ny"] = n, ["heights"] = rows };
     }
+
+    // the region's terrain look (RegionHandshake, 2026-10-13 photo hd): the 4 detail textures (low -> high) and the corner
+    // start heights / height ranges the LL viewer blends them by (00 = SW, 01 = NW, 10 = SE, 11 = NE), with its offset
+    internal static OSDMap TerrainComposition(Simulator s, Vector3 off) => new()
+    {
+        ["region"] = s.Name ?? "", ["offset"] = OSD.FromVector3(off),
+        ["detail"] = new OSDArray { OSD.FromUUID(s.TerrainDetail0), OSD.FromUUID(s.TerrainDetail1), OSD.FromUUID(s.TerrainDetail2), OSD.FromUUID(s.TerrainDetail3) },
+        ["start"] = new OSDArray { s.TerrainStartHeight00, s.TerrainStartHeight01, s.TerrainStartHeight10, s.TerrainStartHeight11 },
+        ["range"] = new OSDArray { s.TerrainHeightRange00, s.TerrainHeightRange01, s.TerrainHeightRange10, s.TerrainHeightRange11 },
+    };
 
     // her region's heightmap plus every connected neighbor's, on one grid in her region's frame (a look across a border
     // has ground on both sides). Cells no region covers are filled from the nearest known cell (the renderer would put 20 m).

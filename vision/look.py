@@ -57,6 +57,26 @@ def body_views(arg):
         out.append(q)
     return ";".join(dict.fromkeys(out))
 
+# SL's default terrain (llviewerregion / LLVLComposition): dirt, grass, mountain, rock; start 10 m, range 60 m
+SL_TERRAIN_DEFAULT = {"detail": ["0bc58228-74a0-7e83-89bc-5c23464bcec5", "63338ede-0037-c4fd-855b-015d77112fc8",
+                                 "303cd381-8560-7579-23f1-f0a880799740", "53a2f406-4895-1d13-d541-d2e3b86bc19c"],
+                      "start": [10.0] * 4, "range": [60.0] * 4}
+
+def terrain_composition(doc, texdir, fetch=None):
+    """photo hd: each region's terrain detail textures + blend heights (scene.json terrain_composition, exports
+    2026-10-13+; older exports: SL's defaults for her region), with the fetched texture path per layer (None = colour)"""
+    fetch = fetch or (lambda u: handler.fetch_tex(u, texdir, 1024)[1])
+    comps = [dict(c) for c in doc.get("terrain_composition") or []] or [{**SL_TERRAIN_DEFAULT, "region": doc.get("region", ""), "offset": [0, 0, 0], "default": True}]
+    for c in comps:
+        c["offset"] = [v or 0 for v in (c.get("offset") or [0, 0, 0])]
+        ok = [u for u in c.get("detail") or [] if u and u != "00000000-0000-0000-0000-000000000000"]
+        if len(ok) < 4: c.update({k: v for k, v in SL_TERRAIN_DEFAULT.items() if k == "detail"}); c["default"] = True
+        c["paths"] = []
+        for u in c["detail"]:
+            try: c["paths"].append(fetch(u))
+            except Exception: c["paths"].append(None)
+    return comps
+
 def mesher_args(d, mode, me, far):
     return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + (["96", "--far=30"] if far else ["30", "--roots=32"])
 
@@ -210,7 +230,9 @@ def main(a):
     meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["backdrop"] = far or bool(hd)   # photo hd: the sky gradient too
     if far or terrain_hd: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
-    json.dump((far or terrain_hd) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)
+    tj = (far or terrain_hd) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}  # region heightmap (exports 2026-10-04+)
+    if terrain_hd: tj = {**tj, "composition": terrain_composition(doc, f"{WORK}/tex")}
+    json.dump(tj, open(f"{WORK}/terrain.json", "w"))
     # bakes: only agents in this mesh (not every bake-*.j2c in a crowded export — was ~55–100 s)
     t = time.time()
     bake_cap = 2048 if hd else 256 if mode == "around" else (512 if fast else 1024)

@@ -130,7 +130,7 @@ public static partial class Program
                 if (client.Self.SittingOn != seat || seat == 0) return;
                 var (v, d) = await CheckHands(client.Self.AgentID, seat);
                 Log("hands", $"check after pose ({why}): {v} [{d}]");
-                if (v == "undriven") await SetHandPose(HandRelaxedCol, "relaxed", "fingers undriven after " + why);
+                // 2026-10-13 David: log-only, never change the hands from this check
             }
             catch (Exception ex) { Log("hands", "check error: " + ex.GetBaseException().Message); }
         });

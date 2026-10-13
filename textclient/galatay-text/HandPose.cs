@@ -1,5 +1,6 @@
 using LibreMetaverse;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -65,10 +66,19 @@ public static partial class Program
         finally { handGate.Release(); }
     }
 
+    // poses David flagged as breaking the hands (seat name part, pose word): 2026-10-12 Mirage bed magazine reading
+    internal static readonly List<(string seat, string pose)> HandFixPoses = new() { ("Mirage", "magazine") };
+    internal static bool HandFixFlagged(string why, System.Collections.Generic.IEnumerable<string> path)
+    {
+        var all = (why ?? "") + " " + string.Join(" ", path ?? Enumerable.Empty<string>());
+        return HandFixPoses.Any(t => all.Contains(t.seat, StringComparison.OrdinalIgnoreCase) && all.Contains(t.pose, StringComparison.OrdinalIgnoreCase));
+    }
     static void HandPoseForPathAsync(System.Collections.Generic.IEnumerable<string> path, string why)
     {
         var (col, name) = HandPoseFor(path);
-        _ = Task.Run(async () => { await Task.Delay(2000); await SetHandPose(col, name, why); HandsVerifyAfterPose(why); });   // HandBones.cs check
+        // 2026-10-13 David: hands are changed only for poses he flagged as broken; everything else is log-only
+        if (HandFixFlagged(why, path)) _ = Task.Run(async () => { await Task.Delay(2000); await SetHandPose(col, name, why); HandsVerifyAfterPose(why); });
+        else { Log("hands", $"would set {name} (column {col}) for {why}: log-only (not a flagged broken pose)"); HandsVerifyAfterPose(why); }
     }
 
     static async Task<string> HandsCmd(string[] a)

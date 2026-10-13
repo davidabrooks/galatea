@@ -97,3 +97,17 @@ public class HandBonesTests
         Assert.Contains("HandsVerifyAfterPose(why)", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../../galatay-text/HandPose.cs")));
     }
 }
+
+public class HandsLogOnlyTests
+{
+    static string Src(string f) => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../../galatay-text", f));
+    [Fact]
+    public void Hands_are_changed_only_for_flagged_broken_poses()
+    {
+        Assert.True(Program.HandFixFlagged("Mirage bed: Reading* > magazine 2", new[] { "Reading*", "magazine 2" }));
+        Assert.False(Program.HandFixFlagged("Nutmeg. Porch Rocking Chair: phone", new[] { "phone" }));
+        Assert.False(Program.HandFixFlagged("Mirage bed: Sleep", new[] { "Sleep" }));
+        Assert.DoesNotContain("SetHandPose(", Src("HandBones.cs"));
+        Assert.DoesNotContain("SetHandPose(", Src("SeatLinger.cs"));
+    }
+}

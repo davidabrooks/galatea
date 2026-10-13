@@ -323,6 +323,10 @@ def camera(loc, target, lens, res):
 
 def area(loc, target, energy, size):
     bpy.ops.object.light_add(type="AREA", location=loc); L = bpy.context.object; L.data.energy = energy; L.data.size = size
+    # studio lights cast no shadow (2026-10-13): the SL viewer's local lights don't, and Cycles' contact shadows turned
+    # open cut-outs into black panels (the Kay ttchL/ttchR chest windows looked closed: the light into the body's cavity
+    # was blocked by the shell around the window, while in-world the mechanics behind it show). Sun shadow is unchanged.
+    L.data.use_shadow = os.environ.get("GT_STUDIO_SHADOW", "0") == "1"
     L.rotation_euler = (Vector(target) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
 
 def eep(env):
@@ -569,6 +573,13 @@ else:
             area(mid + loc, mid, e_, s_); rigged.append(bpy.context.object)
         for ob in rigged: ob.parent = rig; ob.location = ob.location - Vector(mid)
         views = [("body", body_view_deg(v), body_view_label(v)) for v in os.environ.get("GT_BODY_VIEWS", "").split(";") if v.strip()]
+        # close-up (alpha cut-out / attachment checks): GT_BODY_FOCUS="<m below her top>[,dist m[,lens]]", camera in front
+        fo = os.environ.get("GT_BODY_FOCUS", "")
+        if fo:
+            fp = [float(x) for x in fo.split(",")]; dist = fp[1] if len(fp) > 1 else 0.6; lens = fp[2] if len(fp) > 2 else 70
+            rig.location = Vector((mid[0], mid[1], hi[2] - fp[0])); sc.camera.location = Vector((dist, 0, 0)); sc.camera.data.lens = lens
+            sc.render.resolution_x = sc.render.resolution_y = 768
+            log("focus", [round(v, 2) for v in rig.location], "dist", dist)
     world(0.5)
 sc.view_settings.view_transform = "Standard"  # SL shows textures as plain sRGB
 sc.view_settings.exposure = float(os.environ.get("GT_EXPOSURE", "0"))

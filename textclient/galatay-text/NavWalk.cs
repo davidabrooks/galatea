@@ -256,12 +256,12 @@ public static partial class Program
 
     static readonly string[] SeatWords = { "pillow", "cushion", "zafu", "zabuton", "seat", "mat", "bench", "chair", "stool", "pouf" };
 
-    static async Task<(Primitive p, float d)?> FindFreeSeatNear(Vector3 at, float radius)
+    static async Task<(Primitive p, float d)?> FindFreeSeatNear(Vector3 at, float radius, ICollection<UUID> exclude = null)
     {
         var sim = Sim; var sit = Sitters(sim);
         var cands = sim.ObjectsPrimitives.Values.Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim && HDist(p.Position, at) <= radius && Math.Abs(p.Position.Z - at.Z) < 2.5f).ToList();
         await EnsureProperties(sim, cands);
-        var free = cands.Where(p => !sit.ContainsKey(p.LocalID) && SeatWords.Any(w => (p.Properties?.Name ?? "").Contains(w, StringComparison.OrdinalIgnoreCase)))
+        var free = cands.Where(p => !sit.ContainsKey(p.LocalID) && (exclude == null || !exclude.Contains(p.ID)) && IsRealSeatName(p.Properties?.Name))   // SitFixes.cs: no parasol / table parts
             .Select(p => (p, d: HDist(p.Position, at))).OrderBy(t => t.d).ToList();
         return free.Count > 0 ? free[0] : null;
     }
@@ -350,7 +350,9 @@ public static partial class Program
                     if (cmd == "goto_avatar") return $"next to {av.Name}: {HDist(client.Self.SimPosition, FindAvatarPos(rest)?.pos ?? apos):F1} m{(client.Network.CurrentSim != sim ? $" (now in {client.Network.CurrentSim?.Name})" : "")}";
                     var sit = Sitters(sim);
                     if (sit.ContainsKey(seat.Value.p.LocalID)) { seat = await FindFreeSeatNear(apos, 3f); if (seat == null) return "seat got taken and no other free seat within 3 m"; }
-                    var r = await Exec($"sit {seat.Value.p.ID}");
+                    var (sok, r, sp) = await SitNearWithFallback(apos, av.Name, seat, ct);   // SitFixes.cs: next seat on 'No room' / no response
+                    if (!sok) return $"could not sit near {av.Name}: {r}";
+                    seat = (sp, HDist(sp.Position, apos));
                     await Task.Delay(1500);
                     var aoWorn = SeatOffItems().Keys.Any(k => WornByItem().ContainsKey(k));
                     return $"{r}; seat {seat.Value.p.ID}; distance to {av.Name} {Vector3.Distance(client.Self.SimPosition, FindAvatarPos(rest)?.pos ?? apos):F1} m; seat-off AO worn now: {(aoWorn ? "yes (loop will detach)" : "no")}";

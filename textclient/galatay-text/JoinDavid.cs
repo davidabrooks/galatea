@@ -40,7 +40,7 @@ public static partial class Program
             var g = LoadGraph("Peronaut");
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
             Log("outfit", $"join David on the beach ({what}): bedroom + bikini first (David at {dp.Value.X:F0},{dp.Value.Y:F0})");
-            await BikiniIndoorsIfBeachBound(g, dp.Value, null, $"join David ({what})", cts.Token);
+            await BikiniIndoorsIfBeachBound(g, dp.Value, null, $"join David ({what})", cts.Token, manual: true);
             return BikiniWorn() ? "joined-David prep: bikini on in the bedroom" : "joined-David prep: bikini change did not happen (see log)";
         }
         catch (Exception ex) { var m = "join David prep: " + ex.GetBaseException().Message; Log("outfit", m); return m; }

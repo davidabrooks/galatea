@@ -123,6 +123,19 @@ public static partial class Program
         var act = ZoneTickAction(zone, beachMode, BikiniWorn(), IndoorsAtHome(pos), HomeWanderOwnsRestore(WanderOn, InPeronaut, wanderPause),
                                  DateTime.UtcNow, beachModeDeferRestoreUntil);   // "wait-guard": bikini just put on in the bedroom (8 min)
         if (act is "none" or "wait-indoors" or "wait-wander" or "wait-guard") return;
+        if (act == "bikini-on")
+        {   // 2026-10-13 David: outfit changes at home only in the bedroom (SitFixes.cs)
+            var route = ZoneBikiniRoute(sim.Name, InBedroom(pos), ManualWalkActive, HomeWanderOwnsRestore(WanderOn, InPeronaut, wanderPause), DateTime.UtcNow < zoneBedroomRetryAt);
+            if (route.StartsWith("wait")) return;
+            if (route == "bedroom-first")
+            {
+                beachOutfitBusy = true;
+                try { await ZoneBikiniViaBedroom($"entering beach (z={z:F1})"); }
+                catch (Exception ex) { Log("outfit-zone", "bedroom-first error: " + ex.GetBaseException().Message); }
+                finally { beachOutfitBusy = false; }
+                return;
+            }
+        }
         beachOutfitBusy = true;
         try
         {
@@ -202,9 +215,17 @@ public static partial class Program
                     if (pick != null) beachRememberedOutfit = pick;           // worn when she goes up to the house
                     else if (string.IsNullOrWhiteSpace(beachRememberedOutfit) && !string.IsNullOrWhiteSpace(lastNamedOutfit) && !BikiniNameRx.IsMatch(lastNamedOutfit))
                         beachRememberedOutfit = lastNamedOutfit;
-                    beachMode = true; PersistBeachState();
-                    if (!BikiniWorn()) Log("outfit-daily", "on the beach without the bikini: " + (await BikiniOn()).Replace("\n", " | "));
-                    else Log("outfit-daily", "on the beach in the bikini: keeping it");
+                    if (!BikiniWorn() && string.Equals(region, "Peronaut", StringComparison.OrdinalIgnoreCase))
+                    {   // 2026-10-13 David: never change in place outside the bedroom; the zone tick walks her up to change
+                        zoneHouseOutfitOverride = beachRememberedOutfit; beachMode = false; PersistBeachState();
+                        Log("outfit-daily", "on the beach without the bikini: the zone tick takes her to the bedroom to change");
+                    }
+                    else
+                    {
+                        beachMode = true; PersistBeachState();
+                        if (!BikiniWorn()) Log("outfit-daily", "on the beach without the bikini (not at home): " + (await BikiniOn()).Replace("\n", " | "));
+                        else Log("outfit-daily", "on the beach in the bikini: keeping it");
+                    }
                     if (pick != null) Log("outfit-daily", $"daily pick '{pick}' saved for the house");
                 }
                 else

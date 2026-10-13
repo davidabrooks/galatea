@@ -500,7 +500,7 @@ public static partial class Program
             }
         };
         client.Self.IM += (s, e) => HandleIm(e.IM);
-        client.Self.AlertMessage += (s, e) => Log("alert", e.Message);
+        client.Self.AlertMessage += (s, e) => { NoteAlertForSit(e.Message); Log("alert", e.Message); };
         HookRest();
     }
 
@@ -1641,7 +1641,7 @@ public static partial class Program
   detach <item> | attach <item> [point]   reversible; logged; detach also removes COF link(s) (seat-off/AO-restore keep COF); attach-block.txt items off while seated, re-worn on stand
   attach move <item|obj|name> <dx> <dy> <dz> [hudok] [force]   nudge worn attachment root by metres in attachment-local frame (±0.1 m/axis; HUD needs hudok; all-RIGGED mesh refused unless force: rigged mesh follows the skeleton, a move is invisible); logged with undo
   attach pos <item|obj|name>   print worn attachment root local position + rotation, rigged-mesh prim count, owner modify perms (quote names with spaces)
-  walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | walk_status | walk_stop   walking navigation (never teleports; add --fly to allow the stuck fly hop once)
+  walk_path x,y,z;x,y,z;... | goto_avatar <name> | sit_near <avatar> | sit_lap <avatar> | walk_status | walk_stop   walking navigation (never teleports; add --fly to allow the stuck fly hop once)
   nav [status|doors|places|reload|selftest] | nav door <name> [touch] | nav plan|to <x,y|place|door|avatar>[;...]   grid planner (routes/_nav-*.json)
   nofly [on|off]   walking never flies (default on)
   map [radius] [x y] | terrain <x> <y>   planning data: objects with size/rotation, ground height
@@ -1928,8 +1928,9 @@ public static partial class Program
             case "crossing": case "crossings": return CrossingCmd(a);   // Crossing.cs: fast hand-over switch + timelines
             case "walk_path": case "goto_avatar": case "sit_near": case "walk_status": case "walk_stop": case "map": case "terrain": case "walk_to":
                 if (cmd is "walk_path" or "goto_avatar" or "sit_near" or "walk_to" && WanderBlocksManualWalk) return "wander is running: 'wander pause' (or 'wander stop') first";
-                { string prep = cmd == "goto_avatar" && NamesDavid(rest) ? await JoinDavidBeachPrep("goto_avatar") : null;
+                { string prep = cmd is "goto_avatar" or "sit_near" && NamesDavid(TakeFlyFlag(rest, out _)) ? await JoinDavidBeachPrep(cmd) : null;
                   var nr = await NavCmds(cmd, rest, a); return prep == null ? nr : prep + "\n" + nr; }
+            case "sit_lap": return await SitLapCmd(rest);   // SitFixes.cs: sit on the avatar's seat + lap pose
             case "wander": return await WanderCmds(a);
             case "instant": return InstantCmdText(a);   // InstantReplies.cs
             case "fastchat": return await FastChatCmd(a);   // FastChat.cs

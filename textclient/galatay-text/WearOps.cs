@@ -186,15 +186,21 @@ public static partial class Program
                 }
                 return $"rez sent for '{it.Name}' at {P3(pos)}" + (got != null ? $"; new object {got.ID} local {got.LocalID} at {P3(got.Position)}" : "; no new object of hers seen within 10 s (check 'objects 10')");
             }
-            case "take":
+            case "take": case "return": case "delete":
             {
-                if (a.Length < 1 || !UUID.TryParse(a[0], out var oid)) return "usage: take <object uuid>";
+                if (a.Length < 1 || !UUID.TryParse(a[0], out var oid)) return $"usage: {cmd} <object uuid>";
                 var p = client.Network.CurrentSim.ObjectsPrimitives.Values.FirstOrDefault(x => x.ID == oid);
                 if (p == null) return "object not found in this region's object list";
-                if (p.OwnerID != client.Self.AgentID) return $"object {oid} is not hers (owner {p.OwnerID}); refused";
-                client.Inventory.RequestDeRezToInventory(p.LocalID, DeRezDestination.AgentInventoryTake, client.Inventory.FindFolderForType(AssetType.Object), UUID.Random());
-                Log("wear", $"take {oid} local {p.LocalID} '{p.Properties?.Name}' -> Objects folder");
-                return $"take sent for {oid} ('{p.Properties?.Name ?? "?"}') into her Objects folder";
+                if (p.Properties == null) { client.Objects.SelectObject(client.Network.CurrentSim, p.LocalID); for (int i = 0; i < 10 && p.Properties == null; i++) await Task.Delay(300, ct); }
+                var why = DerezOwnerCheck(client.Self.AgentID, p.OwnerID, p.Properties?.OwnerID, p.Properties?.GroupID, p.Properties?.LastOwnerID, p.Properties?.CreatorID);
+                if (why != null) return $"object {oid}: {why}; refused";
+                var dest = DerezDest(cmd);
+                var folder = dest == DeRezDestination.TrashFolder ? client.Inventory.FindFolderForType(FolderType.Trash) : client.Inventory.FindFolderForType(AssetType.Object);
+                client.Inventory.RequestDeRezToInventory(p.LocalID, dest, folder, UUID.Random());
+                Log("wear", $"{cmd} {oid} local {p.LocalID} '{p.Properties?.Name}' dest {dest}");
+                bool gone = false;
+                for (int i = 0; i < 16 && !gone; i++) { await Task.Delay(500, ct); gone = !client.Network.CurrentSim.ObjectsPrimitives.Values.Any(x => x.ID == oid); }
+                return $"{cmd} sent for {oid} ('{p.Properties?.Name ?? "?"}', {dest}); " + (gone ? "object is gone from the region" : "object still in the region after 8 s");
             }
             case "offer":
             {
@@ -211,6 +217,24 @@ public static partial class Program
             }
         }
         return "?";
+    }
+
+    public static DeRezDestination DerezDest(string cmd) => cmd switch
+    {
+        "return" => DeRezDestination.ReturnToOwner,
+        "delete" => DeRezDestination.TrashFolder,
+        _ => DeRezDestination.AgentInventoryTake,
+    };
+
+    /// <summary>null = ok. ObjectUpdate's OwnerID is often zero (only set for sound objects), so the owner from
+    /// ObjectProperties counts; a group-set object still has her as owner. A group-deeded object (owner == group) counts
+    /// when she is its last owner or creator (she rezzed/deeded it).</summary>
+    public static string DerezOwnerCheck(UUID me, UUID updateOwner, UUID? propOwner, UUID? group, UUID? lastOwner, UUID? creator)
+    {
+        if (updateOwner == me || propOwner == me) return null;
+        var owner = propOwner ?? updateOwner;
+        if (group.HasValue && group.Value != UUID.Zero && owner == group.Value && (lastOwner == me || creator == me)) return null;
+        return $"not hers (owner {owner})";
     }
 
     // called from the IM handler for InventoryOffered / TaskInventoryOffered; true = accepted here

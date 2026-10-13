@@ -21,6 +21,15 @@ namespace GalatayText;
 public static partial class Program
 {
     // bake name in the appearance-service URL, by AvatarTextureIndex (names as in the LL viewer's appearance dictionary)
+    // 2026-10-11: a seated avatar's rotation is relative to its seat prim; compose up the link chain to world (couch turned 90 deg -> renders faced wrong).
+    internal static Quaternion SeatWorldRot(Simulator sim, uint parent, Quaternion local) =>
+        SeatWorldRot(id => sim.ObjectsPrimitives.TryGetValue(id, out var p) ? (p.Rotation, p.ParentID) : null, parent, local);
+    internal static Quaternion SeatWorldRot(Func<uint, (Quaternion rot, uint parent)?> prim, uint parent, Quaternion local)
+    {
+        var r = local;
+        for (int i = 0; i < 8 && parent != 0 && prim(parent) is { } p; i++) { r = p.rot * r; parent = p.parent; }
+        return r;
+    }
     static readonly (int te, string name)[] Bakes = { (8, "head"), (9, "upper"), (10, "lower"), (11, "eyes"), (19, "skirt"), (20, "hair"),
                                                        (40, "leftarm"), (41, "leftleg"), (42, "aux1"), (43, "aux2"), (44, "aux3") };
 
@@ -190,11 +199,28 @@ public static partial class Program
         s.Write(System.Text.Encoding.UTF8.GetBytes(rest.Length > 2 ? "]," + rest[1..] : "]}"));
     }
 
+    // 2026-10-11: nearby avatars' attachment faces can be stale (object cache / missed TE update): David's body HUD had
+    // un-hidden his legs in-world, yet the export still had those faces at alpha 0, so renders cut him off at the hips.
+    // Re-request close avatars' attachment prims (RequestMultipleObjects, the viewer's normal read-only request) and wait briefly.
+    static async Task RefreshNearbyAttachmentFaces(float radius)
+    {
+        var sim = Sim; var me = client.Self; if (sim == null) return;
+        var near = sim.ObjectsAvatars.Values.Where(av => av != null && av.LocalID != me.LocalID
+            && Vector3.Distance(PositionHelper.GetAvatarPosition(sim, av), me.SimPosition) <= radius).Select(av => av.LocalID).ToHashSet();
+        if (near.Count == 0) return;
+        var prims = sim.ObjectsPrimitives.Values.ToList(); var byId = prims.ToDictionary(p => p.LocalID);
+        uint RootParent(Primitive p) { var q = p; for (int i = 0; i < 8 && q.ParentID != 0 && byId.TryGetValue(q.ParentID, out var up); i++) q = up; return q.ParentID; }
+        var ids = prims.Where(p => near.Contains(RootParent(p))).Select(p => p.LocalID).ToList();
+        for (int k = 0; k < ids.Count; k += 200) try { client.Objects.RequestObjects(sim, ids.Skip(k).Take(200).ToList()); } catch { }
+        if (ids.Count > 0) await Task.Delay(int.TryParse(Env("GT_LOOK_REFRESH_MS", "2000"), out var ms) ? ms : 2000);
+    }
+
     static async Task<string> SceneExport(string[] a)
     {
         float r = 48;
         if (a.Length > 1 && (!float.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out r) || r <= 0 || r > 128))
             return "usage: scene export [radius 1-128]";
+        if (Env("GT_LOOK_REFRESH_ATTACH", "on") != "off") await RefreshNearbyAttachmentFaces(Math.Min(r, 12f));
         var sw = System.Diagnostics.Stopwatch.StartNew(); var stages = new List<string>();
         void Stage(string name, string detail = "") { stages.Add($"{name}={sw.Elapsed.TotalSeconds:F1}{detail}"); sw.Restart(); }
         var sim = Sim; var me = client.Self;
@@ -306,7 +332,7 @@ public static partial class Program
         if (self != null) foreach (var (te, name) in Bakes) jobs.Add((-1, te, name));
         for (int i = 0; i < avList.Count; i++)
         {
-            if (AttachState(dressed[i].exp, dressed[i].have) != "complete") continue;
+            if (AttachState(dressed[i].exp, dressed[i].have) is not ("complete" or "partial")) continue;   // 2026-10-11: partial (one late attachment) still needs fresh bakes, else a stale cached bake (old alpha layers) hides body parts
             var need = BakesNeeded(wornTex.TryGetValue(avKeys[i], out var ts) ? ts : Enumerable.Empty<UUID>());
             foreach (var (te, name) in Bakes) if (need.Contains(name)) jobs.Add((i, te, name));
         }
@@ -325,7 +351,7 @@ public static partial class Program
             var (av, ap) = avList[i];
             avatars.Add(new OSDMap
             {
-                ["pos"] = OSD.FromVector3(ap), ["rot"] = OSD.FromQuaternion(av.Rotation), ["agent_id"] = OSD.FromUUID(av.ID), ["name"] = av.Name ?? "",
+                ["pos"] = OSD.FromVector3(ap), ["rot"] = OSD.FromQuaternion(SeatWorldRot(views[avKeys[i].si].Item1, av.ParentID, av.Rotation)), ["seated"] = av.ParentID != 0, ["agent_id"] = OSD.FromUUID(av.ID), ["name"] = av.Name ?? "",
                 ["local_id"] = unchecked((int)Id(avKeys[i].si, av.LocalID)), ["visual_params"] = Params(av), ["bakes"] = BakeMap(i), ["anims"] = AnimsOf(av.ID),
                 ["dressed"] = AttachState(dressed[i].exp, dressed[i].have), ["attach_expected"] = dressed[i].exp, ["attach_have"] = dressed[i].have,
             });

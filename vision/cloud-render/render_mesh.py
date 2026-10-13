@@ -301,10 +301,10 @@ def gpu_setup():
         sc.cycles.use_denoising = os.environ.get("GT_DENOISE", "1") != "0" and sc.cycles.samples >= 24
         sc.cycles.transparent_max_bounces = 8 if sc.cycles.samples < 24 else 16
         if os.environ.get("GT_HD") == "1":   # `photo hd` (2026-10-13): stills for David, quality over speed
-            sc.cycles.use_adaptive_sampling = True; sc.cycles.adaptive_threshold = 0.01
+            sc.cycles.use_adaptive_sampling = True; sc.cycles.adaptive_threshold = float(os.environ.get("GT_HD_THRESHOLD", "0.02"))
             sc.cycles.denoiser = "OPENIMAGEDENOISE"; sc.cycles.denoising_input_passes = "RGB_ALBEDO_NORMAL"
-            sc.cycles.max_bounces = 8; sc.cycles.diffuse_bounces = 4; sc.cycles.glossy_bounces = 4
-            sc.cycles.transparent_max_bounces = 32; sc.cycles.filter_width = 1.5   # pixel filter = anti-aliasing
+            sc.cycles.max_bounces = 6; sc.cycles.diffuse_bounces = 3; sc.cycles.glossy_bounces = 3
+            sc.cycles.transparent_max_bounces = 24; sc.cycles.filter_width = 1.5   # pixel filter = anti-aliasing
         log("cycles device", sc.cycles.device)
     elif engine == "WORKBENCH":  # flat preview: textures, no lighting model (cheapest; CPU/llvmpipe friendly)
         sc.render.engine = "BLENDER_WORKBENCH"; sc.display.shading.color_type = "TEXTURE"; sc.display.shading.light = "STUDIO"
@@ -557,7 +557,22 @@ if kind == "scene":
             bpy.context.view_layer.update()
             hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.35, u, distance=d.length - 0.35)
             camera(loc - u * 0.15 if hit else want, target, lens, (960, 540))
-        if view.startswith("at:"):
+        if view.startswith("portrait"):
+            # `photo hd self` (2026-10-13): her whole body from in front, in the real scene; "portrait[:yaw offset]".
+            # Framed on her world bounding box (standing, sitting or lying), lens 50; Blender's sensor fit = the long side
+            a = math.radians(yaw + (float(view[9:]) if view.startswith("portrait:") else 0)); f = Vector((math.cos(a), math.sin(a), 0))
+            rx, ry = (int(v) for v in os.environ.get("GT_RES", "2160x3840").split("x"))
+            bpy.context.view_layer.update()
+            pts = [ob.matrix_world @ Vector(c) for ob in obs for c in ob.bound_box]
+            blo = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts))); bhi = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
+            mid = (blo + bhi) / 2; ext = bhi - blo; side = abs(ext.x * f.y) + abs(ext.y * f.x)   # width across the view
+            hf = 2 * math.atan(18 / 50 * (rx / ry if ry >= rx else 1)); vf = 2 * math.atan(18 / 50 * (1 if ry >= rx else ry / rx))
+            dist = max(ext.z * 0.6 / math.tan(vf / 2), side * 0.6 / math.tan(hf / 2), 1.2) + max(ext.x, ext.y) / 2
+            want = mid + f * dist + Vector((0, 0, 0.15 * dist)); e = want - h; u = e.normalized()
+            # a wall in front of her: stop just before it (cast from her head: a seat or table isn't a wall)
+            hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.5, u, distance=max(0.01, e.length - 0.5))
+            camera(loc - u * 0.15 if hit else want, mid, 50, (rx, ry))
+        elif view.startswith("at:"):
             t = view[3:]; tgt = heads.get(t) or Vector([float(v) for v in t.split(",")])
             f = (tgt - h); f.z = 0; f = f.normalized() if f.length > 1e-3 else Vector((1, 0, 0))
             shoulder(f, 1.5, 0.45, 0.3, tgt, 35)

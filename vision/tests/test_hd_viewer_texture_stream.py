@@ -85,8 +85,8 @@ def test_cancel_kills_render_children(tmp_path):
     """SIGTERM to look.py's process: its handler kills the render child's process group (grandchildren too)."""
     script = tmp_path / "parent.py"
     script.write_text(f"""
-import sys; sys.path.insert(0, {HERE!r}); sys.path.insert(0, {os.path.join(HERE, 'cloud-render')!r})
-import types; sys.modules.setdefault('make_job', types.ModuleType('make_job'))
+import sys; sys.path.insert(0, {HERE!r}); 
+import types; sys.modules['handler'] = types.ModuleType('handler'); sys.modules.setdefault('make_job', types.ModuleType('make_job'))
 import look
 look.install_cancel_handlers()
 look.run_mem_guarded(['bash', '-c', 'sleep 300 & echo $! > {tmp_path}/gc; sleep 300'], None, floor_mb=0)

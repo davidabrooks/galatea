@@ -167,7 +167,17 @@ static class Mesher
     }
     internal static float? LegacyShiny(Shininess s) => s switch { Shininess.Low => 0.25f, Shininess.Medium => 0.5f, Shininess.High => 0.75f, _ => null };
     internal static bool Impostor(int rank, int max) => max > 0 && rank >= max;
-    static DetailLevel FarLod(float r, float d) => (r * LodFactor / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
+    // LLVOVolume::calcLOD + computeLODDetail (secondlife/viewer develop 2026-10): distance ramps as (d/ramp)^2*ramp under
+    // ramp = 2 * RenderVolumeLODFactor, then * pi/3; tan = lod_factor * radius / distance, rounded to 0.01;
+    // LLVolumeLODGroup thresholds 0.03 / 0.06 / 0.24 -> LOD 0..3 (= LibreMetaverse Low / Medium / High / Highest)
+    internal static DetailLevel FarLod(float r, float d)
+    {
+        float ramp = LodFactor * 2f;
+        if (d < ramp) { d /= ramp; d *= d; d *= ramp; }
+        d *= MathF.PI / 3f;
+        float tan = MathF.Round(LodFactor * r / MathF.Max(d, 0.01f), 2);
+        return tan <= 0.03f ? DetailLevel.Low : tan <= 0.06f ? DetailLevel.Medium : tan <= 0.24f ? DetailLevel.High : DetailLevel.Highest;
+    }
 
     // drop the rigged-mesh position overrides of joints whose position an animation drives (the SL pose blend wins)
     static void PoseOverrides(Dictionary<string, Vector3> overrides, IEnumerable<string> positionAnimated)
@@ -408,7 +418,9 @@ static class Mesher
             ok &= Projector(null, Quaternion.Identity) == null && Projector(new Primitive.LightImage { LightTexture = UUID.Random(), Params = new Vector3(1, 0, 0) }, Quaternion.Identity) != null;
             ok &= LegacyShiny(Shininess.None) == null && LegacyShiny(Shininess.High) == 0.75f;
             ok &= !Impostor(15, 16) && Impostor(16, 16) && !Impostor(99, 0);
-            ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
+            { var lf = LodFactor; LodFactor = 2f;   // viewer default factor 2: tan 0.19 -> 2, 0.01 -> 0, 0.95 -> 3, 0.05 -> 1
+              ok &= FarLod(5, 50) == DetailLevel.High && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.Highest && FarLod(1.5f, 60) == DetailLevel.Medium;
+              LodFactor = 3f; ok &= FarLod(5, 50) == DetailLevel.Highest; LodFactor = lf; }
             // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028
             var lad0 = LindenAvatarDefinition.Load(Path.Combine(AppContext.BaseDirectory, "linden", "character", "avatar_lad.xml"));
             float Clav(float th) { var vp0 = new Dictionary<int, float> { [34] = th }; var sh = lad0.ComputeBoneTransforms(vp0); InheritVolumeScale(sh, vp0); return sh["L_CLAVICLE"].Scale.Y; }
@@ -523,7 +535,10 @@ static class Mesher
             bool far = !mine && Far(o);
             // backdrop LOD from the whole object's on-screen size (radius x LOD factor 2 / distance), like an SL viewer at its
             // default LOD factor; the lowest LOD of many mesh trees is a handful of loose leaf triangles (floating fragments)
-            var farLod = far ? FarLod(sphere[RootOf(o, byLocal)].r, Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus)) : DetailLevel.Low;
+            // LLVOVolume::calcLOD: per prim (each drawable), radius = |mLODScaleBias * scale| (bias 0.5 for meshes / most
+            // paths), distance = that prim's distance to the camera. The whole linkset's sphere (before 2026-10-14) picked
+            // the top LOD for every child of a big build: 5.7 M backdrop triangles and the Ultra photo ran out of memory.
+            var farLod = far ? FarLod(0.5f * p.Scale.Length(), Vector3.Distance(pos, focus)) : DetailLevel.Low;
             // someone else's attachment: LOD by the wearer's distance (hers stay Highest)
             float? avDist = owner != null && owner != "me" && wearerAt.TryGetValue(owner, out var wp0)
                 ? Vector3.Distance(wp0, focusR < 1e9f ? focus : me) : null;

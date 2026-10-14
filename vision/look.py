@@ -69,12 +69,29 @@ def hd_settings(arg, mode, profile=DEFAULT_PROFILE, no=()):
     return o, {"GT_HD": "1", "GT_RES": HD_RES[o], "GT_SAMPLES": os.environ.get("GT_HD_SAMPLES", "24"), "GT_DENOISE": "1",
                "GT_STUDIO_SHADOW": "1", "GT_HD_PROFILE": profile, **PROFILES[profile], **off}
 
-def retry_env(rc, hd):
-    """env for the 2nd Blender attempt after a signal death (rc < 0). 2026-10-13 20:05: an HD landscape was OOM-killed
-    (SIGKILL, 7.2 GB) after 8 min and the identical rerun needed the same memory: retry lighter (textures capped at
-    1024 px, smaller tiles); a plain crash (segfault) just reruns"""
-    if hd and rc == -9: return {"GT_TEX_LIMIT": "1024", "GT_TILE": "512"}
+def retry_env(rc, hd, attempt=1):
+    """env for the next Blender attempt after a signal death (rc < 0). 2026-10-13 20:05 / 2026-10-14 12:50: HD renders
+    killed at ~7 GB (OOM / memory guard) and the identical rerun needed the same memory. Like the viewer under low
+    memory (sDesiredDiscardBias), retry with a higher texture discard bias (1 = every scene texture half its edge),
+    a smaller texture budget, Cycles' texture limit and smaller tiles; a plain crash (segfault) just reruns"""
+    if hd and rc == -9:
+        bias = max(2.0, float(os.environ.get("GT_TEX_BIAS", "0") or 0) + 1.0)
+        budget = float(os.environ.get("GT_TEX_BUDGET_MB", "3000") or 3000) * 0.5
+        return {"GT_TEX_LIMIT": "1024", "GT_TILE": "512" if attempt == 1 else "256",
+                "GT_TEX_BIAS": f"{bias:g}", "GT_TEX_BUDGET_MB": f"{max(600, budget):.0f}"}
     return {}
+
+def tex_budget_mb(avail_mb, floor_mb=None, base_mb=3000):
+    """Texture budget for an HD render: what the box has free now, minus the memory guard floor and ~3 GB for
+    Blender, geometry, BVH, film and denoise buffers; 600 MB minimum, 6000 MB maximum (shared box)"""
+    floor_mb = int(os.environ.get("GT_MEM_FLOOR_MB", "1500")) if floor_mb is None else floor_mb
+    if avail_mb is None: return 3000
+    return int(min(6000, max(600, avail_mb - floor_mb - base_mb)))
+
+def read_mem_available():
+    try:
+        with open("/proc/meminfo") as f: return mem_available_mb(f.read())
+    except OSError: return None
 
 def env_for(doc, hd, sky=None):
     """mesh.json env: photo hd -> the shared EEP environment (sky None/"shared") or a named preset (llsky.photo_env;
@@ -147,7 +164,9 @@ def optimize_png(path):
         if im.mode != "RGB": im.convert("RGB").save(path)
     cmd = oxipng_cmd(path, os.environ.get("GT_PNG_ZOPFLI") == "1")
     if cmd:
-        try: subprocess.run(cmd, check=True, timeout=1800)
+        try:
+            r_ = run_child(cmd, timeout=1800)
+            if r_.returncode: raise RuntimeError(f"exit {r_.returncode}")
         except Exception as e: return f"oxipng failed ({e}), {before} bytes"
     return f"{before} -> {os.path.getsize(path)} bytes" + ("" if cmd else " (no oxipng)")
 
@@ -186,6 +205,49 @@ def mem_guard_trip(avail_mb, floor_mb):
     """Pure: kill the render now? (avail unknown -> no)"""
     return avail_mb is not None and floor_mb > 0 and avail_mb < floor_mb
 
+# Cancelling a photo must stop every render process (2026-10-14 12:2x: a "stopped" photo kept two Blenders running,
+# which ate the box's memory and froze the client). Children die with look.py (PR_SET_PDEATHSIG, even on SIGKILL),
+# run in their own process group, and SIGTERM / SIGINT / SIGHUP to look.py kill those groups before it exits.
+_CHILDREN = set()
+
+def _child_preexec():
+    os.setsid()
+    try:
+        import ctypes, signal
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)   # PR_SET_PDEATHSIG
+    except Exception: pass
+
+def kill_children():
+    """SIGKILL every running render child's process group (pure bookkeeping otherwise); returns how many"""
+    import signal
+    n = 0
+    for p in list(_CHILDREN):
+        if p.poll() is None:
+            try: os.killpg(p.pid, signal.SIGKILL); n += 1
+            except OSError:
+                try: p.kill(); n += 1
+                except OSError: pass
+        _CHILDREN.discard(p)
+    return n
+
+def install_cancel_handlers():
+    import signal
+    def on_sig(signum, frame):
+        n = kill_children()
+        print(f"cancelled (signal {signum}): killed {n} render process group(s)", file=sys.stderr)
+        os._exit(128 + signum)
+    for s_ in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP): signal.signal(s_, on_sig)
+
+def run_child(cmd, env=None, timeout=None):
+    """subprocess.run(capture_output, text) for a render-stage child that cancel kills too"""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, preexec_fn=_child_preexec)
+    _CHILDREN.add(p)
+    try: out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_children(); out, err = p.communicate(); raise
+    finally: _CHILDREN.discard(p)
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
 def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
     """subprocess.run(capture_output, text) that SIGKILLs the render itself when the box's MemAvailable drops under
     floor_mb (GT_MEM_FLOOR_MB, default 1500). 2026-10-14: two Blender HD renders drove the whole box into the kernel
@@ -194,7 +256,8 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
     import signal, tempfile, threading
     floor_mb = int(os.environ.get("GT_MEM_FLOOR_MB", "1500")) if floor_mb is None else floor_mb
     with tempfile.TemporaryFile("w+") as fo, tempfile.TemporaryFile("w+") as fe:
-        p = subprocess.Popen(cmd, stdout=fo, stderr=fe, text=True, env=env)
+        p = subprocess.Popen(cmd, stdout=fo, stderr=fe, text=True, env=env, preexec_fn=_child_preexec)
+        _CHILDREN.add(p)
         tripped = None
         while p.poll() is None:
             try:
@@ -202,10 +265,13 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
             except OSError: avail = None
             if mem_guard_trip(avail, floor_mb):
                 tripped = avail
-                try: p.send_signal(signal.SIGKILL)
-                except OSError: pass
+                try: os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    try: p.send_signal(signal.SIGKILL)
+                    except OSError: pass
                 p.wait(); break
             time.sleep(poll_s)
+        _CHILDREN.discard(p)
         fo.seek(0); fe.seek(0); out, err = fo.read(), fe.read()
     if tripped is not None:
         err += f"\nGT: memory guard: box MemAvailable {tripped} MB < {floor_mb} MB, render killed to keep the box responsive"
@@ -320,6 +386,7 @@ def crowd_summary(others):
     return {"complete": len(others) - len(stand), "stand_in": len(stand), "stand_in_names": [o.get("name") or o.get("group", "?") for o in stand]}
 
 def main(a):
+    install_cancel_handlers()
     fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
     hd_arg = next(((x.split("=", 1)[1] if "=" in x else "") for x in a if x == "--hd" or x.startswith("--hd=")), None)
     a = [x for x in a if not (x == "--hd" or x.startswith("--hd="))]
@@ -355,7 +422,7 @@ def main(a):
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
         pt = [av["pos"][0], av["pos"][1], av["pos"][2] + 0.7] if av else obj["world_pos"] if obj else None
         if pt: args.append("--look=" + ",".join(str(v) for v in pt))
-    r = subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + args, capture_output=True, text=True, env=mesher_env(os.environ))
+    r = run_child(["nice", "-n", "10", DOTNET, MESHER] + args, env=mesher_env(os.environ))
     if r.returncode: sys.exit("scene-mesher failed: " + mesher_error(r.stderr or r.stdout))
     mesh_warn = [l for l in (r.stderr or "").splitlines() if l.startswith("warning:")]
     times["mesh"] = round(time.time() - t0, 1)
@@ -381,8 +448,12 @@ def main(a):
         os.environ.setdefault("GT_TEX_MAPS", "0")
         os.environ.setdefault("GT_TEX_CAP_AVATAR", "512")
         os.environ.setdefault("GT_TEX_CAP_SCENE", "256")
+    if hd:   # the viewer's texture streaming: discard levels from on-screen size, bias under memory pressure
+        os.environ.setdefault("GT_TEX_DIST", "1"); os.environ["GT_RES"] = hd_env.get("GT_RES", "3840x2160")
+        os.environ.setdefault("GT_TEX_BUDGET_MB", str(tex_budget_mb(read_mem_available())))
     info = {}; err = handler.fetch_textures(meta, info, WORK)
     if err: sys.exit(err)
+    if hd: print(f"textures: {json.dumps({k: info['textures'].get(k) for k in ('requested', 'est_mb', 'est_mb_before_budget', 'discard_bias', 'budget_mb', 'sizes')})}", file=sys.stderr)
     times["textures"] = info["textures"]["seconds"]
     t = time.time()
     bake_paths = {"bake:" + k: f"{WORK}/tex/bake-{k}.png" for k in only if os.path.exists(f"{WORK}/tex/bake-{k}.png")}
@@ -412,8 +483,16 @@ def main(a):
             env.setdefault("GT_NOSKY", "1")
             env.setdefault("GT_DENOISE", "0")
             env.setdefault("GT_MIN_TRIS", "12")  # drop dust; keep chairs/walls/avatars
-        for attempt in range(2):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
-            if attempt: env = {**env, **retry_env(r.returncode, hd)}
+        for attempt in range(3):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
+            if attempt:
+                if r.returncode != -9 and attempt > 1: break
+                env = {**env, **retry_env(r.returncode, hd, attempt)}
+                if hd and r.returncode == -9:   # memory-guard / OOM kill: re-stream textures at a higher discard bias
+                    os.environ["GT_TEX_BIAS"] = env["GT_TEX_BIAS"]; os.environ["GT_TEX_BUDGET_MB"] = env["GT_TEX_BUDGET_MB"]
+                    info2 = {}
+                    if not handler.fetch_textures(meta, info2, WORK):
+                        info = info2; write_manifest(WORK, {**info2.get("tex_paths", {}), **bake_paths, **{k: v for k, v in proj_paths.items() if v}})
+                        print(f"retry {attempt}: bias {env['GT_TEX_BIAS']}, textures ~{info2['textures']['est_mb']} MB", file=sys.stderr)
             r = run_mem_guarded(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
                                  f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], env)
             if r.returncode >= 0: break

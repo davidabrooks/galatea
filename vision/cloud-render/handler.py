@@ -4,7 +4,7 @@ Input: {"scene": {...gather_scene.py JSON...}, "renders": ["scene", "face"], "ee
 Output: diagnostics, per-render timings and JPEG images (base64). Textures are fetched by UUID from SL's
 public asset CDN and decoded with Pillow (JPEG 2000) at reduced resolution.
 """
-import base64, concurrent.futures as cf, glob, gzip, io, json, lzma, os, re, subprocess, time, urllib.request
+import base64, math, concurrent.futures as cf, glob, gzip, io, json, lzma, os, re, subprocess, time, urllib.request
 from PIL import Image
 
 CDN = "http://asset-cdn.glb.agni.lindenlab.com/?texture_id="
@@ -135,6 +135,70 @@ def crowd_drop_order(meta, av_dist, want):
             if isinstance(t, str) and t in want: nearest[t] = min(nearest.get(t, 1e9), d if d is not None else -1.0)
     return [t for t, d in sorted(nearest.items(), key=lambda kv: -kv[1]) if d >= 0]
 
+# 2026-10-14 photo hd (Ultra, 256 m, 4591 prims, 3 neighbour regions): every scene face at 2048 px drove Blender to
+# 7 GB while "Updating Images" and the memory guard killed it twice. The viewer never loads that: it streams each
+# texture at the discard level its on-screen size needs. Mirrored here from secondlife/viewer (develop, 2026-10):
+#  LLFace::calcPixelArea / LLPipeline::calcPixelArea: app_angle = atan(radius / dist), pixel radius = app_angle *
+#    sCurPixelAngle (view height px / vertical FOV rad), pixel area = pi r^2; dist < 16 m ramps (d/16)^2*16
+#  LLFace::getTextureVirtualSize: texel_area = |repeats * 0.5|^2 * pi; vsize = pixel area / clamp(texel_area, 1/64, 128)
+#  LLViewerFetchedTexture::processTextureStats: discard = floor(log4(texels / vsize)), min discard 1 above
+#    max_tex_res (RenderMaxTextureResolution 2048) -> loaded edge = smallest power of two >= sqrt(vsize), <= 2048
+#  LLViewerTextureList::updateImageDecodePriority: sDesiredDiscardBias b >= 1 divides vsize by round(4^(b-1));
+#    low system memory slams b to 1.5 and raises it until memory fits (LLViewerTexture::updateClass)
+# The 4K output is the "screen" (sCurPixelAngle = output height / 60 deg FOV), her position the camera.
+VIEW_FOV = math.radians(60.0)
+MIN_TEX = 64
+
+def pixel_area(dist, radius, height_px, fov=VIEW_FOV):
+    """LLPipeline::calcPixelArea: on-screen area (px^2) of a bounding sphere `radius` m at `dist` m"""
+    if dist < 16.0: dist = max((dist / 16.0) ** 2 * 16.0, 1e-3)
+    r_px = math.atan(radius / dist) * (height_px / fov)
+    return math.pi * r_px * r_px
+
+def virtual_size(dist, radius, repeats, height_px, bias=0.0):
+    """LLFace::getTextureVirtualSize (+ the discard-bias scaler of updateImageDecodePriority)"""
+    ru, rv = repeats
+    texel_area = ((ru * 0.5) ** 2 + (rv * 0.5) ** 2) * math.pi
+    v = pixel_area(dist, radius, height_px) / min(max(texel_area, 1 / 64), 128.0)
+    if bias >= 1.0: v /= round(4 ** (bias - 1.0))
+    return v
+
+def discard_cap(vsize, max_res=2048):
+    """Pure: the texture edge the viewer would load for this virtual size: smallest power of two >= sqrt(vsize)
+    (discard = floor(log4(texels / vsize))), clamped to [MIN_TEX, max_res]"""
+    edge = MIN_TEX
+    while edge < max_res and edge * edge < vsize: edge *= 2
+    return min(edge, max_res)
+
+def batch_geometry(meta, work):
+    """scene/far batch index -> (dist m from her, bounding radius m, (u, v) repeats from the UV extent); {} without
+    mesh.bin / her position (mesh.bin positions are region coordinates for scene/far batches)"""
+    me = meta.get("me"); path = os.path.join(work, "mesh.bin")
+    if not me or not os.path.exists(path): return {}
+    import numpy as np
+    buf = np.memmap(path, np.uint8, "r"); out = {}; m = np.asarray(me[:3], np.float32)
+    for i, b in enumerate(meta["batches"]):
+        if b.get("group") not in ("scene", "far") or not b.get("nv"): continue
+        try:
+            nv, o = b["nv"], b["offset"]
+            P = np.frombuffer(buf, np.float32, nv * 3, o).reshape(-1, 3)
+            T = np.frombuffer(buf, np.float32, nv * 2, o + nv * 24).reshape(-1, 2)
+            lo, hi = P.min(0), P.max(0); c = (lo + hi) / 2
+            rep = np.clip(T.max(0) - T.min(0), 1e-3, 1e4)
+            out[i] = (float(np.linalg.norm(c - m)), float(np.linalg.norm(hi - lo)) / 2, (float(rep[0]), float(rep[1])))
+        except (ValueError, KeyError): continue
+    return out
+
+def viewer_cap(geom, cap, height_px, bias=0.0):
+    """Pure: scene face texture edge per the viewer's discard logic; unknown geometry -> cap"""
+    if geom is None: return cap
+    d, r, rep = geom
+    return discard_cap(virtual_size(d, r, rep, height_px, bias), cap)
+
+def tex_mem_mb(want):
+    """Estimate of Blender + Cycles RAM for these textures: RGBA 8-bit, held twice (Blender image + Cycles copy)."""
+    return sum(c * c * 4 * 2 for c in want.values()) / 2 ** 20
+
 def fetch_textures(meta, out, work):
     """Every texture the batches reference (CDN, capped), into work/tex; None or an error string."""
     max_tex = int(os.environ.get("GT_MAX_TEXTURES", str(MAX_TEXTURES)))
@@ -143,13 +207,28 @@ def fetch_textures(meta, out, work):
     sc_cap = int(os.environ.get("GT_TEX_CAP_SCENE", "512"))
     want = {}
     av_dist = crowd_distances(meta)
-    for b in meta["batches"]:
-        mat = b.get("mat") or {}
-        pairs = [(b["tex"], crowd_cap(av_dist.get(b["group"]), av_cap) if b["group"].startswith("avatar") else sc_cap)]
-        if maps:
-            pairs += [(mat.get(k), min(512, sc_cap)) for k in ("normal", "spec", "mr", "emissive_tex")]
-        for t, cap in pairs:
-            if isinstance(t, str) and UUID.match(t): want[t] = max(want.get(t, 0), cap)
+    tiered = os.environ.get("GT_TEX_DIST", "0") == "1"   # photo hd: viewer discard levels from on-screen size
+    bias = float(os.environ.get("GT_TEX_BIAS", "0"))
+    height = int((os.environ.get("GT_RES", "3840x2160").split("x") + ["2160"])[1])
+    geom = batch_geometry(meta, work) if tiered else {}
+    budget = float(os.environ.get("GT_TEX_BUDGET_MB", "0") or 0)
+    def collect(bias):
+        want = {}
+        for i, b in enumerate(meta["batches"]):
+            mat = b.get("mat") or {}
+            scene = b["group"] in ("scene", "far")
+            scap = viewer_cap(geom.get(i), sc_cap, height, bias) if tiered and scene else sc_cap
+            pairs = [(b["tex"], crowd_cap(av_dist.get(b["group"]), av_cap) if b["group"].startswith("avatar") else scap)]
+            if maps:
+                pairs += [(mat.get(k), min(512, scap if scene else sc_cap)) for k in ("normal", "spec", "mr", "emissive_tex")]
+            for t, cap in pairs:
+                if isinstance(t, str) and UUID.match(t): want[t] = max(want.get(t, 0), cap)
+        return want
+    want = collect(bias); est0 = tex_mem_mb(want)
+    # LLViewerTexture::updateClass under low memory: bias to >= 1.5, then up until it fits (here: in 0.5 steps, max 5)
+    while tiered and budget and tex_mem_mb(want) > budget and bias < 5.0:
+        bias = max(1.5, bias + 0.5); want = collect(bias)
+    os.environ["GT_TEX_BIAS"] = f"{bias:g}"   # the bias in effect: a lighter retry starts above it
     near = {t for b in meta["batches"] if b["group"] != "far" for t in [b["tex"], *(b.get("mat") or {}).values()] if isinstance(t, str)}
     if len(want) > max_tex:  # backdrop ("far") textures go first: those faces then show their plain colour
         for t in [t for t in want if t not in near][:len(want) - max_tex]: del want[t]
@@ -162,7 +241,10 @@ def fetch_textures(meta, out, work):
         res = list(ex.map(lambda kv: fetch_tex(kv[0], work + "/tex", kv[1]), want.items()))
     out["tex_paths"] = {r[0]: r[1] for r in res if r[1]}  # the exact file per texture (render_mesh: tex-manifest.json)
     out["textures"] = {"requested": len(want), "ok": sum(1 for r in res if r[1]), "errors": [r for r in res if r[2]][:5],
-                       "seconds": round(time.time() - t, 1), "workers": workers, "maps": maps, "caps": [av_cap, sc_cap]}
+                       "seconds": round(time.time() - t, 1), "workers": workers, "maps": maps, "caps": [av_cap, sc_cap],
+                       "est_mb": round(tex_mem_mb(want)), "est_mb_before_budget": round(est0), "viewer_discard": tiered,
+                       "discard_bias": bias, "budget_mb": budget,
+                       "sizes": {str(c): n for c, n in sorted(__import__("collections").Counter(want.values()).items())}}
     return None
 
 def handler(job):

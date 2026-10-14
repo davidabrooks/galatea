@@ -47,3 +47,24 @@ Profiles: `photo hd ... [highplus|ultra]` (look.py `--profile=`; highplus is the
 | 16 non-impostor avatars | --avatar-max=16 (`noimpostors` = all full) | supported |
 | Avatar max complexity 350,000 | not in the export (ARC needs per-attachment cost data) | not matched |
 | Max particles 8192, attached particles on, face lights off, HDR/emissive, glow 2, alpha masks, textures 2048, AO, shadows sun/moon+projectors, point lights full | as High+ above | supported |
+
+## Texture streaming, mesh LOD and memory (2026-10-14, PR "HD photo memory = viewer texture streaming")
+
+The Ultra HD photo (256 m, 4591 prims, 3 neighbour regions) loaded every scene face at 2048 px and Blender hit
+~7 GB; the memory guard killed it twice. The viewer never holds that: it streams each texture at the discard level
+its on-screen size needs. Ported from secondlife/viewer `develop` (Oct 2026; Firestorm 7.x carries the same code):
+
+| Viewer (file / function) | Logic | Our HD pipeline |
+|---|---|---|
+| `LLPipeline::calcPixelArea`, `LLFace::calcPixelArea` | `app_angle = atan(radius/dist)`, pixel radius = `app_angle * sCurPixelAngle` (view height px / vertical FOV), area = pi r^2; dist < 16 m ramps to `(d/16)^2*16` | `handler.pixel_area`: the 4K output is the screen (2160 px landscape / 3840 portrait, 60 deg), her position the camera, radius/centre from each face batch's bounds in mesh.bin |
+| `LLFace::getTextureVirtualSize` | `texel_area = |repeats*0.5|^2 * pi`; `vsize = pixel_area / clamp(texel_area, 1/64, 128)` | `handler.virtual_size`, repeats = the batch's UV extent |
+| `LLViewerFetchedTexture::processTextureStats` | `discard = floor(log4(texels / vsize))`, min discard 1 above `RenderMaxTextureResolution` (2048) | `handler.discard_cap`: smallest power-of-two edge >= sqrt(vsize), 64..2048; fetched/decoded at that size (JPEG 2000 resolution levels skipped) |
+| `LLViewerTextureList::updateImageDecodePriority` | `sDesiredDiscardBias` b >= 1 divides vsize by `round(4^(b-1))` (each +1 halves the edge) | `GT_TEX_BIAS` |
+| `LLViewerTexture::updateClass` (low memory) | low system memory slams bias to 1.5, then raises it until usage fits the budget | `GT_TEX_BUDGET_MB` = MemAvailable - 1500 MB guard floor - 3000 MB Blender/BVH/film (600..6000); bias steps 1.5, 2.0, ... until the estimate (RGBA8, Blender image + Cycles copy) fits. Her own avatar and other avatars keep their caps (`crowd_cap`), like the viewer's boosted avatar textures |
+| `LLVOVolume::calcLOD` + `computeLODDetail`, `LLVolumeLODGroup` | ramp `d < 2*LODFactor`: `(d/ramp)^2*ramp`; `d *= pi/3`; `tan = LODFactor*radius/d` (0.01 rounding); thresholds 0.03 / 0.06 / 0.24 -> LOD 0..3 | scene-mesher `FarLod` for the backdrop (> 30 m), RenderVolumeLODFactor 3 (Ultra) / 2 (High+), **per prim**: radius = 0.5 x |prim scale| (mLODScaleBias), distance = that prim's own (was the whole linkset's sphere, which put every child of a big build at the top LOD). Backdrop at Peronaut: 982k -> 565k triangles |
+| Draw distance / impostors | far clip 256 m; avatars beyond the 16 nearest are impostors | export radius 256; `--avatar-max=16` (lowest LOD attachments) |
+
+After a memory-guard kill the retry re-streams the textures with bias +1 (>= 2.0, i.e. every scene texture half its
+edge) and half the budget, Cycles `texture_limit_render` 1024 and 512 px tiles; a third attempt goes one bias step
+further with 256 px tiles. Cancelling a photo (SIGTERM/SIGINT to look.py, `vision/photo_cancel.sh`) SIGKILLs every
+render child's process group; children also get `PR_SET_PDEATHSIG`, so a killed look.py never leaves Blender running.

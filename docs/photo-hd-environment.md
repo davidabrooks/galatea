@@ -9,10 +9,15 @@ the parcel's EEP environment, else the region's), a named preset overrides it on
     photo hd [self|view|<avatar or object>] [landscape|portrait] [<preset>]
     photo hd ... preset=<name>        (or sky=<name>)
 
-Presets: `shared` (default), `default`, `midday`, `sunrise`, `sunset`, `midnight`, `night`, `foggy`. Example:
+Presets: `shared` (default), `default`, `midday`, `midday-legacy`, `sunrise`, `sunset`, `midnight`, `night`, `foggy`. Example:
 `photo hd self landscape sunset`, `photo hd view preset=midnight`. look.py: `--hd[=...] --sky=<preset>`.
-The presets are the viewer library's skies (Firestorm `indra/newview/app_settings/windlight/skies/<Name>.xml`, in
-`vision/cloud-render/sky_presets.json`), converted like `LLSettingsSky::translateLegacySettings`. A preset replaces the
+`default`, `sunrise`, `midday`, `midday-legacy`, `sunset`, `midnight` are the Linden library EEP assets that Firestorm's
+World > Environment menu loads (llenvironment.cpp `KNOWN_SKY_*`; `midday` = `KNOWN_SKY_MIDDAY` c46226b4, the PBR-era
+"MiddayRP2" with `reflection_probe_ambiance`, a tilted sun, no legacy ambient and heavier cloud; `midday-legacy` = the
+old overhead-sun Midday 6c83e853), copied as-is from the OpenSim mirror (opensim/opensim
+`bin/assets/SettingsAssetSet/*.dat`). `night` and `foggy` are Firestorm's legacy Windlight XMLs
+(`app_settings/windlight/skies/`), converted like `LLSettingsSky::translateLegacySettings`. All in
+`vision/cloud-render/sky_presets.json`. A preset replaces the
 sky only; the water settings stay the shared ones.
 
 ## Quick looks (her own vision)
@@ -51,3 +56,29 @@ day length / offset, the day cycle's water track (track 0) and four sky tracks (
 - Water: normal_map, normal_scale, wave1/2 direction (calm plane, no waves), fresnel_offset, blur_multiplier, scale_above / scale_below, underwater fog (the camera is above water), reflections of objects in the water.
 - Haze is one grey extinction (channel mean), without in-scatter toward the sun; gamma is Blender's view gamma, close to but not exactly the viewer's soft clip.
 - Personal (non-shared) environments other than the presets listed above, and day-cycle presets.
+
+## Legacy haze vs the physically based fields (Firestorm source, checked 2026-10-13)
+
+Firestorm draws the sky, lighting and haze from the **legacy haze fields**; the PBR-named fields are stored and
+round-tripped but feed no shader:
+- `skyV.glsl` (class1/deferred) and `atmosphericsFuncs.glsl` (class1/windlight) take only `blue_horizon`, `blue_density`,
+  `haze_horizon`, `haze_density`, `density_multiplier`, `distance_multiplier`, `max_y`, `glow`, `sunlight_color`,
+  `ambient_color`, `cloud_shadow`, `gamma` (uniform lists, atmosphericsFuncs.glsl lines 26-44; sky colour skyV.glsl 104-160).
+- `llsettingsvo.cpp` applySpecial (lines ~790-868) uploads those plus `reflection_probe_ambiance`, sky_sunlight_scale /
+  ambient scale (1.5) and `classic_mode`. `getRayleighConfigs`, `getMieConfigs`, `getAbsorptionConfigs`,
+  `getPlanetRadius`, `getSkyBottomRadius` exist only in llsettingssky.cpp/.h (GitHub code search: no other callers).
+- What the PBR era changed is the *pipeline*, not the sky model: a sky **with** `reflection_probe_ambiance` is
+  non-classic (llsettingssky.cpp: `mCanAutoAdjust = !settings.has(SETTING_REFLECTION_PROBE_AMBIANCE)`): linear
+  sunlight/ambient (atmosphericsFuncs.glsl 154-164), probe ambient, ACES tonemap at mix 0.7 and dynamic exposure.
+  A sky without it (most legacy and region skies, Peronaut's shared sky) is "classic": no tonemapping
+  (`getTonemapMix` returns 0: "legacy settings do not support tonemaping"), fixed exposure 1, clamp + sRGB.
+
+## HDR (photo hd)
+
+Each HD photo is rendered scene-linear and saved as `photo-<stamp>-<mode>.exr` (32-bit float OpenEXR, ZIP) and
+`.hdr` (Radiance RGBE) next to the PNG/JPG. The PNG/JPG are Firestorm's final pass on that master (`hdr_post.py`):
+exposure (RenderExposure 1 x dynamic exposure: classic 1, PBR sky [1/(2 sqrt(gamma)), 2 sqrt(gamma)] by frame
+luminance, coefficient 0.5), tonemap type 1 = ACES (Hill fit, Firestorm's default) mixed by the sky's tonemap mix
+(0 classic, 0.7 PBR), clamp, linear-to-sRGB, legacy gamma for classic skies. `GT_EXPOSURE` (stops) still scales it.
+Not modelled: eye adaptation over time (the settled exposure is used), the viewer's centre-weighted mip luminance (the
+frame mean is used), HDR display encodings (PQ/HLG AVIF/JXL: not practical with the box's tools).

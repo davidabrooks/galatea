@@ -6,7 +6,7 @@ usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
   --hd    4K photo for David (not her quick vision look): 3840x2160 (portrait 2160x3840; self defaults to portrait),
           always in the real scene (self too: framed on her whole body from in front, no studio backdrop), with
           terrain, water and the export's sky/sun (96 m backdrop when the export reaches it), adaptive sampling +
-          OpenImageDenoise, full-res textures and bakes (~5 min on 8 CPUs for a furnished room). PNG + quality-95 JPG in GT_PHOTO_OUT (/workspace/secondlife/photos), photo-<stamp>-<mode>.png/.jpg
+          OpenImageDenoise, full-res textures and bakes (~5 min on 8 CPUs for a furnished room). Firestorm-tonemapped PNG + quality-95 JPG, and the HDR masters (32-bit OpenEXR + Radiance .hdr) in GT_PHOTO_OUT (/workspace/secondlife/photos), photo-<stamp>-<mode>.png/.jpg
   view    over her shoulder, along her facing        around  4 views (front, left, back, right)
   self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
   --views (self) only the full body, from each listed side / angle (degrees counter-clockwise from her front: 90 = her
@@ -292,6 +292,7 @@ def main(a):
             if r.returncode >= 0: break
         lines = r.stdout.splitlines()
         got = [l.split()[-1] for l in lines if l.startswith("GT: render seconds")]
+        hdr_files = [x for l in lines if l.startswith("GT: hdr master") for x in l.split()[3:5]]   # photo hd: EXR + .hdr masters
         rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
         build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
         if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
@@ -299,6 +300,7 @@ def main(a):
             from PIL import Image
             for p in list(got):
                 Image.open(p).convert("RGB").save(p[:-4] + ".jpg", quality=95, subsampling=0, optimize=True); got.append(p[:-4] + ".jpg")
+        got += hdr_files
         outs += got; times[kind] = round(time.time() - t, 1)
         if build is not None: times["build"] = build
         times["render_views"] = rend

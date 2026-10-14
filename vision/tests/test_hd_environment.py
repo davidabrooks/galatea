@@ -31,9 +31,9 @@ def test_shared_exports_every_supported_setting():
 
 def test_presets_from_the_viewer_library():
     names = set(llsky.presets())
-    assert {"default", "midday", "sunrise", "sunset", "midnight"} <= names
+    assert {"default", "midday", "midday-legacy", "sunrise", "sunset", "midnight"} <= names
     up = lambda n: llsky.preset_env(n)["sun_dir"][2]
-    assert up("midday") > 0.99 and up("midnight") < -0.99
+    assert up("midday-legacy") > 0.99 and up("midnight") < -0.99
     assert 0 < up("sunset") < 0.2 and llsky.preset_env("sunset")["sun_dir"][0] < -0.9   # low in the west
     assert 0 < up("sunrise") < 0.2 and llsky.preset_env("sunrise")["sun_dir"][0] > 0.9    # low in the east
     assert llsky.preset_env("midnight")["moon_dir"][2] > 0.99 and llsky.preset_env("midnight")["stars"] == 1.0
@@ -63,6 +63,6 @@ def test_quick_looks_have_no_environment():
 
 
 def test_renderer_maps_the_hd_settings():
-    for s in ('sc.view_settings.gamma', 'use_pass_mist', '"distance_multiplier"', 'env.get("sun_scale"', 'env.get("moon_scale"',
+    for s in ('use_pass_mist', '"distance_multiplier"', 'env.get("sun_scale"', 'env.get("moon_scale"',
               'cl.get("offset")', 'cl.get("detail"', 'wt["fog_color"]', 'wt.get("fresnel_scale"', 'if HD and kind == "scene" and M.get("env"): env_post'):
         assert s in RM, s

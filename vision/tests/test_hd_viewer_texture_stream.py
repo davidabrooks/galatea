@@ -51,7 +51,7 @@ def _scene(tmp_path, items):
 
 def test_fetch_textures_streams_and_budget(tmp_path, monkeypatch):
     u = lambda i: f"{i:08x}-0000-0000-0000-000000000000"
-    meta = _scene(tmp_path, [(1.0, 1.0, 1, u(1), "scene")] + [(100.0 + i, 1.0, 1, u(10 + i), "far") for i in range(20)]
+    meta = _scene(tmp_path, [(1.0, 1.0, 1, u(1), "scene"), (20.0, 2.0, 1, u(2), "scene")] + [(100.0 + i, 1.0, 1, u(10 + i), "far") for i in range(20)]
                   + [(0, 0.3, 1, u(99), "avatar")])
     got = {}
     monkeypatch.setattr(handler, "fetch_tex", lambda t, d, c: (got.__setitem__(t, c), (t, f"{d}/{t}.{c}.png", None))[1])
@@ -61,7 +61,8 @@ def test_fetch_textures_streams_and_budget(tmp_path, monkeypatch):
     assert got[u(1)] == 2048 and got[u(99)] == 2048 and all(got[u(10 + i)] <= 256 for i in range(20))
     monkeypatch.setenv("GT_TEX_BUDGET_MB", "40")      # memory pressure: bias up, her avatar keeps full size
     out = {}; assert handler.fetch_textures(meta, out, str(tmp_path)) is None
-    assert out["textures"]["discard_bias"] >= 1.5 and got[u(99)] == 2048 and got[u(1)] < 2048
+    # her avatar and the face beside her (within NEAR_FULL_M) keep full size; a face 20 m off takes the bias
+    assert out["textures"]["discard_bias"] >= 1.5 and got[u(99)] == 2048 and got[u(1)] == 2048 and got[u(2)] < 2048
 
 
 def test_retry_gets_lighter_each_attempt(monkeypatch):
@@ -103,3 +104,25 @@ look.run_mem_guarded(['bash', '-c', 'sleep 300 & echo $! > {tmp_path}/gc; sleep 
         os.kill(gc, 0); alive = open(f"/proc/{gc}/stat").read().split()[2] != "Z"
     except (OSError, FileNotFoundError): alive = False
     assert not alive
+
+
+def test_faces_near_her_full_res_under_bias():
+    # the Beach House deck she sits on (2026-10-14): centre 3.75 m away, radius 9 m, touching her -> full res at bias 3
+    assert handler.viewer_cap((3.75, 9.14, (1, 1), 0.1), 2048, 1080, 3.0) == 2048
+    assert handler.viewer_cap((150.0, 130.0, (1, 1), 20.0), 2048, 1080, 3.0) < 2048   # huge backdrop batch: no exemption
+    assert handler.map_cap((3.75, 9.14, (1, 1), 0.1), 2048, 2048) == 2048 and handler.map_cap((30, 3, (1, 1), 27), 2048, 2048) == 1024
+    assert handler.viewer_cap((30.0, 3.0, (1, 1)), 2048, 2160, 3.0) < 2048   # far faces still take the bias
+
+
+def test_material_maps_not_capped_at_512(tmp_path, monkeypatch):
+    import json
+    meta = {"batches": [{"group": "scene", "tex": "11111111-1111-1111-1111-111111111111", "nv": 0, "ni": 0, "offset": 0,
+                         "mat": {"pbr": True, "normal": "22222222-2222-2222-2222-222222222222", "mr": "33333333-3333-3333-3333-333333333333"}}]}
+    got = {}
+    monkeypatch.setattr(handler, "fetch_tex", lambda u, d, cap: (got.__setitem__(u, cap), (u, None, None))[1])
+    monkeypatch.setenv("GT_TEX_CAP_SCENE", "2048")
+    handler.fetch_textures(meta, {}, str(tmp_path))
+    assert got["22222222-2222-2222-2222-222222222222"] == 512   # quick looks (no streaming): maps stay at 512
+    monkeypatch.setenv("GT_TEX_DIST", "1"); monkeypatch.setattr(handler, "batch_geometry", lambda m, w: {0: (3.0, 9.0, (1, 1), 0.2)})
+    handler.fetch_textures(meta, {}, str(tmp_path))
+    assert got["22222222-2222-2222-2222-222222222222"] == 2048 and got["33333333-3333-3333-3333-333333333333"] == 2048

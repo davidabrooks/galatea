@@ -18,6 +18,11 @@ HD = os.environ.get("GT_HD") == "1"   # `photo hd`: David's 4K stills (the only 
 def lin(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4   # sRGB -> linear
 
 SSR = os.environ.get("GT_SSR", "1") != "0"
+# Firestorm's sun/moon shadow is a shadow map (4-tap PCF at +-1.5 texels, shadowUtil.glsl pcfShadow) blurred in screen
+# space (blurLightF.glsl, RenderShadowBlurSize 1.4, RenderShadowGaussian 3/2): a soft edge a few cm wide at a chair's
+# height, and thin alpha-masked weave (rope chairs) washes out to a partial shadow. Cycles' default 0.5 deg disc gave
+# razor edges and a solid weave shadow; a wider disc reproduces the blurred penumbra (fitted on the 2026-10-13 porch).
+SHADOW_ANGLE_NIGHT = float(os.environ.get("GT_SHADOW_ANGLE", "0.53")); SHADOW_ANGLE_DAY = float(os.environ.get("GT_SHADOW_ANGLE_DAY", "0.53"))
 FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
 SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)   # profiles set 0 (High+/Ultra: SSR off, mirrors off)
 
@@ -413,6 +418,7 @@ def eep(env):
     """Region EEP sky at export time (make_job.py): sun or, below the horizon, moon; sky colour as ambient; SL point lights."""
     sun = Vector(env["sun_dir"]).normalized(); night = sun.z < 0
     moon = Vector(env.get("moon_dir") or -sun).normalized()   # EEP moon_rotation (older envs: opposite the sun)
+    if os.environ.get("GT_DEBUG_MOON_DIR"): moon = Vector([float(x) for x in os.environ["GT_DEBUG_MOON_DIR"].split(",")]).normalized()   # diagnosis
     if moon.z < 0: moon = -sun   # moon down too: keep the old faint light from above
     travel = -moon if night else -sun
     c = env["sunlight"]
@@ -420,6 +426,7 @@ def eep(env):
     peak = max(max(c), 1e-3)
     bpy.ops.object.light_add(type="SUN"); L = bpy.context.object; L.rotation_euler = travel.to_track_quat("-Z", "Y").to_euler()
     L.data.color = [x / peak for x in c]; L.data.energy = (moon_strength(env) if night else 1.2 * peak)
+    if HD: L.data.angle = math.radians(SHADOW_ANGLE_NIGHT if night else SHADOW_ANGLE_DAY)
     w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True; bg = w.node_tree.nodes["Background"]
     bg.inputs["Color"].default_value = (*env["horizon"], 1); bg.inputs["Strength"].default_value = (0.35 if night else 1.0) * (env.get("probe_ambiance", 1.0) if HD and env.get("classic") is False else 1.0)   # PBR sky: probe ambiance
     sky_backdrop(w, env, night)
@@ -1016,6 +1023,22 @@ views = views or [None]
 # persistent data saves ~1.5 s a view but segfaulted embree (rtcSetSharedGeometryBuffer) on the 2nd/3rd view in every
 # multi-view crowd run on 2026-10-05, costing a ~40 s retry; off unless GT_PERSIST=1.
 sc.render.use_persistent_data = len(views) > 1 and os.environ.get("GT_PERSIST", "0") == "1"
+if os.environ.get("GT_DEBUG_PICK"):   # diagnosis: "u,v[;u,v]" (0..1 from top-left): what shadows that pixel from each sun
+    from mathutils import Vector
+    from bpy_extras.object_utils import world_to_camera_view  # noqa: F401
+    dg = bpy.context.evaluated_depsgraph_get(); camo = sc.camera
+    for uv in os.environ["GT_DEBUG_PICK"].split(";"):
+        u, v = (float(x) for x in uv.split(","))
+        fr = [camo.matrix_world @ c for c in camo.data.view_frame(scene=sc)]   # tr, br, bl, tl
+        tl, tr, bl = fr[3], fr[0], fr[2]; px = tl + (tr - tl) * u + (bl - tl) * v
+        d = (px - camo.matrix_world.translation).normalized()
+        hit, loc, nrm, _, ob, _ = sc.ray_cast(dg, camo.matrix_world.translation, d)
+        log("pick", uv, "hit", ob.name if hit else None, [round(x, 2) for x in loc] if hit else None)
+        if not hit: continue
+        for lo in [o for o in sc.objects if o.type == "LIGHT" and o.data.type == "SUN"]:
+            ld = lo.matrix_world.to_quaternion() @ Vector((0, 0, 1))
+            h2, l2, _, _, o2, _ = sc.ray_cast(dg, loc + nrm * 0.01, ld)
+            log("pick", uv, "sun", lo.name, "blocked by", (o2.name, [round(x, 2) for x in l2], o2.get("sl_tex"), o2.data.materials[0].name if o2.data.materials else None) if h2 else None)
 for i, v in enumerate(views):
     if isinstance(v, tuple) and v[0] == "body":  # body side views: rotate the camera/light rig, name the file by side
         rig.rotation_euler = (0, 0, math.radians(v[1]))

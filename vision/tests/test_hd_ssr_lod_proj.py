@@ -10,7 +10,7 @@ SRC = open(os.path.join(HERE, "cloud-render", "render_mesh.py")).read()
 
 def test_profiles_turn_ssr_off_ao_on_and_carry_lod():
     hp = look.hd_settings("", "view", "highplus")[1]; ul = look.hd_settings("", "view", "ultra")[1]
-    assert hp["GT_SSR"] == "0" and hp["GT_SSAO"] == "1.0" and hp["GT_FULLBRIGHT"] == "1.0" and hp["GT_LOD_FACTOR"] == "2" and ul["GT_LOD_FACTOR"] == "3"
+    assert hp["GT_SSR"] == "0" and hp["GT_SSAO"] == "0.8" and hp["GT_SSAO_DIST"] == "0.53" and hp["GT_SHADOW_ANGLE"] == "4" and hp["GT_FULLBRIGHT"] == "1.0" and hp["GT_LOD_FACTOR"] == "2" and ul["GT_LOD_FACTOR"] == "3"
     assert look.lod_args(hp) == ["--lod-factor=2", "--avatar-max=16"] and look.lod_args({}) == []
 
 

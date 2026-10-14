@@ -23,7 +23,7 @@ public static partial class Program
     static readonly string HeartbeatFile = Path.Combine(Path.GetDirectoryName(SockPath)!, "heartbeat");
     static volatile string wdLastEvent = "-";
     static int wdFired;
-    static Thread wdThread;
+    static Thread wdThread; static int udpTick;
     const double WdFreezeS = 30, WdHeartbeatS = 60, WdStaleS = 45;
 
     static void HookWatchdog()
@@ -78,6 +78,7 @@ public static partial class Program
                 }
                 catch { }
                 lastWall = nowWall; lastMono = nowMono;
+                if (++udpTick % 5 == 0) CheckUdpDrops();   // every ~10 s (UdpDrops.cs)
                 if (why != null) WdRelaunch(why);
             }
         }) { IsBackground = true, Name = "watchdog" };

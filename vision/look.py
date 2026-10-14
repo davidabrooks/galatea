@@ -174,6 +174,44 @@ def mesher_env(base):
     env["DOTNET_gcServer"] = "0"
     return env
 
+def mem_available_mb(meminfo_text):
+    """MemAvailable from /proc/meminfo text, MB (None if absent)."""
+    for l in (meminfo_text or "").splitlines():
+        if l.startswith("MemAvailable:"):
+            try: return int(l.split()[1]) // 1024
+            except (IndexError, ValueError): return None
+    return None
+
+def mem_guard_trip(avail_mb, floor_mb):
+    """Pure: kill the render now? (avail unknown -> no)"""
+    return avail_mb is not None and floor_mb > 0 and avail_mb < floor_mb
+
+def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
+    """subprocess.run(capture_output, text) that SIGKILLs the render itself when the box's MemAvailable drops under
+    floor_mb (GT_MEM_FLOOR_MB, default 1500). 2026-10-14: two Blender HD renders drove the whole box into the kernel
+    OOM killer (12:24:54, 12:25:28 PT); the memory stall froze the text client's UDP reads and David's nearby chat
+    line was dropped by the kernel. Killing early keeps the box responsive; returncode -9 takes the lighter retry."""
+    import signal, tempfile, threading
+    floor_mb = int(os.environ.get("GT_MEM_FLOOR_MB", "1500")) if floor_mb is None else floor_mb
+    with tempfile.TemporaryFile("w+") as fo, tempfile.TemporaryFile("w+") as fe:
+        p = subprocess.Popen(cmd, stdout=fo, stderr=fe, text=True, env=env)
+        tripped = None
+        while p.poll() is None:
+            try:
+                with open("/proc/meminfo") as f: avail = mem_available_mb(f.read())
+            except OSError: avail = None
+            if mem_guard_trip(avail, floor_mb):
+                tripped = avail
+                try: p.send_signal(signal.SIGKILL)
+                except OSError: pass
+                p.wait(); break
+            time.sleep(poll_s)
+        fo.seek(0); fe.seek(0); out, err = fo.read(), fe.read()
+    if tripped is not None:
+        err += f"\nGT: memory guard: box MemAvailable {tripped} MB < {floor_mb} MB, render killed to keep the box responsive"
+        print(f"memory guard: MemAvailable {tripped} MB < {floor_mb} MB: render killed", file=sys.stderr)
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
 def mesher_error(text):
     """The exception line itself (a .NET trace's tail is just Parallel.ForEach frames), then the tail."""
     lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
@@ -376,8 +414,8 @@ def main(a):
             env.setdefault("GT_MIN_TRIS", "12")  # drop dust; keep chairs/walls/avatars
         for attempt in range(2):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
             if attempt: env = {**env, **retry_env(r.returncode, hd)}
-            r = subprocess.run(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
-                                f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], capture_output=True, text=True, env=env)
+            r = run_mem_guarded(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
+                                 f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], env)
             if r.returncode >= 0: break
         lines = r.stdout.splitlines()
         got = [l.split()[-1] for l in lines if l.startswith("GT: render seconds")]

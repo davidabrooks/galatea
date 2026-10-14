@@ -36,11 +36,14 @@ HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
 # textures max 2048, tonemap ACES mix 0.0, CAS sharpening 0.4, exposure 1.0, draw distance 128, LOD volume 2.0 / avatar 1.0 /
 # terrain 2.0. ultra = Firestorm featuretable "list Ultra": mix 0.7, sharpening 0.4, textures 2048, draw 256, LOD volume 3.0.
 # Cycles path-traces AO / shadows / reflections itself; attached (face) lights are never rendered (matches his OFF)
+# SSAO = Firestorm defaults (settings.xml): RenderSSAOEffect 0.8 on the ambient only; radius RenderSSAOScale 500 px at
+# 1 m depth (aoUtil.glsl: min(scale / depth, RenderSSAOMaxScale 200) px) = ~0.53 m in the world at 1080 p, 60 deg FOV.
+# PR #169's 1.0 out to 2 m blacked out the floor under the porch chairs (David 2026-10-13 23:35).
 PROFILES = {
     "highplus": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.0", "GT_TONEMAP_TYPE": "1",
-                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "1.0", "GT_SSAO_DIST": "2.0", "GT_FULLBRIGHT": "1.0", "GT_LOD_FACTOR": "2", "GT_AVATAR_MAX": "16"},
+                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "0.8", "GT_SSAO_DIST": "0.53", "GT_SHADOW_ANGLE": "4", "GT_FULLBRIGHT": "1.0", "GT_LOD_FACTOR": "2", "GT_AVATAR_MAX": "16"},
     "ultra": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.7", "GT_TONEMAP_TYPE": "1",
-              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "1.0", "GT_SSAO_DIST": "2.0", "GT_FULLBRIGHT": "1.0", "GT_LOD_FACTOR": "3", "GT_AVATAR_MAX": "16"},
+              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "0.8", "GT_SSAO_DIST": "0.53", "GT_SHADOW_ANGLE": "4", "GT_FULLBRIGHT": "1.0", "GT_LOD_FACTOR": "3", "GT_AVATAR_MAX": "16"},
 }
 
 def hd_settings(arg, mode, profile="highplus"):

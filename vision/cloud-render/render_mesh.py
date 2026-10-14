@@ -1006,9 +1006,9 @@ if kind == "scene":
             lens = lens_for_vfov(hd_fov(), rx, ry) if hd_fov() else 50.0
             hf = 2 * math.atan(18 / lens * (rx / ry if ry >= rx else 1)); vf = 2 * math.atan(18 / lens * (1 if ry >= rx else ry / rx))
             # margin: half-extent / tan(half fov); 0.6 = body fills ~83% of the frame (old 50 mm close-up). At 60 deg
-            # that would put the lens ~1.5 m from her (wide-angle distortion), so she fills ~65% like Firestorm's camera
-            m = 0.75 if hd_fov() else 0.6
-            dist = max(ext.z * m / math.tan(vf / 2), side * m / math.tan(hf / 2), 1.2) + max(ext.x, ext.y) / 2
+            # that would put the lens ~1.5 m from her (wide-angle distortion), so at 60 deg she fills ~70% of the frame, matched to David's Firestorm boat shot 2026-10-14
+            m = 0.45 if hd_fov() else 0.6
+            dist = max(ext.z * m / math.tan(vf / 2), side * m / math.tan(hf / 2), 0.4 if hd_fov() else 1.2) + max(ext.x, ext.y) / 2
             want = mid + f * dist + Vector((0, 0, 0.15 * dist)); e = want - h; u = e.normalized()
             # a wall in front of her: stop just before it (cast from her head: a seat or table isn't a wall)
             hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.5, u, distance=max(0.01, e.length - 0.5))

@@ -34,6 +34,7 @@ public static partial class Program
         client.Network.RegisterCallback(PacketType.ImprovedTerseObjectUpdate, h);
         client.Network.RegisterCallback(PacketType.CoarseLocationUpdate, h);
         lastRecvTicks = Environment.TickCount64;
+        HookRawChat();   // UdpDrops.cs
     }
 
     static async Task HeartbeatLoop()

@@ -36,6 +36,22 @@ public static partial class Program
         return $"kernel dropped {now - prev} incoming UDP datagram(s) (socket buffer full; box-wide counter, may include other programs) in the last {secs:F0} s - chat or IMs in that window may be lost";
     }
 
+    // Raw ChatFromSimulator arrivals from other AVATARS, logged before any client filtering, so a missing [chat] line
+    // can be told apart: no [chat-raw] = the sim/network never delivered it; [chat-raw] without [chat] = our filter.
+    static void HookRawChat()
+    {
+        client.Network.RegisterCallback(LibreMetaverse.Packets.PacketType.ChatFromSimulator, (s, e) =>
+        {
+            try
+            {
+                var c = ((LibreMetaverse.Packets.ChatFromSimulatorPacket)e.Packet).ChatData;
+                if (c.SourceType != 1 || c.SourceID == client.Self.AgentID || c.ChatType is 4 or 5) return;   // agents only; no typing
+                Log("chat-raw", $"from {LibreMetaverse.Utils.BytesToString(c.FromName)} type {c.ChatType} audible {c.Audible} len {c.Message?.Length ?? 0} via {e.Simulator?.Name}");
+            }
+            catch { }
+        });
+    }
+
     static void CheckUdpDrops()
     {
         try

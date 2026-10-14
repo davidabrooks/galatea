@@ -180,6 +180,23 @@ public static partial class Program
                 }
             if (layers.Count > 0) sb.Append($"layers off: {string.Join(", ", layers.Select(l => "'" + l.Name + "'"))}; bake asked at +{(DateTime.Now - t0).TotalSeconds:F1} s");
             await Task.Delay(1000, ct);
+            // 2026-10-14 15:07: only the COF links went; the Bimbette alphas stayed worn ("wearables (no COF link)"), likely
+            // racing the login outfit. Verify against the wearables actually worn and remove leftovers again (3 tries).
+            for (int tryN = 1; tryN <= 3 && layers.Count > 0; tryN++)
+            {
+                List<UUID> worn; try { worn = client.Appearance.GetWearables().Select(w => w.ItemID).ToList(); } catch { worn = new(); }
+                var left = UndressLeftovers(layers.Select(l => l.UUID), worn);
+                if (left.Count == 0) { if (tryN > 1) sb.Append("; verified: layers gone"); break; }
+                var li = layers.Where(l => left.Contains(l.UUID)).ToList();
+                WLog($"UNDRESS verify {tryN}/3: still worn {string.Join(", ", li.Select(l => "'" + l.Name + "'"))}; removing again");
+                client.Appearance.RemoveFromOutfit(li); await RebakeNow("undress verify"); await Task.Delay(2000, ct);
+                if (tryN == 3)
+                {
+                    try { worn = client.Appearance.GetWearables().Select(w => w.ItemID).ToList(); } catch { }
+                    var still = UndressLeftovers(li.Select(l => l.UUID), worn);
+                    sb.Append(still.Count == 0 ? "; verified: layers gone" : $"; STILL WORN after 3 tries: {string.Join(", ", layers.Where(l => still.Contains(l.UUID)).Select(l => "'" + l.Name + "'"))}");
+                }
+            }
         }
         finally { outfitChangeUntil = DateTime.Now.AddSeconds(15); }
         var res = sb.Length == 0 ? "nothing to take off" : sb.ToString().TrimEnd(' ', ';');
@@ -188,6 +205,10 @@ public static partial class Program
         try { res += "; " + await ToplessExtrasOn(ct); } catch (Exception ex) { WLog("topless extras on failed: " + ex.GetBaseException().Message); }
         return res;
     }
+
+    // pure (test): undress layers still worn after RemoveFromOutfit
+    internal static List<UUID> UndressLeftovers(IEnumerable<UUID> removed, IEnumerable<UUID> wornNow)
+    { var w = wornNow.ToHashSet(); return removed.Where(w.Contains).Distinct().ToList(); }
 
     // 'undress' (2026-10-07, David: The V): the same undress as before the tub, wherever she stands (never while seated)
     static async Task<string> UndressCmd()

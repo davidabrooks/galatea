@@ -228,6 +228,7 @@ def fetch_textures(meta, out, work):
     # LLViewerTexture::updateClass under low memory: bias to >= 1.5, then up until it fits (here: in 0.5 steps, max 5)
     while tiered and budget and tex_mem_mb(want) > budget and bias < 5.0:
         bias = max(1.5, bias + 0.5); want = collect(bias)
+    os.environ["GT_TEX_BIAS"] = f"{bias:g}"   # the bias in effect: a lighter retry starts above it
     near = {t for b in meta["batches"] if b["group"] != "far" for t in [b["tex"], *(b.get("mat") or {}).values()] if isinstance(t, str)}
     if len(want) > max_tex:  # backdrop ("far") textures go first: those faces then show their plain colour
         for t in [t for t in want if t not in near][:len(want) - max_tex]: del want[t]

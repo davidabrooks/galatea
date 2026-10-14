@@ -75,7 +75,7 @@ def retry_env(rc, hd, attempt=1):
     memory (sDesiredDiscardBias), retry with a higher texture discard bias (1 = every scene texture half its edge),
     a smaller texture budget, Cycles' texture limit and smaller tiles; a plain crash (segfault) just reruns"""
     if hd and rc == -9:
-        bias = max(2.0, float(os.environ.get("GT_TEX_BIAS", "0") or 0) + 1.0) + (attempt - 1)
+        bias = max(2.0, float(os.environ.get("GT_TEX_BIAS", "0") or 0) + 1.0)
         budget = float(os.environ.get("GT_TEX_BUDGET_MB", "3000") or 3000) * 0.5
         return {"GT_TEX_LIMIT": "1024", "GT_TILE": "512" if attempt == 1 else "256",
                 "GT_TEX_BIAS": f"{bias:g}", "GT_TEX_BUDGET_MB": f"{max(600, budget):.0f}"}

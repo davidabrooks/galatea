@@ -535,7 +535,10 @@ static class Mesher
             bool far = !mine && Far(o);
             // backdrop LOD from the whole object's on-screen size (radius x LOD factor 2 / distance), like an SL viewer at its
             // default LOD factor; the lowest LOD of many mesh trees is a handful of loose leaf triangles (floating fragments)
-            var farLod = far ? FarLod(sphere[RootOf(o, byLocal)].r, Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus)) : DetailLevel.Low;
+            // LLVOVolume::calcLOD: per prim (each drawable), radius = |mLODScaleBias * scale| (bias 0.5 for meshes / most
+            // paths), distance = that prim's distance to the camera. The whole linkset's sphere (before 2026-10-14) picked
+            // the top LOD for every child of a big build: 5.7 M backdrop triangles and the Ultra photo ran out of memory.
+            var farLod = far ? FarLod(0.5f * p.Scale.Length(), Vector3.Distance(pos, focus)) : DetailLevel.Low;
             // someone else's attachment: LOD by the wearer's distance (hers stay Highest)
             float? avDist = owner != null && owner != "me" && wearerAt.TryGetValue(owner, out var wp0)
                 ? Vector3.Distance(wp0, focusR < 1e9f ? focus : me) : null;

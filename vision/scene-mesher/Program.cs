@@ -165,6 +165,7 @@ static class Mesher
         var dir = new Vector3(0, 0, -1) * rot; var up = new Vector3(0, 1, 0) * rot;
         return new { tex = lm.LightTexture.ToString(), fov = lm.Params.X, focus = lm.Params.Y, ambiance = lm.Params.Z, dir = new[] { dir.X, dir.Y, dir.Z }, up = new[] { up.X, up.Y, up.Z } };
     }
+    internal static float? LegacyShiny(Shininess s) => s switch { Shininess.Low => 0.25f, Shininess.Medium => 0.5f, Shininess.High => 0.75f, _ => null };
     internal static bool Impostor(int rank, int max) => max > 0 && rank >= max;
     static DetailLevel FarLod(float r, float d) => (r * LodFactor / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
 
@@ -405,6 +406,7 @@ static class Mesher
             ok &= AvatarLod(2) == DetailLevel.Highest && AvatarLod(6) == DetailLevel.High && AvatarLod(15) == DetailLevel.Medium && AvatarLod(35) == DetailLevel.Low;
             ok &= LodSelftest();
             ok &= Projector(null, Quaternion.Identity) == null && Projector(new Primitive.LightImage { LightTexture = UUID.Random(), Params = new Vector3(1, 0, 0) }, Quaternion.Identity) != null;
+            ok &= LegacyShiny(Shininess.None) == null && LegacyShiny(Shininess.High) == 0.75f;
             ok &= !Impostor(15, 16) && Impostor(16, 16) && !Impostor(99, 0);
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028
@@ -592,6 +594,12 @@ static class Mesher
                 var sc = l.ContainsKey("spec_color") ? l["spec_color"].AsColor4() : Color4.White;
                 m["spec_color"] = new[] { sc.R, sc.G, sc.B, sc.A }; m["gloss"] = (l.ContainsKey("spec_exp") ? l["spec_exp"].AsInteger() : 0) / 255f;
                 m["env"] = (l.ContainsKey("env") ? l["env"].AsInteger() : 0) / 255f;
+            }
+            else if (LegacyShiny(te.Shiny) is float sh)
+            {
+                // SL "Shininess" (bump_shiny low/medium/high) with no material: the viewer's legacy shiny = environment
+                // reflection 0.25/0.5/0.75 (llface.cpp getShinyIntensity / LLMaterial default specular exponent 51)
+                m["spec_color"] = new[] { 1f, 1f, 1f, 1f }; m["gloss"] = 51 / 255f; m["env"] = sh;
             }
             if (rgba[3] < 0.999f && (string)m["alpha"] != "blend") m["alpha"] = "blend";  // SL: a translucent face colour always blends
             return m;

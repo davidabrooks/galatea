@@ -2,7 +2,7 @@
 import os
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = open(os.path.join(HERE, "cloud-render", "render_mesh.py")).read()
-ns = {"lin": lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4}
+ns = {"os": os, "lin": lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4}
 exec(SRC[SRC.index("def light_linear"):SRC.index("AMB = amblit")], ns)
 ENV = {"ambient": [0.25] * 3, "cloud_shadow": 0.27, "sunlight": [1.10, 1.11, 1.32], "moon": 0.5}
 
@@ -18,5 +18,5 @@ def test_classic_ambient_matches_firestorm():
 
 
 def test_moon_stronger_than_before_and_zero_without_moon():
-    assert 0.4 < ns["moon_strength"](ENV) < 0.8          # was 0.25 x 0.5 = 0.125
+    assert 0.8 < ns["moon_strength"](ENV) < 1.7          # was 0.25 x 0.5 = 0.125; 0.36 cal ~0.6, 0.75 cal (full SSAO) ~1.2
     assert ns["moon_strength"]({**ENV, "moon": 0.0}) == 0.0

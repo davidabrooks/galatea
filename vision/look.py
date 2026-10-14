@@ -38,9 +38,9 @@ HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
 # Cycles path-traces AO / shadows / reflections itself; attached (face) lights are never rendered (matches his OFF)
 PROFILES = {
     "highplus": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.0", "GT_TONEMAP_TYPE": "1",
-                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "0.8", "GT_LOD_FACTOR": "2", "GT_AVATAR_MAX": "16"},
+                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "1.0", "GT_SSAO_DIST": "2.0", "GT_FULLBRIGHT": "1.0", "GT_LOD_FACTOR": "2", "GT_AVATAR_MAX": "16"},
     "ultra": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.7", "GT_TONEMAP_TYPE": "1",
-              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "0.8", "GT_LOD_FACTOR": "3", "GT_AVATAR_MAX": "16"},
+              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "1.0", "GT_SSAO_DIST": "2.0", "GT_FULLBRIGHT": "1.0", "GT_LOD_FACTOR": "3", "GT_AVATAR_MAX": "16"},
 }
 
 def hd_settings(arg, mode, profile="highplus"):
@@ -116,6 +116,24 @@ def particle_sources(doc, me, radius):
         ps = p.get("particles"); wp = p.get("world_pos")
         if ps and wp and sum((a - b) ** 2 for a, b in zip(wp, me)) <= radius ** 2: out.append({"pos": wp, "ps": ps})
     return out
+
+def oxipng_cmd(path, zopfli=False):
+    """lossless max optimisation, metadata stripped (4K porch photo: 6.9 MB -> 6.1 MB in ~25 s; zopfli 6.04 MB but ~8 min)"""
+    exe = shutil.which("oxipng") or next((x for x in ("/home/box/tools/bin/oxipng",) if os.path.exists(x)), None)
+    if not exe: return None
+    return [exe, "-q", "-o", "max", "--strip", "all"] + (["--zopfli"] if zopfli else []) + [path]
+
+def optimize_png(path):
+    """8-bit sRGB RGB PNG, then oxipng; -> 'before -> after bytes' (unchanged when oxipng is missing)"""
+    from PIL import Image
+    before = os.path.getsize(path)
+    with Image.open(path) as im:
+        if im.mode != "RGB": im.convert("RGB").save(path)
+    cmd = oxipng_cmd(path, os.environ.get("GT_PNG_ZOPFLI") == "1")
+    if cmd:
+        try: subprocess.run(cmd, check=True, timeout=1800)
+        except Exception as e: return f"oxipng failed ({e}), {before} bytes"
+    return f"{before} -> {os.path.getsize(path)} bytes" + ("" if cmd else " (no oxipng)")
 
 def projector_textures(meta):
     """distinct projector texture ids of mesh.json lights"""
@@ -352,10 +370,11 @@ def main(a):
         rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
         build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
         if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
-        if hd:   # high-quality JPG next to each PNG master
+        if hd:   # the PNG is the photo (David 2026-10-13: small but lossless); a quality-95 JPG next to it, secondary
             from PIL import Image
             for p in list(got):
                 Image.open(p).convert("RGB").save(p[:-4] + ".jpg", quality=95, subsampling=0, optimize=True); got.append(p[:-4] + ".jpg")
+                info_png = optimize_png(p); print(f"png {p}: {info_png}", file=sys.stderr)
         got += hdr_files
         outs += got; times[kind] = round(time.time() - t, 1)
         if build is not None: times["build"] = build

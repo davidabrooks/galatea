@@ -32,14 +32,26 @@ VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
 PHOTO_OUT = os.environ.get("GT_PHOTO_OUT", "/workspace/secondlife/photos")
 HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
 
-def hd_settings(arg, mode):
+# render profiles = David's Firestorm graphics presets (2026-10-13). highplus = his photo preset "High+" (screenshots):
+# textures max 2048, tonemap ACES mix 0.0, CAS sharpening 0.4, exposure 1.0, draw distance 128, LOD volume 2.0 / avatar 1.0 /
+# terrain 2.0. ultra = Firestorm featuretable "list Ultra": mix 0.7, sharpening 0.4, textures 2048, draw 256, LOD volume 3.0.
+# Cycles path-traces AO / shadows / reflections itself; attached (face) lights are never rendered (matches his OFF)
+PROFILES = {
+    "highplus": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.0", "GT_TONEMAP_TYPE": "1",
+                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0"},
+    "ultra": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.7", "GT_TONEMAP_TYPE": "1",
+              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0"},
+}
+
+def hd_settings(arg, mode, profile="highplus"):
     """--hd[=landscape|portrait] -> (orientation, env for the HD render) or (None, {}) when absent. Quality knobs only:
     her normal looks never pass --hd, so they keep their small, fast settings."""
     if arg is None: return None, {}
     o = (arg or ("portrait" if mode == "self" else "landscape")).lower()
     if o not in HD_RES: raise ValueError(f"unknown photo preset '{arg}' (landscape or portrait)")
+    if profile not in PROFILES: raise ValueError(f"unknown render profile '{profile}' ({' or '.join(PROFILES)})")
     return o, {"GT_HD": "1", "GT_RES": HD_RES[o], "GT_SAMPLES": os.environ.get("GT_HD_SAMPLES", "24"), "GT_DENOISE": "1",
-               "GT_STUDIO_SHADOW": "1", "GT_TEX_CAP_AVATAR": "4096", "GT_TEX_CAP_SCENE": "4096"}
+               "GT_STUDIO_SHADOW": "1", "GT_HD_PROFILE": profile, **PROFILES[profile]}
 
 def retry_env(rc, hd):
     """env for the 2nd Blender attempt after a signal death (rc < 0). 2026-10-13 20:05: an HD landscape was OOM-killed
@@ -218,6 +230,8 @@ def main(a):
     fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
     hd_arg = next(((x.split("=", 1)[1] if "=" in x else "") for x in a if x == "--hd" or x.startswith("--hd=")), None)
     a = [x for x in a if not (x == "--hd" or x.startswith("--hd="))]
+    profile = next((x.split("=", 1)[1] for x in a if x.startswith("--profile=")), "highplus")
+    a = [x for x in a if not x.startswith("--profile=")]
     sky = next((x.split("=", 1)[1] for x in a if x.startswith("--sky=")), None); a = [x for x in a if not x.startswith("--sky=")]
     if sky and hd_arg is None: sys.exit("--sky needs --hd (her own looks never use the environment)")
     vw = next((x.split("=", 1)[1] for x in a if x.startswith("--views=")), ""); a = [x for x in a if not x.startswith("--views=")]
@@ -225,7 +239,7 @@ def main(a):
     except ValueError as e: sys.exit(str(e))
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
-    try: hd, hd_env = hd_settings(hd_arg, mode)
+    try: hd, hd_env = hd_settings(hd_arg, mode, profile)
     except ValueError as e: sys.exit(str(e))
     if sky and sky.lower() != "shared" and sky.lower() not in llsky.presets():
         sys.exit(f"unknown sky preset '{sky}' (shared, {', '.join(sorted(llsky.presets()))})")

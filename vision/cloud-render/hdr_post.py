@@ -66,7 +66,27 @@ def firestorm_ldr(rgb, env, exposure=1.0, settings=FS):
     c = linear_to_srgb(c)
     g = float((env or {}).get("gamma", 1.0) or 1.0)
     if classic and abs(g - 1.0) > 1e-6: c = 1.0 - np.power(1.0 - c, g)
+    c = cas_sharpen(c, float(settings.get("sharpen", 0.0)))
     return np.clip(c, 0.0, 1.0), {"classic": classic, "tonemap_mix": mix, "dyn_exposure": round(s, 4), "exposure": round(e, 4)}
+
+
+def settings_from_env(environ):
+    """render profile (look.py PROFILES: highplus / ultra) -> firestorm_ldr settings + CAS sharpness"""
+    g = lambda k, d: float(environ.get(k, d))
+    return {"exposure": g("GT_FS_EXPOSURE", FS["exposure"]), "tonemap_type": int(g("GT_TONEMAP_TYPE", FS["tonemap_type"])),
+            "tonemap_mix": g("GT_TONEMAP_MIX", FS["tonemap_mix"]), "dyn_coeff": FS["dyn_coeff"], "sharpen": g("GT_SHARPEN", 0.0)}
+
+
+def cas_sharpen(c, amount):
+    """RenderCASSharpness (AMD FidelityFX CAS, 0..1) approximated: an unsharp mask whose strength falls where the 3x3
+    neighbourhood already has high contrast (CAS's adaptive part), on display values 0..1"""
+    if amount <= 0: return c
+    p = np.pad(c, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    nb = [p[1 + dy:p.shape[0] - 1 + dy, 1 + dx:p.shape[1] - 1 + dx] for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
+    lo = np.minimum.reduce(nb); hi = np.maximum.reduce(nb)
+    cross = (nb[1] + nb[3] + nb[5] + nb[7]) / 4
+    adapt = np.sqrt(np.clip(np.minimum(lo, 1 - hi) / np.maximum(hi, 1e-4), 0, 1))
+    return np.clip(c + (c - cross) * adapt * amount, 0.0, 1.0)
 
 
 def write_rgbe(path, rgb):

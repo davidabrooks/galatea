@@ -19,7 +19,7 @@ def test_no_hd_leaves_quick_look_alone():
 def test_self_defaults_portrait_scene_landscape():
     o, env = look.hd_settings("", "self"); assert o == "portrait" and env["GT_RES"] == "2160x3840"
     o, env = look.hd_settings("", "view"); assert o == "landscape" and env["GT_RES"] == "3840x2160"
-    assert env["GT_HD"] == "1" and env["GT_DENOISE"] == "1" and int(env["GT_TEX_CAP_AVATAR"]) >= 4096
+    assert env["GT_HD"] == "1" and env["GT_DENOISE"] == "1" and int(env["GT_TEX_CAP_AVATAR"]) == 2048   # Firestorm max texture resolution (High+ / Ultra)
 
 def test_explicit_and_bad_orientation():
     assert look.hd_settings("landscape", "self")[0] == "landscape"

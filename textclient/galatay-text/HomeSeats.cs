@@ -150,6 +150,9 @@ public static partial class Program
     // 2026-10-08 18:36 (David: long delay before the legs alpha comes off): clothing attachments and every alpha / clothing
     // layer in one batch, COF links in one call, bake right away (FastLayers.UndressOrder); the topless extras after that.
     static async Task<string> UndressForSeat(CancellationToken ct)
+        => await WithWardrobe("undress", async () => { var r = await UndressForSeatLocked(ct); WardrobeUndressedNow(); return r; }, ct);
+
+    static async Task<string> UndressForSeatLocked(CancellationToken ct)
     {
         var sb = new StringBuilder(); var t0 = DateTime.Now;
         outfitChangeUntil = DateTime.Now.AddSeconds(60);

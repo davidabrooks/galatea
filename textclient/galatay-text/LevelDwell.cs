@@ -180,6 +180,7 @@ public static partial class Program
         }
         else
         {
+            if (!AutoOutfitAllowed(wardrobeUndressed, wardrobeUndressedAt, DateTime.Now)) { Log("outfit-zone", $"back from the beach, {where}: undressed, not restoring '{restore}' automatically"); return; }
             Log("outfit-zone", $"back from the beach, {where}: restoring outfit '{restore}'");
             var r = await WearOutfitWithHuds(restore, keepColor: true);
             RememberNamedOutfit(restore);

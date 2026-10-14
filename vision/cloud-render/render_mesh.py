@@ -564,6 +564,10 @@ def water():
 
 TERRAIN_FALLBACK = [(0.33, 0.27, 0.18), (0.22, 0.30, 0.12), (0.30, 0.30, 0.24), (0.38, 0.37, 0.35)]  # dirt, grass, mountain, rock
 
+def omit_stand_in(env):
+    """HD photos leave out an avatar that would be a stand-in (GT_STANDIN=1 forces it back)"""
+    return env.get("GT_HD") == "1" and env.get("GT_STANDIN") != "1"
+
 def terrain_layers(verts, comps):
     """LLVLComposition: per vertex, which of the region's 4 detail textures (0..3, fractional = blend): (height - start) * 4 /
     range, start and range bilinear across the region's corners (00 SW, 01 NW, 10 SE, 11 NE). The viewer adds noise; the
@@ -692,6 +696,10 @@ if kind == "scene":
     for o, fp in placed:
         # attachments missing from the export -> bake-textured stand-in (not a nude mesh body)
         if o.get("placeholder") or not any(b["group"] == o["group"] and b["ni"] > 0 for b in M["batches"]):
+            # 2026-10-13: never a silent grey block. HD photos omit an avatar whose attachments didn't arrive; looks keep the stand-in
+            if omit_stand_in(os.environ):
+                print(f"GT: avatar omitted {o.get('name', '?')} (attachments not loaded, dressed={o.get('dressed')})", flush=True); continue
+            print(f"GT: avatar stand-in {o.get('name', '?')} (attachments not loaded, dressed={o.get('dressed')})", flush=True)
             olo, _, oobs = stand_in(o)
         else:
             near = math.dist(o["pos"][:2], (x, y)) < float(os.environ.get("GT_LINING_M", "8"))

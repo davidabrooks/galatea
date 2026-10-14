@@ -59,7 +59,7 @@ public static partial class Program
     // (W21 20:37, just after arriving: stopping when no avatar had *finished* for 8 s gave up with 3 of 57 dressed while
     // attachments were still streaming in; progress now counts attachments.)
     // Anyone still loading is drawn as a neutral stand-in (scene-mesher reads "dressed" from the export), never half-dressed.
-    static async Task<string> EnsureNearbyAttachments(float radius)
+    static async Task<string> EnsureNearbyAttachments(float radius, bool hd = false)
     {
         var sim = Sim; var me = client.Self; var myPos = me.SimPosition;
         var near = sim.ObjectsAvatars.Values.Where(a => a != null && a.LocalID != me.LocalID
@@ -82,18 +82,25 @@ public static partial class Program
             rc = AttachRootsByAvatar(sim);
             samples.Add(near.Sum(a => Math.Min(rc.GetValueOrDefault(a.LocalID), ExpectedOf(a))));
             why = LookAttachWaitDone(samples, near.Sum(a => ExpectedOf(a)), (int)(DateTime.UtcNow - t0).TotalMilliseconds, tick, budget,
-                LookStallMs(near.Count(a => State(a, rc) != "complete"), near.Count, stall));
+                LookStallMs(near.Count(a => State(a, rc) != "complete"), near.Count, stall, hd));
             if (why != null) break;
             // nudge the camera toward the nearest unfinished avatar (interest list), then back
             var focus = near.Where(a => State(a, rc) != "complete").DefaultIfEmpty(near[0])
                 .OrderBy(a => Vector3.Distance(PositionHelper.GetAvatarPosition(sim, a), myPos)).First();
             mv.Camera.LookAt(myPos, PositionHelper.GetAvatarPosition(sim, focus)); mv.SendUpdate(true);
+            // photo hd (2026-10-13: David 15/16 after 3 s, stalled): every 2 s ask the sim again for the unfinished avatars
+            // (full object update + re-select, so it resends their attachment prims)
+            if (hd && spins % 4 == 3)
+                foreach (var a in near.Where(a => State(a, rc) != "complete"))
+                { client.Objects.RequestObject(sim, a.LocalID); client.Objects.SelectObject(sim, a.LocalID, true); }
             await Task.Delay(tick); spins++;
         }
         mv.Camera.LookAt(home, home + homeAt); mv.SendUpdate(true);
         var by = near.GroupBy(a => State(a, rc)).ToDictionary(g => g.Key, g => g.Count());
         var msg = $"{by.GetValueOrDefault("complete")}/{near.Count} nearby avatars complete ({by.GetValueOrDefault("partial")} partial, {by.GetValueOrDefault("bare")} bare, {by.GetValueOrDefault("unknown")} unknown) after {(DateTime.UtcNow - t0).TotalSeconds:F1} s, {spins} nudge(s) ({why})";
         Log("look", "attachments: " + msg);
+        foreach (var a in near.Where(a => State(a, rc) != "complete"))
+            Log("look", $"attachments: {a.Name} still {State(a, rc)} ({rc.GetValueOrDefault(a.LocalID)}/{ExpectedOf(a)}){(Program_MostlyDressed(ExpectedOf(a), rc.GetValueOrDefault(a.LocalID)) ? " - mostly dressed, meshed as is" : " - drawn as a stand-in (omitted in photo hd)")}");
         return msg;
     }
 
@@ -116,8 +123,11 @@ public static partial class Program
     // stall window for the look's attachment wait: the full window while many avatars are unfinished, 3 s when only a few
     // stragglers remain (W21 22:12: 59/61 complete, and the 10 s window was the whole wait - some never finish: the sim
     // lists an attachment it never sends)
-    internal static int LookStallMs(int incomplete, int total, int baseMs) =>
-        incomplete <= Math.Max(2, total / 20) ? Math.Min(baseMs, 3000) : baseMs;
+    // photo hd: never shorter than 10 s (2026-10-13 20:05: gave up on David after 3 s at 15/16)
+    internal static int LookStallMs(int incomplete, int total, int baseMs, bool hd = false) =>
+        hd ? Math.Max(baseMs, 10000) : incomplete <= Math.Max(2, total / 20) ? Math.Min(baseMs, 3000) : baseMs;
+    // same rule as scene-mesher's MostlyDressed: at most one attachment missing and >= 75% here -> meshed as is
+    internal static bool Program_MostlyDressed(int expected, int have) => expected > 0 && have >= expected - 1 && have * 4 >= expected * 3;
 
     // BOM: an attachment face showing one of these ids shows the wearer's server bake of that channel (as scene-mesher maps them)
     static readonly Dictionary<UUID, string> BakeRefs = new()

@@ -79,18 +79,37 @@ public static partial class Program
         return (w.ToArray(), sky == "shared" ? null : sky);
     }
 
+    // pure (test): the render profile word (`ultra`, `highplus` / `high+`, or profile=<name>) anywhere in `photo hd ...`
+    // -> (remaining args, profile or null = look.py's default highplus; "?" = unknown profile=)
+    internal static (string[] rest, string profile) PhotoHdProfile(string[] a)
+    {
+        var w = new List<string>(); string prof = null;
+        foreach (var x in a)
+        {
+            var t = x.ToLowerInvariant(); if (t.StartsWith("profile=")) { t = t[8..]; prof = t is "ultra" or "highplus" or "high+" ? t : "?"; continue; }
+            if (t is "ultra" or "highplus" or "high+") { prof = t; continue; }
+            w.Add(x);
+        }
+        return (w.ToArray(), prof == "high+" ? "highplus" : prof);
+    }
+
+    // pure (test): photo hd export radius = the profile's Firestorm draw distance (High+ 128 m, Ultra 256 m), capped at 96 m
+    // (scene-mesher's far LOD beyond 30 m; the 2026-10-13 20:05 HD at 32 m dropped the neighbour's house David's view shows)
+    internal static float PhotoHdRadius(string profile) => Math.Min(profile == "ultra" ? 256f : 128f, 96f);
+
     static Task<string> PhotoCmd(string[] a)
     {
-        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|midday-legacy|sunrise|midnight|night|foggy|default|shared | preset=<name>]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
+        var (a2, prof) = PhotoHdProfile(a); a = a2;
+        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|midday-legacy|sunrise|midnight|night|foggy|default|shared | preset=<name>] [highplus|ultra]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
         var (rest, sky) = PhotoHdSky(a);
-        if (sky == "?") return Task.FromResult(usage);
+        if (sky == "?" || prof == "?") return Task.FromResult(usage);
         var p = PhotoHdArgs(rest);
         if (p == null) return Task.FromResult(usage);
         var la = p.Value.mode == "view" ? Array.Empty<string>() : p.Value.mode == "self" ? new[] { "self" } : new[] { "at", p.Value.target };
-        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky);
+        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky, prof);
     }
 
-    static async Task<string> LookCmd(string[] a, string hd = null, string sky = null)
+    static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null)
     {
         const string usage = "usage: look [self [front|back|left|right|<degrees>|all]|around|at <avatar or object name>] [fast] [far]";
         bool fast = a.Contains("fast"), far = a.Contains("far"); var w = a.Where(x => x != "fast" && x != "far").ToArray();
@@ -114,7 +133,7 @@ public static partial class Program
                     && Vector3.Distance(p.Position, client.Self.SimPosition) <= 32) : null;
                 if (av != null) HeadTurnTo(av.ID, "look at"); else if (ob != null) HeadTurnToPoint(ob.Position, "look at");
             }
-            float er = hd != null ? (far ? 96 : 32) : mode == "self" ? 8 : far ? 96 : 32;   // photo hd: always her surroundings, `self` too
+            float er = hd != null ? PhotoHdRadius(profile) : mode == "self" ? 8 : far ? 96 : 32;   // photo hd: always her surroundings, `self` too
             var tWait = sw.Elapsed.TotalSeconds;
             if (mode != "self" || hd != null) await EnsureNearbyAttachments(er, hd != null);   // wait for nearby avatars' attachments (stand-ins for the rest)
             tWait = sw.Elapsed.TotalSeconds - tWait; var tEx = sw.Elapsed.TotalSeconds;
@@ -132,6 +151,7 @@ public static partial class Program
             if (views != null) psi.ArgumentList.Add("--views=" + views);
             if (hd != null) psi.ArgumentList.Add(hd);
             if (hd != null && sky != null) psi.ArgumentList.Add("--sky=" + sky);
+            if (hd != null && profile != null) psi.ArgumentList.Add("--profile=" + profile);
             // the client-side stages, so look.py's timing summary covers the whole look
             psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
             psi.Environment["GT_LOOK_EXPORT_S"] = lastExportStages;   // export sub-stages, e.g. prims=1.2(20696),bakes=3.4(...)

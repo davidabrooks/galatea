@@ -1,0 +1,29 @@
+# David's Firestorm "High+" photo settings vs the photo hd pipeline (2026-10-13)
+
+Profiles: `photo hd ... [highplus|ultra]` (look.py `--profile=`; highplus is the default). Ultra = Firestorm featuretable "list Ultra".
+
+| Setting (High+) | Ultra | Our HD pipeline | Status |
+|---|---|---|---|
+| Transparent water on | on | water plane with EEP fog colour, transparent | partly (no refraction depth fog / moon glints) |
+| Ambient occlusion on | on | Cycles path tracing (inherent) | supported |
+| SSR off / Mirrors off | off / off | Cycles always traces glossy reflections | partly (more reflective than the viewer) |
+| Shadows sun/moon + projectors | same | sun/moon + point-light shadows; projector textures ignored | partly |
+| Reflection detail / coverage / max probes | same | path traced, no probes | n/a |
+| Point lighting full, max nearby lights 4096 | 8192 | every exported prim light | supported |
+| Attached (face) lights OFF | (default on) | attachment lights never rendered | supported (always off) |
+| Draw distance 128 | 256 | export radius 96 m (far LOD beyond 30 m) | partly (capped at 96 m) |
+| Max particles 4096 / attached particles | 8192 | particles not exported or rendered | not supported |
+| Avatar complexity 350k / 16 non-impostors | 16 | all avatars fully rendered | not applied |
+| Post process High | - | n/a | n/a |
+| Exposure 1.0 | 1.0 | hdr_post exposure (GT_FS_EXPOSURE) | supported |
+| Tone mapper ACES, mix 0.0 | ACES 0.7 | hdr_post ACES Hill, mix per profile (classic sky = 0 anyway) | supported |
+| Sharpening (CAS) 0.4 | 0.4 | hdr_post.cas_sharpen | supported (approximation) |
+| LOD factors objects 2 / flexi 1 / trees 0.5 / avatars 1 / terrain 2 | 3 / 1 / 1 / 1 / 2 | mesher: highest LOD near, screen-size LOD far | not applied (own rule, >= viewer detail) |
+| Sky detail 96 | 128 | procedural sky shader | n/a |
+| Anisotropic, SMAA High | same | Cycles pixel filter 1.5 + texture filtering | supported |
+| HDR + emissive, glow on strength 2 | same | emission for fullbright/glow faces | partly (no bloom) |
+| Alpha masks on | on | mask / blend / emissive alpha modes | supported |
+| Texture max 2048 | 2048 | GT_TEX_CAP_* = 2048 | supported |
+| Shadow quality 1.0 | - | soft path-traced shadows | n/a |
+| Terrain texture scale 12 | 12 | one tile per 12 m | supported |
+| DOF off, FOV 60 | off | no DOF; HD self framing lens 50, scene views lens ~18 (60 deg vertical) | supported |

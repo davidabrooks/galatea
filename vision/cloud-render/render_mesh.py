@@ -388,7 +388,9 @@ def sky_seen(env, night):
     colour fading to the blue_density colour scaled to the horizon's brightness (at 0.85 of it the upper sky read as
     a darker picture); before 2026-10-06 night was this day gradient at 0.35, a flat mid-grey ~3x the viewer's."""
     ns = env.get("night_sky") if night else None
-    if ns: return ns["horizon"], ns["zenith"], 1.0
+    # 2026-10-13 Firestorm reference (Peronaut night): the viewer's night sky colours are what it puts on screen (sRGB:
+    # horizon 0.059 = 15/255, the reference's sky exactly); drawn as linear they came out 53/255, a grey sky 3.5x too bright
+    if ns: return [srgb_to_linear(c) for c in ns["horizon"]], [srgb_to_linear(c) for c in ns["zenith"]], 1.0
     sk = env.get("sky") if HD and not night else None
     if sk:   # photo hd (2026-10-13): the viewer's sky shader by day too (blue horizon/density, haze, density multiplier, max_y, glow)
         return [min(5.0, c) for c in sk["horizon"]], [min(5.0, c) for c in sk["zenith"]], 1.0   # HDR (skyF.glsl clamps at 5)
@@ -421,6 +423,10 @@ def sky_backdrop(w, env, night):
         hz = nt.nodes.new("ShaderNodeMapRange"); hz.inputs["From Min"].default_value = 0.02; hz.inputs["From Max"].default_value = 0.15; L(sp.outputs["Z"], hz.inputs["Value"])
         st2 = nt.nodes.new("ShaderNodeMath"); st2.operation = "MULTIPLY"; L(st.outputs[0], st2.inputs[0]); L(hz.outputs["Result"], st2.inputs[1])
         st3 = nt.nodes.new("ShaderNodeMath"); st3.operation = "MULTIPLY"; st3.inputs[1].default_value = 0.9 * ns["stars"]; L(st2.outputs[0], st3.inputs[0])
+        # camera rays only (2026-10-13 Firestorm reference): glossy glass / water picked the star points up as white specks
+        # all over the porch windows; the viewer's reflection probes blur them away
+        stc = nt.nodes.new("ShaderNodeMath"); stc.operation = "MULTIPLY"; L(st3.outputs[0], stc.inputs[0])
+        L(nt.nodes.new("ShaderNodeLightPath").outputs["Is Camera Ray"], stc.inputs[1]); st3 = stc
         ad = nt.nodes.new("ShaderNodeMix"); ad.data_type = "RGBA"; ad.blend_type = "ADD"; ad.inputs["Factor"].default_value = 1.0
         L(col, ad.inputs["A"]); L(st3.outputs[0], ad.inputs["B"]); col = ad.outputs["Result"]
     if os.environ.get("GT_HD") == "1": col = sky_hd(nt, co, sp, col, env, night)
@@ -474,7 +480,10 @@ def sky_hd(nt, co, sp, col, env, night):
         hz = node("ShaderNodeMapRange"); L(sp.outputs["Z"], hz.inputs["Value"]); hz.inputs["From Min"].default_value = 0.02; hz.inputs["From Max"].default_value = 0.25
         k = math_("MULTIPLY", math_("MULTIPLY", mr.outputs["Result"], hz.outputs["Result"]), min(1.0, dens))
         h, zc, _ = sky_seen(env, night)
-        lit = [min(1.0, c * (0.25 if night else 1.0) * (sum(h) / 3 * 2.2 + 0.25)) for c in cl.get("color", [0.41] * 3)]
+        lit = [min(1.0, c * (sum(h) / 3 * 2.2 + 0.25)) for c in cl.get("color", [0.41] * 3)]
+        # night (2026-10-13 Firestorm reference): moonlit clouds barely part from the sky; the old 0.25 x day lighting drew
+        # grey clouds ~3x the (linear) night sky. Now the sky's own colour, lifted by the cloud colour
+        if night: lit = [z_ * (1.0 + c) for z_, c in zip(zc, cl.get("color", [0.41] * 3))]
         col = mixc(k, col, lit)
     up = [nt.nodes.new("ShaderNodeCombineXYZ")]
     def disc(dirv, cos_r, colr, strength):
@@ -498,7 +507,7 @@ def sky_hd(nt, co, sp, col, env, night):
         col = mixc(sd, col, [c / pk * 8 for c in sl])
     elif env.get("moon_dir") and env["moon_dir"][2] > 0:
         d = disc(env["moon_dir"], 0, None, 1)
-        md = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(0.9 * max(0.05, env.get("moon_scale", 1.0))))), cam)
+        md = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(MOON_RADIUS_DEG * max(0.05, env.get("moon_scale", 1.0))))), cam)
         col = mixc(md, col, [0.55 * max(0.3, env.get("moon", 0.5))] * 3)
     return col
 
@@ -563,6 +572,20 @@ def water():
     ob.data.materials.append(m); ob.visible_shadow = False; ob.visible_diffuse = False; ob.visible_glossy = False
 
 TERRAIN_FALLBACK = [(0.33, 0.27, 0.18), (0.22, 0.30, 0.12), (0.30, 0.30, 0.24), (0.38, 0.37, 0.35)]  # dirt, grass, mountain, rock
+
+# the moon's apparent radius: Firestorm draws it ~5.3 deg across at moon_scale 1 (2026-10-13 reference, 60 deg FOV);
+# 0.9 deg was a dot a sixth that size
+MOON_RADIUS_DEG = 2.6
+
+def srgb_to_linear(c):
+    c = max(0.0, float(c or 0.0))
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+def z0_of(fl, ll, lo, seated=False):
+    """mesh z 0 for an avatar: seated -> the sim's placement (ll); standing -> lowest vertex on the floor unless ll is
+    more than 0.35 m off it (a seat / table / hover under her)"""
+    if seated and ll is not None: return ll
+    return fl - lo if ll is None or abs(ll + lo - fl) < 0.35 else ll
 
 def omit_stand_in(env):
     """HD photos leave out an avatar that would be a stand-in (GT_STANDIN=1 forces it back)"""
@@ -678,15 +701,17 @@ if kind == "scene":
     # a seat or table under her) the LL placement wins instead of standing her on whatever the cast hit. GT_AV (moved
     # elsewhere) or an old mesh.json -> floor cast. ponytail: hover isn't exported (0); ceiling = sitting heights ~0.2 m high
     seated_keep = os.environ.get("GT_SEATED") == "1"   # 2026-10-11: seated avatars: pelvis at agent position, no floor snap
-    def place(o, px, py, pz):  # -> (floor under it, LL mesh z0 or None); cast before any avatar is built
-        off = o.get("agent_off_seated") if seated_keep and o.get("agent_off_seated") is not None else o.get("agent_off")
-        return floor_at(px, py, pz), (pz + off if off is not None else None)
-    def z0_of(fl, ll, lo):
-        if seated_keep and ll is not None: return ll
-        return fl - lo if ll is None or abs(ll + lo - fl) < 0.35 else ll
+    # 2026-10-13 Reiley Net Chair: seated avatars were snapped onto the floor cast (which hits the seat cushion) by their
+    # lowest vertex, so who sits higher depended on where each pose puts its feet: Galatea on David's lap (agent z 0.11 m
+    # above his) rendered 0.13 m BELOW him, i.e. him on her lap. Seated (mesh.json "seated", scene-mesher 2026-10-13+):
+    # always the sim's placement, agent z + agent_off_seated, for every avatar alike
+    def place(o, px, py, pz):  # -> (floor under it, LL mesh z0 or None, seated); cast before any avatar is built
+        st = seated_keep or bool(o.get("seated"))
+        off = o.get("agent_off_seated") if st and o.get("agent_off_seated") is not None else o.get("agent_off")
+        return floor_at(px, py, pz), (pz + off if off is not None else None), st
     placed = [(o, place(o, *o["pos"])) for o in M.get("others", [])]
-    fl, ll = place(M, x, y, g[2]); ll = None if av else ll
-    lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2])
+    fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
+    lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
     for ob in obs: ob.location = (x, y, z0); ob.rotation_euler = (0, 0, math.radians(yaw))
     log("avatar at", round(x, 2), round(y, 2), "mesh z0", round(z0, 2), "floor", round(fl, 2), "LL", ll and round(ll, 2))
     def to_world(local, at, yw):
@@ -704,7 +729,7 @@ if kind == "scene":
         else:
             near = math.dist(o["pos"][:2], (x, y)) < float(os.environ.get("GT_LINING_M", "8"))
             olo, _, oobs = build(o["group"], o.get("bones"), lining=near)
-        at = (o["pos"][0], o["pos"][1], z0_of(*fp, olo[2]))
+        at = (o["pos"][0], o["pos"][1], z0_of(fp[0], fp[1], olo[2], fp[2]))
         for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
         heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])
     if os.environ.get("GT_NOSKY") == "1":
@@ -800,7 +825,7 @@ def hd_render_hdr(png):
     t = time.time(); bpy.ops.render.render(write_still=True); secs = round(time.time() - t, 1)
     img = bpy.data.images.load(exr); w, h = img.size; px = np.empty(w * h * 4, np.float32); img.pixels.foreach_get(px)
     rgb = px.reshape(h, w, 4)[..., :3].astype(np.float64)
-    ldr, info = hdr_post.firestorm_ldr(rgb, M.get("env"), 2.0 ** float(os.environ.get("GT_EXPOSURE", "0")))
+    ldr, info = hdr_post.firestorm_ldr(rgb, M.get("env"), 2.0 ** float(os.environ.get("GT_EXPOSURE", "0")), hdr_post.settings_from_env(os.environ))
     hdr_post.write_rgbe(png[:-4] + ".hdr", rgb[::-1])   # Blender pixels are bottom row first
     out = bpy.data.images.new("ldr", w, h, alpha=False, float_buffer=True); out.colorspace_settings.name = "Non-Color"
     o = np.ones((h, w, 4), np.float32); o[..., :3] = ldr; out.pixels.foreach_set(o.ravel())

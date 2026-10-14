@@ -38,9 +38,9 @@ HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
 # Cycles path-traces AO / shadows / reflections itself; attached (face) lights are never rendered (matches his OFF)
 PROFILES = {
     "highplus": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.0", "GT_TONEMAP_TYPE": "1",
-                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325"},
+                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "0.8", "GT_LOD_FACTOR": "2", "GT_AVATAR_MAX": "16"},
     "ultra": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.7", "GT_TONEMAP_TYPE": "1",
-              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325"},
+              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325", "GT_SSR": "0", "GT_SSAO": "0.8", "GT_LOD_FACTOR": "3", "GT_AVATAR_MAX": "16"},
 }
 
 def hd_settings(arg, mode, profile="highplus"):
@@ -115,6 +115,17 @@ def particle_sources(doc, me, radius):
     for p in doc.get("prims", []):
         ps = p.get("particles"); wp = p.get("world_pos")
         if ps and wp and sum((a - b) ** 2 for a, b in zip(wp, me)) <= radius ** 2: out.append({"pos": wp, "ps": ps})
+    return out
+
+def projector_textures(meta):
+    """distinct projector texture ids of mesh.json lights"""
+    return sorted({l["proj"]["tex"] for l in meta.get("lights", []) if l.get("proj") and l["proj"].get("tex")})
+
+def lod_args(env):
+    """profile LOD factor / non-impostor avatar limit -> scene-mesher flags (none outside HD profiles)"""
+    out = []
+    if env.get("GT_LOD_FACTOR"): out.append(f"--lod-factor={float(env['GT_LOD_FACTOR']):g}")
+    if env.get("GT_AVATAR_MAX"): out.append(f"--avatar-max={int(env['GT_AVATAR_MAX'])}")
     return out
 
 def mesher_args(d, mode, me, far, radius=96):
@@ -265,6 +276,7 @@ def main(a):
     # those centred beyond 30 m as backdrop at a screen-size LOD; `self` meshes her alone. --roots=32: the 32 m export's
     # linksets even from a 96 m export (an older client that still exports 96 m)
     args = mesher_args(d, mmode, me, far, float(doc.get("radius") or 96))
+    args += lod_args(hd_env if hd else {})
     if mode == "at":  # she turns her head toward the target (scene-mesher --look); an avatar's head ~0.7 m above its agent position
         av = next((v for v in doc.get("avatars", []) if target in str(v.get("name", "")).lower() and "pos" in v), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
@@ -301,7 +313,11 @@ def main(a):
     times["textures"] = info["textures"]["seconds"]
     t = time.time()
     bake_paths = {"bake:" + k: f"{WORK}/tex/bake-{k}.png" for k in only if os.path.exists(f"{WORK}/tex/bake-{k}.png")}
-    n_scanned = write_manifest(WORK, {**info.get("tex_paths", {}), **bake_paths})
+    proj_paths = {}
+    for u in projector_textures(meta):   # projector light textures (photo hd): not on any face, so fetched here
+        try: proj_paths[u] = handler.fetch_tex(u, f"{WORK}/tex", 512)[1]
+        except Exception as e: print(f"projector texture {u}: {e}", file=sys.stderr)
+    n_scanned = write_manifest(WORK, {**info.get("tex_paths", {}), **bake_paths, **{k: v for k, v in proj_paths.items() if v}})
     times["manifest"] = round(time.time() - t, 1)
     view = "portrait" if photo_self else VIEWS.get(mode)
     if mode == "at":  # an avatar's name (mesh.json "others") or an object's name (scene.json root prims), first substring match

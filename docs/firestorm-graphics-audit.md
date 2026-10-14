@@ -5,20 +5,20 @@ Profiles: `photo hd ... [highplus|ultra]` (look.py `--profile=`; highplus is the
 | Setting (High+) | Ultra | Our HD pipeline | Status |
 |---|---|---|---|
 | Transparent water on | on | water plane with EEP fog colour, fresnel-mixed transparency (max 0.88), depth fog from the night fog colour + ambient, noise-perturbed moon/sun glint | supported (approximation, no refraction distortion) |
-| Ambient occlusion on | on | Cycles path tracing (inherent) | supported |
-| SSR off / Mirrors off | off / off | Cycles always traces glossy reflections | partly (more reflective than the viewer) |
-| Shadows sun/moon + projectors | same | sun/moon + point-light shadows; projector textures ignored (none in the 20:05 export) | partly |
+| Ambient occlusion on | on | Cycles path tracing + SSAO on the sky ambient (ambient x mix(1, ao, 0.8), 0.8 m) | supported |
+| SSR off / Mirrors off | off / off | GT_SSR=0: faces without a specular/PBR material get no reflection; shiny faces keep traced glossy (= probe reflections) | supported |
+| Shadows sun/moon + projectors | same | sun/moon + point-light shadows; projectors = textured spot lights down the prim's -Z (fov from LightImage) | supported (focus blur / ambiance ignored; synthetic test only) |
 | Reflection detail / coverage / max probes | same | path traced, no probes | n/a |
 | Point lighting full, max nearby lights 4096 | 8192 | every exported prim light | supported |
 | Attached (face) lights OFF | (default on) | attachment lights never rendered | supported (always off) |
 | Draw distance 128 | 256 | export radius per profile: high 96, highplus 128, ultra 256 m, stepped down by MemAvailable (>=14 GB 256, >=10 GB 128, else 96) | supported (memory guarded) |
 | Max particles 4096 / attached particles | 8192 | PSys data exported from ObjectUpdate; emissive/lit soft billboards, max 400 per source | supported (needs in-world check; 20:05 export predates it) |
-| Avatar complexity 350k / 16 non-impostors | 16 | all avatars fully rendered | not applied |
+| Avatar complexity 350k / 16 non-impostors | 16 | avatars past the 16 nearest drop to the lowest LOD (impostor stand-in); complexity not in the export | partly (no ARC limit) |
 | Post process High | - | n/a | n/a |
 | Exposure 1.0 | 1.0 | hdr_post exposure (GT_FS_EXPOSURE) | supported |
 | Tone mapper ACES, mix 0.0 | ACES 0.7 | hdr_post ACES Hill, mix per profile (classic sky = 0 anyway) | supported |
 | Sharpening (CAS) 0.4 | 0.4 | hdr_post.cas_sharpen | supported (approximation) |
-| LOD factors objects 2 / flexi 1 / trees 0.5 / avatars 1 / terrain 2 | 3 / 1 / 1 / 1 / 2 | mesher: highest LOD near, screen-size LOD far | not applied (own rule, >= viewer detail) |
+| LOD factors objects 2 / flexi 1 / trees 0.5 / avatars 1 / terrain 2 | 3 / 1 / 1 / 1 / 2 | object LOD factor per profile (--lod-factor 2 / 3) on the backdrop screen-size LOD; near objects always highest | supported (objects; flexi/tree/terrain factors n/a) |
 | Sky detail 96 | 128 | procedural sky shader | n/a |
 | Anisotropic, SMAA High | same | Cycles pixel filter 1.5 + texture filtering | supported |
 | HDR + emissive, glow on strength 2 | same | face glow AOV + Firestorm bloom (iterations 2, strength 0.325, width 1.3) | supported |

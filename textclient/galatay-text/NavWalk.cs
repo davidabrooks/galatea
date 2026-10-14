@@ -42,6 +42,7 @@ public static partial class Program
 
     static async Task EnsureStandingForWalk(CancellationToken ct)
     {
+        await TheVPeeStop("standing to walk");
         if (client.Self.SittingOn != 0)
         {
             Interlocked.Increment(ref sitGen);

@@ -67,6 +67,8 @@ public static partial class Program
         // The library's raw UDP receive queue drops packets (DropWrite) when full; at login the sim floods us with
         // ~10k object updates and SL sends ObjectUpdate UNRELIABLE, so a dropped update is never resent. 512 -> 8192.
         try { if (Settings.UdpReceiveQueueCapacity < 8192) Settings.UdpReceiveQueueCapacity = 8192; } catch { }
+        // 2026-10-14: Blender OOM starved the box, her reads stalled and the kernel's 208 KB default buffer overflowed: David's chat was lost (UdpDrops.cs)
+        try { if (Settings.UdpSocketReceiveBuffer < UdpSockBufWanted) Settings.UdpSocketReceiveBuffer = UdpSockBufWanted; } catch { }
         // library warnings/errors (packet decode failures etc.) were going nowhere; log them, rate-limited
         LibreMetaverse.Logger.OnLogMessage += (msg, level) =>
         {

@@ -194,11 +194,48 @@ public static partial class Program
         return (true, string.Join(" > ", path));
     }
 
-    // leave the boat: teleport to the pier spot while still seated (never stand first)
+    // pure (test): 2026-10-14 14:44 'wander' while she sat on the Beach House boat (seated by a pose command, not by the
+    // wander) -> wOnBoatLocal was 0, so the first leg stood her up and she fell into the water. Seated on a listed boat
+    // (seat list "boats", by root UUID) or seated over the water = on a boat, whoever seated her.
+    internal static bool SeatedOnBoat(bool seated, UUID rootId, Vector3 me, IEnumerable<HomeSeatInfo> seats)
+        => seated && (seats.Any(i => IsBoat(i) && i.Id == rootId) || OnBoatWater(me));
+
+    // pure (test): the pier benches to sit on straight from the boat (David: never stand/walk off a boat), nearest first,
+    // occupied ones skipped
+    internal static List<HomeSeatInfo> PierBenchesFrom(Vector3 me, IEnumerable<HomeSeatInfo> seats, Func<UUID, bool> occupied)
+        => seats.Where(i => !IsBoat(i) && (i.Name ?? "").Contains("Pier . Bench", StringComparison.OrdinalIgnoreCase) && !occupied(i.Id))
+                .GroupBy(i => i.Id).Select(x => x.First()).OrderBy(i => HDist(me, i.Pos)).ToList();
+
+    static bool BenchOccupied(UUID id)
+    {
+        var sim = client.Network.CurrentSim; var p = sim?.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == id);
+        if (p == null) return false;
+        return sim.ObjectsAvatars.Values.Any(a => a != null && a.ID != client.Self.AgentID && a.ParentID != 0
+            && (a.ParentID == p.LocalID || sim.ObjectsPrimitives.Values.Any(c => c != null && c.LocalID == a.ParentID && c.ParentID == p.LocalID)));
+    }
+
+    // sit straight from the boat onto a free pier bench (still seated: no stand on the boat); true = on a bench
+    static async Task<bool> BoatToPierBench(string why)
+    {
+        foreach (var b in PierBenchesFrom(client.Self.SimPosition, LoadHomeSeats(), BenchOccupied))
+        {
+            wanderPhase = "moving from the boat to a pier bench";
+            var r = await Exec("sit " + b.Id);
+            for (int i = 0; i < 12; i++) { await Task.Delay(250); if (client.Self.SittingOn != 0 && !OnBoatWater(client.Self.SimPosition) && HDist(client.Self.SimPosition, b.Pos) < 3f) break; }
+            bool ok = client.Self.SittingOn != 0 && HDist(client.Self.SimPosition, b.Pos) < 3f;
+            WLog($"BOAT leave ({why}): sit on the pier bench {b.Id} ('{b.Name}'): {r}; {(ok ? "seated" : "NOT seated")} at {P3(client.Self.SimPosition)}");
+            if (ok) { wLastSeat = b.Id; return true; }
+        }
+        return false;
+    }
+
+    // leave the boat: sit straight onto a free pier bench (David 2026-10-14), else teleport to the pier spot while still
+    // seated (never stand first)
     static async Task BoatLeave(string why)
     {
         var s = LoadBoatSpot();
         wOnBoatLocal = 0;
+        if (await BoatToPierBench(why)) return;
         if (s == null) { WLog($"BOAT leave ({why}): no boat_spot in the seat list; standing instead"); client.Self.Stand(); return; }
         wanderPhase = "teleporting off the boat to the pier";
         if (!await BoatTeleportToSpot(s, "leaving the boat: " + why))
@@ -213,6 +250,12 @@ public static partial class Program
     // still on a boat when the loop wants to move on (after a pause, a restart of the loop ...)
     static async Task<bool> LeaveBoatIfOnOne(string why)
     {
+        if (wOnBoatLocal == 0 && client.Self.SittingOn != 0)   // seated on a boat by something other than the wander
+        {
+            var sim = client.Network.CurrentSim; var q = sim?.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.LocalID == client.Self.SittingOn);
+            for (int i = 0; i < 8 && q != null && q.ParentID != 0; i++) { var pid = q.ParentID; q = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.LocalID == pid); }
+            if (SeatedOnBoat(true, q?.ID ?? UUID.Zero, client.Self.SimPosition, LoadHomeSeats())) { wOnBoatLocal = client.Self.SittingOn; WLog($"BOAT: already seated on a boat ({q?.ID}) at wander time: leaving it seated, never standing on it"); }
+        }
         if (wOnBoatLocal == 0) return false;
         if (client.Self.SittingOn != wOnBoatLocal) { if (client.Self.SittingOn == 0 && OnBoatWater(client.Self.SimPosition)) await BoatLeave(why + " (unseated in the water)"); wOnBoatLocal = 0; return false; }
         await BoatLeave(why);

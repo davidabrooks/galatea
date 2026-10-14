@@ -1,0 +1,31 @@
+diff --git a/LibreMetaverse/Settings.cs b/LibreMetaverse/Settings.cs
+index 402dda37..71bd26d3 100644
+--- a/LibreMetaverse/Settings.cs
++++ b/LibreMetaverse/Settings.cs
+@@ -85,6 +85,9 @@ namespace LibreMetaverse
+         /// <summary>Capacity of the incoming UDP receive queue; packets received when the queue is full are dropped and counted in SimStats.DroppedPackets</summary>
+         public static int UdpReceiveQueueCapacity = 512;
+ 
++        /// <summary>Kernel receive buffer (SO_RCVBUF) for the UDP socket, bytes; 0 = OS default. Linux caps it at net.core.rmem_max.</summary>
++        public static int UdpSocketReceiveBuffer = 0;
++
+         /// <summary>Timer interval in milliseconds between checks for stalled texture downloads</summary>
+         public static float TexturePipelineRefreshInterval = 500.0f;
+ 
+diff --git a/LibreMetaverse/UDPBase.cs b/LibreMetaverse/UDPBase.cs
+index e0b47337..bb2467da 100644
+--- a/LibreMetaverse/UDPBase.cs
++++ b/LibreMetaverse/UDPBase.cs
+@@ -129,6 +129,12 @@ namespace LibreMetaverse
+             // default on Windows.
+             udpSocket!.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, false);
+ 
++            if (Settings.UdpSocketReceiveBuffer > 0)
++            {
++                try { udpSocket!.ReceiveBufferSize = Settings.UdpSocketReceiveBuffer; }
++                catch (Exception ex) { Logger.Warn($"UDP ReceiveBufferSize {Settings.UdpSocketReceiveBuffer} not applied: {ex.Message}"); }
++            }
++
+             udpSocket!.Bind(ipep);
+ 
+             // we're not shutting down, we're starting up

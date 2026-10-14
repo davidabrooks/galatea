@@ -31,4 +31,5 @@ apply "$TC/libremetaverse-object-cache.patch"   # 2026-10-05: on-disk object cac
 apply "$TC/libremetaverse-multisim.patch"       # 2026-10-06: neighbor regions: self updates only from the current region; her local id on crossing (newest entry, terse self-heal, stale copies dropped); fast hand-over (CAM at once on the live child circuit, keep child caps, no appearance re-pass)
 apply "$TC/libremetaverse-seed-retry.patch"    # 2026-10-08: seed cap retry = capped backoff loop (was unbounded sync recursion -> stack overflow)
 apply "$TC/libremetaverse-doh-connect.patch"    # 2026-10-09: GridClient.CapsConnectCallback (SocketsHttpHandler) for SlDns.cs DoH + real-IP connects
+apply "$TC/libremetaverse-udp-rcvbuf.patch"     # 2026-10-14: Settings.UdpSocketReceiveBuffer (SO_RCVBUF) - lost chat when the box stalled
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

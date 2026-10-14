@@ -56,6 +56,8 @@ DEFAULT_PROFILE = "ultra"
 OPT_OUTS = {"ssr": {"GT_SSR": "0"}, "mirrors": {"GT_MIRRORS": "0"}, "dof": {"GT_DOF": "0"}, "smaa": {"GT_SMAA": "0"},
             "sharpen": {"GT_SHARPEN": "0"}, "aces": {"GT_TONEMAP_MIX": "0.0"}, "impostors": {"GT_AVATAR_MAX": "0"}}
 
+HD_FOV_DEG = 60   # 2026-10-14 David: Firestorm's default camera view angle (CameraAngle 1.047 rad, vertical)
+
 def hd_settings(arg, mode, profile=DEFAULT_PROFILE, no=()):
     """--hd[=landscape|portrait] -> (orientation, env for the HD render) or (None, {}) when absent. Quality knobs only:
     her normal looks never pass --hd, so they keep their small, fast settings."""
@@ -67,7 +69,8 @@ def hd_settings(arg, mode, profile=DEFAULT_PROFILE, no=()):
     if bad: raise ValueError(f"unknown opt-out '{bad[0]}' ({', '.join(OPT_OUTS)})")
     off = {k: v for x in no for k, v in OPT_OUTS[x].items()}
     return o, {"GT_HD": "1", "GT_RES": HD_RES[o], "GT_SAMPLES": os.environ.get("GT_HD_SAMPLES", "24"), "GT_DENOISE": "1",
-               "GT_STUDIO_SHADOW": "1", "GT_HD_PROFILE": profile, **PROFILES[profile], **off}
+               "GT_STUDIO_SHADOW": "1", "GT_HD_PROFILE": profile,
+               "GT_HD_FOV": os.environ.get("GT_HD_FOV", str(HD_FOV_DEG)), **PROFILES[profile], **off}
 
 def retry_env(rc, hd, attempt=1):
     """env for the next Blender attempt after a signal death (rc < 0). 2026-10-13 20:05 / 2026-10-14 12:50: HD renders
@@ -405,6 +408,7 @@ def main(a):
     a = [x for x in a if not (x == "--hd" or x.startswith("--hd="))]
     profile = next((x.split("=", 1)[1] for x in a if x.startswith("--profile=")), DEFAULT_PROFILE)
     a = [x for x in a if not x.startswith("--profile=")]
+    fov = next((x.split("=", 1)[1] for x in a if x.startswith("--fov=")), None); a = [x for x in a if not x.startswith("--fov=")]
     no = [y for x in a if x.startswith("--no=") for y in x[5:].split(",") if y]; a = [x for x in a if not x.startswith("--no=")]
     sky = next((x.split("=", 1)[1] for x in a if x.startswith("--sky=")), None); a = [x for x in a if not x.startswith("--sky=")]
     if sky and hd_arg is None: sys.exit("--sky needs --hd (her own looks never use the environment)")
@@ -415,6 +419,10 @@ def main(a):
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     try: hd, hd_env = hd_settings(hd_arg, mode, profile, no)
     except ValueError as e: sys.exit(str(e))
+    if hd and fov:   # `photo hd ... fov <deg>`
+        try: f = float(fov); assert 10 <= f <= 120
+        except (ValueError, AssertionError): sys.exit(f"bad fov '{fov}' (10..120 degrees, vertical)")
+        hd_env["GT_HD_FOV"] = f"{f:g}"
     if sky and sky.lower() != "shared" and sky.lower() not in llsky.presets():
         sys.exit(f"unknown sky preset '{sky}' (shared, {', '.join(sorted(llsky.presets()))})")
     if hd: fast = False; os.environ.update({k: v for k, v in hd_env.items() if k.startswith("GT_TEX_CAP")})

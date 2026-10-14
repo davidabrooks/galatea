@@ -111,6 +111,20 @@ public static partial class Program
         return (w.ToArray(), no.Count == 0 ? null : string.Join(",", no));
     }
 
+    // pure (test): `photo hd ... fov <deg>` / `fov=<deg>` (2026-10-14, David): vertical field of view, 10..120 deg; "?" = bad value
+    internal static (string[] rest, string fov) PhotoHdFov(string[] a)
+    {
+        var w = new List<string>(); string fov = null;
+        for (int i = 0; i < a.Length; i++)
+        {
+            var t = a[i].ToLowerInvariant(); string v = null;
+            if (t.StartsWith("fov=")) v = t[4..]; else if (t == "fov") v = i + 1 < a.Length ? a[++i] : "";
+            if (v == null) { w.Add(a[i]); continue; }
+            fov = double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && d >= 10 && d <= 120 ? d.ToString(CultureInfo.InvariantCulture) : "?";
+        }
+        return (w.ToArray(), fov);
+    }
+
     internal static float PhotoHdRadius(string profile, double freeGb = -1)
     {
         float want = profile == "highplus" ? 128f : 256f;   // null = the default (ultra)
@@ -133,16 +147,17 @@ public static partial class Program
     {
         var (a2, prof) = PhotoHdProfile(a); a = a2;
         var (a3, no) = PhotoHdOptOuts(a); a = a3;
-        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|midday-legacy|sunrise|midnight|night|foggy|default|shared | preset=<name>] [ultra (default)|highplus] [nossr] [nomirrors] [nodof] [nosmaa] [nosharpen] [noaces] [noimpostors]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
+        var (a4, fov) = PhotoHdFov(a); a = a4;
+        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|midday-legacy|sunrise|midnight|night|foggy|default|shared | preset=<name>] [ultra (default)|highplus] [nossr] [nomirrors] [nodof] [nosmaa] [nosharpen] [noaces] [noimpostors] [fov <deg> (default 60, Firestorm)]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
         var (rest, sky) = PhotoHdSky(a);
-        if (sky == "?" || prof == "?") return Task.FromResult(usage);
+        if (sky == "?" || prof == "?" || fov == "?") return Task.FromResult(usage);
         var p = PhotoHdArgs(rest);
         if (p == null) return Task.FromResult(usage);
         var la = p.Value.mode == "view" ? Array.Empty<string>() : p.Value.mode == "self" ? new[] { "self" } : new[] { "at", p.Value.target };
-        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky, prof, no);
+        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky, prof, no, fov);
     }
 
-    static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null, string no = null)
+    static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null, string no = null, string fov = null)
     {
         const string usage = "usage: look [self [front|back|left|right|<degrees>|all]|around|at <avatar or object name>] [fast] [far]";
         bool fast = a.Contains("fast"), far = a.Contains("far"); var w = a.Where(x => x != "fast" && x != "far").ToArray();
@@ -186,6 +201,7 @@ public static partial class Program
             if (hd != null && sky != null) psi.ArgumentList.Add("--sky=" + sky);
             if (hd != null && profile != null) psi.ArgumentList.Add("--profile=" + profile);
             if (hd != null && no != null) psi.ArgumentList.Add("--no=" + no);
+            if (hd != null && fov != null) psi.ArgumentList.Add("--fov=" + fov);
             // the client-side stages, so look.py's timing summary covers the whole look
             psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
             psi.Environment["GT_LOOK_EXPORT_S"] = lastExportStages;   // export sub-stages, e.g. prims=1.2(20696),bakes=3.4(...)

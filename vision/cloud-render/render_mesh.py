@@ -437,6 +437,15 @@ def body_view_label(v):
     v = v.strip().lower()
     return v if v in BODY_VIEW_DEG else f"{float(v):g}deg"
 
+def lens_for_vfov(vfov_deg, rx, ry):
+    """Blender lens (mm) for a vertical field of view; sensor_fit AUTO puts the 36 mm sensor on the long side"""
+    sh = 36.0 * (ry / rx if rx >= ry else 1.0)
+    return sh / (2 * math.tan(math.radians(vfov_deg) / 2))
+
+def hd_fov():
+    """photo hd vertical FOV in degrees (GT_HD_FOV, default 60 = Firestorm's camera), None outside photo hd"""
+    return float(os.environ.get("GT_HD_FOV", "60")) if os.environ.get("GT_HD") == "1" else None
+
 def camera(loc, target, lens, res):
     cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam")); sc.collection.objects.link(cam); sc.camera = cam
     cam.location = loc; cam.rotation_euler = (Vector(target) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
@@ -980,6 +989,8 @@ if kind == "scene":
             want = h - f * back + f.cross(Vector((0, 0, 1))) * side + Vector((0, 0, up)); d = want - h; u = d.normalized()
             bpy.context.view_layer.update()
             hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.35, u, distance=d.length - 0.35)
+            if hd_fov():
+                rx, ry = (int(v) for v in os.environ.get("GT_RES", "3840x2160").split("x")); lens = lens_for_vfov(hd_fov(), rx, ry)
             camera(loc - u * 0.15 if hit else want, target, lens, (960, 540))
         if view.startswith("portrait"):
             # `photo hd self` (2026-10-13): her whole body from in front, in the real scene; "portrait[:yaw offset]".
@@ -990,12 +1001,18 @@ if kind == "scene":
             pts = [ob.matrix_world @ Vector(c) for ob in obs for c in ob.bound_box]
             blo = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts))); bhi = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
             mid = (blo + bhi) / 2; ext = bhi - blo; side = abs(ext.x * f.y) + abs(ext.y * f.x)   # width across the view
-            hf = 2 * math.atan(18 / 50 * (rx / ry if ry >= rx else 1)); vf = 2 * math.atan(18 / 50 * (1 if ry >= rx else ry / rx))
-            dist = max(ext.z * 0.6 / math.tan(vf / 2), side * 0.6 / math.tan(hf / 2), 1.2) + max(ext.x, ext.y) / 2
+            # photo hd (2026-10-14 David): Firestorm's 60 deg vertical view angle (GT_HD_FOV), subject framing kept by
+            # moving the camera to keep her well framed, with Firestorm's wider surroundings around her
+            lens = lens_for_vfov(hd_fov(), rx, ry) if hd_fov() else 50.0
+            hf = 2 * math.atan(18 / lens * (rx / ry if ry >= rx else 1)); vf = 2 * math.atan(18 / lens * (1 if ry >= rx else ry / rx))
+            # margin: half-extent / tan(half fov); 0.6 = body fills ~83% of the frame (old 50 mm close-up). At 60 deg
+            # that would put the lens ~1.5 m from her (wide-angle distortion), so she fills ~65% like Firestorm's camera
+            m = 0.75 if hd_fov() else 0.6
+            dist = max(ext.z * m / math.tan(vf / 2), side * m / math.tan(hf / 2), 1.2) + max(ext.x, ext.y) / 2
             want = mid + f * dist + Vector((0, 0, 0.15 * dist)); e = want - h; u = e.normalized()
             # a wall in front of her: stop just before it (cast from her head: a seat or table isn't a wall)
             hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.5, u, distance=max(0.01, e.length - 0.5))
-            camera(loc - u * 0.15 if hit else want, mid, 50, (rx, ry))
+            camera(loc - u * 0.15 if hit else want, mid, lens, (rx, ry))
         elif view.startswith("at:"):
             t = view[3:]; tgt = heads.get(t) or Vector([float(v) for v in t.split(",")])
             f = (tgt - h); f.z = 0; f = f.normalized() if f.length > 1e-3 else Vector((1, 0, 0))

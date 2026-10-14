@@ -498,6 +498,11 @@ def eep(env):
     if HD: L.data.angle = math.radians(SHADOW_ANGLE_NIGHT if night else SHADOW_ANGLE_DAY)
     w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True; bg = w.node_tree.nodes["Background"]
     bg.inputs["Color"].default_value = (*env["horizon"], 1); bg.inputs["Strength"].default_value = (0.35 if night else 1.0) * (env.get("probe_ambiance", 1.0) if HD and env.get("classic") is False else 1.0)   # PBR sky: probe ambiance
+    if HD and not night and env.get("classic", True) and AMB > 0:
+        # 2026-10-14 bikini compare (deck shadows (117, 103, 92) vs Firestorm's (106, 80, 63), rail shadows barely there):
+        # the classic sky's ambient is already on every surface as amblit emission; the world's full-strength horizon
+        # light on top filled the shadows twice. Keep a quarter for bounce / reflections
+        bg.inputs["Strength"].default_value *= float(os.environ.get("GT_CLASSIC_WORLD", "0.25"))
     sky_backdrop(w, env, night)
     for l in M.get("lights", []):
         # SL point light, reimplemented from the LL viewer's deferred light shader: radiance = albedo x linear colour x
@@ -641,11 +646,14 @@ def sky_hd(nt, co, sp, col, env, night):
         L(sh.outputs[0], nz.inputs["Vector"])
         nz.inputs["Roughness"].default_value = min(0.85, 0.35 + 0.5 * float(cl.get("detail", 0.125)))   # cloud_pos_density2 z = detail layer
         mr = node("ShaderNodeMapRange", interpolation_type="SMOOTHSTEP"); L(nz.outputs["Fac"], mr.inputs["Value"])
-        mr.inputs["From Min"].default_value = 0.56 - 0.4 * cov; mr.inputs["From Max"].default_value = 0.76 - 0.4 * cov
+        # 2026-10-14 bikini compare: classic cloudsF.glsl takes cloudDensity = 2 x (cloud_shadow - 0.25), so a coverage of
+        # 0.27 is a near-clear sky in Firestorm; the old 0.56 - 0.4 x cov threshold drew a half-clouded sky at any coverage
+        cd = max(0.0, min(1.0, 2.0 * (cov - 0.25))) if env.get("classic", True) else cov
+        mr.inputs["From Min"].default_value = 0.64 - 0.45 * cd; mr.inputs["From Max"].default_value = 0.80 - 0.45 * cd
         hz = node("ShaderNodeMapRange"); L(sp.outputs["Z"], hz.inputs["Value"]); hz.inputs["From Min"].default_value = 0.02; hz.inputs["From Max"].default_value = 0.25
         k = math_("MULTIPLY", math_("MULTIPLY", mr.outputs["Result"], hz.outputs["Result"]), min(1.0, dens))
         h, zc, _ = sky_seen(env, night)
-        lit = [min(1.0, c * (sum(h) / 3 * 2.2 + 0.25)) for c in cl.get("color", [0.41] * 3)]
+        lit = [min(1.0, c * (sum(h) / 3 * 1.5 + 0.2)) for c in cl.get("color", [0.41] * 3)]   # was x2.2+0.25: near-white
         # night (2026-10-13 Firestorm reference): moonlit clouds barely part from the sky; the old 0.25 x day lighting drew
         # grey clouds ~3x the (linear) night sky. Now the sky's own colour, lifted by the cloud colour
         if night: lit = [z_ * (1.0 + c) for z_, c in zip(zc, cl.get("color", [0.41] * 3))]
@@ -775,12 +783,18 @@ def water():
     wt = env.get("water") if HD else None
     if wt:   # photo hd: the EEP water: fog colour as the sea body (lit like the viewer: x the horizon brightness), fresnel scale
         hb = max(0.15, sum(h) / 3 * 1.6); fd = min(1.0, float(wt.get("fog_density", 10)) / 10.0)
-        fc = [min(1.0, c * hb * (2.4 - fd)) for c in wt["fog_color"]]
+        # 2026-10-14: the EEP fog colour is sRGB (Firestorm: waterFogColorLinear = srgb_to_linear); used raw it read pale
+        fc = [min(1.0, lin(c) * hb * (2.4 - fd)) for c in wt["fog_color"]]
         # night (2026-10-13 Firestorm reference: the bay reads (45, 52, 68)/255, ours was (15, 19, 23)): the EEP fog colour
         # is a display colour, lifted by the classic sky's ambient as the viewer's water shader does
         if night: fc = [lin(min(1.0, c + 0.35 * AMB_SRGB(env))) for c in wt["fog_color"]]
         mx.inputs["A"].default_value = (*fc, 1)
         lw.inputs["Blend"].default_value = max(0.05, min(0.95, float(wt.get("fresnel_scale", 0.4)) * 0.875))
+        # 2026-10-14 bikini compare: the far sea read sky-pale (108, 125, 164) vs Firestorm's (55, 70, 99): the grazing
+        # fresnel went to a full sky mirror. Firestorm's water reflects at fresnel_scale x fresnel + offset into a darker
+        # probe; cap the sky share at the scale
+        fm = nt.nodes.new("ShaderNodeMath"); fm.operation = "MULTIPLY"; L(lw.outputs["Fresnel"], fm.inputs[0])
+        fm.inputs[1].default_value = min(1.0, float(wt.get("fresnel_scale", 0.4))); L(fm.outputs[0], mx.inputs["Factor"])
     col = mx.outputs["Result"]
     lt = (env.get("moon_dir") if night else env.get("sun_dir")) if HD else None
     if lt and lt[2] > 0:

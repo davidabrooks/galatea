@@ -18,6 +18,7 @@ HD = os.environ.get("GT_HD") == "1"   # `photo hd`: David's 4K stills (the only 
 def lin(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4   # sRGB -> linear
 
 SSR = os.environ.get("GT_SSR", "1") != "0"
+FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
 SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)   # profiles set 0 (High+/Ultra: SSR off, mirrors off)
 
 def light_linear(c):
@@ -41,7 +42,7 @@ def moon_strength(env):
     # viewer adds the moon in sRGB space, which one linear sun can't follow everywhere
     return max(0.0, e / 0.5 * MOON_CAL)
 
-MOON_CAL = 0.36
+MOON_CAL = float(os.environ.get("GT_MOON_CAL", "0.75"))   # 2026-10-13 23:10: re-fit with full SSAO (ambient no longer lifts shadows): view 2 percentiles 5-99 within 2 levels
 
 def AMB_SRGB(env):
     """the classic sky's ambient in the viewer's sRGB space, x RenderSkyAmbientScale 1.5 (mean of the channels)"""
@@ -203,7 +204,7 @@ def _material(b, slots, cut):
     if b["fullbright"]:
         if p.inputs["Base Color"].links: L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])
         else: L(tint.outputs["Color"], p.inputs["Emission Color"])
-        p.inputs["Emission Strength"].default_value = 0.8
+        p.inputs["Emission Strength"].default_value = FULLBRIGHT
     elif AMB > 0 and mode != "emissive" and not p.inputs["Emission Strength"].links and p.inputs["Emission Strength"].default_value == 0:
         # SL sky ambient: albedo x amblit, as emission so walls and roofs don't shade it (see amblit())
         if p.inputs["Base Color"].links: L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])

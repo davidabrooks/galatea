@@ -107,6 +107,9 @@ public static partial class Program
     // a big flat floor slab (two sides >= 8 m, <= 1.5 m thick, lying flat, within 6 m of her height) whose edge comes within
     // r of her although its centre is farther: exported on its own so the floor doesn't end in sky (Warehouse 21, a
     // skybox). Same rule as scene-mesher's GroundSlab.
+    // pure (test): a prim's particle system is worth exporting (llParticleSystem([]) leaves max age / count at 0)
+    internal static bool ExportParticles(float partMaxAge, int burstCount) => partMaxAge > 0 && burstCount > 0;
+
     internal static bool GroundSlab(Vector3 pos, Quaternion rot, Vector3 scale, Vector3 me, float r)
     {
         var ax = new[] { (scale.X, new Vector3(1, 0, 0)), (scale.Y, new Vector3(0, 1, 0)), (scale.Z, new Vector3(0, 0, 1)) }.OrderBy(a => a.Item1).ToArray();
@@ -282,6 +285,8 @@ public static partial class Program
                 if (root.ParentID == 0 && Vector3.Distance(root.Position + off, myPos) > r && !(p == root && GroundSlab(p.Position + off, p.Rotation, p.Scale, myPos, r))) continue;
                 if (p.PrimData.PCode != PCode.Prim) continue;                 // trees/grass (PCode Tree/Grass) have no volume data
                 var o = (OSDMap)p.GetOSD();
+                // particle systems (2026-10-13 audit: Firestorm draws them, e.g. the purple orb on the Peronaut porch)
+                if (ExportParticles(p.ParticleSys.PartMaxAge, p.ParticleSys.BurstPartCount)) o["particles"] = p.ParticleSys.GetOSD();
                 if (p.RenderMaterials is { Count: > 0 } rms) { var m = new OSDMap(); foreach (var (f, id) in rms) m[f.ToString()] = OSD.FromUUID(id); o["render_materials"] = m; if (attachedToMe || wearer.av != null || pbrIds.Count < 300) foreach (var id in rms.Values) if (id != UUID.Zero) pbrIds.Add(id); }
                 if (attachedToMe) { o["attached_to_me"] = true; o["attach_point"] = (int)root.PrimData.AttachmentPoint; mine++; }
                 else if (wearer.av != null)

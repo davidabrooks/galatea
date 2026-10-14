@@ -221,9 +221,16 @@ public static partial class Program
     }
     // Door trigger (2026-10-07 David 09:23 'doors open too late, she bumps them'): touch when the door is <= 3 m ahead along
     // the path, scanning DoorScanM ahead in DoorScanStepM steps; then wait up to DoorSwingWaitMs (total) for a leaf to swing.
-    internal const float DoorTriggerM = 3.0f, DoorScanM = 6.0f, DoorScanStepM = 0.5f;
+    internal const float DoorTriggerM = 3.0f, DoorScanM = 9.0f, DoorScanStepM = 0.5f;
     internal const int DoorSwingWaitMs = 900;
     internal static bool DoorTouchDue(float distAhead) => distAhead >= 0 && distAhead <= DoorTriggerM;
+    // 2026-10-14 David: she still walks into doors at home. At her 3.2 m/s walk a 3 m trigger left 0.9 s, the same as
+    // the leaf's swing (DoorSwingWaitMs) with nothing for the touch round trip or the 0.4 s route tick, so she either
+    // bumped the leaf or held in front of it. Touch when she is the swing + touch + tick lead time away (>= 3 m).
+    internal const int DoorTouchLatencyMs = 300, DoorTickMs = 400;
+    internal static float DoorTriggerFor(float speedMps)
+        => Math.Min(DoorScanM - DoorScanStepM, Math.Max(DoorTriggerM, Math.Max(0f, speedMps) * (DoorSwingWaitMs + DoorTouchLatencyMs + DoorTickMs) / 1000f));
+    internal static bool DoorTouchDue(float distAhead, float speedMps) => distAhead >= 0 && distAhead <= DoorTriggerFor(speedMps);
     // path distance from s to the first step [u, u+step] that crosses a door, or null within the scan window
     internal static float? FirstCrossingAhead(Func<float, Vector2> at, float s, float len, Func<Vector2, Vector2, bool> crosses, float scan = DoorScanM, float step = DoorScanStepM)
     {

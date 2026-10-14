@@ -80,6 +80,11 @@ public static partial class Program
         public List<Vector3> From(float s) { var l = new List<Vector3> { At(s) }; for (int i = 0; i < P.Count; i++) if (C[i] > s + 0.05f) l.Add(P[i]); return l; }
     }
 
+    // pure (test): 2026-10-14 David: at Peronaut home she "pauses a lot mid-walk" and it looks unnatural. The 6-20 s
+    // look-around every 15-45 m of a leg was the deliberate mid-walk stop; the home wander walks each leg through and
+    // rests only at its destinations (seats, sofa rest). Other regions keep the look-arounds.
+    internal static bool MidLegIdlePauses(string label) => !(label ?? "").StartsWith("home wander", StringComparison.Ordinal);
+
     sealed class RouteOpts { public bool AllowZendo, AllowOutside, SitAtEnd, Idle, EscapeUnderHouse; public string Label = ""; public string Place; }
 
     // live state (read by route status / overhead)
@@ -351,7 +356,7 @@ public static partial class Program
         DateTime lastProgT = DateTime.Now, lastDriftLog = DateTime.MinValue; DateTime? blockedSince = null, belowSince = null;
         int recov = 0, pauses = 0, sidesteps = 0, stuckEvents = 0; Block lastBlock = null; bool triedSide = false;
         var doorsOpened = new HashSet<UUID>(); bool doorSeqTried = false;
-        double idleSecs = 0; float nextIdle = o.Idle ? 15f + (float)wRnd.NextDouble() * 30f : float.MaxValue; // wander: short natural pauses
+        double idleSecs = 0; float nextIdle = o.Idle && MidLegIdlePauses(o.Label) ? 15f + (float)wRnd.NextDouble() * 30f : float.MaxValue; // wander: short natural pauses (not at home: MidLegIdlePauses)
         var start = client.Self.SimPosition;
         bool legacy = steerLegacy;
         // doorway zones on this path (no pause / idle / greet / sidestep there; 19:45 David)
@@ -505,7 +510,7 @@ public static partial class Program
                             var l = DoorsForCrossing(ng, p, q).Where(nd => !doorsOpened.Contains(nd.Id)).ToList();
                             if (l.Count == 0) return false; ahead = l; return true;
                         });
-                        if (dAhead is float da && DoorTouchDue(da))
+                        if (dAhead is float da && DoorTouchDue(da, new Vector2(client.Self.Velocity.X, client.Self.Velocity.Y).Length()))
                         {
                             // touch while walking (no stop at an open door); hold outside only if the leaf would not have
                             // DoorSwingWaitMs to swing before she reaches it (19:45 David: no pausing at doorways)

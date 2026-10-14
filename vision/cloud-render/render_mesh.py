@@ -306,6 +306,10 @@ def gpu_setup():
             sc.cycles.denoiser = "OPENIMAGEDENOISE"; sc.cycles.denoising_input_passes = "RGB_ALBEDO_NORMAL"
             sc.cycles.max_bounces = 6; sc.cycles.diffuse_bounces = 3; sc.cycles.glossy_bounces = 3
             sc.cycles.transparent_max_bounces = 24; sc.cycles.filter_width = 1.5   # pixel filter = anti-aliasing
+            # 2026-10-13 20:05 photo hd self landscape: Blender OOM-killed at 7.2 GB RSS (15 GB box, client running) after
+            # 8 min. Tiles bound the film/denoise buffers; look.py's retry after a kill also sets GT_TEX_LIMIT
+            sc.cycles.use_auto_tile = True; sc.cycles.tile_size = int(os.environ.get("GT_TILE", "1024"))
+        if os.environ.get("GT_TEX_LIMIT"): sc.cycles.texture_limit_render = os.environ["GT_TEX_LIMIT"]
         log("cycles device", sc.cycles.device)
     elif engine == "WORKBENCH":  # flat preview: textures, no lighting model (cheapest; CPU/llvmpipe friendly)
         sc.render.engine = "BLENDER_WORKBENCH"; sc.display.shading.color_type = "TEXTURE"; sc.display.shading.light = "STUDIO"
@@ -568,7 +572,7 @@ def terrain_layers(verts, comps):
     for x, y, z in verts:
         c = min(comps, key=lambda c: max(0, abs(x - c["offset"][0] - 128) - 128) + max(0, abs(y - c["offset"][1] - 128) - 128))
         u = min(1, max(0, (x - c["offset"][0]) / 256)); v = min(1, max(0, (y - c["offset"][1]) / 256))
-        bil = lambda a: a[0] * (1 - u) * (1 - v) + a[1] * (1 - u) * v + a[2] * u * (1 - v) + a[3] * u * v
+        bil = lambda a: sum((w or 0.0) * f for w, f in zip(a or (0, 0, 0, 0), ((1 - u) * (1 - v), (1 - u) * v, u * (1 - v), u * v)))   # null (= 0 in OSD JSON) safe
         out.append(min(3.0, max(0.0, (z - bil(c["start"])) * 4 / max(bil(c["range"]), 1e-3))))
     return out
 

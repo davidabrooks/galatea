@@ -41,6 +41,13 @@ def hd_settings(arg, mode):
     return o, {"GT_HD": "1", "GT_RES": HD_RES[o], "GT_SAMPLES": os.environ.get("GT_HD_SAMPLES", "24"), "GT_DENOISE": "1",
                "GT_STUDIO_SHADOW": "1", "GT_TEX_CAP_AVATAR": "4096", "GT_TEX_CAP_SCENE": "4096"}
 
+def retry_env(rc, hd):
+    """env for the 2nd Blender attempt after a signal death (rc < 0). 2026-10-13 20:05: an HD landscape was OOM-killed
+    (SIGKILL, 7.2 GB) after 8 min and the identical rerun needed the same memory: retry lighter (textures capped at
+    1024 px, smaller tiles); a plain crash (segfault) just reruns"""
+    if hd and rc == -9: return {"GT_TEX_LIMIT": "1024", "GT_TILE": "512"}
+    return {}
+
 def env_for(doc, hd, sky=None):
     """mesh.json env: photo hd -> the shared EEP environment (sky None/"shared") or a named preset (llsky.photo_env;
     ValueError for an unknown name); her quick looks -> None: render_mesh's fixed neutral lighting, no EEP at all"""
@@ -76,6 +83,11 @@ def terrain_composition(doc, texdir, fetch=None):
     comps = [dict(c) for c in doc.get("terrain_composition") or []] or [{**SL_TERRAIN_DEFAULT, "region": doc.get("region", ""), "offset": [0, 0, 0], "default": True}]
     for c in comps:
         c["offset"] = [v or 0 for v in (c.get("offset") or [0, 0, 0])]
+        # OSD JSON writes 0 as null: a region whose corner start height / range is 0 exported [null, ...] (2026-10-13
+        # render_mesh terrain_layers TypeError). Nulls -> 0; a missing/short list -> SL's default
+        for k in ("start", "range"):
+            v = c.get(k)
+            c[k] = [x or 0.0 for x in v] if isinstance(v, list) and len(v) == 4 else list(SL_TERRAIN_DEFAULT[k])
         ok = [u for u in c.get("detail") or [] if u and u != "00000000-0000-0000-0000-000000000000"]
         if len(ok) < 4: c.update({k: v for k, v in SL_TERRAIN_DEFAULT.items() if k == "detail"}); c["default"] = True
         c["paths"] = []
@@ -287,6 +299,7 @@ def main(a):
             env.setdefault("GT_DENOISE", "0")
             env.setdefault("GT_MIN_TRIS", "12")  # drop dust; keep chairs/walls/avatars
         for attempt in range(2):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
+            if attempt: env = {**env, **retry_env(r.returncode, hd)}
             r = subprocess.run(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
                                 f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], capture_output=True, text=True, env=env)
             if r.returncode >= 0: break

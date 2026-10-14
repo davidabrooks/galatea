@@ -76,8 +76,9 @@ def test_retry_gets_lighter_each_attempt(monkeypatch):
 
 def test_tex_budget_from_free_memory():
     assert look.tex_budget_mb(11000, 1500) == 6000
-    assert look.tex_budget_mb(7000, 1500) == 2500
+    assert look.tex_budget_mb(7000, 1500) == 4600
     assert look.tex_budget_mb(3000, 1500) == 600
+    assert look.tex_budget_mb(6000, 1500) == 2600
     assert look.tex_budget_mb(None) == 3000
 
 

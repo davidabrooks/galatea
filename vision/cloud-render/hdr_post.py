@@ -21,9 +21,9 @@ FS = {"exposure": 1.0, "tonemap_type": 1, "tonemap_mix": 0.7, "dyn_coeff": 0.5} 
 
 
 def aces_hill(c):
-    c = c @ ACES_IN.T
+    c = c @ ACES_IN.T.astype(c.dtype)   # keeps a float32 frame float32 (memory)
     a = c * (c + 0.0245786) - 0.000090537; b = c * (0.983729 * c + 0.4329510) + 0.238081
-    return np.clip((a / b) @ ACES_OUT.T, 0.0, 1.0)
+    return np.clip((a / b) @ ACES_OUT.T.astype(c.dtype), 0.0, 1.0)
 
 
 def khronos_neutral(c):
@@ -122,7 +122,7 @@ def cas_sharpen(c, amount):
 
 def write_rgbe(path, rgb):
     """Radiance .hdr (RGBE, flat scanlines; top row first). rgb float (h, w, 3)"""
-    h, w, _ = rgb.shape; v = np.maximum(rgb, 0.0).astype(np.float64); m = v.max(axis=2)
+    h, w, _ = rgb.shape; v = np.maximum(rgb, 0.0).astype(np.float32); m = v.max(axis=2)
     ex = np.where(m > 1e-32, np.floor(np.log2(np.maximum(m, 1e-32))) + 1, 0)
     sc = np.where(m > 1e-32, 256.0 / np.power(2.0, ex), 0.0)
     out = np.zeros((h, w, 4), np.uint8)

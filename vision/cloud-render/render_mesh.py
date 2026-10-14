@@ -544,7 +544,10 @@ def sky_seen(env, night):
     if ns: return [srgb_to_linear(c) for c in ns["horizon"]], [srgb_to_linear(c) for c in ns["zenith"]], 1.0
     sk = env.get("sky") if HD and not night else None
     if sk:   # photo hd (2026-10-13): the viewer's sky shader by day too (blue horizon/density, haze, density multiplier, max_y, glow)
-        return [min(5.0, c) for c in sk["horizon"]], [min(5.0, c) for c in sk["zenith"]], 1.0   # HDR (skyF.glsl clamps at 5)
+        # 2026-10-14 Beach House boat vs David's Firestorm shot: the classic sky shader's output goes to the screen as is
+        # (no tone mapping, already display values: horizon 0.41/0.48/0.70 -> his 107/127/184 sRGB). Drawn as linear it
+        # came out ~2.5x too bright and grey-lavender, and the water mirrored it pale. Same fix as the night sky above.
+        return [srgb_to_linear(min(5.0, c)) for c in sk["horizon"]], [srgb_to_linear(min(5.0, c)) for c in sk["zenith"]], 1.0   # HDR (skyF.glsl clamps at 5)
     h = env["horizon"]; z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
     return h, [min(1.0, c * k) for c in z], 0.35 if night else 1.0
 

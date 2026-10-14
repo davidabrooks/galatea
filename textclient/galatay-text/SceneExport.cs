@@ -110,6 +110,10 @@ public static partial class Program
     // pure (test): a prim's particle system is worth exporting (llParticleSystem([]) leaves max age / count at 0)
     internal static bool ExportParticles(float partMaxAge, int burstCount) => partMaxAge > 0 && burstCount > 0;
 
+    // pure (test): how close a linkset member comes to `me`: distance to its position minus half its largest side (>= 0)
+    internal static float MemberReach(Vector3 worldPos, Vector3 scale, Vector3 me)
+        => MathF.Max(0, Vector3.Distance(worldPos, me) - 0.5f * MathF.Max(scale.X, MathF.Max(scale.Y, scale.Z)));
+
     internal static bool GroundSlab(Vector3 pos, Quaternion rot, Vector3 scale, Vector3 me, float r)
     {
         var ax = new[] { (scale.X, new Vector3(1, 0, 0)), (scale.Y, new Vector3(0, 1, 0)), (scale.Z, new Vector3(0, 0, 1)) }.OrderBy(a => a.Item1).ToArray();
@@ -277,12 +281,23 @@ public static partial class Program
             var prims = vs.ObjectsPrimitives.Values.Where(p => p != null).ToList();
             var byLocal = new Dictionary<uint, Primitive>(); foreach (var p in prims) byLocal[p.LocalID] = p;
             Primitive Root(Primitive p) { var q = p; for (int i = 0; i < 8 && q.ParentID != 0 && byLocal.TryGetValue(q.ParentID, out var up); i++) q = up; return q; }
+            // 2026-10-14 Beach House boat: the neighbour's beach house walls/roof are children of roots 97 m away, so a 96 m
+            // export (root position only) dropped them and left its furniture floating. A world linkset is in when any
+            // member reaches within r (member position +- half its largest side), as the viewer culls per drawable.
+            var reach = new Dictionary<uint, float>();
+            foreach (var p in prims)
+            {
+                var root = Root(p); if (root.ParentID != 0) continue;
+                var wp = (p == root ? p.Position : root.Position + p.Position * root.Rotation) + off;
+                float d = MemberReach(wp, p.Scale, myPos);
+                reach[root.LocalID] = reach.TryGetValue(root.LocalID, out var d0) ? MathF.Min(d0, d) : d;
+            }
             foreach (var p in prims)
             {
                 var root = Root(p); bool attachedToMe = si == 0 && root.ParentID == me.LocalID;
                 nearAvs.TryGetValue((si, root.ParentID), out var wearer);
                 if (root.ParentID != 0 && !attachedToMe && wearer.av == null) continue;   // seated-on / far avatars' attachments
-                if (root.ParentID == 0 && Vector3.Distance(root.Position + off, myPos) > r && !(p == root && GroundSlab(p.Position + off, p.Rotation, p.Scale, myPos, r))) continue;
+                if (root.ParentID == 0 && (reach.TryGetValue(root.LocalID, out var rd) ? rd : Vector3.Distance(root.Position + off, myPos)) > r && !(p == root && GroundSlab(p.Position + off, p.Rotation, p.Scale, myPos, r))) continue;
                 if (p.PrimData.PCode != PCode.Prim) continue;                 // trees/grass (PCode Tree/Grass) have no volume data
                 var o = (OSDMap)p.GetOSD();
                 // particle systems (2026-10-13 audit: Firestorm draws them, e.g. the purple orb on the Peronaut porch)

@@ -273,6 +273,9 @@ public static partial class Program
           && !GroundSlab(new Vector3(200, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32)
           && !GroundSlab(new Vector3(150, 100, 1990), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 32),
           "ground slab: a big flat floor reaching within r is exported; thick, wall, too far, other level are not");
+        C(MemberReach(new Vector3(197, 100, 2004), new Vector3(19, 5, 10), fz) <= 96f + 1e-3f && MemberReach(new Vector3(197, 100, 2004), new Vector3(19, 5, 10), fz) > 87f
+          && MemberReach(new Vector3(101, 100, 2004), new Vector3(4, 1, 1), fz) == 0f,
+          "linkset reach: a 19 m wall 97 m away reaches within a 96 m export; a member around me reaches 0");
         {
             var k = UUID.Random();
             var req = CoarseNamesToRequest(new[] { me, a, k, a, UUID.Zero }, me, id => id == k);

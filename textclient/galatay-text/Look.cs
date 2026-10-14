@@ -80,7 +80,7 @@ public static partial class Program
     }
 
     // pure (test): the render profile word (`ultra`, `highplus` / `high+`, or profile=<name>) anywhere in `photo hd ...`
-    // -> (remaining args, profile or null = look.py's default highplus; "?" = unknown profile=)
+    // -> (remaining args, profile or null = look.py's default ultra, David's own Firestorm Ultra since 2026-10-14; "?" = unknown profile=)
     internal static (string[] rest, string profile) PhotoHdProfile(string[] a)
     {
         var w = new List<string>(); string prof = null;
@@ -97,9 +97,23 @@ public static partial class Program
     // (scene-mesher's far LOD beyond 30 m; the 2026-10-13 20:05 HD at 32 m dropped the neighbour's house David's view shows)
     // 2026-10-13 (David): the profile's draw distance (High+ 128, Ultra 256) when the box has the memory for it: a 96 m
     // HD export peaked ~7 GB in Blender (OOM-killed once beside the client); 128 m needs ~10 GB free, 256 m ~14 GB
+    // pure (test): `photo hd ... nossr nomirrors nodof nosmaa nosharpen noaces noimpostors` -> (remaining args, look.py --no= list)
+    internal static readonly string[] PhotoHdOptOutNames = { "ssr", "mirrors", "dof", "smaa", "sharpen", "aces", "impostors" };
+    internal static (string[] rest, string no) PhotoHdOptOuts(string[] a)
+    {
+        var w = new List<string>(); var no = new List<string>();
+        foreach (var x in a)
+        {
+            var t = x.ToLowerInvariant();
+            if (t.StartsWith("no") && PhotoHdOptOutNames.Contains(t[2..])) { if (!no.Contains(t[2..])) no.Add(t[2..]); continue; }
+            w.Add(x);
+        }
+        return (w.ToArray(), no.Count == 0 ? null : string.Join(",", no));
+    }
+
     internal static float PhotoHdRadius(string profile, double freeGb = -1)
     {
-        float want = profile == "ultra" ? 256f : 128f;
+        float want = profile == "highplus" ? 128f : 256f;   // null = the default (ultra)
         if (freeGb < 0) freeGb = MemAvailableGb();
         if (want >= 256 && freeGb >= 14) return 256f;
         if (want >= 128 && freeGb >= 10) return 128f;
@@ -118,16 +132,17 @@ public static partial class Program
     static Task<string> PhotoCmd(string[] a)
     {
         var (a2, prof) = PhotoHdProfile(a); a = a2;
-        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|midday-legacy|sunrise|midnight|night|foggy|default|shared | preset=<name>] [highplus|ultra]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
+        var (a3, no) = PhotoHdOptOuts(a); a = a3;
+        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|midday-legacy|sunrise|midnight|night|foggy|default|shared | preset=<name>] [ultra (default)|highplus] [nossr] [nomirrors] [nodof] [nosmaa] [nosharpen] [noaces] [noimpostors]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
         var (rest, sky) = PhotoHdSky(a);
         if (sky == "?" || prof == "?") return Task.FromResult(usage);
         var p = PhotoHdArgs(rest);
         if (p == null) return Task.FromResult(usage);
         var la = p.Value.mode == "view" ? Array.Empty<string>() : p.Value.mode == "self" ? new[] { "self" } : new[] { "at", p.Value.target };
-        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky, prof);
+        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky, prof, no);
     }
 
-    static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null)
+    static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null, string no = null)
     {
         const string usage = "usage: look [self [front|back|left|right|<degrees>|all]|around|at <avatar or object name>] [fast] [far]";
         bool fast = a.Contains("fast"), far = a.Contains("far"); var w = a.Where(x => x != "fast" && x != "far").ToArray();
@@ -170,6 +185,7 @@ public static partial class Program
             if (hd != null) psi.ArgumentList.Add(hd);
             if (hd != null && sky != null) psi.ArgumentList.Add("--sky=" + sky);
             if (hd != null && profile != null) psi.ArgumentList.Add("--profile=" + profile);
+            if (hd != null && no != null) psi.ArgumentList.Add("--no=" + no);
             // the client-side stages, so look.py's timing summary covers the whole look
             psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
             psi.Environment["GT_LOOK_EXPORT_S"] = lastExportStages;   // export sub-stages, e.g. prims=1.2(20696),bakes=3.4(...)

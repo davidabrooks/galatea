@@ -24,7 +24,41 @@ SSR = os.environ.get("GT_SSR", "1") != "0"
 # razor edges and a solid weave shadow; a wider disc reproduces the blurred penumbra (fitted on the 2026-10-13 porch).
 SHADOW_ANGLE_NIGHT = float(os.environ.get("GT_SHADOW_ANGLE", "0.53")); SHADOW_ANGLE_DAY = float(os.environ.get("GT_SHADOW_ANGLE_DAY", "0.53"))
 FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
-SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)   # profiles set 0 (High+/Ultra: SSR off, mirrors off)
+SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)
+# 2026-10-14 David's Ultra (photo hd default): SSR + mirrors on. Cycles traces reflections in world space, so they are the
+# same in every 4K tile (no screen-edge fade, nothing off-screen missing): SSR on = every face keeps Principled's specular
+# (water, wet/shiny surfaces); mirrors on = smooth faces reflect sharply at full render resolution (>= his 2048 mirror
+# probe). Mirrors off (`nomirrors`): smooth faces get the radiance-probe blur instead (roughness floor MIRROR_OFF_ROUGH)
+MIRRORS = os.environ.get("GT_MIRRORS", "1") != "0"; MIRROR_OFF_ROUGH = 0.12
+
+def dof_subject(view, heads):
+    """David 2026-10-14: DOF only when the photo has an avatar subject (`self` portrait, David, a named avatar);
+    scenery / `view` / an object target stay sharp everywhere"""
+    v = view or ""
+    if v.startswith("portrait"): return True
+    return v.startswith("at:") and v[3:] in (heads or {})
+
+def roughness_floor(r):
+    """reflection roughness Cycles uses: unchanged with mirrors on; probe-like floor with mirrors off"""
+    return r if MIRRORS else max(r, MIRROR_OFF_ROUGH)
+
+def dof_fstop(n, focal_mm, fov_deg, fovy, lens_mm):
+    """Firestorm's depth of field (pipeline.cpp renderDoF + cofF.glsl calc_cof) -> the Blender f-stop that blurs the same.
+    Viewer: focal_length = CameraFocalLength x tan(CameraFieldOfView/2) / tan(fov/2) (fov = the camera's vertical view),
+    CoF px = 1.414 x |d-S|/d x (f^2 / (N (S-f))) / magnification / (S x tan_pixel_angle), tan_pixel_angle ~ fovy / height
+    -> CoF / height = 1.414 f |d-S| / (d N S fovy) (FIRE-13989: the same at every resolution). Blender's thin lens with
+    sensor height 2 F tan(fovy/2): CoF / height = F |d-S| / (d N_b (S-F) 2 tan(fovy/2)). Equal when
+    N_b = N fovy F / (1.414 f 2 tan(fovy/2)) (S >> F; f, F in metres; F = Blender's lens)"""
+    f = focal_mm / 1000.0 * math.tan(math.radians(fov_deg) / 2) / math.tan(fovy / 2)
+    return n * fovy * (lens_mm / 1000.0) / (1.414 * f * 2 * math.tan(fovy / 2))
+
+def max_cof_ok(n_b, lens_mm, fovy, subject_m, max_cof_px=10.0, viewer_h=1080.0):
+    """Firestorm clamps the CoF at CameraMaxCoF (10 px of a ~1080 p window); Blender has no clamp: raise the f-stop so the
+    far-background blur (d -> inf) stays within it"""
+    F = lens_mm / 1000.0
+    far = F / (n_b * max(subject_m - F, 1e-3) * 2 * math.tan(fovy / 2))   # CoF / height at infinity
+    lim = max_cof_px / viewer_h
+    return n_b if far <= lim else n_b * far / lim
 
 def light_linear(c):
     """an SL point light's colour as the shader uses it. The wire value is already linear (llprimitive.h LLLightParams:
@@ -183,18 +217,21 @@ def _material(b, slots, cut):
     if nm:
         n = nt.nodes.new("ShaderNodeNormalMap"); L(nm.outputs["Color"], n.inputs["Color"]); L(n.outputs["Normal"], p.inputs["Normal"])
     if mat.get("pbr"):
-        p.inputs["Metallic"].default_value = mat["metallic"]; p.inputs["Roughness"].default_value = mat["roughness"]
+        p.inputs["Metallic"].default_value = mat["metallic"]; p.inputs["Roughness"].default_value = roughness_floor(mat["roughness"])
         mr = img("mr")
         if mr:  # glTF: G = roughness, B = metallic
             sep = nt.nodes.new("ShaderNodeSeparateColor"); L(mr.outputs["Color"], sep.inputs["Color"])
-            L(mul(sep.outputs["Green"], float(mat["roughness"])), p.inputs["Roughness"]); L(mul(sep.outputs["Blue"], float(mat["metallic"])), p.inputs["Metallic"])
+            rg = mul(sep.outputs["Green"], float(mat["roughness"]))
+            if not MIRRORS:
+                mx_ = nt.nodes.new("ShaderNodeMath"); mx_.operation = "MAXIMUM"; L(rg, mx_.inputs[0]); mx_.inputs[1].default_value = MIRROR_OFF_ROUGH; rg = mx_.outputs[0]
+            L(rg, p.inputs["Roughness"]); L(mul(sep.outputs["Blue"], float(mat["metallic"])), p.inputs["Metallic"])
         e = mat.get("emissive") or [0, 0, 0]; et = img("emissive_tex")
         if max(e) > 0:
             p.inputs["Emission Color"].default_value = (*e, 1); p.inputs["Emission Strength"].default_value = 1
             if et: L(et.outputs["Color"], p.inputs["Emission Color"])
     elif "gloss" in mat:  # legacy: specular colour x spec map; glossiness (exponent/255) -> roughness
         sc = mat.get("spec_color", [1, 1, 1, 1]); sp = img("spec")
-        p.inputs["Roughness"].default_value = 1 - 0.85 * mat["gloss"]
+        p.inputs["Roughness"].default_value = roughness_floor(1 - 0.85 * mat["gloss"])
         p.inputs["Specular Tint"].default_value = (sc[0], sc[1], sc[2], 1)
         if sp:
             mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; mx.blend_type = "MULTIPLY"; mx.inputs["Factor"].default_value = 1
@@ -371,7 +408,7 @@ def gpu_setup():
             sc.cycles.use_adaptive_sampling = True; sc.cycles.adaptive_threshold = float(os.environ.get("GT_HD_THRESHOLD", "0.02"))
             sc.cycles.denoiser = "OPENIMAGEDENOISE"; sc.cycles.denoising_input_passes = "RGB_ALBEDO_NORMAL"
             sc.cycles.max_bounces = 6; sc.cycles.diffuse_bounces = 3; sc.cycles.glossy_bounces = 3
-            sc.cycles.transparent_max_bounces = 24; sc.cycles.filter_width = 1.5   # pixel filter = anti-aliasing
+            sc.cycles.transparent_max_bounces = 24; sc.cycles.filter_width = 1.5 if os.environ.get("GT_SMAA", "1") != "0" else 0.01   # pixel filter = anti-aliasing (SMAA Ultra; `nosmaa` = aliased)
             # 2026-10-13 20:05 photo hd self landscape: Blender OOM-killed at 7.2 GB RSS (15 GB box, client running) after
             # 8 min. Tiles bound the film/denoise buffers; look.py's retry after a kill also sets GT_TEX_LIMIT
             sc.cycles.use_auto_tile = True; sc.cycles.tile_size = int(os.environ.get("GT_TILE", "1024"))
@@ -405,6 +442,27 @@ def camera(loc, target, lens, res):
     if os.environ.get("GT_RES"):
         res = tuple(int(x) for x in os.environ["GT_RES"].split("x"))
     sc.render.resolution_x, sc.render.resolution_y = res
+    cam["focus_target"] = list(target)
+
+DOF_SUBJECT = [False]
+def setup_dof():
+    """photo hd DOF (David's Ultra: f/9, 50 mm, FOV 60): focus on the photo subject = the first surface along the ray to the
+    framing target (her / the named avatar or object; `view`: what's at the centre), else the target's distance"""
+    cam = sc.camera
+    if not (HD and kind == "scene" and cam and os.environ.get("GT_DOF") == "1" and DOF_SUBJECT[0]):
+        if cam: cam.data.dof.use_dof = False
+        return
+    bpy.context.view_layer.update()
+    o = cam.matrix_world.translation; t = Vector(cam.get("focus_target", (0, 0, 0))); d = t - o
+    hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), o + d.normalized() * 0.05, d.normalized(), distance=d.length + 2)
+    S = max(0.1, (loc - o).length if hit else d.length)
+    rx, ry = sc.render.resolution_x, sc.render.resolution_y
+    cam.data.sensor_fit = "AUTO"; sh = 36.0 * (min(rx, ry) / max(rx, ry) if rx >= ry else 1.0)
+    fovy = 2 * math.atan(sh / (2 * cam.data.lens))
+    nb = dof_fstop(float(os.environ.get("GT_DOF_FNUMBER", "9")), float(os.environ.get("GT_DOF_FOCAL", "50")), float(os.environ.get("GT_DOF_FOV", "60")), fovy, cam.data.lens)
+    nb = max_cof_ok(nb, cam.data.lens, fovy, S, float(os.environ.get("GT_DOF_MAX_COF", "10")))
+    cam.data.dof.use_dof = True; cam.data.dof.focus_distance = S; cam.data.dof.aperture_fstop = nb
+    log("dof focus", round(S, 2), "m, blender f-stop", round(nb, 1), "fovy", round(math.degrees(fovy), 1))
 
 def area(loc, target, energy, size):
     bpy.ops.object.light_add(type="AREA", location=loc); L = bpy.context.object; L.data.energy = energy; L.data.size = size
@@ -910,7 +968,7 @@ if kind == "scene":
     # look: GT_VIEW = ";"-separated views, one image each: "eye[:yaw offset deg]" over her shoulder, "at:<avatar name>|x,y,z"
     views = [v for v in os.environ.get("GT_VIEW", "").split(";") if v]
     def set_view(view):
-        h = heads["me"]
+        h = heads["me"]; DOF_SUBJECT[0] = dof_subject(view, heads)
         def shoulder(f, back, side, up, target, lens):
             """over her right shoulder; a wall or chimney behind her would fill the frame, so stop in front of the first
             surface between her head and the camera (as the SL camera does)"""
@@ -1046,6 +1104,7 @@ for i, v in enumerate(views):
     else:
         if i: set_view(v)
         sc.render.filepath = out if len(views) == 1 else re.sub(r"\.(jpg|png)$", rf"-{i}.\1", out)
+    setup_dof()
     if HD and sc.render.filepath.lower().endswith(".png"):
         hd_render_hdr(sc.render.filepath); continue
     t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)

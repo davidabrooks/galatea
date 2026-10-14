@@ -14,11 +14,11 @@ ns = {}
 exec(SRC[SRC.index("def srgb_to_linear"):SRC.index("def terrain_layers")], ns)
 
 
-def test_highplus_default_and_ultra():
-    _, e = look.hd_settings("", "self")
+def test_highplus_and_ultra():
+    _, e = look.hd_settings("", "self", "highplus")
     assert e["GT_HD_PROFILE"] == "highplus" and e["GT_TONEMAP_MIX"] == "0.0" and e["GT_TEX_CAP_SCENE"] == "2048" and e["GT_SHARPEN"] == "0.4"
     _, u = look.hd_settings("", "self", "ultra")
-    assert u["GT_TONEMAP_MIX"] == "0.7"
+    assert u["GT_TONEMAP_MIX"] == "0.0" and u["GT_HD_PROFILE"] == "ultra"
     with pytest.raises(ValueError): look.hd_settings("", "self", "low")
 
 

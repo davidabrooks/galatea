@@ -29,3 +29,21 @@ Profiles: `photo hd ... [highplus|ultra]` (look.py `--profile=`; highplus is the
 | DOF off, FOV 60 | off | no DOF; HD self framing lens 50, scene views lens ~18 (60 deg vertical) | supported |
 
 | Moon texture | same | procedural moon face (maria noise + limb darkening), 2.6 deg | partly (not the SL moon texture) |
+
+## 2026-10-14: David's Ultra = the photo hd default
+
+`photo hd` now defaults to `ultra` = David's own Firestorm Ultra screenshots (`highplus` stays available). Opt-outs:
+`nossr nomirrors nodof nosmaa nosharpen noaces noimpostors` (look.py `--no=ssr,mirrors,...`).
+
+| Setting (Ultra) | Our HD pipeline | Status |
+|---|---|---|
+| SSR on | every face keeps Principled specular; Cycles traces reflections in world space, so water and shiny/metal surfaces reflect off-screen objects too and every 4K tile is consistent | supported (better than screen space: no edge fade) |
+| Mirrors on, 2048, update Ultra | smooth faces reflect sharply at the full render resolution; `nomirrors` floors roughness at 0.12 (probe blur). Mirror-flagged reflection probes aren't exported (LibreMetaverse has no reflection probe param), so a mirror prim reflects only through its own material | partly |
+| DOF on, f/9, 50 mm, FOV 60, quality 0.7 | Firestorm's CoF (pipeline.cpp renderDoF + cofF.glsl) mapped to a Blender thin-lens f-stop (render_mesh.dof_fstop), CameraMaxCoF 10 px clamp, focus = first surface towards the subject. **Only with an avatar subject** (self portrait, David, a named avatar); view / scenery / object targets stay sharp (David 2026-10-14). Quality 0.7 (blur buffer scale) n/a: path traced | supported |
+| ACES, mix 0.0 | hdr_post: mix 0 = Firestorm's toneMap() returns the exposed colour clamped (no ACES curve); classic skies are 0 anyway | supported |
+| Sharpening 0.4 | CAS approximation | supported |
+| SMAA Ultra | Cycles pixel filter 1.5 over 24+ samples (`nosmaa`: 0.01 px, aliased) | supported (equivalent) |
+| LOD objects 3 / terrain 2 / sky 128, draw 256 | --lod-factor=3, radius 256 (memory guarded) | supported |
+| 16 non-impostor avatars | --avatar-max=16 (`noimpostors` = all full) | supported |
+| Avatar max complexity 350,000 | not in the export (ARC needs per-attachment cost data) | not matched |
+| Max particles 8192, attached particles on, face lights off, HDR/emissive, glow 2, alpha masks, textures 2048, AO, shadows sun/moon+projectors, point lights full | as High+ above | supported |

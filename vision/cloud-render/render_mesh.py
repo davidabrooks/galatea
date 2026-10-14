@@ -17,6 +17,9 @@ def log(*a): print("GT:", *a, flush=True)
 HD = os.environ.get("GT_HD") == "1"   # `photo hd`: David's 4K stills (the only renders that use the region environment fully)
 def lin(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4   # sRGB -> linear
 
+SSR = os.environ.get("GT_SSR", "1") != "0"
+SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)   # profiles set 0 (High+/Ultra: SSR off, mirrors off)
+
 def light_linear(c):
     """an SL point light's colour as the shader uses it. The wire value is already linear (llprimitive.h LLLightParams:
     mColor "linear color (not gamma corrected)"; the viewer's getLightLinearColor() passes it straight on). Until
@@ -192,6 +195,11 @@ def _material(b, slots, cut):
             L(sp.outputs["Color"], mx.inputs["A"]); mx.inputs["B"].default_value = (sc[0], sc[1], sc[2], 1); L(mx.outputs["Result"], p.inputs["Specular Tint"])
         p.inputs["Specular IOR Level"].default_value = 0.5 + 0.5 * mat.get("env", 0)
         # ponytail: env intensity only raises specular; no reflection probes; ceiling = shiny SL surfaces look matte
+    if not SSR and not ("gloss" in mat or "roughness" in mat):
+        # SSR + mirrors off (David's High+, Firestorm 2026-10-13): a face without a specular/PBR material gets no reflection
+        # at all in the viewer (no screen-space pass, no hero probe); Principled's default 0.5 specular put a sky/lamp sheen on
+        # leaves, bark, skin bakes and plaster (foliage 37 vs 24, wall/skin +10-17%). Shiny faces keep Cycles' glossy = probes.
+        p.inputs["Specular IOR Level"].default_value = 0.0
     if b["fullbright"]:
         if p.inputs["Base Color"].links: L(p.inputs["Base Color"].links[0].from_socket, p.inputs["Emission Color"])
         else: L(tint.outputs["Color"], p.inputs["Emission Color"])
@@ -202,6 +210,13 @@ def _material(b, slots, cut):
         else: L(tint.outputs["Color"], p.inputs["Emission Color"])
         # PBR metal reflects instead of scattering: sky ambient as albedo emission washed chrome to flat paint (2026-10-11)
         p.inputs["Emission Strength"].default_value = AMB * (1 - 0.8 * float(mat.get("metallic", 0))) if mat.get("pbr") else AMB
+        if HD and SSAO > 0:
+            # Firestorm SSAO (High+ "Ambient occlusion on"): the deferred ambient term x mix(1, ao, RenderSSAOEffect 0.8).
+            # Ambient as emission skipped occlusion, so leaf clusters and a hugging couple got the open-sky ambient
+            # (palm 30 vs 24, skin 69 vs 59 on the 2026-10-13 porch reference).
+            ao = nt.nodes.new("ShaderNodeAmbientOcclusion"); ao.inputs["Distance"].default_value = SSAO_DIST; ao.samples = 8
+            k = nt.nodes.new("ShaderNodeMapRange"); L(ao.outputs["AO"], k.inputs["Value"]); k.inputs[3].default_value = 1 - SSAO
+            L(mul(k.outputs["Result"], float(p.inputs["Emission Strength"].default_value)), p.inputs["Emission Strength"])
     # Opaque clothes must depth-test solid: always-HASHED let body BOM show through jeans/tops (Scentual90).
     if mode in ("none", "emissive"):
         m.blend_method = "OPAQUE"
@@ -412,7 +427,8 @@ def eep(env):
         # intensity x atten x N.L x 3.25/pi, atten = 2 (1 - clamp((d/radius + falloff) / (1 + falloff)))^2, zero past the
         # radius. Cycles: constant falloff (no inverse square), the curve on Light Path ray length (= distance);
         # 4 pi^2 cancels Cycles' point-light normalisation (calibrated: 1 W constant -> 1/(4 pi^2) on a white plane).
-        d = bpy.data.lights.new("sl", "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05
+        pj = l.get("proj")
+        d = bpy.data.lights.new("sl", "SPOT" if pj else "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05
         d.energy = 4 * math.pi ** 2 * 3.25 / math.pi; d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75)
         def op(kind, a, b, clamp=False):
             n = nt.nodes.new("ShaderNodeMath"); n.operation = kind; n.use_clamp = clamp
@@ -425,7 +441,31 @@ def eep(env):
         fo = nt.nodes.new("ShaderNodeLightFalloff"); nt.links.new(op("MULTIPLY", op("POWER", k, 2.0), 2 * l["intensity"]), fo.inputs["Strength"])
         nt.links.new(fo.outputs["Constant"], nt.nodes["Emission"].inputs["Strength"])
         o = bpy.data.objects.new("sl", d); o.location = l["pos"]; sc.collection.objects.link(o)
+        if pj: projector(d, o, pj, op)
     log("eep", "night" if night else "day", "ambient", round(AMB, 4), "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
+
+def proj_spot(fov):
+    """SL projector field of view (LightImage params.x, radians, full cone) -> (Blender spot_size, tan(half angle)) """
+    f = min(max(float(fov or 0), 0.02), math.pi - 0.02); return f, math.tan(f / 2)
+
+def projector(d, o, pj, op):
+    """SL projector (Firestorm "Shadows: sun/moon + projectors"): a spot light down the prim's -Z with the light texture
+    projected across the cone (gobo: the light's own Normal coordinate is the ray direction in light space, u,v =
+    x,y / -z / tan(fov/2) / 2 + 1/2). ponytail: focus (blur) and ambiance (the fill term) ignored; ceiling = a
+    projector looks sharper and its unlit side darker than in the viewer"""
+    from mathutils import Vector
+    size, t = proj_spot(pj.get("fov")); d.spot_size = size; d.spot_blend = 0.1
+    o.rotation_euler = Vector(pj["dir"]).to_track_quat("-Z", "Y").to_euler()
+    tp = tex_path(pj.get("tex"))
+    if not tp: return
+    nt = d.node_tree; tc = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); nt.links.new(tc.outputs["Normal"], sp.inputs[0])
+    z = op("MAXIMUM", op("MULTIPLY", sp.outputs["Z"], -1.0), 1e-4)
+    uv = nt.nodes.new("ShaderNodeCombineXYZ")
+    for ax, i in (("X", 0), ("Y", 1)): nt.links.new(op("ADD", op("MULTIPLY", op("DIVIDE", sp.outputs[ax], z), 0.5 / t), 0.5), uv.inputs[i])
+    im = nt.nodes.new("ShaderNodeTexImage"); im.image = load_image(tp); im.extension = "CLIP"; nt.links.new(uv.outputs[0], im.inputs["Vector"])
+    mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; mx.blend_type = "MULTIPLY"; mx.inputs["Factor"].default_value = 1
+    mx.inputs["A"].default_value = (*d.color, 1); nt.links.new(im.outputs["Color"], mx.inputs["B"])
+    nt.links.new(mx.outputs["Result"], nt.nodes["Emission"].inputs["Color"])
 
 def sky_seen(env, night):
     """(horizon, overhead, strength) of the sky the camera sees. Night: the LL viewer's own sky colours (llsky.py

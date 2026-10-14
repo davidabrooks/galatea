@@ -152,7 +152,21 @@ static class Mesher
     internal static bool StandIn(string dressed, int expected = 0, int have = 0) =>
         dressed is "bare" or "unknown" || dressed == "partial" && !MostlyDressed(expected, have);
     internal static bool MostlyDressed(int expected, int have) => expected > 0 && have >= expected - 1 && have * 4 >= expected * 3;
-    static DetailLevel FarLod(float r, float d) => (r * 2f / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
+    // David's RenderVolumeLODFactor (High+ 2, Ultra 3; --lod-factor=): the thresholds above were tuned at the viewer default 2
+    internal static float LodFactor = 2f;
+    // Firestorm "max non-impostor avatars" (High+ / Ultra 16; --avatar-max=, 0 = no limit): avatars past the N nearest are
+    // impostors in the viewer (a low-detail billboard); here their attachments drop to the lowest LOD. Pure, CI-tested.
+    internal static int AvatarMax = 0;
+    // SL projector (LightImage extra param: texture, params = fov rad, focus, ambiance): points down the prim's -Z
+    // (llvovolume.cpp getSpotLightPriority / LLPipeline::setupSpotLight). null for a plain point light. Pure, CI-tested.
+    internal static object Projector(Primitive.LightImage lm, Quaternion rot)
+    {
+        if (lm == null || lm.LightTexture == UUID.Zero) return null;
+        var dir = new Vector3(0, 0, -1) * rot; var up = new Vector3(0, 1, 0) * rot;
+        return new { tex = lm.LightTexture.ToString(), fov = lm.Params.X, focus = lm.Params.Y, ambiance = lm.Params.Z, dir = new[] { dir.X, dir.Y, dir.Z }, up = new[] { up.X, up.Y, up.Z } };
+    }
+    internal static bool Impostor(int rank, int max) => max > 0 && rank >= max;
+    static DetailLevel FarLod(float r, float d) => (r * LodFactor / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
 
     // drop the rigged-mesh position overrides of joints whose position an animation drives (the SL pose blend wins)
     static void PoseOverrides(Dictionary<string, Vector3> overrides, IEnumerable<string> positionAnimated)
@@ -390,6 +404,8 @@ static class Mesher
                   && CachePath(null, "mesh", UUID.Random()) == null && CachePath("/c", "../x", UUID.Random()) == null && CachePath("/c", "mesh", UUID.Zero) == null;
             ok &= AvatarLod(2) == DetailLevel.Highest && AvatarLod(6) == DetailLevel.High && AvatarLod(15) == DetailLevel.Medium && AvatarLod(35) == DetailLevel.Low;
             ok &= LodSelftest();
+            ok &= Projector(null, Quaternion.Identity) == null && Projector(new Primitive.LightImage { LightTexture = UUID.Random(), Params = new Vector3(1, 0, 0) }, Quaternion.Identity) != null;
+            ok &= !Impostor(15, 16) && Impostor(16, 16) && !Impostor(99, 0);
             ok &= FarLod(5, 50) == DetailLevel.Medium && FarLod(0.5f, 90) == DetailLevel.Low && FarLod(20, 40) == DetailLevel.High;
             // shape: Thickness (34) scales mCollarLeft's Y by 0.2 per unit, so its volume L_CLAVICLE (default Y 0.14) widens by 0.028
             var lad0 = LindenAvatarDefinition.Load(Path.Combine(AppContext.BaseDirectory, "linden", "character", "avatar_lad.xml"));
@@ -414,6 +430,9 @@ static class Mesher
         // kept (an invisible face still collides). ponytail: visual mesh as the collision shape; ceiling = mesh whose physics
         // shape differs from what it shows (a hull over a doorway, a phantom-looking curtain that is solid)
         bool nav = args.Contains("--nav"); args = args.Where(a => a != "--nav").ToArray();
+        LodFactor = float.Parse(args.FirstOrDefault(a => a.StartsWith("--lod-factor="))?[13..] ?? "2", System.Globalization.CultureInfo.InvariantCulture);
+        AvatarMax = int.Parse(args.FirstOrDefault(a => a.StartsWith("--avatar-max="))?[13..] ?? "0");
+        args = args.Where(a => !a.StartsWith("--lod-factor=") && !a.StartsWith("--avatar-max=")).ToArray();
         if (args.Length < 1 || !File.Exists(Path.Combine(args[0], "scene.json"))) { Console.Error.WriteLine("usage: scene-mesher <export dir> [near_m]"); return 2; }
         string dir = args[0]; ExportDir = dir; float near = args.Length > 1 ? float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 20;
         var doc = (OSDMap)OSDParser.DeserializeJson(File.ReadAllText(Path.Combine(dir, "scene.json")));
@@ -439,6 +458,7 @@ static class Mesher
         var byLocal = ((OSDArray)doc["prims"]).Cast<OSDMap>().ToDictionary(o => o["localid"].AsUInteger());
         var wearerAt = ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id") && av.ContainsKey("pos"))
             .GroupBy(av => av["agent_id"].AsString()).ToDictionary(g => g.Key, g => g.First()["pos"].AsVector3());
+        var avRank = wearerAt.OrderBy(kv => Vector3.Distance(kv.Value, focusR < 1e9f ? focus : me)).Select((kv, i) => (kv.Key, i)).ToDictionary(t => t.Key, t => t.i);
         // avatars the client saw still loading (export "dressed" != complete, 2026-10-05+): drawn as a neutral stand-in, so
         // their attachments that did arrive aren't meshed (never a half-dressed body); older exports have no "dressed"
         var loading = ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id") && StandIn(av.ContainsKey("dressed") ? av["dressed"].AsString() : null,
@@ -505,6 +525,8 @@ static class Mesher
             // someone else's attachment: LOD by the wearer's distance (hers stay Highest)
             float? avDist = owner != null && owner != "me" && wearerAt.TryGetValue(owner, out var wp0)
                 ? Vector3.Distance(wp0, focusR < 1e9f ? focus : me) : null;
+            bool imp = owner != null && avRank.TryGetValue(owner, out var rk) && Impostor(rk, AvatarMax);
+            if (imp) avDist = 1e4f;   // impostor: lowest LOD (AvatarLod/AttachmentLod past 20 m)
             DetailLevel? avLod = avDist is float ad ? AvatarLod(ad) : null;
             FacetedMesh fm = null; float[] bind = null;
             try
@@ -537,7 +559,7 @@ static class Mesher
             // is dropped: it only lights far scenery, and 48 such lamps cost ~5 s a view (David 2026-10-04: keep the render
             // near its old time). ponytail: far lamps don't light the backdrop; ceiling = distant buildings unlit at night
             if (!mine && p.Light is { Intensity: > 0 } li && (!far || Vector3.Distance(pos, focus) - li.Radius <= farR))
-                lock (lights) lights.Add(new { pos = new[] { pos.X, pos.Y, pos.Z }, color = new[] { li.Color.R, li.Color.G, li.Color.B }, intensity = li.Intensity, radius = li.Radius, falloff = li.Falloff });
+                lock (lights) lights.Add(new { pos = new[] { pos.X, pos.Y, pos.Z }, color = new[] { li.Color.R, li.Color.G, li.Color.B }, intensity = li.Intensity, radius = li.Radius, falloff = li.Falloff, proj = Projector(p.LightMap, rot) });
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
             if (mine) { (bind != null ? rigged : unrigged).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
             Emit(p, fm, nav ? $"nav:{p.LocalID}" : far ? "far" : "scene", null, null, pos, rot, o);

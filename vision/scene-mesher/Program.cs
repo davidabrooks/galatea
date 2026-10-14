@@ -275,7 +275,7 @@ static class Mesher
 
     static readonly UUID Transparent = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
 
-    sealed class Batch { public string Group, Tex; public float[] Rgba; public bool Fullbright; public Dictionary<string, object> Mat; public List<float> P = new(), N = new(), T = new(); public List<uint> I = new(); }
+    sealed class Batch { public string Group, Tex; public float[] Rgba; public bool Fullbright; public float Glow; public Dictionary<string, object> Mat; public List<float> P = new(), N = new(), T = new(); public List<uint> I = new(); }
     static readonly string[] AlphaModes = { "none", "blend", "mask", "emissive" };   // LegacyMaterial DiffuseAlphaMode
 
     // CDN assets are immutable per UUID: keep them on disk (SCENE_MESHER_CACHE, default ~/.cache/scene-mesher; "off" = none).
@@ -590,8 +590,8 @@ static class Mesher
                 var rgba = new[] { te.RGBA.R, te.RGBA.G, te.RGBA.B, te.RGBA.A };
                 var mat = Mat(te, f.ID, o, ref tex, ref rgba);
                 if (group == "far") foreach (var k in new[] { "normal", "spec", "mr", "emissive_tex" }) mat?.Remove(k);
-                string key = $"{group}|{tex}|{string.Join(",", rgba.Select(x => x.ToString("F2")))}|{te.Fullbright}|{JsonSerializer.Serialize(mat)}";
-                var b = batches.GetOrAdd(key, _ => new Batch { Group = group, Tex = tex, Rgba = rgba, Fullbright = te.Fullbright, Mat = mat });
+                string key = $"{group}|{tex}|{string.Join(",", rgba.Select(x => x.ToString("F2")))}|{te.Fullbright}|{te.Glow:F2}|{JsonSerializer.Serialize(mat)}";
+                var b = batches.GetOrAdd(key, _ => new Batch { Group = group, Tex = tex, Rgba = rgba, Fullbright = te.Fullbright, Glow = te.Glow, Mat = mat });
                 lock (b)
                 {
                     uint baseIdx = (uint)(b.P.Count / 3);
@@ -797,7 +797,7 @@ static class Mesher
             foreach (var b in batches.Values.OrderBy(b => b.Group))
             {
                 foreach (var x in b.P) bin.Write(x); foreach (var x in b.N) bin.Write(x); foreach (var x in b.T) bin.Write(x); foreach (var x in b.I) bin.Write(x);
-                outMeta.Add(new { group = b.Group, tex = b.Tex, rgba = b.Rgba, fullbright = b.Fullbright, mat = b.Mat, nv = b.P.Count / 3, ni = b.I.Count, offset = off });
+                outMeta.Add(new { group = b.Group, tex = b.Tex, rgba = b.Rgba, fullbright = b.Fullbright, glow = b.Glow, mat = b.Mat, nv = b.P.Count / 3, ni = b.I.Count, offset = off });
                 off += (b.P.Count + b.N.Count + b.T.Count + b.I.Count) * 4L;
             }
         File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, agent_off_seated = agentOffSeated.TryGetValue("me", out var mso) ? mso : (float?)null, seated = meMap.ContainsKey("sitting_on") && meMap["sitting_on"].AsUInteger() != 0, bones = frames == null ? null : Bones(frames), others }));

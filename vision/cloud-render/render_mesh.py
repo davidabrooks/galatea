@@ -117,6 +117,8 @@ def mat_images(b):
 # bpy re-propagates over all node trees in the file (~0.3 ms each at 4000 materials: O(n^2)); Material.copy() doesn't.
 # Warehouse 21: ~17 s of node building -> ~1 s. Also faces that differed only in colour now share a material.
 TEMPLATES = {}; MAT_CACHE = {}
+# glow/bloom (Firestorm "Glow", High+ strength 2 = RenderGlowIterations): only photo hd scenes with a glowing face
+GLOW_ON = HD and os.environ.get("GT_GLOW", "1") != "0" and any((b.get("glow") or 0) > 0 for b in M.get("batches", []))
 def material(b, imgs=None):
     imgs = mat_images(b) if imgs is None else imgs
     mat = b.get("mat") or {"alpha": "auto"}
@@ -130,6 +132,13 @@ def material(b, imgs=None):
         for s_, im in imgs.items(): m.node_tree.nodes[s_].image = im
         MAT_CACHE[k] = m
     return MAT_CACHE[k]
+
+def glow_aov(nt, p, tint):
+    """photo hd glow: AOV "glow" = the face's colour x its SL glow (LL glowExtract: colour x glow), bloomed in hdr_post"""
+    src = p.inputs["Base Color"].links[0].from_socket if p.inputs["Base Color"].links else tint.outputs["Color"]
+    ga = nt.nodes.new("ShaderNodeAttribute"); ga.attribute_name = "sl_glow"
+    sv = nt.nodes.new("ShaderNodeVectorMath"); sv.operation = "SCALE"; nt.links.new(src, sv.inputs[0]); nt.links.new(ga.outputs["Fac"], sv.inputs["Scale"])
+    ao = nt.nodes.new("ShaderNodeOutputAOV"); ao.aov_name = "glow"; nt.links.new(sv.outputs[0], ao.inputs["Color"])
 
 def _material(b, slots, cut):
     """SL face -> Principled BSDF template (image nodes named by slot, left empty; colour from the "sl_tint" attribute).
@@ -202,6 +211,7 @@ def _material(b, slots, cut):
         m.blend_method = "OPAQUE"
     else:
         m.blend_method = "HASHED"
+    if GLOW_ON: glow_aov(nt, p, tint)
     return m
 
 def arrays(b):
@@ -302,6 +312,8 @@ def build(group, bones=None, lining=True):
         uv = me.uv_layers.new(); uv.data.foreach_set("uv", T.reshape(-1, 2)[I].ravel())
         tint = me.color_attributes.new("sl_tint", "FLOAT_COLOR", "POINT")   # the face colour (materials are per texture)
         tint.data.foreach_set("color", np.tile(np.asarray(b["rgba"], np.float32), nv))
+        if GLOW_ON:   # SL face glow (photo hd): per-point attribute so the templates stay shared
+            gl = me.attributes.new("sl_glow", "FLOAT", "POINT"); gl.data.foreach_set("value", np.full(nv, float(b.get("glow") or 0.0), np.float32))
         me.update(); me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
         ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs))
         obs.append(ob)
@@ -541,7 +553,20 @@ def sky_hd(nt, co, sp, col, env, night):
     elif env.get("moon_dir") and env["moon_dir"][2] > 0:
         d = disc(env["moon_dir"], 0, None, 1)
         md = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(MOON_RADIUS_DEG * max(0.05, env.get("moon_scale", 1.0))))), cam)
-        col = mixc(md, col, [0.55 * max(0.3, env.get("moon", 0.5))] * 3)
+        # the moon's face (2026-10-13): Firestorm draws the moon texture (grey disc with dark maria); procedural stand-in:
+        # two noise octaves on the view direction -> darker maria patches, edges a touch darker (limb)
+        mn = node("ShaderNodeTexNoise"); mn.inputs["Scale"].default_value = 55.0; mn.inputs["Detail"].default_value = 3
+        L(co.outputs["Generated"], mn.inputs["Vector"])
+        maria = node("ShaderNodeMapRange"); L(mn.outputs["Fac"], maria.inputs["Value"])
+        maria.inputs["From Min"].default_value = 0.45; maria.inputs["From Max"].default_value = 0.6
+        maria.inputs["To Min"].default_value = 0.62; maria.inputs["To Max"].default_value = 1.0
+        limb = node("ShaderNodeMapRange"); L(d, limb.inputs["Value"])
+        limb.inputs["From Min"].default_value = math.cos(math.radians(MOON_RADIUS_DEG * max(0.05, env.get("moon_scale", 1.0))))
+        limb.inputs["From Max"].default_value = 1.0; limb.inputs["To Min"].default_value = 0.8; limb.inputs["To Max"].default_value = 1.0
+        face = math_("MULTIPLY", maria.outputs["Result"], limb.outputs["Result"])
+        mc = node("ShaderNodeCombineColor"); b_ = 0.55 * max(0.3, env.get("moon", 0.5))
+        for i in range(3): L(math_("MULTIPLY", face, b_ * (1.0, 0.98, 0.94)[i]), mc.inputs[i])
+        col = mixc(md, col, mc.outputs["Color"])
     return col
 
 def env_post(env):
@@ -855,9 +880,29 @@ def hd_render_hdr(png):
     exr = png[:-4] + ".exr"; im = sc.render.image_settings
     im.file_format = "OPEN_EXR"; im.color_mode = "RGB"; im.color_depth = "32"; im.exr_codec = "ZIP"
     sc.render.filepath = exr
+    gexr = None
+    if GLOW_ON:
+        vl = sc.view_layers[0]
+        if "glow" not in [x.name for x in vl.aovs]: av = vl.aovs.add(); av.name = "glow"; av.type = "COLOR"
+        sc.use_nodes = True; cnt = sc.node_tree
+        rl = cnt.nodes.get("Render Layers") or cnt.nodes.new("CompositorNodeRLayers")
+        if not any(n.bl_idname == "CompositorNodeComposite" for n in cnt.nodes):
+            cp = cnt.nodes.new("CompositorNodeComposite"); cnt.links.new(rl.outputs["Image"], cp.inputs["Image"])
+        fo = cnt.nodes.new("CompositorNodeOutputFile"); gdir = png[:-4] + "-glow"; fo.base_path = gdir
+        fo.format.file_format = "OPEN_EXR"; fo.format.color_depth = "32"; fo.file_slots[0].path = "glow"
+        cnt.links.new(rl.outputs["glow"], fo.inputs[0]); gexr = gdir
     t = time.time(); bpy.ops.render.render(write_still=True); secs = round(time.time() - t, 1)
     img = bpy.data.images.load(exr); w, h = img.size; px = np.empty(w * h * 4, np.float32); img.pixels.foreach_get(px)
     rgb = px.reshape(h, w, 4)[..., :3].astype(np.float64)
+    if gexr:
+        import glob, shutil
+        gf = sorted(glob.glob(gexr + "/glow*.exr"))
+        if gf:
+            gi = bpy.data.images.load(gf[0]); gp = np.empty(w * h * 4, np.float32); gi.pixels.foreach_get(gp)
+            st = hdr_post.settings_from_env(os.environ)
+            rgb = rgb + hdr_post.bloom(gp.reshape(h, w, 4)[..., :3].astype(np.float64), st["glow_iterations"], st["glow_strength"])
+            log("glow bloom", "iterations", st["glow_iterations"], "strength", st["glow_strength"])
+        shutil.rmtree(gexr, ignore_errors=True)
     ldr, info = hdr_post.firestorm_ldr(rgb, M.get("env"), 2.0 ** float(os.environ.get("GT_EXPOSURE", "0")), hdr_post.settings_from_env(os.environ))
     hdr_post.write_rgbe(png[:-4] + ".hdr", rgb[::-1])   # Blender pixels are bottom row first
     out = bpy.data.images.new("ldr", w, h, alpha=False, float_buffer=True); out.colorspace_settings.name = "Non-Color"

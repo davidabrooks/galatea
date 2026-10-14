@@ -95,7 +95,25 @@ public static partial class Program
 
     // pure (test): photo hd export radius = the profile's Firestorm draw distance (High+ 128 m, Ultra 256 m), capped at 96 m
     // (scene-mesher's far LOD beyond 30 m; the 2026-10-13 20:05 HD at 32 m dropped the neighbour's house David's view shows)
-    internal static float PhotoHdRadius(string profile) => Math.Min(profile == "ultra" ? 256f : 128f, 96f);
+    // 2026-10-13 (David): the profile's draw distance (High+ 128, Ultra 256) when the box has the memory for it: a 96 m
+    // HD export peaked ~7 GB in Blender (OOM-killed once beside the client); 128 m needs ~10 GB free, 256 m ~14 GB
+    internal static float PhotoHdRadius(string profile, double freeGb = -1)
+    {
+        float want = profile == "ultra" ? 256f : 128f;
+        if (freeGb < 0) freeGb = MemAvailableGb();
+        if (want >= 256 && freeGb >= 14) return 256f;
+        if (want >= 128 && freeGb >= 10) return 128f;
+        return 96f;
+    }
+    static double MemAvailableGb()
+    {
+        try
+        {
+            var l = File.ReadLines("/proc/meminfo").FirstOrDefault(x => x.StartsWith("MemAvailable:"));
+            return l == null ? 0 : double.Parse(l.Split(' ', StringSplitOptions.RemoveEmptyEntries)[1], CultureInfo.InvariantCulture) / 1048576.0;
+        }
+        catch { return 0; }
+    }
 
     static Task<string> PhotoCmd(string[] a)
     {

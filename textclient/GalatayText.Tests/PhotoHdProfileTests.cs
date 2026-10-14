@@ -11,6 +11,7 @@ public class PhotoHdProfileTests
         Assert.Equal("highplus", Program.PhotoHdProfile(new[] { "high+", "self" }).profile);
         Assert.Null(Program.PhotoHdProfile(new[] { "self" }).profile);
         Assert.Equal("?", Program.PhotoHdProfile(new[] { "profile=low" }).profile);
-        Assert.Equal(96f, Program.PhotoHdRadius(null)); Assert.Equal(96f, Program.PhotoHdRadius("ultra"));
+        Assert.Equal(128f, Program.PhotoHdRadius(null, 12)); Assert.Equal(96f, Program.PhotoHdRadius(null, 6));
+        Assert.Equal(256f, Program.PhotoHdRadius("ultra", 15)); Assert.Equal(128f, Program.PhotoHdRadius("ultra", 11));
     }
 }

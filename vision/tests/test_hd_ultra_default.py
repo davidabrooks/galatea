@@ -39,9 +39,9 @@ def test_dof_fstop_matches_firestorm_cof():
     F = 0.018 / math.tan(fovy / 2)                                          # Blender lens (m), 36 mm sensor
     nb = ns["dof_fstop"](9.0, 50, 60, fovy, F * 1000)
     f = 0.05; S, d = 3.0, 10.0
-    fs = 1.414 * f * abs(d - S) / (d * 9.0 * S * fovy)                       # Firestorm CoF / height
-    bl = F * abs(d - S) / (d * nb * S * 2 * math.tan(fovy / 2))
-    assert abs(bl / fs - 1) < 0.02
+    fs = 1.414 * f * abs(d - S) / (d * 9.0 * S * fovy)                       # Firestorm CoF radius / height
+    bl = F * abs(d - S) / (d * nb * S * 2 * math.tan(fovy / 2))              # Blender CoF diameter / height
+    assert abs(bl / (2 * fs) - 1) < 0.02
     assert ns["max_cof_ok"](nb, F * 1000, fovy, 0.3) > nb                   # close focus: clamped to CameraMaxCoF
 
 

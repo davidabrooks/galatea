@@ -145,44 +145,4 @@ public static partial class Program
         finally { outfitChangeUntil = DateTime.Now.AddSeconds(15); }
         WLog($"TOILET restore after standing ({(DateTime.Now - t0).TotalSeconds:F0} s): " + sb.ToString().TrimEnd(' ', ';'));
     }
-
-    // ---- The V pee (2026-10-14 David) ---------------------------------------------------------------------------------
-    // On a pee pose (toilet Sit / Hover, or a pose named pee/wee) with The V worn: press "spray" on The V's own touch
-    // menu (V1.51 release notes: touching the V gives states 1-5, favourite sound/face, cum, drip, spray, stop, cum layer;
-    // V1.5 "Updated the pee and cum to more realistic particles" = spray). Stop ("stop") before she stands or leaves the
-    // toilet: end of the sit, wander moving on, David interrupting, any stand for a walk (EnsureStandingForWalk).
-    static readonly Regex PeePoseRx = new(@"(?<![a-z])(pee\w*|wee|piss\w*|urinat\w*)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    internal static bool ToiletPeePose(IReadOnlyList<string> path)
-    {
-        var last = path?.LastOrDefault()?.Trim() ?? "";
-        return last.Equals("Sit", StringComparison.OrdinalIgnoreCase) || last.Equals("Hover", StringComparison.OrdinalIgnoreCase) || PeePoseRx.IsMatch(last);
-    }
-    internal static bool TheVBodyName(string name) => (name ?? "").StartsWith("The V - Bento", StringComparison.OrdinalIgnoreCase) && !(name ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase);
-    // pure: the menu button for start ("spray", else a pee-named one) / stop
-    internal static string TheVMenuButton(IReadOnlyList<string> labels, bool start)
-        => (labels ?? new List<string>()).FirstOrDefault(l => start ? (l.Trim().Equals("spray", StringComparison.OrdinalIgnoreCase) || PeePoseRx.IsMatch(l)) : l.Trim().Equals("stop", StringComparison.OrdinalIgnoreCase));
-
-    static volatile bool theVPeeOn;
-
-    static async Task<bool> TheVMenuPress(bool start, CancellationToken ct)
-    {
-        var roots = WornPrims(); await EnsureProperties(Sim, roots);
-        var v = roots.FirstOrDefault(p => TheVBodyName(p.Properties?.Name));
-        if (v == null) { WLog($"The V pee {(start ? "start" : "stop")}: The V not worn"); return false; }
-        var t0 = DateTime.Now; client.Self.Touch(v.LocalID);
-        var d = await WaitSeatDialog(v, t0, 5000, ct);
-        var b = d == null ? null : TheVMenuButton(d.ButtonLabels, start);
-        if (b == null) { WLog($"The V pee {(start ? "start" : "stop")}: {(d == null ? "no menu after touching The V" : "no button in [" + string.Join(" | ", d.ButtonLabels ?? new()) + "]")}"); return false; }
-        client.Self.ReplyToScriptDialog(d.Channel, d.ButtonLabels.IndexOf(b), b, d.ObjectID);
-        WLog($"The V pee {(start ? "ON" : "OFF")}: pressed '{b}' on The V's menu");
-        return true;
-    }
-    static async Task TheVPeeStart(CancellationToken ct) { try { if (await TheVMenuPress(true, ct)) theVPeeOn = true; } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("The V pee start: " + ex.GetBaseException().Message); } }
-    static async Task TheVPeeStop(string why)
-    {
-        if (!theVPeeOn) return;
-        theVPeeOn = false;
-        try { using var cts = new CancellationTokenSource(8000); WLog("The V pee stop (" + why + ")"); if (!await TheVMenuPress(false, cts.Token)) theVPeeOn = false; }
-        catch (Exception ex) { WLog("The V pee stop: " + ex.GetBaseException().Message); }
-    }
 }

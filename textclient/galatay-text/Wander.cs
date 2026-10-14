@@ -824,8 +824,7 @@ public static partial class Program
         }
         else if (fixedMenu != null)
         {
-            try { var pr = await SeatPosePath(c.p, c.name, fixedMenu, ct); WLog($"POSE (seat menu {string.Join(" > ", fixedMenu)}): {pr}");
-                  if (info?.Special == "toilet" && ToiletPeePose(fixedMenu) && client.Self.SittingOn != 0) { await Task.Delay(1500, ct); await TheVPeeStart(ct); } }
+            try { var pr = await SeatPosePath(c.p, c.name, fixedMenu, ct); WLog($"POSE (seat menu {string.Join(" > ", fixedMenu)}): {pr}"); }
             catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE menu error: " + ex.GetBaseException().Message); }
         }
         else
@@ -849,7 +848,6 @@ public static partial class Program
         }
         finally
         {
-            await TheVPeeStop("toilet sit over");   // before she stands / moves on / David interrupts
             // water off before she stands (or whenever this sit ends while still seated)
             if (waterOn && client.Self.SittingOn != 0) { TouchChildPrim(info.TouchChild, "shower water OFF (valve)"); waterOn = false; try { await Task.Delay(1000); } catch { } }
             else if (waterOn) WLog("shower: she was stood up before the valve could be turned off");

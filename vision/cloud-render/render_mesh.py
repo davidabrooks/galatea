@@ -17,6 +17,35 @@ def log(*a): print("GT:", *a, flush=True)
 HD = os.environ.get("GT_HD") == "1"   # `photo hd`: David's 4K stills (the only renders that use the region environment fully)
 def lin(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4   # sRGB -> linear
 
+def light_linear(c):
+    """an SL point light's colour as the shader uses it. The wire value is already linear (llprimitive.h LLLightParams:
+    mColor "linear color (not gamma corrected)"; the viewer's getLightLinearColor() passes it straight on). Until
+    2026-10-13 we ran it through sRGB -> linear again: warm lamps (1, 0.8, 0.6) lit as (1, 0.6, 0.32), dim and orange"""
+    return [min(1.0, max(0.0, float(x or 0.0))) for x in c[:3]]
+
+def moon_strength(env):
+    """Cycles sun strength for the moon under a classic sky, from Firestorm's legacy shading (softenLightF.glsl, classic):
+    colour = srgb_to_linear(amb x 0.9 + srgb(da^1.2) x sunlit x 0.7) x 1.1, sunlit = moon diffuse (sunlight colour x
+    moon_brightness, llsettingssky.cpp) x RenderSkySunlightScale 1.5 x 1.35 (classic). Matched at da = 0.5 (moon ~30 deg
+    up on a floor): the moonlight part of that over the ambient. The old 0.25 x moon_brightness was ~10x too dim: a
+    moonlit porch floor rendered like a shaded one (Firestorm reference 2026-10-13)"""
+    a_s = AMB_SRGB(env)
+    S = max(env.get("sunlight") or [1.0]) * float(env.get("moon", 0.5)) * 1.5 * 1.35
+    da = 0.5 ** 1.2
+    srgb = lambda v: 12.92 * v if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
+    e = lin(min(1.0, a_s * 0.9 + srgb(da) * S * 0.7)) * 1.1 - lin(min(1.0, a_s * 0.9)) * 1.1
+    # x 0.36: calibrated on the two 2026-10-13 Peronaut references (porch view +9 %, moonlit deck view -9 % overall); the
+    # viewer adds the moon in sRGB space, which one linear sun can't follow everywhere
+    return max(0.0, e / 0.5 * MOON_CAL)
+
+MOON_CAL = 0.36
+
+def AMB_SRGB(env):
+    """the classic sky's ambient in the viewer's sRGB space, x RenderSkyAmbientScale 1.5 (mean of the channels)"""
+    if not env or not env.get("ambient"): return 0.0
+    cs = env.get("cloud_shadow", 0.0)
+    return sum((x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9 * 1.5 for x in env["ambient"]) / 3
+
 def amblit(env):
     """The SL viewer's sky ambient on every surface (reimplemented from the LL viewer's calcAtmosphericVars):
     ambient raised by cloud cover, ^0.9 x 0.57, to linear, as grey luminance. It is NOT occluded the way Cycles' world light
@@ -25,7 +54,11 @@ def amblit(env):
     viewer's indoor irradiance) aren't modelled; ceiling = flat-looking ambient in corners"""
     if not env or not env.get("ambient"): return 0.0
     cs = env.get("cloud_shadow", 0.0)
-    t = [lin((x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9) for x in env["ambient"]]
+    # 2026-10-13 "why are your photos so much darker?": Firestorm's classic sky (legacy EEP, RenderSkyAutoAdjustLegacy off)
+    # scales the sRGB ambient by RenderSkyAmbientScale 1.5 (llsettingsvo.cpp, sky_ambient_scale in atmosphericsFuncs.glsl),
+    # then softenLightF.glsl: srgb_to_linear(amblit x 0.9 + sun) x 1.1. We stopped at lin(amblit): ~half the viewer's ambient
+    k_s, k_l = (1.5 * 0.9, 1.1) if env.get("classic", True) else (1.0, 1.0)
+    t = [lin(min(1.0, (x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9 * k_s)) * k_l for x in env["ambient"]]
     return 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2]
 AMB = amblit(M.get("env")) if kind == "scene" else 0.0  # face/body portraits have their own studio lights
 # look.py writes tex-manifest.json: the exact file each texture was fetched to for this job (no 5-way exists() search,
@@ -358,7 +391,7 @@ def eep(env):
     if HD and env.get("classic") is False: c = [lin(min(x, 8.0)) if x <= 1 else ((x + 0.055) / 1.055) ** 2.4 for x in c]   # PBR sky: srgb_to_linear(sunlit) (atmosphericsFuncs.glsl)
     peak = max(max(c), 1e-3)
     bpy.ops.object.light_add(type="SUN"); L = bpy.context.object; L.rotation_euler = travel.to_track_quat("-Z", "Y").to_euler()
-    L.data.color = [x / peak for x in c]; L.data.energy = (0.25 * env["moon"] if night else 1.2 * peak)
+    L.data.color = [x / peak for x in c]; L.data.energy = (moon_strength(env) if night else 1.2 * peak)
     w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True; bg = w.node_tree.nodes["Background"]
     bg.inputs["Color"].default_value = (*env["horizon"], 1); bg.inputs["Strength"].default_value = (0.35 if night else 1.0) * (env.get("probe_ambiance", 1.0) if HD and env.get("classic") is False else 1.0)   # PBR sky: probe ambiance
     sky_backdrop(w, env, night)
@@ -367,7 +400,7 @@ def eep(env):
         # intensity x atten x N.L x 3.25/pi, atten = 2 (1 - clamp((d/radius + falloff) / (1 + falloff)))^2, zero past the
         # radius. Cycles: constant falloff (no inverse square), the curve on Light Path ray length (= distance);
         # 4 pi^2 cancels Cycles' point-light normalisation (calibrated: 1 W constant -> 1/(4 pi^2) on a white plane).
-        d = bpy.data.lights.new("sl", "POINT"); d.color = [lin(c) for c in l["color"]]; d.shadow_soft_size = 0.05
+        d = bpy.data.lights.new("sl", "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05
         d.energy = 4 * math.pi ** 2 * 3.25 / math.pi; d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75)
         def op(kind, a, b, clamp=False):
             n = nt.nodes.new("ShaderNodeMath"); n.operation = kind; n.use_clamp = clamp

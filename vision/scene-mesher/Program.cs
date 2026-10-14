@@ -147,7 +147,11 @@ static class Mesher
         return MathF.Max(0, Vector2.Distance(new Vector2(pos.X, pos.Y), new Vector2(focus.X, focus.Y)) - half) <= reach;
     }
 
-    internal static bool StandIn(string dressed) => dressed is "partial" or "bare" or "unknown";
+    // 2026-10-13 20:05 photo hd: David was 15/16 attachments ("partial", one late) and every one of his 15 was dropped for a
+    // grey stand-in. Mostly dressed (at most one missing and >= 75%) now meshes what arrived; bare/unknown/very partial still don't
+    internal static bool StandIn(string dressed, int expected = 0, int have = 0) =>
+        dressed is "bare" or "unknown" || dressed == "partial" && !MostlyDressed(expected, have);
+    internal static bool MostlyDressed(int expected, int have) => expected > 0 && have >= expected - 1 && have * 4 >= expected * 3;
     static DetailLevel FarLod(float r, float d) => (r * 2f / MathF.Max(d, 1f)) switch { >= 0.24f => DetailLevel.High, >= 0.06f => DetailLevel.Medium, _ => DetailLevel.Low };
 
     // drop the rigged-mesh position overrides of joints whose position an animation drives (the SL pose blend wins)
@@ -381,7 +385,7 @@ static class Mesher
                   && !GroundSlab(new Vector3(200, 100, 2003), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 30)        // too far
                   && !GroundSlab(new Vector3(150, 100, 1990), Quaternion.Identity, new Vector3(64, 64, 0.5f), fz, 30)        // other level
                   && GroundSlab(new Vector3(150, 100, 2003), Quaternion.CreateFromAxisAngle(0, 1, 0, MathF.PI / 2), new Vector3(0.5f, 64, 64), fz, 30);  // thin X turned up
-            ok &= StandIn("partial") && StandIn("bare") && StandIn("unknown") && !StandIn("complete") && !StandIn(null);
+            ok &= StandIn("partial") && !StandIn("partial", 16, 15) && StandIn("partial", 16, 12) && StandIn("partial", 3, 2) && StandIn("bare") && StandIn("unknown") && !StandIn("complete") && !StandIn(null);
             ok &= CachePath("/c", "mesh", new UUID("0123abcd-0000-0000-0000-000000000001")) == Path.Combine("/c", "mesh", "01", "0123abcd-0000-0000-0000-000000000001")
                   && CachePath(null, "mesh", UUID.Random()) == null && CachePath("/c", "../x", UUID.Random()) == null && CachePath("/c", "mesh", UUID.Zero) == null;
             ok &= AvatarLod(2) == DetailLevel.Highest && AvatarLod(6) == DetailLevel.High && AvatarLod(15) == DetailLevel.Medium && AvatarLod(35) == DetailLevel.Low;
@@ -437,7 +441,8 @@ static class Mesher
             .GroupBy(av => av["agent_id"].AsString()).ToDictionary(g => g.Key, g => g.First()["pos"].AsVector3());
         // avatars the client saw still loading (export "dressed" != complete, 2026-10-05+): drawn as a neutral stand-in, so
         // their attachments that did arrive aren't meshed (never a half-dressed body); older exports have no "dressed"
-        var loading = ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id") && StandIn(av.ContainsKey("dressed") ? av["dressed"].AsString() : null))
+        var loading = ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id") && StandIn(av.ContainsKey("dressed") ? av["dressed"].AsString() : null,
+                av.ContainsKey("attach_expected") ? av["attach_expected"].AsInteger() : 0, av.ContainsKey("attach_have") ? av["attach_have"].AsInteger() : 0))
             .Select(av => av["agent_id"].AsString()).ToHashSet();
         // range culling per whole linkset (David 2026-10-04: per-prim culling left floating tree fragments): a linkset's
         // bounding sphere (member positions +- half their largest scale) is in if its nearest point is within focusR, and
@@ -783,7 +788,7 @@ static class Mesher
                 // placeholder when export held no attachment prims: render_mesh draws a bake-textured stand-in so every
                 // nearby avatar still shows (Warehouse 21: 34 in the export, only 1 had attachments on the wire)
                 otherAt[ai] = new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], agent_off_seated = agentOffSeated[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f), placeholder = !worn, bake_prefix = id[..8], dressed = av.ContainsKey("dressed") ? av["dressed"].AsString() : null };
-                Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}{(worn ? "" : " (no attachments: placeholder)")}");
+                Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}{(worn ? "" : loading.Contains(id) ? $" (STAND-IN: still loading, {(av.ContainsKey("attach_have") ? av["attach_have"].AsInteger() : 0)}/{(av.ContainsKey("attach_expected") ? av["attach_expected"].AsInteger() : 0)} attachments)" : " (no attachments: STAND-IN)")}");
             });
         others.AddRange(otherAt);
         Phase("avatars");

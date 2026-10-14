@@ -116,7 +116,7 @@ public static partial class Program
             }
             float er = hd != null ? (far ? 96 : 32) : mode == "self" ? 8 : far ? 96 : 32;   // photo hd: always her surroundings, `self` too
             var tWait = sw.Elapsed.TotalSeconds;
-            if (mode != "self" || hd != null) await EnsureNearbyAttachments(er);   // wait for nearby avatars' attachments (stand-ins for the rest)
+            if (mode != "self" || hd != null) await EnsureNearbyAttachments(er, hd != null);   // wait for nearby avatars' attachments (stand-ins for the rest)
             tWait = sw.Elapsed.TotalSeconds - tWait; var tEx = sw.Elapsed.TotalSeconds;
             var exArgs = new List<string> { "export", er.ToString(CultureInfo.InvariantCulture) };
             if (hd == null) exArgs.Add("noenv");   // her own looks: fixed neutral light, no environment fetch (David 2026-10-13)

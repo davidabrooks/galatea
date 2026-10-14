@@ -305,6 +305,8 @@ def main(a):
             if r.returncode >= 0: break
         lines = r.stdout.splitlines()
         got = [l.split()[-1] for l in lines if l.startswith("GT: render seconds")]
+        for l in lines:
+            if l.startswith("GT: avatar omitted") or l.startswith("GT: avatar stand-in"): print(l[4:], file=sys.stderr)
         hdr_files = [x for l in lines if l.startswith("GT: hdr master") for x in l.split()[3:5]]   # photo hd: EXR + .hdr masters
         rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
         build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)

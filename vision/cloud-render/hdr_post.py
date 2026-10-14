@@ -74,7 +74,38 @@ def settings_from_env(environ):
     """render profile (look.py PROFILES: highplus / ultra) -> firestorm_ldr settings + CAS sharpness"""
     g = lambda k, d: float(environ.get(k, d))
     return {"exposure": g("GT_FS_EXPOSURE", FS["exposure"]), "tonemap_type": int(g("GT_TONEMAP_TYPE", FS["tonemap_type"])),
-            "tonemap_mix": g("GT_TONEMAP_MIX", FS["tonemap_mix"]), "dyn_coeff": FS["dyn_coeff"], "sharpen": g("GT_SHARPEN", 0.0)}
+            "tonemap_mix": g("GT_TONEMAP_MIX", FS["tonemap_mix"]), "dyn_coeff": FS["dyn_coeff"], "sharpen": g("GT_SHARPEN", 0.0),
+            "glow_iterations": int(g("GT_GLOW_ITERATIONS", 2)), "glow_strength": g("GT_GLOW_STRENGTH", 0.325)}
+
+
+def _box(a, r, axis):
+    """box blur of radius r along axis (edge-clamped), via a cumulative sum"""
+    if r < 1: return a
+    pad = [(0, 0)] * a.ndim; pad[axis] = (r + 1, r)
+    c = np.cumsum(np.pad(a, pad, mode="edge"), axis=axis)
+    n = a.shape[axis]
+    hi = np.take(c, np.arange(2 * r + 1, 2 * r + 1 + n), axis=axis); lo = np.take(c, np.arange(0, n), axis=axis)
+    return (hi - lo) / (2 * r + 1)
+
+
+def gauss_blur(a, sigma):
+    """~gaussian blur (3 box passes per axis; Blender's python has no scipy) of an (h, w, c) image"""
+    r = int(round(np.sqrt(12 * sigma * sigma / 3 + 1) / 2 - 0.5)) if sigma > 0 else 0
+    for _ in range(3):
+        a = _box(_box(a, r, 0), r, 1)
+    return a
+
+
+def bloom(glow, iterations=2, strength=0.325, width=1.3, res=512):
+    """LL glow (renderGlow, glowExtractF/glowF.glsl): the glow buffer (colour x face glow) at 2^RenderGlowResolutionPow
+    (512) wide, blurred RenderGlowIterations x (horizontal + vertical) with RenderGlowWidth (1.3) tap spacing, each pass
+    weighted by RenderGlowStrength (0.325), added to the frame. -> linear rgb to add. Firestorm's "Glow strength" slider
+    is the iteration count (David's High+: 2). ponytail: gaussian kernel, not LL's 7 taps"""
+    if iterations <= 0 or not np.any(glow > 0): return np.zeros_like(glow)
+    k = glow.shape[1] / float(res)
+    sigma = width * 2.0 * k * np.sqrt(iterations)
+    b = gauss_blur(glow, sigma)
+    return b * strength * 2.0 * iterations
 
 
 def cas_sharpen(c, amount):

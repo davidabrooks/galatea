@@ -38,9 +38,9 @@ HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
 # Cycles path-traces AO / shadows / reflections itself; attached (face) lights are never rendered (matches his OFF)
 PROFILES = {
     "highplus": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.0", "GT_TONEMAP_TYPE": "1",
-                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0"},
+                 "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325"},
     "ultra": {"GT_TEX_CAP_AVATAR": "2048", "GT_TEX_CAP_SCENE": "2048", "GT_TONEMAP_MIX": "0.7", "GT_TONEMAP_TYPE": "1",
-              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0"},
+              "GT_SHARPEN": "0.4", "GT_FS_EXPOSURE": "1.0", "GT_GLOW_ITERATIONS": "2", "GT_GLOW_STRENGTH": "0.325"},
 }
 
 def hd_settings(arg, mode, profile="highplus"):
@@ -108,8 +108,9 @@ def terrain_composition(doc, texdir, fetch=None):
             except Exception: c["paths"].append(None)
     return comps
 
-def mesher_args(d, mode, me, far):
-    return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + (["96", "--far=30"] if far else ["30", "--roots=32"])
+def mesher_args(d, mode, me, far, radius=96):
+    """far: everything to the export radius (photo hd: the profile's draw distance, 96-256 m), full LOD inside 30 m"""
+    return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + ([str(int(max(96, radius or 96))), "--far=30"] if far else ["30", "--roots=32"])
 
 def mesher_env(base):
     """The text client runs under a 512 MB .NET heap cap (DOTNET_GCHeapHardLimit) and look.py inherits it; a crowd mesh
@@ -254,7 +255,7 @@ def main(a):
     # her surroundings: whole objects reaching within 30 m (Highest LOD within 12); with --far also objects out to 96 m,
     # those centred beyond 30 m as backdrop at a screen-size LOD; `self` meshes her alone. --roots=32: the 32 m export's
     # linksets even from a 96 m export (an older client that still exports 96 m)
-    args = mesher_args(d, mmode, me, far)
+    args = mesher_args(d, mmode, me, far, float(doc.get("radius") or 96))
     if mode == "at":  # she turns her head toward the target (scene-mesher --look); an avatar's head ~0.7 m above its agent position
         av = next((v for v in doc.get("avatars", []) if target in str(v.get("name", "")).lower() and "pos" in v), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)

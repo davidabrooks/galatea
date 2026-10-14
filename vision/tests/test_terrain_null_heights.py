@@ -27,5 +27,6 @@ def test_renderer_bilinear_is_null_safe():
 
 
 def test_hd_retry_after_oom_kill_is_lighter():
-    assert look.retry_env(-9, True) == {"GT_TEX_LIMIT": "1024", "GT_TILE": "512"}
+    r = look.retry_env(-9, True)
+    assert r["GT_TEX_LIMIT"] == "1024" and r["GT_TILE"] == "512" and float(r["GT_TEX_BIAS"]) >= 2
     assert look.retry_env(-11, True) == {} and look.retry_env(-9, False) == {}

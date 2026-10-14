@@ -46,6 +46,7 @@
     <Compile Include="../galatay-text/OfflineIm.cs" Link="Core/OfflineIm.cs" />
     <Compile Include="../galatay-text/AttachTrack.cs" Link="Core/AttachTrack.cs" />
     <Compile Include="../galatay-text/WearOps.cs" Link="Core/WearOps.cs" />
+    <Compile Include="../galatay-text/Wardrobe.cs" Link="Core/Wardrobe.cs" />
     <Compile Include="../galatay-text/AutoFollow.cs" Link="Core/AutoFollow.cs" />
     <Compile Include="../galatay-text/OfferStore.cs" Link="Core/OfferStore.cs" />
     <Compile Include="../galatay-text/ImGuard.cs" Link="Core/ImGuard.cs" />

@@ -195,6 +195,11 @@ public static partial class Program
             var z = client.Self.SimPosition.Z;
             var lpos = client.Self.SimPosition;
             bool onBeach = OutfitZoneFor(region, lpos, false) == "beach" || (beachMode && OutfitZoneFor(region, lpos, true) == "beach");
+            if (!AutoOutfitAllowed(wardrobeUndressed, wardrobeUndressedAt, DateTime.Now))
+            {   // 2026-10-14 David: never a random change while undressed / right after an undress (the 15:07 login race)
+                Log("outfit-daily", $"login outfit SKIPPED: undressed at {wardrobeUndressedAt:HH:mm:ss} (no random change until she dresses deliberately); daily stays pending");
+                zoneArmed = true; return;
+            }
             var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null, await AndroidWornSettled());
             Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT)");
             if (plan == "keep-android") { zoneArmed = true; return; }   // android body: keep the outfit; the daily stays pending for a human login

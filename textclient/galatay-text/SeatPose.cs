@@ -360,7 +360,7 @@ public static partial class Program
     }
 
     // couplesMode only when explicitCouples (David asked). recovery: restore path or leave/solo — never couples.
-    static async Task<string> SeatPose(Primitive seat, string seatName, DateTime since, bool change, CancellationToken ct, bool explicitCouples = false, bool recovery = false, bool preferPgSolo = false)
+    static async Task<string> SeatPose(Primitive seat, string seatName, DateTime since, bool change, CancellationToken ct, bool explicitCouples = false, bool recovery = false, bool preferPgSolo = false, int overlapTry = 0)
     {
         // 2026-10-09 David: on a listed boat only the boat allowlist ever presses buttons (never SYSTEM*/drive controls)
         if (LoadHomeSeats().Any(i => i.Id == seat.ID && IsBoat(i)))
@@ -450,7 +450,9 @@ public static partial class Program
                 var m = $"'{seatName}': David joined mid-pick — stopping (he chooses poses)";
                 WLog("POSE " + m); return m;
             }
-            var (pick, sub, why) = PickPoseButton(SeatPoseFilter(seat.ID, d.ButtonLabels), current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual);
+            var menuLabels = SeatPoseFilter(seat.ID, d.ButtonLabels);
+            if (!couplesMode) menuLabels = PoseLabelsFree(seat, menuLabels, seatName);   // SeatOccupancy.cs
+            var (pick, sub, why) = PickPoseButton(menuLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual);
             if (pick == null)
             {
                 var m = $"'{seatName}': {why}; keeping the current pose {current ?? "?"}";
@@ -486,6 +488,18 @@ public static partial class Program
                 var mode = couplesMode ? " [couples/explicit]" : " [solo]";
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", path)}{tag}{mode}";
                 var m = $"'{seatName}' {seat.ID}: chose {string.Join(" > ", path)} (was {current ?? "?"}; {why}){tag}";
+                if (!couplesMode)
+                {   // 2026-10-14: never on top of another sitter (SeatOccupancy.cs)
+                    var ov = await PoseCheckOverlap(seat, pick, ct);
+                    if (ov != null)
+                    {
+                        WLog($"POSE '{seatName}': overlap: {ov}; picking the next free pose ({overlapTry + 1}/{PoseOverlapRetries})");
+                        if (overlapTry + 1 < PoseOverlapRetries)
+                            return m + "; overlap -> " + await SeatPose(seat, seatName, DateTime.Now, true, ct, false, false, true, overlapTry + 1);
+                        if (client.Self.SittingOn != 0) { WLog($"POSE '{seatName}': still overlapping after {PoseOverlapRetries} tries; standing up"); client.Self.Stand(); }
+                        return m + $"; overlap ({ov}) - no free pose, stood up";
+                    }
+                }
                 WLog("POSE " + m); HandPoseForPathAsync(path, $"{seatName}: {string.Join(" > ", path)}"); return m;
             }
             d = await WaitSeatDialog(seat, t1, 5000, ct);
@@ -614,6 +628,15 @@ public static partial class Program
                 if (!PosePathIsCouples(path)) wLastSoloPosePath = path.ToList();
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", path)} (restored)";
                 var m = $"'{seatName}' {seat.ID}: restored {string.Join(" > ", path)}";
+                if (!PosePathIsCouples(path))
+                {
+                    var ov = await PoseCheckOverlap(seat, pick, ct);
+                    if (ov != null)
+                    {
+                        WLog($"POSE '{seatName}': restored pose overlaps ({ov}); picking a free one instead");
+                        return m + "; overlap -> " + await SeatPose(seat, seatName, DateTime.Now, true, ct, false, false, true, 1);
+                    }
+                }
                 WLog("POSE " + m); return m;
             }
             d = await WaitSeatDialog(seat, t1, 5000, ct);

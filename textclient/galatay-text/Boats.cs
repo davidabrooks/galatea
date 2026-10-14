@@ -157,7 +157,7 @@ public static partial class Program
 
     // a random seat on the boat = a random pose from its Singles/Solo set (each pose moves her to another seat)
     // (ok, message); ok=false means: no Singles set / no menu / no pose -> leave the boat
-    static async Task<(bool ok, string msg)> BoatPose(Primitive boat, string name, CancellationToken ct)
+    static async Task<(bool ok, string msg)> BoatPose(Primitive boat, string name, CancellationToken ct, int overlapTry = 0)
     {
         lastSeatPoseMenuAt = DateTime.Now; seatPoseMissingSince = null;
         var t0 = DateTime.Now; client.Self.Touch(boat.LocalID);
@@ -176,13 +176,21 @@ public static partial class Program
             if (d == null) return (false, $"'{root}' did not open");
             if (!BoatMenuInSolo(d.Message) && !(d.ButtonLabels ?? new()).Any(BoatIsPoseButton)) return (false, $"'{root}' opened no pose list");
         }
-        var pose = BoatPickPose(d.ButtonLabels, PoseCurrent(d.Message), wRnd);
+        var pose = BoatPickPose(PoseLabelsFree(boat, d.ButtonLabels, name), PoseCurrent(d.Message), wRnd);   // occupied seats skipped (SeatOccupancy.cs)
         if (pose == null) return (false, $"no allowlisted pose in [{string.Join(" | ", d.ButtonLabels ?? new())}]");
         ClearKeptPoseCopies();
         client.Self.ReplyToScriptDialog(d.Channel, d.ButtonLabels.IndexOf(pose), pose, d.ObjectID);
         path.Add(pose.Trim());
         wLastPosePath = path.ToList(); wLastSoloPosePath = path.ToList();
         wLastPose = $"{DateTime.Now:HH:mm:ss} '{name}' {boat.ID}: {string.Join(" > ", path)} [boat, solo]";
+        // 2026-10-14 13:17: 'tan 1' put her on top of David: verify, then the next free seat
+        var ov = await PoseCheckOverlap(boat, pose, ct);
+        if (ov != null)
+        {
+            WLog($"BOAT '{name}': overlap: {ov}; next free seat ({overlapTry + 1}/{PoseOverlapRetries})");
+            if (overlapTry + 1 < PoseOverlapRetries) return await BoatPose(boat, name, ct, overlapTry + 1);
+            return (false, $"{string.Join(" > ", path)} overlaps ({ov}); no free seat");
+        }
         return (true, string.Join(" > ", path));
     }
 

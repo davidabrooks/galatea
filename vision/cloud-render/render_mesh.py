@@ -50,14 +50,16 @@ def dof_fstop(n, focal_mm, fov_deg, fovy, lens_mm):
     sensor height 2 F tan(fovy/2): CoF / height = F |d-S| / (d N_b (S-F) 2 tan(fovy/2)). Equal when
     N_b = N fovy F / (1.414 f 2 tan(fovy/2)) (S >> F; f, F in metres; F = Blender's lens)"""
     f = focal_mm / 1000.0 * math.tan(math.radians(fov_deg) / 2) / math.tan(fovy / 2)
-    return n * fovy * (lens_mm / 1000.0) / (1.414 * f * 2 * math.tan(fovy / 2))
+    # 2026-10-14: the viewer's sc is the bokeh RADIUS (postDeferredF.glsl samples a circle of radius sc px), Blender's CoF
+    # a diameter: half the f-stop (we blurred half as much as Firestorm)
+    return n * fovy * (lens_mm / 1000.0) / (1.414 * f * 2 * math.tan(fovy / 2)) / 2.0
 
 def max_cof_ok(n_b, lens_mm, fovy, subject_m, max_cof_px=10.0, viewer_h=1080.0):
     """Firestorm clamps the CoF at CameraMaxCoF (10 px of a ~1080 p window); Blender has no clamp: raise the f-stop so the
     far-background blur (d -> inf) stays within it"""
     F = lens_mm / 1000.0
     far = F / (n_b * max(subject_m - F, 1e-3) * 2 * math.tan(fovy / 2))   # CoF / height at infinity
-    lim = max_cof_px / viewer_h
+    lim = 2.0 * max_cof_px / viewer_h   # CameraMaxCoF clamps the radius
     return n_b if far <= lim else n_b * far / lim
 
 def light_linear(c):
@@ -83,11 +85,14 @@ def moon_strength(env):
 
 MOON_CAL = float(os.environ.get("GT_MOON_CAL", "0.75"))   # 2026-10-13 23:10: re-fit with full SSAO (ambient no longer lifts shadows): view 2 percentiles 5-99 within 2 levels
 
+# RenderSkyAmbientScale: the code fallback is 1.5 (llsettingsvo.cpp), Firestorm's shipped settings.xml default 1.0
+SKY_AMB_SCALE = float(os.environ.get("GT_SKY_AMBIENT_SCALE", "1.5"))
+
 def AMB_SRGB(env):
     """the classic sky's ambient in the viewer's sRGB space, x RenderSkyAmbientScale 1.5 (mean of the channels)"""
     if not env or not env.get("ambient"): return 0.0
     cs = env.get("cloud_shadow", 0.0)
-    return sum((x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9 * 1.5 for x in env["ambient"]) / 3
+    return sum((x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9 * SKY_AMB_SCALE for x in env["ambient"]) / 3
 
 def amblit(env):
     """The SL viewer's sky ambient on every surface (reimplemented from the LL viewer's calcAtmosphericVars):
@@ -100,7 +105,7 @@ def amblit(env):
     # 2026-10-13 "why are your photos so much darker?": Firestorm's classic sky (legacy EEP, RenderSkyAutoAdjustLegacy off)
     # scales the sRGB ambient by RenderSkyAmbientScale 1.5 (llsettingsvo.cpp, sky_ambient_scale in atmosphericsFuncs.glsl),
     # then softenLightF.glsl: srgb_to_linear(amblit x 0.9 + sun) x 1.1. We stopped at lin(amblit): ~half the viewer's ambient
-    k_s, k_l = (1.5 * 0.9, 1.1) if env.get("classic", True) else (1.0, 1.0)
+    k_s, k_l = (SKY_AMB_SCALE * 0.9, 1.1) if env.get("classic", True) else (1.0, 1.0)
     t = [lin(min(1.0, (x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9 * k_s)) * k_l for x in env["ambient"]]
     return 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2]
 AMB = amblit(M.get("env")) if kind == "scene" else 0.0  # face/body portraits have their own studio lights
@@ -238,7 +243,9 @@ def _material(b, slots, cut):
             L(sp.outputs["Color"], mx.inputs["A"]); mx.inputs["B"].default_value = (sc[0], sc[1], sc[2], 1); L(mx.outputs["Result"], p.inputs["Specular Tint"])
         p.inputs["Specular IOR Level"].default_value = 0.5 + 0.5 * mat.get("env", 0)
         # ponytail: env intensity only raises specular; no reflection probes; ceiling = shiny SL surfaces look matte
-    if not SSR and not ("gloss" in mat or "roughness" in mat):
+    # 2026-10-14 bikini compare: with SSR on too: the viewer's SSR / probes only reflect on faces with a glossiness
+    # (specular.a); a plain face stays matte. The 0.5 sheen greyed the teak deck ((97, 85, 76) vs his (108, 84, 59))
+    if not ("gloss" in mat or "roughness" in mat):
         # SSR + mirrors off (David's High+, Firestorm 2026-10-13): a face without a specular/PBR material gets no reflection
         # at all in the viewer (no screen-space pass, no hero probe); Principled's default 0.5 specular put a sky/lamp sheen on
         # leaves, bark, skin bakes and plaster (foliage 37 vs 24, wall/skin +10-17%). Shiny faces keep Cycles' glossy = probes.
@@ -567,6 +574,19 @@ def sky_seen(env, night):
     h = env["horizon"]; z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
     return h, [min(1.0, c * k) for c in z], 0.35 if night else 1.0
 
+def sky_stops(env):
+    """photo hd day: the classic sky shader (llsky.sky_rgb = skyF.glsl) at several elevations -> [(sin elev, linear rgb)]
+    for a colour ramp; None without the haze params"""
+    hz = env.get("haze"); sk = env.get("sky")
+    if not hz or not sk or not env.get("sun_dir") or env["sun_dir"][2] < 0 or not env.get("classic", True): return None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import llsky
+    p = {"max_y": env.get("max_y", 1605), "blue_density": hz["blue_density"], "blue_horizon": env["horizon"], "haze_density": hz["haze_density"],
+         "haze_horizon": hz["haze_horizon"], "density_multiplier": hz["density_multiplier"], "sunlight": env["sunlight"],
+         "glow": env.get("glow", [5, 0, -2.5]), "ambient": env["ambient"], "cloud_shadow": env.get("cloud_shadow", 0)}
+    try: return [(math.sin(math.radians(d)), [srgb_to_linear(min(5.0, c)) for c in llsky.sky_rgb(p, env["sun_dir"][2], True, 1.0, d)])
+                 for d in (0.5, 2, 5, 10, 15, 20, 30, 45, 60, 90)]
+    except (KeyError, TypeError, ValueError) as e: log("sky stops", e); return None
+
 def sky_backdrop(w, env, night):
     """What the camera (and water reflections) see of the sky: sky_seen's horizon-to-overhead gradient, and at night
     the region's stars (star_brightness). Diffuse lighting still comes from the flat horizon colour it always used, so
@@ -583,6 +603,14 @@ def sky_backdrop(w, env, night):
     mx = nt.nodes.new("ShaderNodeMix"); mx.data_type = "RGBA"; L(mr.outputs["Result"], mx.inputs["Factor"])
     mx.inputs["A"].default_value = (*h, 1); mx.inputs["B"].default_value = (*zc, 1)
     col = mx.outputs["Result"]
+    stops = sky_stops(env) if HD and not night else None
+    if stops:
+        # 2026-10-14 bikini compare: the viewer's sky shader is most saturated 10-25 deg up ((111, 136, 188) at 10 deg);
+        # a 2-key horizon -> zenith blend went through grey there ((98, 107, 133) vs his (94, 118, 172))
+        cr = nt.nodes.new("ShaderNodeValToRGB"); L(sp.outputs["Z"], cr.inputs["Fac"]); el = cr.color_ramp.elements
+        el[0].position = stops[0][0]; el[0].color = (*stops[0][1], 1); el[1].position = stops[-1][0]; el[1].color = (*stops[-1][1], 1)
+        for z_, c_ in stops[1:-1]: e_ = el.new(z_); e_.color = (*c_, 1)
+        col = cr.outputs["Color"]
     if ns and ns.get("stars", 0) > 0:
         # stars: Voronoi cells on the view direction, a point at each cell's centre, random brightness, above the horizon
         vo = nt.nodes.new("ShaderNodeTexVoronoi"); vo.inputs["Scale"].default_value = 60.0; L(co.outputs["Generated"], vo.inputs["Vector"])
@@ -781,6 +809,8 @@ def water():
     # most frames where the pre-backdrop render showed the flat horizon colour, so the picture read as darker, David 2026-10-04)
     mx.inputs["A"].default_value = (h[0] * 0.72, h[1] * 0.8, h[2] * 0.9, 1); L(sky.outputs["Result"], mx.inputs["B"])
     wt = env.get("water") if HD else None
+    if wt and not night and os.environ.get("GT_FS_WATER", "1") == "1":
+        water_fs(ob, m, nt, wt); return
     if wt:   # photo hd: the EEP water: fog colour as the sea body (lit like the viewer: x the horizon brightness), fresnel scale
         hb = max(0.15, sum(h) / 3 * 1.6); fd = min(1.0, float(wt.get("fog_density", 10)) / 10.0)
         # 2026-10-14: the EEP fog colour is sRGB (Firestorm: waterFogColorLinear = srgb_to_linear); used raw it read pale
@@ -821,6 +851,54 @@ def water():
         L(op_.outputs[0], ms.inputs["Fac"]); L(tr.outputs[0], ms.inputs[1]); L(out, ms.inputs[2]); out = ms.outputs[0]
     L(out, nt.nodes["Material Output"].inputs["Surface"])
     ob.data.materials.append(m); ob.visible_shadow = False; ob.visible_diffuse = False; ob.visible_glossy = False
+
+def water_fs(ob, m, nt, wt):
+    """photo hd day water as Firestorm's PBR viewer draws it (class3/environment/waterF.glsl, 2026-10-14 bikini compare:
+    the emission-only sea had no waves, no sparkle and mirrored the sky pale where his is deep blue):
+    - wave normals: two layers of ripples (the viewer scrolls its normal map at wave1 / wave2, x normal_scale); a noise
+      height field through a bump here (ponytail: not the 822ded49 normal map texture itself)
+    - fresnel per wave: df = dot(view, n) x fresnel_scale + fresnel_offset; mix factor min(1, 3 df^2) (df3 summed),
+      reflection weight df (df2.y). The viewer's view vector points from the eye to the water (dot < 0), Blender's
+      Incoming the other way: -dot. So the grazing sea mirrors most (0.5) and looking down shows the deep fog colour
+    - reflection = probe + SSR: a traced GGX mirror (roughness = blur_multiplier) of the sky and the scene, x df; the
+      sun's punctual specular on the waves comes out of the same lobe (the sparkle path)
+    - refraction / fog: deep water is getWaterFogViewNoClip -> srgb_to_linear(fog colour) x ~1 (no lighting);
+      the shallows show through (Transparent Water) as before"""
+    L = nt.links.new; N = lambda t: nt.nodes.new(t)
+    geo = N("ShaderNodeNewGeometry")
+    ns = max(0.5, sum(wt.get("normal_scale") or [2, 2, 2]) / 3)
+    h = None
+    for sc_, amp, w_ in ((0.9, 1.0, wt.get("wave1") or [1, 0]), (3.5, 0.4, wt.get("wave2") or [1, -1])):   # ~1 m swell, ~25 cm ripples
+        mp = N("ShaderNodeMapping"); L(geo.outputs["Position"], mp.inputs["Vector"])
+        mp.inputs["Scale"].default_value = (sc_, sc_ * (0.55 + 0.1 * abs(w_[1])), sc_ * 0.5)   # ripples stretched across the wind
+        mp.inputs["Rotation"].default_value = (0, 0, math.atan2(w_[1], w_[0]))
+        nz = N("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 1.0; nz.inputs["Detail"].default_value = 4; nz.inputs["Roughness"].default_value = 0.55
+        L(mp.outputs["Vector"], nz.inputs["Vector"])
+        k = N("ShaderNodeMath"); k.operation = "MULTIPLY"; L(nz.outputs["Fac"], k.inputs[0]); k.inputs[1].default_value = amp
+        if h is None: h = k.outputs[0]
+        else:
+            ad = N("ShaderNodeMath"); ad.operation = "ADD"; L(h, ad.inputs[0]); L(k.outputs[0], ad.inputs[1]); h = ad.outputs[0]
+    bm = N("ShaderNodeBump"); bm.inputs["Strength"].default_value = min(1.0, 0.3 * ns); bm.inputs["Distance"].default_value = 0.3
+    L(h, bm.inputs["Height"]); nrm = bm.outputs["Normal"]
+    dp = N("ShaderNodeVectorMath"); dp.operation = "DOT_PRODUCT"; L(geo.outputs["Incoming"], dp.inputs[0]); L(nrm, dp.inputs[1])
+    df = N("ShaderNodeMath"); df.operation = "MULTIPLY_ADD"; df.use_clamp = False; L(dp.outputs["Value"], df.inputs[0])
+    df.inputs[1].default_value = -float(wt.get("fresnel_scale", 0.4)); df.inputs[2].default_value = float(wt.get("fresnel_offset", 0.5))
+    d2 = N("ShaderNodeMath"); d2.operation = "MULTIPLY"; L(df.outputs[0], d2.inputs[0]); L(df.outputs[0], d2.inputs[1])
+    kx = N("ShaderNodeMath"); kx.operation = "MULTIPLY"; kx.use_clamp = True; L(d2.outputs[0], kx.inputs[0]); kx.inputs[1].default_value = 3.0
+    gl = N("ShaderNodeBsdfGlossy"); gl.distribution = "GGX"; gl.inputs["Roughness"].default_value = max(0.02, float(wt.get("blur_multiplier", 0.04)))
+    L(nrm, gl.inputs["Normal"])
+    cw = N("ShaderNodeCombineColor"); [L(df.outputs[0], cw.inputs[i]) for i in range(3)]; L(cw.outputs[0], gl.inputs["Color"])
+    fb = N("ShaderNodeEmission"); fb.inputs["Color"].default_value = (*[lin(c) for c in wt["fog_color"]], 1); fb.inputs["Strength"].default_value = 1.0
+    ms = N("ShaderNodeMixShader"); L(kx.outputs[0], ms.inputs["Fac"]); L(fb.outputs[0], ms.inputs[1]); L(gl.outputs[0], ms.inputs[2])
+    out = ms.outputs[0]
+    if os.environ.get("GT_TRANSPARENT_WATER", "1") == "1":
+        lw = N("ShaderNodeLayerWeight"); lw.inputs["Blend"].default_value = 0.35
+        tr = N("ShaderNodeBsdfTransparent"); mt = N("ShaderNodeMixShader")
+        op_ = N("ShaderNodeMath"); op_.operation = "MAXIMUM"; L(lw.outputs["Fresnel"], op_.inputs[0]); op_.inputs[1].default_value = 0.97   # the seabed shows unfogged here (Firestorm fogs it by depth): a hint only
+        L(op_.outputs[0], mt.inputs["Fac"]); L(tr.outputs[0], mt.inputs[1]); L(out, mt.inputs[2]); out = mt.outputs[0]
+    L(out, nt.nodes["Material Output"].inputs["Surface"])
+    ob.data.materials.append(m); ob.visible_shadow = False; ob.visible_diffuse = False; ob.visible_glossy = False
+    log("water: firestorm waterF (waves, fresnel", wt.get("fresnel_scale"), "+", wt.get("fresnel_offset"), ", traced reflection, fog)")
 
 TERRAIN_FALLBACK = [(0.33, 0.27, 0.18), (0.22, 0.30, 0.12), (0.30, 0.30, 0.24), (0.38, 0.37, 0.35)]  # dirt, grass, mountain, rock
 

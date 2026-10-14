@@ -407,6 +407,8 @@ def gpu_setup():
         if os.environ.get("GT_HD") == "1":   # `photo hd` (2026-10-13): stills for David, quality over speed
             sc.cycles.use_adaptive_sampling = True; sc.cycles.adaptive_threshold = float(os.environ.get("GT_HD_THRESHOLD", "0.02"))
             sc.cycles.denoiser = "OPENIMAGEDENOISE"; sc.cycles.denoising_input_passes = "RGB_ALBEDO_NORMAL"
+            sc.cycles.denoising_prefilter = os.environ.get("GT_DENOISE_PREFILTER", "ACCURATE")
+            if hasattr(sc.cycles, "denoising_quality"): sc.cycles.denoising_quality = os.environ.get("GT_DENOISE_QUALITY", "HIGH")
             sc.cycles.max_bounces = 6; sc.cycles.diffuse_bounces = 3; sc.cycles.glossy_bounces = 3
             sc.cycles.transparent_max_bounces = 24; sc.cycles.filter_width = 1.5 if os.environ.get("GT_SMAA", "1") != "0" else 0.01   # pixel filter = anti-aliasing (SMAA Ultra; `nosmaa` = aliased)
             # 2026-10-13 20:05 photo hd self landscape: Blender OOM-killed at 7.2 GB RSS (15 GB box, client running) after
@@ -1041,6 +1043,12 @@ else:
     sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90
 log("build seconds", round(time.time() - T0, 1))
 
+BAND_OVERLAP = 48
+def band_rows(h, n):
+    """[(y0, y1)] row ranges of n near-equal horizontal bands covering 0..h"""
+    n = max(1, min(int(n), h)); e = [round(h * i / n) for i in range(n + 1)]
+    return [(e[i], e[i + 1]) for i in range(n)]
+
 def hd_render_hdr(png):
     """photo hd (2026-10-13, David: HDR): render once scene-linear to a 32-bit OpenEXR master (+ Radiance .hdr), then the
     PNG = Firestorm's tonemap/exposure/sRGB pass on it (hdr_post.firestorm_ldr)"""
@@ -1059,22 +1067,49 @@ def hd_render_hdr(png):
         fo = cnt.nodes.new("CompositorNodeOutputFile"); gdir = png[:-4] + "-glow"; fo.base_path = gdir
         fo.format.file_format = "OPEN_EXR"; fo.format.color_depth = "32"; fo.file_slots[0].path = "glow"
         cnt.links.new(rl.outputs["glow"], fo.inputs[0]); gexr = gdir
-    t = time.time(); bpy.ops.render.render(write_still=True); secs = round(time.time() - t, 1)
-    img = bpy.data.images.load(exr); w, h = img.size; px = np.empty(w * h * 4, np.float32); img.pixels.foreach_get(px)
-    rgb = px.reshape(h, w, 4)[..., :3].astype(np.float64)
-    if gexr:
-        import glob, shutil
-        gf = sorted(glob.glob(gexr + "/glow*.exr"))
-        if gf:
-            gi = bpy.data.images.load(gf[0]); gp = np.empty(w * h * 4, np.float32); gi.pixels.foreach_get(gp)
-            st = hdr_post.settings_from_env(os.environ)
-            rgb = rgb + hdr_post.bloom(gp.reshape(h, w, 4)[..., :3].astype(np.float64), st["glow_iterations"], st["glow_strength"])
-            log("glow bloom", "iterations", st["glow_iterations"], "strength", st["glow_strength"])
-        shutil.rmtree(gexr, ignore_errors=True)
+    # 2026-10-14 memory: the post runs in float32 (8-bit PNG / RGBE out; float64 copies of a 4K frame were ~1 GB of the
+    # peak) and each EXR's Blender image is freed as soon as its pixels are read. Cycles also merges the 4K tiles and
+    # runs OIDN on the WHOLE frame at the end (+3.4 GB at 3840x2160, measured), whatever the tile size. GT_HD_BANDS=n
+    # renders n horizontal border bands (each denoised alone, BAND_OVERLAP rows of margin each side so OIDN's edges fall
+    # outside the kept rows) and stitches them: that end-of-render spike drops to ~1/n. look.py picks n from free memory.
+    bands = max(1, int(os.environ.get("GT_HD_BANDS", "1") or 1))
+    W_, H_ = sc.render.resolution_x, sc.render.resolution_y
+    rgb = glow = None; t = time.time()
+    for y0, y1 in band_rows(H_, bands):
+        if bands > 1:
+            lo, hi = max(0, y0 - BAND_OVERLAP), min(H_, y1 + BAND_OVERLAP)
+            sc.render.use_border = True; sc.render.use_crop_to_border = False
+            sc.render.border_min_x, sc.render.border_max_x = 0.0, 1.0
+            sc.render.border_min_y, sc.render.border_max_y = lo / H_, hi / H_
+        bpy.ops.render.render(write_still=True)
+        img = bpy.data.images.load(exr); w, h = img.size; px = np.empty(w * h * 4, np.float32); img.pixels.foreach_get(px)
+        bpy.data.images.remove(img)
+        if rgb is None: rgb = np.zeros((h, w, 3), np.float32)
+        rgb[y0:y1] = px.reshape(h, w, 4)[y0:y1, :, :3]; del px     # Blender rows bottom-up, like border_min_y
+        if gexr:
+            import glob, shutil
+            gf = sorted(glob.glob(gexr + "/glow*.exr"))
+            if gf:
+                gi = bpy.data.images.load(gf[0]); gp = np.empty(w * h * 4, np.float32); gi.pixels.foreach_get(gp)
+                bpy.data.images.remove(gi)
+                if glow is None: glow = np.zeros((h, w, 3), np.float32)
+                glow[y0:y1] = gp.reshape(h, w, 4)[y0:y1, :, :3]; del gp
+            shutil.rmtree(gexr, ignore_errors=True)
+    secs = round(time.time() - t, 1)
+    if bands > 1:   # the stitched scene-linear master replaces the last band's EXR
+        sc.render.use_border = False; log("hd bands", bands)
+        ex = bpy.data.images.new("exr-master", W_, H_, alpha=True, float_buffer=True); ex.colorspace_settings.name = "Linear Rec.709"
+        o = np.ones((H_, W_, 4), np.float32); o[..., :3] = rgb; ex.pixels.foreach_set(o.ravel()); del o
+        ex.save_render(exr, scene=sc); bpy.data.images.remove(ex)
+    if glow is not None:
+        st = hdr_post.settings_from_env(os.environ)
+        rgb += hdr_post.bloom(glow, st["glow_iterations"], st["glow_strength"]).astype(np.float32); del glow
+        log("glow bloom", "iterations", st["glow_iterations"], "strength", st["glow_strength"])
     ldr, info = hdr_post.firestorm_ldr(rgb, M.get("env"), 2.0 ** float(os.environ.get("GT_EXPOSURE", "0")), hdr_post.settings_from_env(os.environ))
     hdr_post.write_rgbe(png[:-4] + ".hdr", rgb[::-1])   # Blender pixels are bottom row first
     out = bpy.data.images.new("ldr", w, h, alpha=False, float_buffer=True); out.colorspace_settings.name = "Non-Color"
-    o = np.ones((h, w, 4), np.float32); o[..., :3] = ldr; out.pixels.foreach_set(o.ravel())
+    del rgb
+    o = np.ones((h, w, 4), np.float32); o[..., :3] = ldr; del ldr; out.pixels.foreach_set(o.ravel()); del o
     out.filepath_raw = png; out.file_format = "PNG"; out.save()
     log("hdr master", exr, png[:-4] + ".hdr", "post", json.dumps(info))
     log("render seconds", secs, png)

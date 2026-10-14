@@ -81,12 +81,25 @@ def retry_env(rc, hd, attempt=1):
                 "GT_TEX_BIAS": f"{bias:g}", "GT_TEX_BUDGET_MB": f"{max(600, budget):.0f}"}
     return {}
 
-def tex_budget_mb(avail_mb, floor_mb=None, base_mb=3000):
-    """Texture budget for an HD render: what the box has free now, minus the memory guard floor and ~3 GB for
-    Blender, geometry, BVH, film and denoise buffers; 600 MB minimum, 6000 MB maximum (shared box)"""
+HD_OVERHEAD_MB = 3200   # Blender + geometry + BVH + film/tiles + float32 post at 3840x2160, measured 2026-10-14 (below)
+HD_TEX_RATIO = 0.5      # peak MB per MB of handler.tex_mem_mb's estimate, measured 0.41-0.43 (+ margin)
+
+def tex_budget_mb(avail_mb, floor_mb=None, base_mb=HD_OVERHEAD_MB, tex_ratio=HD_TEX_RATIO):
+    """Texture budget (in handler.tex_mem_mb's estimate units) for an HD render so the FIRST attempt fits what the box
+    has free now. 2026-10-14 measurement, look-work Peronaut scene (1.02 M tris, 4K, Ultra), peak RSS of Blender:
+    no textures 2.8 GB; estimate 1.84 GB -> 3.6 GB; estimate 3.33 GB -> 4.2 GB (Cycles packs textures at render, so
+    the estimate's 2x copy is mostly not live at the peak). Room = free - guard floor - overhead; 600..6000 MB"""
     floor_mb = int(os.environ.get("GT_MEM_FLOOR_MB", "1500")) if floor_mb is None else floor_mb
     if avail_mb is None: return 3000
-    return int(min(6000, max(600, avail_mb - floor_mb - base_mb)))
+    return int(min(6000, max(600, (avail_mb - floor_mb - base_mb) / tex_ratio)))
+
+def hd_bands(avail_mb, floor_mb=None):
+    """Denoise bands for a 4K HD render (render_mesh GT_HD_BANDS): Cycles' whole-frame OIDN pass at the end is the peak.
+    2026-10-14 Peronaut 4K Ultra: 1 band 6.5 GB peak, 3 bands 5.8 GB. Bands only when the box is tight."""
+    floor_mb = int(os.environ.get("GT_MEM_FLOOR_MB", "1500")) if floor_mb is None else floor_mb
+    if avail_mb is None: return 2
+    room = avail_mb - floor_mb
+    return 1 if room >= 7500 else 2 if room >= 6000 else 3
 
 def read_mem_available():
     try:
@@ -450,7 +463,9 @@ def main(a):
         os.environ.setdefault("GT_TEX_CAP_SCENE", "256")
     if hd:   # the viewer's texture streaming: discard levels from on-screen size, bias under memory pressure
         os.environ.setdefault("GT_TEX_DIST", "1"); os.environ["GT_RES"] = hd_env.get("GT_RES", "3840x2160")
-        os.environ.setdefault("GT_TEX_BUDGET_MB", str(tex_budget_mb(read_mem_available())))
+        _avail = read_mem_available()
+        os.environ.setdefault("GT_TEX_BUDGET_MB", str(tex_budget_mb(_avail)))
+        os.environ.setdefault("GT_HD_BANDS", str(hd_bands(_avail)))
     info = {}; err = handler.fetch_textures(meta, info, WORK)
     if err: sys.exit(err)
     if hd: print(f"textures: {json.dumps({k: info['textures'].get(k) for k in ('requested', 'est_mb', 'est_mb_before_budget', 'discard_bias', 'budget_mb', 'sizes')})}", file=sys.stderr)

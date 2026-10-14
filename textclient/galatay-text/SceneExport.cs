@@ -222,7 +222,7 @@ public static partial class Program
 
     static async Task<string> SceneExport(string[] a)
     {
-        float r = 48;
+        float r = 48; bool noEnv = a.Contains("noenv"); a = a.Where(x => x != "noenv").ToArray();
         if (a.Length > 1 && (!float.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out r) || r <= 0 || r > 128))
             return "usage: scene export [radius 1-128]";
         if (Env("GT_LOOK_REFRESH_ATTACH", "on") != "off") await RefreshNearbyAttachmentFaces(Math.Min(r, 12f));
@@ -383,7 +383,9 @@ public static partial class Program
 
         var vparams = self == null ? new OSDMap() : Params(self);
         OSD env; var parcelId = await ParcelIdAt(sim, myPos);
-        if (EnvCacheHit(envCache, sim.Handle, parcelId, DateTime.UtcNow)) env = envCache.env;
+        // `noenv` (her quick looks, David 2026-10-13): no EEP fetch at all; only `photo hd` renders the environment
+        if (noEnv) env = OSD.FromString("skipped: noenv");
+        else if (EnvCacheHit(envCache, sim.Handle, parcelId, DateTime.UtcNow)) env = envCache.env;
         else
         {
             env = new OSDMap();

@@ -177,7 +177,7 @@ def main(a):
     if r.returncode: sys.exit("scene-mesher failed: " + mesher_error(r.stderr or r.stdout))
     mesh_warn = [l for l in (r.stderr or "").splitlines() if l.startswith("warning:")]
     times["mesh"] = round(time.time() - t0, 1)
-    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["backdrop"] = far
+    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = None; meta["backdrop"] = far   # her own renders: no environment (David 2026-10-13)
     if far: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
     json.dump(far and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}, open(f"{WORK}/terrain.json", "w"))  # region heightmap (exports 2026-10-04+)

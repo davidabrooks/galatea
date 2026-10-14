@@ -2,6 +2,7 @@
 """`look` for the text client: a `scene export` dir -> mesh (scene-mesher) -> CPU Cycles render(s) of what's around her.
 usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far] [--views=front,back,left,right,<deg>|all]
              [--hd[=landscape|portrait]]
+  --sky=<preset>  (with --hd) override the shared environment: default, midday, sunrise, sunset, midnight, night, foggy
   --hd    4K photo for David (not her quick vision look): 3840x2160 (portrait 2160x3840; self defaults to portrait),
           always in the real scene (self too: framed on her whole body from in front, no studio backdrop), with
           terrain, water and the export's sky/sun (96 m backdrop when the export reaches it), adaptive sampling +
@@ -19,7 +20,7 @@ import json, os, re, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, f"{HERE}/cloud-render")
 os.environ.setdefault("GT_MAX_TEXTURES", "4000")  # Warehouse 21 crowd: ~3200 scene + avatar textures (3000 dropped ~200 far ones); disk-cached after the first look
 os.environ.setdefault("GT_TEX_WORKERS", "24")  # local disk cache; parallel CDN GETs (crowd looks were ~50 s at 8)
-import handler, make_job  # texture fetch (CDN, capped) + bake decode / region sky: same code as the Runpod path
+import handler, llsky, make_job  # texture fetch (CDN, capped) + bake decode / region sky: same code as the Runpod path
 
 MESHER = os.environ.get("SCENE_MESHER", "/home/box/tools/scene-mesher/SceneMesher.dll")
 # the text client's supervisor may not have dotnet on PATH (2026-10-04: "nice: 'dotnet': No such file"); DOTNET_ROOT is set
@@ -39,6 +40,12 @@ def hd_settings(arg, mode):
     if o not in HD_RES: raise ValueError(f"unknown photo preset '{arg}' (landscape or portrait)")
     return o, {"GT_HD": "1", "GT_RES": HD_RES[o], "GT_SAMPLES": os.environ.get("GT_HD_SAMPLES", "24"), "GT_DENOISE": "1",
                "GT_STUDIO_SHADOW": "1", "GT_TEX_CAP_AVATAR": "4096", "GT_TEX_CAP_SCENE": "4096"}
+
+def env_for(doc, hd, sky=None):
+    """mesh.json env: photo hd -> the shared EEP environment (sky None/"shared") or a named preset (llsky.photo_env;
+    ValueError for an unknown name); her quick looks -> None: render_mesh's fixed neutral lighting, no EEP at all"""
+    if not hd: return None
+    return llsky.photo_env(doc, sky)
 
 SIDES = ("front", "back", "left", "right")
 def body_views(arg):
@@ -199,6 +206,8 @@ def main(a):
     fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
     hd_arg = next(((x.split("=", 1)[1] if "=" in x else "") for x in a if x == "--hd" or x.startswith("--hd=")), None)
     a = [x for x in a if not (x == "--hd" or x.startswith("--hd="))]
+    sky = next((x.split("=", 1)[1] for x in a if x.startswith("--sky=")), None); a = [x for x in a if not x.startswith("--sky=")]
+    if sky and hd_arg is None: sys.exit("--sky needs --hd (her own looks never use the environment)")
     vw = next((x.split("=", 1)[1] for x in a if x.startswith("--views=")), ""); a = [x for x in a if not x.startswith("--views=")]
     try: bviews = body_views(vw)
     except ValueError as e: sys.exit(str(e))
@@ -206,6 +215,8 @@ def main(a):
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     try: hd, hd_env = hd_settings(hd_arg, mode)
     except ValueError as e: sys.exit(str(e))
+    if sky and sky.lower() != "shared" and sky.lower() not in llsky.presets():
+        sys.exit(f"unknown sky preset '{sky}' (shared, {', '.join(sorted(llsky.presets()))})")
     if hd: fast = False; os.environ.update({k: v for k, v in hd_env.items() if k.startswith("GT_TEX_CAP")})
     doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
     # photo hd: always the real surroundings (David 2026-10-13: no studio backdrop, `self` too): scene path with
@@ -227,7 +238,10 @@ def main(a):
     if r.returncode: sys.exit("scene-mesher failed: " + mesher_error(r.stderr or r.stdout))
     mesh_warn = [l for l in (r.stderr or "").splitlines() if l.startswith("warning:")]
     times["mesh"] = round(time.time() - t0, 1)
-    meta = json.load(open(f"{d}/mesh.json")); meta["env"] = make_job.eep(doc); meta["backdrop"] = far or bool(hd)   # photo hd: the sky gradient too
+    meta = json.load(open(f"{d}/mesh.json")); meta["backdrop"] = far or bool(hd)   # photo hd: the sky gradient too
+    # environment (David 2026-10-13): photo hd follows the shared (parcel/region) EEP environment, or the named preset
+    # (--sky=sunset); her own quick looks ignore it entirely: fixed neutral sun + sky, whatever the time of day
+    meta["env"] = env_for(doc, hd, sky)
     if far or terrain_hd: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
     tj = (far or terrain_hd) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}  # region heightmap (exports 2026-10-04+)

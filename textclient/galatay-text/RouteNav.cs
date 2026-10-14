@@ -510,7 +510,7 @@ public static partial class Program
                             var l = DoorsForCrossing(ng, p, q).Where(nd => !doorsOpened.Contains(nd.Id)).ToList();
                             if (l.Count == 0) return false; ahead = l; return true;
                         });
-                        if (dAhead is float da && DoorTouchDue(da))
+                        if (dAhead is float da && DoorTouchDue(da, new Vector2(client.Self.Velocity.X, client.Self.Velocity.Y).Length()))
                         {
                             // touch while walking (no stop at an open door); hold outside only if the leaf would not have
                             // DoorSwingWaitMs to swing before she reaches it (19:45 David: no pausing at doorways)

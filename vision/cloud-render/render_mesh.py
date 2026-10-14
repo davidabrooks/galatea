@@ -14,6 +14,7 @@ T0 = time.time()
 bpy.ops.wm.read_factory_settings(use_empty=True)
 sc = bpy.context.scene
 def log(*a): print("GT:", *a, flush=True)
+HD = os.environ.get("GT_HD") == "1"   # `photo hd`: David's 4K stills (the only renders that use the region environment fully)
 def lin(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4   # sRGB -> linear
 
 def amblit(env):
@@ -382,6 +383,9 @@ def sky_seen(env, night):
     a darker picture); before 2026-10-06 night was this day gradient at 0.35, a flat mid-grey ~3x the viewer's."""
     ns = env.get("night_sky") if night else None
     if ns: return ns["horizon"], ns["zenith"], 1.0
+    sk = env.get("sky") if HD and not night else None
+    if sk:   # photo hd (2026-10-13): the viewer's sky shader by day too (blue horizon/density, haze, density multiplier, max_y, glow)
+        return [min(1.0, c) for c in sk["horizon"]], [min(1.0, c) for c in sk["zenith"]], 1.0
     h = env["horizon"]; z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
     return h, [min(1.0, c * k) for c in z], 0.35 if night else 1.0
 
@@ -455,7 +459,10 @@ def sky_hd(nt, co, sp, col, env, night):
         dz = math_("ADD", sp.outputs["Z"], 0.08); vx = math_("DIVIDE", sp.outputs["X"], dz); vy = math_("DIVIDE", sp.outputs["Y"], dz)
         cv = node("ShaderNodeCombineXYZ"); L(vx, cv.inputs[0]); L(vy, cv.inputs[1])
         nz = node("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 1.2 / max(0.05, float(cl.get("scale", 0.42))); nz.inputs["Detail"].default_value = 6
-        L(cv.outputs[0], nz.inputs["Vector"])
+        off = cl.get("offset") or [0, 0]   # EEP cloud position + scroll rate x export time (llsky.build_env)
+        sh = node("ShaderNodeVectorMath", operation="ADD"); L(cv.outputs[0], sh.inputs[0]); sh.inputs[1].default_value = (off[0] * 8, off[1] * 8, 0)
+        L(sh.outputs[0], nz.inputs["Vector"])
+        nz.inputs["Roughness"].default_value = min(0.85, 0.35 + 0.5 * float(cl.get("detail", 0.125)))   # cloud_pos_density2 z = detail layer
         mr = node("ShaderNodeMapRange", interpolation_type="SMOOTHSTEP"); L(nz.outputs["Fac"], mr.inputs["Value"])
         mr.inputs["From Min"].default_value = 0.56 - 0.4 * cov; mr.inputs["From Max"].default_value = 0.76 - 0.4 * cov
         hz = node("ShaderNodeMapRange"); L(sp.outputs["Z"], hz.inputs["Value"]); hz.inputs["From Min"].default_value = 0.02; hz.inputs["From Max"].default_value = 0.25
@@ -473,15 +480,50 @@ def sky_hd(nt, co, sp, col, env, night):
     if not night:
         sun = env["sun_dir"]; sl = env.get("sunlight", [1, 1, 1]); pk = max(max(sl), 1e-3)
         d = disc(sun, 0, sl, 1)
-        glow = math_("MULTIPLY", math_("MULTIPLY", math_("POWER", math_("MAXIMUM", d, 0.0), 24.0), 0.35), cam)
+        # EEP glow (size x, focus z) as skyF.glsl: ((1 - view.sun) * x) ^ z, scaled so the default (5, -0.48) keeps the
+        # previous 0.35 at the sun; haze_horizon (default 0.19) scales it like the viewer's haze glow term
+        gx, _, gz = (list(env.get("glow") or [5, 0.001, -0.48]) + [0, 0, 0])[:3]; gz = min(-0.05, gz)
+        hh = (env.get("haze") or {}).get("haze_horizon", 0.19)
+        g0 = (0.001 * 5) ** -0.48
+        gv = math_("POWER", math_("MULTIPLY", math_("MAXIMUM", math_("SUBTRACT", 1.0, d), 0.001), max(0.01, gx)), gz)
+        glow = math_("MULTIPLY", math_("MULTIPLY", math_("MINIMUM", gv, 4 * g0), 0.35 / g0 * min(3.0, hh / 0.19)), cam)
         col = mixc(glow, col, [c / pk for c in sl], "ADD")
-        sd = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(0.6))), cam)
+        sd = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(0.6 * max(0.05, env.get("sun_scale", 1.0))))), cam)
         col = mixc(sd, col, [c / pk * 8 for c in sl])
     elif env.get("moon_dir") and env["moon_dir"][2] > 0:
         d = disc(env["moon_dir"], 0, None, 1)
-        md = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(0.9))), cam)
+        md = math_("MULTIPLY", math_("GREATER_THAN", d, math.cos(math.radians(0.9 * max(0.05, env.get("moon_scale", 1.0))))), cam)
         col = mixc(md, col, [0.55 * max(0.3, env.get("moon", 0.5))] * 3)
     return col
+
+def env_post(env):
+    """photo hd: EEP scene gamma and distance haze (the viewer's atmospheric fog on far geometry).
+    gamma: LL scaleSoftClip 1 - (1 - c)^gamma ~ Blender view gamma (1 = unchanged). Haze: transmittance
+    exp(-(blue_density + haze_density) x density_multiplier x distance_multiplier x metres) toward the sky's horizon colour,
+    from Cycles' mist pass (linear 0..4 km) in the compositor; the sky itself (mist = 1) is left as drawn.
+    ponytail: one grey extinction (mean of the channels), not per-channel; no in-scatter toward the sun"""
+    g = float(env.get("gamma", 1.0) or 1.0)
+    sc.view_settings.gamma = max(0.2, min(5.0, g))
+    hz = env.get("haze") or {}
+    k = (sum(hz.get("blue_density", [0, 0, 0])) / 3 + hz.get("haze_density", 0)) * hz.get("density_multiplier", 0) * hz.get("distance_multiplier", 0)
+    log("env post", env.get("source"), "gamma", round(g, 3), "haze k/m", round(k, 6))
+    if k < 1e-6: return
+    D = 4000.0
+    sc.view_layers[0].use_pass_mist = True; sc.world.mist_settings.start = 0.0; sc.world.mist_settings.depth = D; sc.world.mist_settings.falloff = "LINEAR"
+    sc.use_nodes = True; nt = sc.node_tree; L = nt.links.new
+    rl = nt.nodes.get("Render Layers") or nt.nodes.new("CompositorNodeRLayers")
+    cp = nt.nodes.get("Composite") or nt.nodes.new("CompositorNodeComposite")
+    def m(op, a, b):
+        n = nt.nodes.new("CompositorNodeMath"); n.operation = op
+        for i, v in enumerate((a, b)):
+            if isinstance(v, (int, float)): n.inputs[i].default_value = v
+            else: L(v, n.inputs[i])
+        return n.outputs[0]
+    ex = m("EXPONENT", m("MULTIPLY", rl.outputs["Mist"], -k * D), 0)
+    fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", rl.outputs["Mist"], 0.9999))
+    h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
+    mx = nt.nodes.new("CompositorNodeMixRGB"); L(fog, mx.inputs[0]); L(rl.outputs["Image"], mx.inputs[1]); mx.inputs[2].default_value = (*[c * s for c in h], 1)
+    L(mx.outputs[0], cp.inputs["Image"])
 
 def water():
     """The region's water plane (export: water_height), 4 km across so it meets the sky at the horizon. Shaded without
@@ -505,6 +547,12 @@ def water():
     # sea body = the horizon colour at ~80%, a little bluer (was a near-black (0.02, 0.05, 0.07): the sea fills a third of
     # most frames where the pre-backdrop render showed the flat horizon colour, so the picture read as darker, David 2026-10-04)
     mx.inputs["A"].default_value = (h[0] * 0.72, h[1] * 0.8, h[2] * 0.9, 1); L(sky.outputs["Result"], mx.inputs["B"])
+    wt = env.get("water") if HD else None
+    if wt:   # photo hd: the EEP water: fog colour as the sea body (lit like the viewer: x the horizon brightness), fresnel scale
+        hb = max(0.15, sum(h) / 3 * 1.6); fd = min(1.0, float(wt.get("fog_density", 10)) / 10.0)
+        fc = [min(1.0, c * hb * (2.4 - fd)) for c in wt["fog_color"]]
+        mx.inputs["A"].default_value = (*fc, 1)
+        lw.inputs["Blend"].default_value = max(0.05, min(0.95, float(wt.get("fresnel_scale", 0.4)) * 0.875))
     em = nt.nodes.new("ShaderNodeEmission"); L(mx.outputs["Result"], em.inputs["Color"]); em.inputs["Strength"].default_value = s
     L(em.outputs[0], nt.nodes["Material Output"].inputs["Surface"])
     ob.data.materials.append(m); ob.visible_shadow = False; ob.visible_diffuse = False; ob.visible_glossy = False
@@ -722,6 +770,7 @@ else:
     world(0.5)
 sc.view_settings.view_transform = "Standard"  # SL shows textures as plain sRGB
 sc.view_settings.exposure = float(os.environ.get("GT_EXPOSURE", "0"))
+if HD and kind == "scene" and M.get("env"): env_post(M["env"])
 if out.lower().endswith(".png"):   # `photo hd`: lossless master (look.py writes the high-quality JPG from it)
     sc.render.image_settings.file_format = "PNG"; sc.render.image_settings.color_mode = "RGB"; sc.render.image_settings.compression = 15
 else:

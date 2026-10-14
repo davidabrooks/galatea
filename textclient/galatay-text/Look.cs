@@ -52,15 +52,45 @@ public static partial class Program
     // `photo hd ...` (2026-10-13, David): a 4K still for David, separate from her quick looks (look.py --hd: 3840x2160 or 2160x3840,
     // Cycles + denoise, full-res textures, soft shadows; PNG + JPG in /workspace/secondlife/photos). Minutes on the CPU, so it always
     // returns before it finishes and logs the paths as [look].
-    static Task<string> PhotoCmd(string[] a)
+    // sky presets (look.py --sky=; vision/cloud-render/sky_presets.json, the viewer library's skies); "shared" = the parcel/region EEP
+    internal static readonly string[] SkyPresets = { "shared", "default", "midday", "sunrise", "sunset", "midnight", "night", "foggy" };
+
+    // pure (test): pull the sky choice out of `photo hd ...` args: `preset=<name>` / `sky=<name>` anywhere, or a bare preset
+    // name as the last word (after the orientation is fine too). -> (remaining args, preset or null = shared), sky "?" = unknown preset=
+    internal static (string[] rest, string sky) PhotoHdSky(string[] a)
     {
-        var p = PhotoHdArgs(a);
-        if (p == null) return Task.FromResult("usage: photo hd [self|view|<avatar or object name>] [landscape|portrait]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait)");
-        var la = p.Value.mode == "view" ? Array.Empty<string>() : p.Value.mode == "self" ? new[] { "self" } : new[] { "at", p.Value.target };
-        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd");
+        var w = a.ToList(); string sky = null;
+        for (int i = 0; i < w.Count; i++)
+        {
+            var t = w[i].ToLowerInvariant();
+            if (t.StartsWith("preset=") || t.StartsWith("sky="))
+            {
+                var n = t[(t.IndexOf('=') + 1)..];
+                sky = SkyPresets.Contains(n) ? n : "?"; w.RemoveAt(i); i--;
+            }
+        }
+        if (sky == null)   // bare name: the last word, or the one before landscape/portrait (a name like "Sunset Resident" keeps its first word)
+            for (int k = w.Count - 1; k >= Math.Max(1, w.Count - 2); k--)
+            {
+                var t = w[k].ToLowerInvariant();
+                if (SkyPresets.Contains(t)) { sky = t; w.RemoveAt(k); break; }
+                if (t is not ("landscape" or "portrait" or "far")) break;
+            }
+        return (w.ToArray(), sky == "shared" ? null : sky);
     }
 
-    static async Task<string> LookCmd(string[] a, string hd = null)
+    static Task<string> PhotoCmd(string[] a)
+    {
+        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|sunrise|midnight|night|foggy|default|shared | preset=<name>]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
+        var (rest, sky) = PhotoHdSky(a);
+        if (sky == "?") return Task.FromResult(usage);
+        var p = PhotoHdArgs(rest);
+        if (p == null) return Task.FromResult(usage);
+        var la = p.Value.mode == "view" ? Array.Empty<string>() : p.Value.mode == "self" ? new[] { "self" } : new[] { "at", p.Value.target };
+        return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky);
+    }
+
+    static async Task<string> LookCmd(string[] a, string hd = null, string sky = null)
     {
         const string usage = "usage: look [self [front|back|left|right|<degrees>|all]|around|at <avatar or object name>] [fast] [far]";
         bool fast = a.Contains("fast"), far = a.Contains("far"); var w = a.Where(x => x != "fast" && x != "far").ToArray();
@@ -88,7 +118,9 @@ public static partial class Program
             var tWait = sw.Elapsed.TotalSeconds;
             if (mode != "self" || hd != null) await EnsureNearbyAttachments(er);   // wait for nearby avatars' attachments (stand-ins for the rest)
             tWait = sw.Elapsed.TotalSeconds - tWait; var tEx = sw.Elapsed.TotalSeconds;
-            var ex = await SceneExport(new[] { "export", er.ToString(CultureInfo.InvariantCulture) });   // far: backdrop beyond 30 m (look.py --far)
+            var exArgs = new List<string> { "export", er.ToString(CultureInfo.InvariantCulture) };
+            if (hd == null) exArgs.Add("noenv");   // her own looks: fixed neutral light, no environment fetch (David 2026-10-13)
+            var ex = await SceneExport(exArgs.ToArray());   // far: backdrop beyond 30 m (look.py --far)
             tEx = sw.Elapsed.TotalSeconds - tEx;
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }
@@ -99,6 +131,7 @@ public static partial class Program
             if (far) psi.ArgumentList.Add("--far");
             if (views != null) psi.ArgumentList.Add("--views=" + views);
             if (hd != null) psi.ArgumentList.Add(hd);
+            if (hd != null && sky != null) psi.ArgumentList.Add("--sky=" + sky);
             // the client-side stages, so look.py's timing summary covers the whole look
             psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
             psi.Environment["GT_LOOK_EXPORT_S"] = lastExportStages;   // export sub-stages, e.g. prims=1.2(20696),bakes=3.4(...)

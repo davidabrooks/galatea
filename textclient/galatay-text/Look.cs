@@ -53,7 +53,7 @@ public static partial class Program
     // Cycles + denoise, full-res textures, soft shadows; PNG + JPG in /workspace/secondlife/photos). Minutes on the CPU, so it always
     // returns before it finishes and logs the paths as [look].
     // sky presets (look.py --sky=; vision/cloud-render/sky_presets.json, the viewer library's skies); "shared" = the parcel/region EEP
-    internal static readonly string[] SkyPresets = { "shared", "default", "midday", "sunrise", "sunset", "midnight", "night", "foggy" };
+    internal static readonly string[] SkyPresets = { "shared", "default", "midday", "midday-legacy", "sunrise", "sunset", "midnight", "night", "foggy" };
 
     // pure (test): pull the sky choice out of `photo hd ...` args: `preset=<name>` / `sky=<name>` anywhere, or a bare preset
     // name as the last word (after the orientation is fine too). -> (remaining args, preset or null = shared), sky "?" = unknown preset=
@@ -81,7 +81,7 @@ public static partial class Program
 
     static Task<string> PhotoCmd(string[] a)
     {
-        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|sunrise|midnight|night|foggy|default|shared | preset=<name>]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
+        const string usage = "usage: photo hd [self|view|<avatar or object name>] [landscape|portrait] [sunset|midday|midday-legacy|sunrise|midnight|night|foggy|default|shared | preset=<name>]  (4K PNG + JPG in /workspace/secondlife/photos; self defaults to portrait; default sky = the shared parcel/region environment)";
         var (rest, sky) = PhotoHdSky(a);
         if (sky == "?") return Task.FromResult(usage);
         var p = PhotoHdArgs(rest);

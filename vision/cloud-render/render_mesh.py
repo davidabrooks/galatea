@@ -350,11 +350,13 @@ def eep(env):
     moon = Vector(env.get("moon_dir") or -sun).normalized()   # EEP moon_rotation (older envs: opposite the sun)
     if moon.z < 0: moon = -sun   # moon down too: keep the old faint light from above
     travel = -moon if night else -sun
-    c = env["sunlight"]; peak = max(max(c), 1e-3)
+    c = env["sunlight"]
+    if HD and env.get("classic") is False: c = [lin(min(x, 8.0)) if x <= 1 else ((x + 0.055) / 1.055) ** 2.4 for x in c]   # PBR sky: srgb_to_linear(sunlit) (atmosphericsFuncs.glsl)
+    peak = max(max(c), 1e-3)
     bpy.ops.object.light_add(type="SUN"); L = bpy.context.object; L.rotation_euler = travel.to_track_quat("-Z", "Y").to_euler()
     L.data.color = [x / peak for x in c]; L.data.energy = (0.25 * env["moon"] if night else 1.2 * peak)
     w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True; bg = w.node_tree.nodes["Background"]
-    bg.inputs["Color"].default_value = (*env["horizon"], 1); bg.inputs["Strength"].default_value = 0.35 if night else 1.0
+    bg.inputs["Color"].default_value = (*env["horizon"], 1); bg.inputs["Strength"].default_value = (0.35 if night else 1.0) * (env.get("probe_ambiance", 1.0) if HD and env.get("classic") is False else 1.0)   # PBR sky: probe ambiance
     sky_backdrop(w, env, night)
     for l in M.get("lights", []):
         # SL point light, reimplemented from the LL viewer's deferred light shader: radiance = albedo x linear colour x
@@ -385,7 +387,7 @@ def sky_seen(env, night):
     if ns: return ns["horizon"], ns["zenith"], 1.0
     sk = env.get("sky") if HD and not night else None
     if sk:   # photo hd (2026-10-13): the viewer's sky shader by day too (blue horizon/density, haze, density multiplier, max_y, glow)
-        return [min(1.0, c) for c in sk["horizon"]], [min(1.0, c) for c in sk["zenith"]], 1.0
+        return [min(5.0, c) for c in sk["horizon"]], [min(5.0, c) for c in sk["zenith"]], 1.0   # HDR (skyF.glsl clamps at 5)
     h = env["horizon"]; z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
     return h, [min(1.0, c * k) for c in z], 0.35 if night else 1.0
 
@@ -502,8 +504,7 @@ def env_post(env):
     exp(-(blue_density + haze_density) x density_multiplier x distance_multiplier x metres) toward the sky's horizon colour,
     from Cycles' mist pass (linear 0..4 km) in the compositor; the sky itself (mist = 1) is left as drawn.
     ponytail: one grey extinction (mean of the channels), not per-channel; no in-scatter toward the sun"""
-    g = float(env.get("gamma", 1.0) or 1.0)
-    sc.view_settings.gamma = max(0.2, min(5.0, g))
+    g = float(env.get("gamma", 1.0) or 1.0)   # applied in hdr_post (legacyGamma / exposure range), not here
     hz = env.get("haze") or {}
     k = (sum(hz.get("blue_density", [0, 0, 0])) / 3 + hz.get("haze_density", 0)) * hz.get("density_multiplier", 0) * hz.get("distance_multiplier", 0)
     log("env post", env.get("source"), "gamma", round(g, 3), "haze k/m", round(k, 6))
@@ -776,6 +777,24 @@ if out.lower().endswith(".png"):   # `photo hd`: lossless master (look.py writes
 else:
     sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90
 log("build seconds", round(time.time() - T0, 1))
+
+def hd_render_hdr(png):
+    """photo hd (2026-10-13, David: HDR): render once scene-linear to a 32-bit OpenEXR master (+ Radiance .hdr), then the
+    PNG = Firestorm's tonemap/exposure/sRGB pass on it (hdr_post.firestorm_ldr)"""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import hdr_post
+    exr = png[:-4] + ".exr"; im = sc.render.image_settings
+    im.file_format = "OPEN_EXR"; im.color_mode = "RGB"; im.color_depth = "32"; im.exr_codec = "ZIP"
+    sc.render.filepath = exr
+    t = time.time(); bpy.ops.render.render(write_still=True); secs = round(time.time() - t, 1)
+    img = bpy.data.images.load(exr); w, h = img.size; px = np.empty(w * h * 4, np.float32); img.pixels.foreach_get(px)
+    rgb = px.reshape(h, w, 4)[..., :3].astype(np.float64)
+    ldr, info = hdr_post.firestorm_ldr(rgb, M.get("env"), 2.0 ** float(os.environ.get("GT_EXPOSURE", "0")))
+    hdr_post.write_rgbe(png[:-4] + ".hdr", rgb[::-1])   # Blender pixels are bottom row first
+    out = bpy.data.images.new("ldr", w, h, alpha=False, float_buffer=True); out.colorspace_settings.name = "Non-Color"
+    o = np.ones((h, w, 4), np.float32); o[..., :3] = ldr; out.pixels.foreach_set(o.ravel())
+    out.filepath_raw = png; out.file_format = "PNG"; out.save()
+    log("hdr master", exr, png[:-4] + ".hdr", "post", json.dumps(info))
+    log("render seconds", secs, png)
 views = views or [None]
 # keep the synced scene (BVH, ~1 GB of images with the backdrop) between the views of one job: each view re-synced it,
 # 2-3 s a view with the backdrop's textures (David 2026-10-04: keep `look around` near its pre-backdrop time)
@@ -789,4 +808,6 @@ for i, v in enumerate(views):
     else:
         if i: set_view(v)
         sc.render.filepath = out if len(views) == 1 else re.sub(r"\.(jpg|png)$", rf"-{i}.\1", out)
+    if HD and sc.render.filepath.lower().endswith(".png"):
+        hd_render_hdr(sc.render.filepath); continue
     t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)

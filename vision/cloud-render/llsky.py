@@ -45,7 +45,10 @@ def params(f):
             "cloud_detail": (z0(f.get("cloud_pos_density2", [1, 0.53, 0.125])) + [1, 1, 0.125])[2],
             "cloud_scroll": (z0(f.get("cloud_scroll_rate", [0.2, 0.01])) + [0, 0])[:2],
             "gamma": f.get("gamma", 1.0) or 0.0, "distance_multiplier": lh.get("distance_multiplier", 0.8) or 0.0,
-            "sun_scale": f.get("sun_scale", 1.0) or 0.0, "moon_scale": f.get("moon_scale", 1.0) or 0.0}
+            "sun_scale": f.get("sun_scale", 1.0) or 0.0, "moon_scale": f.get("moon_scale", 1.0) or 0.0,
+            # PBR-era skies (reflection_probe_ambiance set) are not "classic": linear lighting, tonemapped, probe ambient
+            "probe_ambiance": f.get("reflection_probe_ambiance") or 0.0,
+            "pbr": 1.0 if "reflection_probe_ambiance" in f else 0.0}
 
 def mix(a, b, t):
     return {k: ([x + (y - x) * t for x, y in zip(v, b[k])] if isinstance(v, list) else v + (b[k] - v) * t) for k, v in a.items()}
@@ -98,6 +101,8 @@ def build_env(p, sun, moon, frac=None, t=0.0, horizon=None):
            "horizon": horizon or p["blue_horizon"], "zenith": p["blue_density"], "moon": p["moon"],
            "gamma": p["gamma"], "glow": p["glow"], "sun_scale": p["sun_scale"], "moon_scale": p["moon_scale"],
            "stars": min(1.0, p["stars"] / 500.0), "max_y": p["max_y"],
+           # Firestorm classic_mode = canAutoAdjust() = no reflection_probe_ambiance key (llsettingsvo.cpp, llsettingssky.cpp)
+           "classic": p["pbr"] < 0.5, "probe_ambiance": p["probe_ambiance"],
            "haze": {"blue_density": p["blue_density"], "haze_density": p["haze_density"], "haze_horizon": p["haze_horizon"],
                     "density_multiplier": p["density_multiplier"], "distance_multiplier": p["distance_multiplier"]}}
     # cloud layer: scroll is EEP's (legacy - 10) rate; the layer's offset at the export time = position + rate x t / 100 (wrapped)
@@ -162,11 +167,14 @@ def preset_frame(w):
     star brightness x 250, sun and moon (opposite) rotation from east_angle / sun_angle"""
     v = lambda k, d=None: (w.get(k) if w.get(k) is not None else d)
     s = lambda k, d: (v(k)[0] if isinstance(v(k), list) else v(k, d))
-    az, alt = v("east_angle", 0.0), v("sun_angle", math.pi / 2)
+    az, alt = -v("east_angle", 0.0), v("sun_angle", math.pi / 2)   # LL: azimuth = -east_angle
     c1, c2 = list(v("cloud_pos_density1", [1, 0.53, 1])), list(v("cloud_pos_density2", [1, 0.53, 0.125]))
+    sr = [x - 10 for x in v("cloud_scroll_rate", [10.2, 10.01])]
+    en = v("enable_cloud_scroll", [True, True])
+    sr = [r if e else 0.0 for r, e in zip(sr, en)]
     return {"type": "sky", "sunlight_color": v("sunlight_color")[:3], "cloud_color": v("cloud_color")[:3],
-            "cloud_pos_density1": [c1[0] - 10 if c1[0] > 5 else c1[0], c1[1], c1[2]], "cloud_pos_density2": [c2[0] - 10 if c2[0] > 5 else c2[0], c2[1], c2[2]],
-            "cloud_scale": s("cloud_scale", 0.42), "cloud_scroll_rate": [x - 10 for x in v("cloud_scroll_rate", [10.2, 10.01])],
+            "cloud_pos_density1": c1[:3], "cloud_pos_density2": c2[:3],   # copied as-is (translateLegacySettings)
+            "cloud_scale": s("cloud_scale", 0.42), "cloud_scroll_rate": sr,
             "cloud_shadow": s("cloud_shadow", 0.27), "gamma": s("gamma", 1.0), "glow": v("glow")[:3], "max_y": s("max_y", 1605),
             "star_brightness": v("star_brightness", 0) * 250.0, "moon_brightness": 0.5, "sun_scale": 1.0, "moon_scale": 1.0,
             "sun_rotation": dir_quat(azalt_dir(az, alt)), "moon_rotation": dir_quat(azalt_dir(az + math.pi, -alt)),
@@ -178,7 +186,7 @@ def preset_env(name, doc=None):
     """a named preset ("sunset") -> env dict, keeping the shared water settings when the export has them; None = unknown"""
     w = presets().get((name or "").strip().lower())
     if w is None: return None
-    f = preset_frame(w)
+    f = w["eep"] if "eep" in w else preset_frame(w["legacy"])   # library EEP asset as-is, or a converted Windlight preset
     out = build_env(params(f), qrot_x(f["sun_rotation"]), qrot_x(f["moon_rotation"]))
     out["source"] = "preset:" + w["name"]
     wt = water_of(doc) if doc else None

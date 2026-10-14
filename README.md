@@ -29,6 +29,13 @@ See [TESTING.md](TESTING.md) for how to run the automated test suite locally (C#
 - `client-options.md` – comparison of viewer/client options tried.
 - `lelutka-evox-hud-SKILL.md` – notes on driving the LeLutka EvoX head HUD.
 
+## Host setup
+
+Run once per host (idempotent): `sudo scripts/setup-host.sh`. It installs `/etc/sysctl.d/90-galatay-udp.conf`
+(`net.core.rmem_max = 16 MB`) and applies it, so the client's 8 MB UDP receive buffer is actually granted
+(without it Linux silently caps the buffer and nearby chat can be lost when the box stalls; see `UdpDrops.cs`).
+The client logs a `[net] WARNING: UDP receive buffer capped` line at startup when the limit is too low.
+
 ## License
 BSD 3-Clause License, Copyright (c) 2026, David Brooks; see [LICENSE](LICENSE). This is the same licence as LibreMetaverse, which the clients build on. It covers everything in this repository, including `textclient/SlTextureVision/`. Third-party components keep their own licences; see [`textclient/SlTextureVision/THIRD-PARTY-NOTICES.md`](textclient/SlTextureVision/THIRD-PARTY-NOTICES.md) (LibreMetaverse and CoreJ2K, both BSD-3-Clause).
 

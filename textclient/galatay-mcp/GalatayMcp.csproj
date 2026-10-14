@@ -42,6 +42,7 @@
     <Compile Include="../galatay-text/AoGuard.cs" Link="Core/AoGuard.cs" />
     <Compile Include="../galatay-text/Watchdog.cs" Link="Core/Watchdog.cs" />
     <Compile Include="../galatay-text/UdpDrops.cs" Link="Core/UdpDrops.cs" />
+    <Compile Include="../galatay-text/SeatOccupancy.cs" Link="Core/SeatOccupancy.cs" />
     <Compile Include="../galatay-text/OfflineIm.cs" Link="Core/OfflineIm.cs" />
     <Compile Include="../galatay-text/AttachTrack.cs" Link="Core/AttachTrack.cs" />
     <Compile Include="../galatay-text/WearOps.cs" Link="Core/WearOps.cs" />

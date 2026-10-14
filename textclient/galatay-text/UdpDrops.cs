@@ -38,8 +38,26 @@ public static partial class Program
 
     // Raw ChatFromSimulator arrivals from other AVATARS, logged before any client filtering, so a missing [chat] line
     // can be told apart: no [chat-raw] = the sim/network never delivered it; [chat-raw] without [chat] = our filter.
+    /// <summary>Pure: warning when the kernel will cap SO_RCVBUF below what we ask (Linux grants min(wanted, rmem_max)); null when fine/unknown.</summary>
+    internal static string UdpRcvbufWarning(long rmemMax, int wanted)
+    {
+        if (rmemMax <= 0 || rmemMax >= wanted) return null;
+        return $"WARNING: UDP receive buffer capped: net.core.rmem_max = {rmemMax} bytes ({rmemMax / 1024} KB) < requested {wanted / 1048576} MB; "
+             + "chat can be lost under load. Run: sudo scripts/setup-host.sh";
+    }
+    static void CheckUdpRcvbufLimit()
+    {
+        try
+        {
+            var w = UdpRcvbufWarning(long.Parse(File.ReadAllText("/proc/sys/net/core/rmem_max").Trim()), UdpSockBufWanted);
+            if (w != null) { Log("net", w); Console.Error.WriteLine("[net] " + w); }
+            else Log("net", $"UDP receive buffer: {UdpSockBufWanted / 1048576} MB allowed by net.core.rmem_max");
+        }
+        catch (Exception ex) { Log("net", "rmem_max check failed: " + ex.Message); }
+    }
     static void HookRawChat()
     {
+        CheckUdpRcvbufLimit();
         client.Network.RegisterCallback(LibreMetaverse.Packets.PacketType.ChatFromSimulator, (s, e) =>
         {
             try

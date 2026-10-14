@@ -108,6 +108,15 @@ def terrain_composition(doc, texdir, fetch=None):
             except Exception: c["paths"].append(None)
     return comps
 
+def particle_sources(doc, me, radius):
+    """photo hd: the export's running particle systems on world prims within the export radius -> [{pos, ps}]
+    (attachments' particles: no world position in the export yet)"""
+    out = []
+    for p in doc.get("prims", []):
+        ps = p.get("particles"); wp = p.get("world_pos")
+        if ps and wp and sum((a - b) ** 2 for a, b in zip(wp, me)) <= radius ** 2: out.append({"pos": wp, "ps": ps})
+    return out
+
 def mesher_args(d, mode, me, far, radius=96):
     """far: everything to the export radius (photo hd: the profile's draw distance, 96-256 m), full LOD inside 30 m"""
     return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + ([str(int(max(96, radius or 96))), "--far=30"] if far else ["30", "--roots=32"])
@@ -280,6 +289,7 @@ def main(a):
     only = bake_keys(meta, doc)
     n_bake, bake_hits = cached_bakes(d, only, bake_cap, WORK)
     times["bakes"] = round(time.time() - t, 1)
+    if hd: meta["particles"] = particle_sources(doc, me, float(doc.get("radius") or 32))
     json.dump(meta, open(f"{WORK}/mesh.json", "w"))
     # around: diffuse only, smaller caps (nav: who's there / obstacles — not fabric normal maps)
     if mode == "around":

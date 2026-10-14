@@ -14,4 +14,10 @@ public class PhotoHdProfileTests
         Assert.Equal(128f, Program.PhotoHdRadius(null, 12)); Assert.Equal(96f, Program.PhotoHdRadius(null, 6));
         Assert.Equal(256f, Program.PhotoHdRadius("ultra", 15)); Assert.Equal(128f, Program.PhotoHdRadius("ultra", 11));
     }
+
+    [Fact]
+    public void Particles_exported_only_when_running()
+    {
+        Assert.True(Program.ExportParticles(2f, 2)); Assert.False(Program.ExportParticles(0f, 2)); Assert.False(Program.ExportParticles(2f, 0));
+    }
 }

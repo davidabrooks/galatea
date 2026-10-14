@@ -597,6 +597,39 @@ def env_post(env):
     mx = nt.nodes.new("CompositorNodeMixRGB"); L(fog, mx.inputs[0]); L(rl.outputs["Image"], mx.inputs[1]); mx.inputs[2].default_value = (*[c * s for c in h], 1)
     L(mx.outputs[0], cp.inputs["Image"])
 
+def particle_systems():
+    """photo hd: SL particles (particles.py snapshot) as small camera-facing soft discs: emissive ones glow in their
+    colour (the purple orb), the rest are lit, alpha = the particle's alpha. ponytail: round sprites, not the particle
+    texture; spheres face the camera from every side"""
+    srcs = M.get("particles") or []
+    if not (HD and srcs): return
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import particles
+    m = bpy.data.materials.new("sl_particle"); m.use_nodes = True; nt = m.node_tree; L = nt.links.new
+    for n in list(nt.nodes):
+        if n.type != "OUTPUT_MATERIAL": nt.nodes.remove(n)
+    at = nt.nodes.new("ShaderNodeAttribute"); at.attribute_name = "sl_pcol"; at.attribute_type = "OBJECT"
+    em = nt.nodes.new("ShaderNodeEmission"); L(at.outputs["Color"], em.inputs["Color"])
+    ae = nt.nodes.new("ShaderNodeAttribute"); ae.attribute_name = "sl_pem"; ae.attribute_type = "OBJECT"
+    df = nt.nodes.new("ShaderNodeBsdfDiffuse"); L(at.outputs["Color"], df.inputs["Color"])
+    sh = nt.nodes.new("ShaderNodeMixShader"); L(ae.outputs["Fac"], sh.inputs["Fac"]); L(df.outputs[0], sh.inputs[1]); L(em.outputs[0], sh.inputs[2])
+    lw = nt.nodes.new("ShaderNodeLayerWeight"); lw.inputs["Blend"].default_value = 0.5
+    soft = nt.nodes.new("ShaderNodeMath"); soft.operation = "SUBTRACT"; soft.inputs[0].default_value = 1.0; L(lw.outputs["Facing"], soft.inputs[1])
+    aa = nt.nodes.new("ShaderNodeAttribute"); aa.attribute_name = "sl_palpha"; aa.attribute_type = "OBJECT"
+    al = nt.nodes.new("ShaderNodeMath"); al.operation = "MULTIPLY"; L(soft.outputs[0], al.inputs[0]); L(aa.outputs["Fac"], al.inputs[1])
+    tr = nt.nodes.new("ShaderNodeBsdfTransparent"); mx = nt.nodes.new("ShaderNodeMixShader")
+    L(al.outputs[0], mx.inputs["Fac"]); L(tr.outputs[0], mx.inputs[1]); L(sh.outputs[0], mx.inputs[2])
+    L(mx.outputs[0], nt.nodes["Material Output"].inputs["Surface"])
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=12, ring_count=8, radius=0.5); proto = bpy.context.object.data; bpy.data.objects.remove(bpy.context.object)
+    proto.materials.append(m); n = 0
+    for i, s_ in enumerate(srcs):
+        for q in particles.snapshot(s_["ps"], s_["pos"], seed=i):
+            ob = bpy.data.objects.new("sl_particle", proto); sc.collection.objects.link(ob)
+            ob.location = q["pos"]; ob.scale = (q["size"][0], q["size"][0], q["size"][1])
+            c = q["color"]; k = 1.0 + 2.0 * q["glow"]
+            ob["sl_pcol"] = [c[0] * k, c[1] * k, c[2] * k]; ob["sl_pem"] = 1.0 if q["emissive"] else 0.0; ob["sl_palpha"] = c[3]
+            ob.visible_shadow = False; n += 1
+    log("particles", len(srcs), "sources", n, "particles")
+
 def water():
     """The region's water plane (export: water_height), 4 km across so it meets the sky at the horizon. Shaded without
     tracing: the sky gradient looked up along the reflected view ray, weighted by a Fresnel-like facing term, over a dark
@@ -623,10 +656,36 @@ def water():
     if wt:   # photo hd: the EEP water: fog colour as the sea body (lit like the viewer: x the horizon brightness), fresnel scale
         hb = max(0.15, sum(h) / 3 * 1.6); fd = min(1.0, float(wt.get("fog_density", 10)) / 10.0)
         fc = [min(1.0, c * hb * (2.4 - fd)) for c in wt["fog_color"]]
+        # night (2026-10-13 Firestorm reference: the bay reads (45, 52, 68)/255, ours was (15, 19, 23)): the EEP fog colour
+        # is a display colour, lifted by the classic sky's ambient as the viewer's water shader does
+        if night: fc = [lin(min(1.0, c + 0.35 * AMB_SRGB(env))) for c in wt["fog_color"]]
         mx.inputs["A"].default_value = (*fc, 1)
         lw.inputs["Blend"].default_value = max(0.05, min(0.95, float(wt.get("fresnel_scale", 0.4)) * 0.875))
-    em = nt.nodes.new("ShaderNodeEmission"); L(mx.outputs["Result"], em.inputs["Color"]); em.inputs["Strength"].default_value = s
-    L(em.outputs[0], nt.nodes["Material Output"].inputs["Surface"])
+    col = mx.outputs["Result"]
+    lt = (env.get("moon_dir") if night else env.get("sun_dir")) if HD else None
+    if lt and lt[2] > 0:
+        # photo hd (2026-10-13 audit): the sun / moon glitter path on the waves (Firestorm water: specular off the wave
+        # normal maps). A noise-perturbed reflection vector against the light: a broken streak toward the light
+        nz = nt.nodes.new("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 3.0; nz.inputs["Detail"].default_value = 6
+        L(co.outputs["Object"], nz.inputs["Vector"])
+        pv = nt.nodes.new("ShaderNodeVectorMath"); pv.operation = "SUBTRACT"; L(nz.outputs["Color"], pv.inputs[0]); pv.inputs[1].default_value = (0.5, 0.5, 0.5)
+        sv = nt.nodes.new("ShaderNodeVectorMath"); sv.operation = "SCALE"; L(pv.outputs[0], sv.inputs[0]); sv.inputs["Scale"].default_value = 0.25
+        rv = nt.nodes.new("ShaderNodeVectorMath"); rv.operation = "ADD"; L(co.outputs["Reflection"], rv.inputs[0]); L(sv.outputs[0], rv.inputs[1])
+        nv = nt.nodes.new("ShaderNodeVectorMath"); nv.operation = "NORMALIZE"; L(rv.outputs[0], nv.inputs[0])
+        dp = nt.nodes.new("ShaderNodeVectorMath"); dp.operation = "DOT_PRODUCT"; L(nv.outputs[0], dp.inputs[0]); dp.inputs[1].default_value = tuple(lt)
+        pw = nt.nodes.new("ShaderNodeMath"); pw.operation = "POWER"; L(dp.outputs["Value"], pw.inputs[0]); pw.inputs[1].default_value = 600.0
+        gk = nt.nodes.new("ShaderNodeMath"); gk.operation = "MULTIPLY"; L(pw.outputs[0], gk.inputs[0])
+        gk.inputs[1].default_value = (0.6 * max(0.3, env.get("moon", 0.5))) if night else 4.0
+        ad = nt.nodes.new("ShaderNodeMix"); ad.data_type = "RGBA"; ad.blend_type = "ADD"; L(gk.outputs[0], ad.inputs["Factor"])
+        L(col, ad.inputs["A"]); ad.inputs["B"].default_value = (1, 1, 0.95, 1); col = ad.outputs["Result"]
+    em = nt.nodes.new("ShaderNodeEmission"); L(col, em.inputs["Color"]); em.inputs["Strength"].default_value = s
+    out = em.outputs[0]
+    if HD and os.environ.get("GT_TRANSPARENT_WATER", "1") == "1":
+        # Transparent Water (High+ on): the shallows show through, the deep / grazing view is the sea body (fresnel)
+        tr = nt.nodes.new("ShaderNodeBsdfTransparent"); ms = nt.nodes.new("ShaderNodeMixShader")
+        op_ = nt.nodes.new("ShaderNodeMath"); op_.operation = "MAXIMUM"; L(lw.outputs["Fresnel"], op_.inputs[0]); op_.inputs[1].default_value = 0.88
+        L(op_.outputs[0], ms.inputs["Fac"]); L(tr.outputs[0], ms.inputs[1]); L(out, ms.inputs[2]); out = ms.outputs[0]
+    L(out, nt.nodes["Material Output"].inputs["Surface"])
     ob.data.materials.append(m); ob.visible_shadow = False; ob.visible_diffuse = False; ob.visible_glossy = False
 
 TERRAIN_FALLBACK = [(0.33, 0.27, 0.18), (0.22, 0.30, 0.12), (0.30, 0.30, 0.24), (0.38, 0.37, 0.35)]  # dirt, grass, mountain, rock
@@ -746,7 +805,7 @@ def stand_in(o):
     return lo, hi, [body, head]
 
 if kind == "scene":
-    build("scene"); build("far"); terrain(); water()
+    build("scene"); build("far"); terrain(); water(); particle_systems()
     g = M["me"]; av = os.environ.get("GT_AV")  # "x,y,yaw_deg": stand/sit her there, on the first surface below
     x, y, yaw = [float(v) for v in av.split(",")] if av else (g[0], g[1], M.get("me_yaw", -90.0))
     bpy.context.view_layer.update(); dg = bpy.context.evaluated_depsgraph_get()

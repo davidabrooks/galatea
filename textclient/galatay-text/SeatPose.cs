@@ -258,12 +258,18 @@ public static partial class Program
         {
             Log("height", "pose: David sat on my seat (same linkset) — he chooses the pose; wander holds while he stays");
             DavidSeatHoldCheck(true, "he sat on the same linkset");   // StayWithDavid.cs
+            // David 2026-10-13: shared furniture -> check roles (swaps only when clearly reversed: menu says so or he's >= 0.25 m above me)
+            var seatNow = Sim?.ObjectsPrimitives.Values.FirstOrDefault(q => q != null && q.LocalID == RootSeatOf(client.Self.SittingOn, id => Sim.ObjectsPrimitives.TryGetValue(id, out var x) && x != null ? x.ParentID : 0));
+            if (seatNow != null)
+                _ = Task.Run(async () => { await Task.Delay(2000); await EnsureCoupleRoles(seatNow, seatNow.Properties?.Name ?? seatNow.ID.ToString(), "David joined my seat", false, CancellationToken.None); });
         }
-        if (was && !davidHere && PosePathIsCouples(wLastPosePath) && client?.Self?.SittingOn != 0)
+        // 2026-10-13 David: react within ~2 s when he stands up from furniture we share (was: only after a couples path
+        // she picked herself, else the 15 s grace + 8 s recovery = 24 s on the Reiley chair, 20:08:07 -> 20:08:31)
+        if (was && !davidHere && client?.Self?.SittingOn != 0)
         {
             var gen = System.Threading.Interlocked.Increment(ref poseDavidLeftSwitchGen);
-            Log("height", "pose: David left the seat while we were in a couples pose — switching to solo");
-            _ = Task.Run(() => PoseSwitchToSoloAfterDavidLeft(gen));
+            Log("height", "pose: David left our seat — reacting in ~1.5 s (guard for an AVsitter re-seat/swap)");
+            _ = Task.Run(() => ReactDavidLeftSeat(gen));
         }
     }
 
@@ -623,11 +629,41 @@ public static partial class Program
         return $"'{seatName}': path ended in submenus ({string.Join(" > ", path)})";
     }
 
-    static async Task PoseSwitchToSoloAfterDavidLeft(int gen)
+    // pure: what to do when David stood up from our seat. dist0/dist1 = his distance from me at the guard's start/end (m),
+    // seatedElsewhere = he sat on something else. -> "solo" (a solo pose here) | "stand_follow" (stand, go next to him)
+    internal static (string action, string why) DavidLeftReaction(double dist0, double dist1, bool seatedElsewhere, double rnd)
+    {
+        if (seatedElsewhere) return dist1 <= 4 ? ("solo", $"he sat nearby ({dist1:F1} m)") : ("stand_follow", $"he sat {dist1:F1} m away");
+        if (dist1 - dist0 > 0.4) return ("stand_follow", $"he is walking away ({dist0:F1} -> {dist1:F1} m)");
+        if (dist1 > 3) return ("stand_follow", $"he is {dist1:F1} m away");
+        return rnd < 0.3 ? ("stand_follow", $"he is close ({dist1:F1} m); joining him (random)") : ("solo", $"he is close ({dist1:F1} m), just adjusting");
+    }
+
+    static async Task ReactDavidLeftSeat(int gen)
     {
         try
         {
-            await Task.Delay(800); // let AVsitter finish its sit-leave shuffle
+            double D() { var h = FindAvatarPos("David Nightingale"); return h == null ? 99 : Vector3.Distance(client.Self.SimPosition, h.Value.pos); }
+            double d0 = D();
+            await Task.Delay(1500);   // short guard: AVsitter re-seats on [SWAP]/role changes
+            if (gen != System.Threading.Volatile.Read(ref poseDavidLeftSwitchGen) || poseDavidOnSeat || client?.Self?.SittingOn == 0) return;
+            var dav = FindAvatarPos("David Nightingale");
+            double d1 = D(); bool seated = dav != null && dav.Value.av.ParentID != 0;
+            var (act, why) = DavidLeftReaction(d0, d1, seated, Random.Shared.NextDouble());
+            Log("height", $"pose: David left our seat: {why} -> {act}");
+            if (act == "solo") { await PoseSwitchToSoloAfterDavidLeft(gen, 0); return; }
+            client.Self.Stand(); await Task.Delay(1200);
+            if (dav != null && !WanderBlocksManualWalk)
+                Log("height", "pose: David left: " + await NavCmds("goto_avatar", dav.Value.av.Name, dav.Value.av.Name.Split(' ')));
+        }
+        catch (Exception ex) { Log("height", "pose: David-left reaction error: " + ex.GetBaseException().Message); }
+    }
+
+    static async Task PoseSwitchToSoloAfterDavidLeft(int gen, int settleMs = 800)
+    {
+        try
+        {
+            await Task.Delay(settleMs); // let AVsitter finish its sit-leave shuffle
             if (gen != System.Threading.Volatile.Read(ref poseDavidLeftSwitchGen)) return;
             if (client?.Self?.SittingOn == 0) return;
             if (poseDavidOnSeat) return; // he came back
@@ -677,6 +713,13 @@ public static partial class Program
         bool couples = a.Length > 0 && a[0].Equals("couples", StringComparison.OrdinalIgnoreCase);
         if (couples && !SeatHasDavid(p)) return "pose couples: David is not on this seat; refusing (couples only when he asks while sharing)";
         // pose / pose change = solo only (preferPgSolo forced inside SeatPose); pose couples stays explicit
+        if (couples)
+        {   // David 2026-10-13: right roles before (and after) any couples pose
+            var pre = await EnsureCoupleRoles(p, name, "pose couples (before)", false, cts.Token);
+            var r = await SeatPose(p, name, DateTime.Now.AddSeconds(-20), true, cts.Token, explicitCouples: true, preferPgSolo: false);
+            var post = await EnsureCoupleRoles(p, name, "pose couples (after)", false, cts.Token);
+            return pre + "; " + r + "; " + post;
+        }
         return await SeatPose(p, name, DateTime.Now.AddSeconds(-20), change || couples, cts.Token, explicitCouples: couples, preferPgSolo: !couples);
     }
 

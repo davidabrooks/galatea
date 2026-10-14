@@ -234,9 +234,12 @@ public static partial class Program
             var (ok, r) = await TrySitOn(seat);
             if (!ok) return $"could not sit on {av.Name}'s seat '{name}': {r}";
             await Task.Delay(2500);
+            // roles first (David 2026-10-13): me on his lap, never him on mine; then the lap pose; then verify again
+            string pre = av.ID == DavidId ? await EnsureCoupleRoles(seat, name, "sit_lap (before pose)", true, ct) : null;
             var lp = await LapPose(seat, name, ct);
             Log("lap", lp);
-            return $"on {av.Name}'s seat '{name}'; {lp}";
+            string post = av.ID == DavidId ? await EnsureCoupleRoles(seat, name, "sit_lap (after pose)", true, ct) : null;
+            return $"on {av.Name}'s seat '{name}'; " + (pre != null ? pre + "; " : "") + lp + (post != null ? "; " + post : "");
         });
         return prep == null ? res : prep + "\n" + res;
     }

@@ -27,10 +27,33 @@ public static partial class Program
     }
 
     // pure: an event only for David kissing her (not her own kiss, not other couples), at most once per 20 s
+    // 2026-10-13: the Kisser names display names ("Galatea Nightingale"), not my legacy "Galatay Resident": 20:05:01 never matched
     internal static bool IsKissOnMe((string who, string whom, string part)? k, string myName, string davidName, DateTime now, DateTime lastEvent)
-        => k != null && myName != null && davidName != null
-           && k.Value.whom.Equals(myName, StringComparison.OrdinalIgnoreCase) && k.Value.who.Equals(davidName, StringComparison.OrdinalIgnoreCase)
+        => k != null && davidName != null && NameIsMe(k.Value.whom, myName)
+           && (k.Value.who.Equals(davidName, StringComparison.OrdinalIgnoreCase) || k.Value.who.Equals("David Nightingale", StringComparison.OrdinalIgnoreCase))
            && now - lastEvent > TimeSpan.FromSeconds(20);
+    internal static bool NameIsMe(string n, string legacy)
+    {
+        n = (n ?? "").Trim();
+        return n.Equals(legacy ?? "", StringComparison.OrdinalIgnoreCase) || n.Equals("Galatea Nightingale", StringComparison.OrdinalIgnoreCase)
+            || n.Equals("Galatay Resident", StringComparison.OrdinalIgnoreCase) || n.Equals("Galatea", StringComparison.OrdinalIgnoreCase) || n.Equals("Galatay", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ---- automatic response (2026-10-13 David): randomly kiss back, a sweet IM, or both (~1/3 each), 2-5 s later;
+    // one response per KissAutoCooldown however often he kisses; kiss back only within range and outside the kiss cooldown
+    internal static readonly TimeSpan KissAutoCooldown = TimeSpan.FromMinutes(2);
+    static DateTime kissAutoLast = DateTime.MinValue;
+    internal static readonly string[] KissSweetLines = { "Mmm, I love your kisses 💕", "You taste like sunshine, babe 😘", "More of those, please 💋",
+        "That made me melt a little 🥰", "Kiss me like that again and I'm never letting go 💕", "Mmm... hi, handsome 😘" };
+    // pure: "kiss" | "im" | "both" | "none:<why>"
+    internal static string KissResponse(double rnd, DateTime now, DateTime lastAuto, bool canKissBack, double? dist)
+    {
+        if (now - lastAuto < KissAutoCooldown) return "none:cooldown";
+        bool kissOk = canKissBack && dist is double d && d <= 5.0;
+        var pick = rnd < 1 / 3.0 ? "kiss" : rnd < 2 / 3.0 ? "im" : "both";
+        if (!kissOk && pick != "im") pick = "im";   // out of range / kissed him recently: words instead
+        return pick;
+    }
 
     internal static bool CanKissBack(DateTime now, DateTime lastOwnKiss) => now - lastOwnKiss >= KissBackCooldown;
 
@@ -50,8 +73,34 @@ public static partial class Program
                 var text = $"{k.Value.who} kissed you on the {k.Value.part} (Real Kisser). " + (back
                     ? "You may kiss him back with 'kiss' (or 'kiss david cheek'), or say something sweet by IM."
                     : $"You kissed him {(int)(now - kissLastAt).TotalMinutes} min ago (kiss-back cooldown {KissBackCooldown.TotalMinutes:F0} min): answer with something sweet by IM instead.");
-                Log("kiss", $"kissed: {k.Value.who} -> me ({k.Value.part}); kiss back allowed={back}; line '{e.Message}'");
-                Notify("kissed", k.Value.who, DavidId, text, dist, context: back ? "kiss_back_allowed" : "kiss_back_cooldown", trigger: "real_kisser_chat", line: e.Message);
+                var resp = KissResponse(Random.Shared.NextDouble(), now, kissAutoLast, back, dist);
+                Log("kiss", $"kissed: {k.Value.who} -> me ({k.Value.part}); kiss back allowed={back}; auto response {resp}; line '{e.Message}'");
+                if (resp.StartsWith("none")) return;   // already answered a kiss in the last 2 min: no spam, no webhook
+                kissAutoLast = now;
+                string line = KissSweetLines[Random.Shared.Next(KissSweetLines.Length)];
+                long mid = -(DateTime.UtcNow.Ticks / 10000);
+                autoActions[mid] = resp switch
+                {
+                    "kiss" => "the client already kissed him back via the Real Kisser by itself. Do NOT 'kiss' again; a reply is optional",
+                    "im" => $"the client already sent him a sweet IM by itself: '{line}'. Do NOT kiss or IM about this kiss again",
+                    _ => $"the client already kissed him back AND IMed '{line}' by itself. Do NOT kiss or IM about this kiss again",
+                };
+                Notify("kissed", k.Value.who, DavidId, text, dist, msgId: mid, context: back ? "kiss_back_allowed" : "kiss_back_cooldown", trigger: "real_kisser_chat", line: e.Message);
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    try
+                    {
+                        await System.Threading.Tasks.Task.Delay(2000 + Random.Shared.Next(3000));
+                        if (resp is "kiss" or "both") Log("kiss", "auto kiss back: " + KissCmd("david"));
+                        if (resp == "both") await System.Threading.Tasks.Task.Delay(1500 + Random.Shared.Next(1500));
+                        if (resp is "im" or "both")
+                        {
+                            var (sent, skip) = ImGuardedSend(DavidId.ToString(), NameOf(DavidId), true, false, () => client.Self.InstantMessage(DavidId, line), null, false, null, line);
+                            if (sent) NoteMyIm(DavidId.ToString(), DateTimeOffset.Now); Log("kiss", $"auto IM '{line}': {(sent ? "sent" : "skipped " + skip)}");
+                        }
+                    }
+                    catch (Exception ex2) { Log("kiss", "auto response error: " + ex2.GetBaseException().Message); }
+                });
             }
             catch (Exception ex) { Log("kiss", "detect error: " + ex.GetBaseException().Message); }
         };

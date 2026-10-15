@@ -86,6 +86,14 @@ def moon_strength(env):
 MOON_CAL = float(os.environ.get("GT_MOON_CAL", "0.75"))   # 2026-10-13 23:10: re-fit with full SSAO (ambient no longer lifts shadows): view 2 percentiles 5-99 within 2 levels
 
 # RenderSkyAmbientScale: the code fallback is 1.5 (llsettingsvo.cpp), Firestorm's shipped settings.xml default 1.0
+# the classic sky as Firestorm displays it (2026-10-14 15:37 Beach House shot, 6 rows 2-31 % down the frame): his sky is
+# ~(0.84, 0.85, 0.88) x skyF.glsl's display value at the same elevation (linear ~(0.66, 0.70, 0.76)) from the horizon to 27 deg
+SKY_SCALE = [float(x) for x in os.environ.get("GT_SKY_SCALE", "0.66,0.70,0.76").split(",")]   # per channel (linear): R, G, B
+WATER_REFL = float(os.environ.get("GT_WATER_REFL", "0.7"))
+GT_WORLD_GREY = float(os.environ.get("GT_WORLD_GREY", "0.5"))   # classic amblit is grey: half the horizon colour's saturation in the fill   # experiment knobs (2026-10-14 saturation pass)
+GT_SUN_MUL = float(os.environ.get("GT_SUN_MUL", "1.2"))   # classic softenLightF: sunlit x 1.35 (we kept 1.2 x peak; with the world fill cut to 0.1 the lit side needs it)
+GT_PBR_SPEC = float(os.environ.get("GT_PBR_SPEC", "0.15"))   # x Principled's 0.5: the sky sheen on rough non-metal PBR (teak deck at grazing view)
+GT_PBR_AMB = os.environ.get("GT_PBR_AMB", "1") == "1"
 SKY_AMB_SCALE = float(os.environ.get("GT_SKY_AMBIENT_SCALE", "1.5"))
 
 def AMB_SRGB(env):
@@ -223,6 +231,7 @@ def _material(b, slots, cut):
         n = nt.nodes.new("ShaderNodeNormalMap"); L(nm.outputs["Color"], n.inputs["Color"]); L(n.outputs["Normal"], p.inputs["Normal"])
     if mat.get("pbr"):
         p.inputs["Metallic"].default_value = mat["metallic"]; p.inputs["Roughness"].default_value = roughness_floor(mat["roughness"])
+        p.inputs["Specular IOR Level"].default_value = 0.5 * GT_PBR_SPEC
         mr = img("mr")
         if mr:  # glTF: G = roughness, B = metallic
             sep = nt.nodes.new("ShaderNodeSeparateColor"); L(mr.outputs["Color"], sep.inputs["Color"])
@@ -234,6 +243,17 @@ def _material(b, slots, cut):
         if max(e) > 0:
             p.inputs["Emission Color"].default_value = (*e, 1); p.inputs["Emission Strength"].default_value = 1
             if et: L(et.outputs["Color"], p.inputs["Emission Color"])
+            if GT_PBR_AMB and AMB > 0 and not b["fullbright"] and mode != "emissive":
+                # 2026-10-14: a PBR face with an emissive factor (the Beach House boat's whole deck: factor 1, black emissive
+                # map) skipped the sky ambient below (emission strength already 1): no albedo-tinted fill, only the world's
+                # blue-ish light. Add albedo x amblit to the emissive map instead
+                em = nt.nodes.new("ShaderNodeMix"); em.data_type = "RGBA"; em.blend_type = "ADD"; em.inputs["Factor"].default_value = 1.0
+                src = p.inputs["Emission Color"].links[0].from_socket if p.inputs["Emission Color"].links else None
+                if src is not None: L(src, em.inputs["A"])
+                else: em.inputs["A"].default_value = (*e, 1)
+                bc = nt.nodes.new("ShaderNodeMix"); bc.data_type = "RGBA"; bc.blend_type = "MULTIPLY"; bc.inputs["Factor"].default_value = 1.0
+                L(p.inputs["Base Color"].links[0].from_socket if p.inputs["Base Color"].links else tint.outputs["Color"], bc.inputs["A"]); bc.inputs["B"].default_value = (AMB, AMB, AMB, 1)
+                L(bc.outputs["Result"], em.inputs["B"]); L(em.outputs["Result"], p.inputs["Emission Color"])
     elif "gloss" in mat:  # legacy: specular colour x spec map; glossiness (exponent/255) -> roughness
         sc = mat.get("spec_color", [1, 1, 1, 1]); sp = img("spec")
         p.inputs["Roughness"].default_value = roughness_floor(1 - 0.85 * mat["gloss"])
@@ -490,6 +510,33 @@ def area(loc, target, energy, size):
     L.data.use_shadow = os.environ.get("GT_STUDIO_SHADOW", "0") == "1"
     L.rotation_euler = (Vector(target) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
 
+SUN = {}
+SUN_ATTEN = os.environ.get("GT_SUN_ATTEN", "1") == "1"
+def atmos_sunlit(env, vy):
+    """the sun colour a surface sees in Firestorm's classic shading (atmosphericsFuncs.glsl calcAtmosphericVars): the EEP
+    sunlight x exp(-(blue_density + haze_density / 4) x density_multiplier x max_y x off_axis), off_axis = 1 / (sun up +
+    view-ray up), the ray from the camera to the surface (vy, a little negative looking down at a deck). At a 36 deg sun
+    that is ~(0.9, 0.8, 0.7) of (1.17, 1.21, 1.30): a warm sun. Cycles' sun used the raw sunlight, a cool white-blue one
+    (2026-10-14 saturation pass: the orange-brown teak deck read grey)"""
+    hz = env.get("haze")
+    if not hz or not env.get("sun_dir"): return None
+    try:
+        att = [(b + hz["haze_density"] * 0.25) * (hz["density_multiplier"] * env.get("max_y", 1605)) for b in hz["blue_density"]]
+        off = 1.0 / max(1e-6, max(0.0, env["sun_dir"][2]) + vy)
+        return [c * math.exp(-a * off) for c, a in zip(env["sunlight"], att)]
+    except (KeyError, TypeError, ValueError): return None
+
+def retint_sun(vy):
+    """after the camera is placed: tint the day sun by the atmosphere along the view (classic sky, photo hd only)"""
+    L = SUN.get("light"); env = SUN.get("env")
+    if not (HD and SUN_ATTEN and L and env and env["sun_dir"][2] > 0 and env.get("classic", True)): return
+    ca = atmos_sunlit(env, vy)
+    if not ca: return
+    c = SUN["c"]; lum = lambda v: 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
+    pk = max(max(ca), 1e-3); L.data.color = [x / pk for x in ca]
+    L.data.energy = (1.2 * lum(c) * pk / max(lum(ca), 1e-3) if os.environ.get("GT_SUN_LUMKEEP", "1") == "1" else 1.2 * pk) * GT_SUN_MUL   # keep the sun's luminance (hue only) unless LUMKEEP=0
+    log("sun tint", [round(x, 3) for x in ca], "energy", round(L.data.energy, 3), "vy", round(vy, 3))
+
 def eep(env):
     """Region EEP sky at export time (make_job.py): sun or, below the horizon, moon; sky colour as ambient; SL point lights."""
     sun = Vector(env["sun_dir"]).normalized(); night = sun.z < 0
@@ -501,15 +548,17 @@ def eep(env):
     if HD and env.get("classic") is False: c = [lin(min(x, 8.0)) if x <= 1 else ((x + 0.055) / 1.055) ** 2.4 for x in c]   # PBR sky: srgb_to_linear(sunlit) (atmosphericsFuncs.glsl)
     peak = max(max(c), 1e-3)
     bpy.ops.object.light_add(type="SUN"); L = bpy.context.object; L.rotation_euler = travel.to_track_quat("-Z", "Y").to_euler()
-    L.data.color = [x / peak for x in c]; L.data.energy = (moon_strength(env) if night else 1.2 * peak)
+    SUN["light"] = L; SUN["env"] = env; SUN["peak"] = peak; SUN["c"] = c
+    L.data.color = [x / peak for x in c]; L.data.energy = (moon_strength(env) if night else 1.2 * peak * GT_SUN_MUL)
     if HD: L.data.angle = math.radians(SHADOW_ANGLE_NIGHT if night else SHADOW_ANGLE_DAY)
     w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True; bg = w.node_tree.nodes["Background"]
-    bg.inputs["Color"].default_value = (*env["horizon"], 1); bg.inputs["Strength"].default_value = (0.35 if night else 1.0) * (env.get("probe_ambiance", 1.0) if HD and env.get("classic") is False else 1.0)   # PBR sky: probe ambiance
+    _hz = list(env["horizon"]); _y = 0.2126 * _hz[0] + 0.7152 * _hz[1] + 0.0722 * _hz[2]; _hz = [_y + (c - _y) * (1 - GT_WORLD_GREY) for c in _hz]
+    bg.inputs["Color"].default_value = (*_hz, 1); bg.inputs["Strength"].default_value = (0.35 if night else 1.0) * (env.get("probe_ambiance", 1.0) if HD and env.get("classic") is False else 1.0)   # PBR sky: probe ambiance
     if HD and not night and env.get("classic", True) and AMB > 0:
         # 2026-10-14 bikini compare (deck shadows (117, 103, 92) vs Firestorm's (106, 80, 63), rail shadows barely there):
         # the classic sky's ambient is already on every surface as amblit emission; the world's full-strength horizon
         # light on top filled the shadows twice. Keep a quarter for bounce / reflections
-        bg.inputs["Strength"].default_value *= float(os.environ.get("GT_CLASSIC_WORLD", "0.25"))
+        bg.inputs["Strength"].default_value *= float(os.environ.get("GT_CLASSIC_WORLD", "0.1"))
     sky_backdrop(w, env, night)
     for l in M.get("lights", []):
         # SL point light, reimplemented from the LL viewer's deferred light shader: radiance = albedo x linear colour x
@@ -570,7 +619,7 @@ def sky_seen(env, night):
         # 2026-10-14 Beach House boat vs David's Firestorm shot: the classic sky shader's output goes to the screen as is
         # (no tone mapping, already display values: horizon 0.41/0.48/0.70 -> his 107/127/184 sRGB). Drawn as linear it
         # came out ~2.5x too bright and grey-lavender, and the water mirrored it pale. Same fix as the night sky above.
-        return [srgb_to_linear(min(5.0, c)) for c in sk["horizon"]], [srgb_to_linear(min(5.0, c)) for c in sk["zenith"]], 1.0   # HDR (skyF.glsl clamps at 5)
+        return [srgb_to_linear(min(5.0, c)) * k for c, k in zip(sk["horizon"], SKY_SCALE)], [srgb_to_linear(min(5.0, c)) * k for c, k in zip(sk["zenith"], SKY_SCALE)], 1.0   # HDR (skyF.glsl clamps at 5)
     h = env["horizon"]; z = env.get("zenith", h); k = max(sum(h), 1e-3) / max(sum(z), 1e-3)
     return h, [min(1.0, c * k) for c in z], 0.35 if night else 1.0
 
@@ -583,7 +632,7 @@ def sky_stops(env):
     p = {"max_y": env.get("max_y", 1605), "blue_density": hz["blue_density"], "blue_horizon": env["horizon"], "haze_density": hz["haze_density"],
          "haze_horizon": hz["haze_horizon"], "density_multiplier": hz["density_multiplier"], "sunlight": env["sunlight"],
          "glow": env.get("glow", [5, 0, -2.5]), "ambient": env["ambient"], "cloud_shadow": env.get("cloud_shadow", 0)}
-    try: return [(math.sin(math.radians(d)), [srgb_to_linear(min(5.0, c)) for c in llsky.sky_rgb(p, env["sun_dir"][2], True, 1.0, d)])
+    try: return [(math.sin(math.radians(d)), [srgb_to_linear(min(5.0, c)) * k for c, k in zip(llsky.sky_rgb(p, env["sun_dir"][2], True, 1.0, d), SKY_SCALE)])
                  for d in (0.5, 2, 5, 10, 15, 20, 30, 45, 60, 90)]
     except (KeyError, TypeError, ValueError) as e: log("sky stops", e); return None
 
@@ -887,7 +936,8 @@ def water_fs(ob, m, nt, wt):
     kx = N("ShaderNodeMath"); kx.operation = "MULTIPLY"; kx.use_clamp = True; L(d2.outputs[0], kx.inputs[0]); kx.inputs[1].default_value = 3.0
     gl = N("ShaderNodeBsdfGlossy"); gl.distribution = "GGX"; gl.inputs["Roughness"].default_value = max(0.02, float(wt.get("blur_multiplier", 0.04)))
     L(nrm, gl.inputs["Normal"])
-    cw = N("ShaderNodeCombineColor"); [L(df.outputs[0], cw.inputs[i]) for i in range(3)]; L(cw.outputs[0], gl.inputs["Color"])
+    rf = N("ShaderNodeMath"); rf.operation = "MULTIPLY"; L(df.outputs[0], rf.inputs[0]); rf.inputs[1].default_value = WATER_REFL
+    cw = N("ShaderNodeCombineColor"); [L(rf.outputs[0], cw.inputs[i]) for i in range(3)]; L(cw.outputs[0], gl.inputs["Color"])
     fb = N("ShaderNodeEmission"); fb.inputs["Color"].default_value = (*[lin(c) for c in wt["fog_color"]], 1); fb.inputs["Strength"].default_value = 1.0
     ms = N("ShaderNodeMixShader"); L(kx.outputs[0], ms.inputs["Fac"]); L(fb.outputs[0], ms.inputs[1]); L(gl.outputs[0], ms.inputs[2])
     out = ms.outputs[0]
@@ -1251,6 +1301,8 @@ for i, v in enumerate(views):
     else:
         if i: set_view(v)
         sc.render.filepath = out if len(views) == 1 else re.sub(r"\.(jpg|png)$", rf"-{i}.\1", out)
+    if sc.camera and sc.camera.get("focus_target") is not None:
+        _d = Vector(sc.camera["focus_target"]) - sc.camera.matrix_world.translation; retint_sun((_d.normalized().z if _d.length > 1e-6 else 0.0) - 0.25)   # the centre of the frame's lower half (the deck / ground she is on), not the subject itself
     setup_dof()
     if HD and sc.render.filepath.lower().endswith(".png"):
         hd_render_hdr(sc.render.filepath); continue

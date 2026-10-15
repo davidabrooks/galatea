@@ -78,8 +78,9 @@ public static partial class Program
     }
 
     // David 2026-10-12 15:30: sexual poses NEVER while an android outfit is worn; in a human outfit only when the
-    // only other avatar in Peronaut (and its neighbour regions) is David. Taking one = stand, wear Naked (Real Kisser
-    // stays), sit again, then the pose. Couples poses stay skipped on solo paths either way.
+    // only other avatar in Peronaut itself is David. 2026-10-14: neighbour regions no longer count (an avatar
+    // across the sim border isn't "around"); only the current sim's coarse map and its avatar objects. Taking one =
+    // stand, wear Naked (Real Kisser stays), sit again, then the pose. Couples poses stay skipped on solo paths either way.
     internal static bool SexualPosesAllowed(bool androidWorn, string region, IEnumerable<UUID> otherAvatars, UUID davidId)
     {
         if (androidWorn) return false;
@@ -87,12 +88,24 @@ public static partial class Program
         var o = (otherAvatars ?? Enumerable.Empty<UUID>()).Distinct().ToList();
         return o.Count == 1 && o[0] == davidId;
     }
+    /// <summary>Pure: other avatars in the sim with handle <paramref name="current"/> only: its coarse-location ids
+    /// plus its avatar objects; neighbour regions' entries are ignored.</summary>
+    internal static List<UUID> AvatarsInSim(ulong current, IEnumerable<KeyValuePair<ulong, IEnumerable<UUID>>> coarse,
+        IEnumerable<KeyValuePair<ulong, IEnumerable<UUID>>> objects, UUID me)
+    {
+        var ids = new HashSet<UUID>();
+        foreach (var src in new[] { coarse, objects })
+            foreach (var kv in src ?? Enumerable.Empty<KeyValuePair<ulong, IEnumerable<UUID>>>())
+                if (kv.Key == current) foreach (var k in kv.Value ?? Enumerable.Empty<UUID>()) if (k != me && k != UUID.Zero) ids.Add(k);
+        return ids.ToList();
+    }
     static List<UUID> OtherAvatarsAround()
     {
-        var me = client.Self.AgentID; var ids = new HashSet<UUID>();
-        try { foreach (var kv in coarseBy.ToArray()) foreach (var k in kv.Value.Keys) if (k != me) ids.Add(k); } catch { }
-        try { foreach (var sim in client.Network.Simulators.ToArray()) foreach (var a in sim.ObjectsAvatars.Values) if (a != null && a.ID != me) ids.Add(a.ID); } catch { }
-        return ids.ToList();
+        var cur = client.Network.CurrentSim; if (cur == null) return new List<UUID>();
+        var coarse = new List<KeyValuePair<ulong, IEnumerable<UUID>>>(); var objs = new List<KeyValuePair<ulong, IEnumerable<UUID>>>();
+        try { foreach (var kv in coarseBy.ToArray()) coarse.Add(new(kv.Key, kv.Value.Keys.ToList())); } catch { }
+        try { foreach (var sim in client.Network.Simulators.ToArray()) objs.Add(new(sim.Handle, sim.ObjectsAvatars.Values.Where(a => a != null).Select(a => a.ID).ToList())); } catch { }
+        return AvatarsInSim(cur.Handle, coarse, objs, client.Self.AgentID);
     }
     static bool SexualPosesAllowedNow() { try { return SexualPosesAllowed(AndroidWorn(), client.Network.CurrentSim?.Name, OtherAvatarsAround(), DavidId); } catch { return false; } }
     internal static bool PosePathIsSexual(IEnumerable<string> path) => (path ?? Enumerable.Empty<string>()).Any(l => PoseIsSexualNamed(l) || PoseAdultMenuName.IsMatch(PoseBare(l)));

@@ -69,3 +69,23 @@ public class SexualPoseRuleTests
         for (int i = 0; i < 50; i++) Assert.NotEqual("Sexy sit", Program.PickPoseButton(new List<string> { "Sexy sit", "Meh" }, null, new Random(i), inSubmenu: true, allowSexual: false).pick);
     }
 }
+
+
+public class AloneInSimTests
+{
+    static readonly LibreMetaverse.UUID David = new("44ce5a36-c1c7-4a68-ac9a-635ddfff6233");
+    static KeyValuePair<ulong, IEnumerable<LibreMetaverse.UUID>> E(ulong h, params LibreMetaverse.UUID[] ids) => new(h, ids);
+
+    [Fact]
+    public void Avatars_in_neighbour_regions_do_not_count()
+    {
+        var me = LibreMetaverse.UUID.Random(); var stranger = LibreMetaverse.UUID.Random();
+        const ulong peronaut = 1000, neighbour = 1001;
+        var ids = Program.AvatarsInSim(peronaut, new[] { E(peronaut, me, David), E(neighbour, stranger) }, new[] { E(neighbour, stranger), E(peronaut, David) }, me);
+        Assert.Equal(new[] { David }, ids);
+        Assert.True(Program.SexualPosesAllowed(false, "Peronaut", ids, David));
+        // the stranger walks into Peronaut: blocked
+        var ids2 = Program.AvatarsInSim(peronaut, new[] { E(peronaut, me, David, stranger) }, null, me);
+        Assert.False(Program.SexualPosesAllowed(false, "Peronaut", ids2, David));
+    }
+}

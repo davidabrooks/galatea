@@ -96,6 +96,40 @@ public static partial class Program
         return sim.ObjectsPrimitives.TryGetValue(seat, out var sp) && sp != null && (sp.ParentID == p.LocalID || (sp.ParentID != 0 && sp.ParentID == p.ParentID));
     }
 
+    // ---- [anim] log volume (2026-10-15, David: the [anim] start/stop/RESTART lines were a third of textclient.log + the console log).
+    // vision/scene-mesher/anims_at.py REPLAYS every start/RESTART/stop line (AO ones included, to the second) to pose her in scene exports,
+    // so none can be dropped or deduped. Instead the lines move to their own small file (anim-events.log, same "ts [anim] verb uuid" format,
+    // shorter source text, no console echo, no events-queue entry; anims_at.py reads it next to the log it is given) and textclient.log
+    // keeps only errors. GT_ANIM_LOG=1 = the old behaviour: full lines in textclient.log (and console/events), no separate file.
+    static readonly bool AnimLogFull = Env("GT_ANIM_LOG", "0") == "1";
+    static readonly string AnimEventsFile = Env("GT_ANIM_EVENTS", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "anim-events.log"));
+    static readonly object animEventsLock = new();
+
+    // pure (test): the message after "[anim] ". compact = shorter source text (no item/object uuids, no long names), same leading "verb uuid".
+    internal static string AnimLogMsg(string verb, string anim, int seq, string srcDesc, bool compact)
+    {
+        var src = compact ? AnimSrcShort(srcDesc) : srcDesc;
+        return verb == "stop" ? $"stop {anim} (was from {src})" : $"{verb} {anim} seq {seq} from {src}";
+    }
+
+    internal static string AnimSrcShort(string d)
+    {
+        if (d.StartsWith("attachment ")) { var m = System.Text.RegularExpressions.Regex.Match(d, @"@(\S+)"); return "att @" + (m.Success ? m.Groups[1].Value : "?"); }
+        if (d.StartsWith("self/sim")) return "self";
+        var o = System.Text.RegularExpressions.Regex.Match(d, @"^(object|seat) '(.*?)'( [0-9a-fA-F-]{36})?$");
+        if (o.Success) { var n = o.Groups[2].Value; return $"{o.Groups[1].Value} '{(n.Length > 24 ? n[..24] : n)}'"; }
+        var nv = System.Text.RegularExpressions.Regex.Match(d, @"^object ([0-9a-fA-F]{8})[0-9a-fA-F-]{28} \(not in view\)$");
+        if (nv.Success) return $"object {nv.Groups[1].Value}.. (not in view)";
+        return d;
+    }
+
+    static void AnimLogWrite(string msg)
+    {
+        if (AnimLogFull) { Log("anim", msg); return; }
+        try { lock (animEventsLock) File.AppendAllText(AnimEventsFile, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [anim] {msg}\n"); }
+        catch { }
+    }
+
     static void OnAvatarAnimation(object sender, PacketReceivedEventArgs e)
     {
         try
@@ -119,11 +153,11 @@ public static partial class Program
             foreach (var kv in now) if (animSince.TryGetValue(kv.Key, out var t1) && (DateTime.Now - t1).TotalSeconds > 20) longLived[kv.Key] = true;
             foreach (var kv in started)
             {
-                if (log) Log("anim", $"{(prev.ContainsKey(kv.Key) ? "RESTART" : "start")} {AnimName(kv.Key)} seq {kv.Value.Item1} from {SrcDesc(kv.Value.Item2)}");
+                if (log) AnimLogWrite(AnimLogMsg(prev.ContainsKey(kv.Key) ? "RESTART" : "start", AnimName(kv.Key), kv.Value.Item1, SrcDesc(kv.Value.Item2), !AnimLogFull));
                 NoteSeatOffAnim(kv.Key, kv.Value.Item2); // learn AO/seat-off anims while standing so we can stop them after sit
             }
             foreach (var k in stopped)
-                if (log) Log("anim", $"stop {AnimName(k)} (was from {SrcDesc(prev[k].src)})");
+                if (log) AnimLogWrite(AnimLogMsg("stop", AnimName(k), 0, SrcDesc(prev[k].src), !AnimLogFull));
             try { SeatLingerNote(now); } catch (Exception ex2) { Log("anim", "seat linger error: " + ex2.GetBaseException().Message); } // SeatLinger.cs
             if (client.Self.SittingOn != 0 && started.Count > 0) _ = Task.Run(() => SeatedAnimGuard(started.Select(kv => (kv.Key, kv.Value.Item2, prev.ContainsKey(kv.Key))).ToList(), now));
             if (client.Self.SittingOn == 0)

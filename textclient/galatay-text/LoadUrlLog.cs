@@ -9,7 +9,8 @@ namespace GalatayText;
 
 public static partial class Program
 {
-    static readonly string LastLoadUrlFile = Env("GT_LAST_LOADURL", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "last-loadurl.txt"));
+    // a property (see AnimEventsFile): LogPath is not set yet when a static field of this partial class initialises
+    internal static string LastLoadUrlFile => Env("GT_LAST_LOADURL", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "last-loadurl.txt"));
 
     static string OneLine(string? s) => (s ?? "").Replace("\r", " ").Replace("\n", " ");
 

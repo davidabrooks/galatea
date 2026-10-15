@@ -102,7 +102,9 @@ public static partial class Program
     // shorter source text, no console echo, no events-queue entry; anims_at.py reads it next to the log it is given) and textclient.log
     // keeps only errors. GT_ANIM_LOG=1 = the old behaviour: full lines in textclient.log (and console/events), no separate file.
     static readonly bool AnimLogFull = Env("GT_ANIM_LOG", "0") == "1";
-    static readonly string AnimEventsFile = Env("GT_ANIM_EVENTS", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "anim-events.log"));
+    // a property, not a static field: static fields of a partial class initialise in no fixed order across files, and this one read LogPath
+    // before it was set (the file landed in the process cwd instead of next to textclient.log, 2026-10-15)
+    internal static string AnimEventsFile => Env("GT_ANIM_EVENTS", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "anim-events.log"));
     static readonly object animEventsLock = new();
 
     // pure (test): the message after "[anim] ". compact = shorter source text (no item/object uuids, no long names), same leading "verb uuid".

@@ -39,4 +39,10 @@ public class LoadUrlLogTests
         Assert.Contains("File.AppendAllText(LogPath", code);
         Assert.Contains("HookLoadUrl();", File.ReadAllText(Path.Combine(root, "Program.cs")));
     }
+    [Fact]
+    public void SiblingLogFiles_AreNextToTheLog_NotInTheProcessCwd()
+    {   // 2026-10-15: static fields of a partial class initialise in no fixed order; these two read LogPath too early and landed in the cwd
+        foreach (var f in new[] { Program.LastLoadUrlFile, Program.AnimEventsFile })
+            Assert.True(Path.IsPathRooted(f) && Path.GetDirectoryName(f) is { Length: > 0 }, f);
+    }
 }

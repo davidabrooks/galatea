@@ -464,6 +464,17 @@ def body_view_label(v):
     v = v.strip().lower()
     return v if v in BODY_VIEW_DEG else f"{float(v):g}deg"
 
+QUICK_EXPOSURE = -1.5   # stops
+
+def view_exposure(env, hd, kind):
+    """View-transform exposure (stops). Quick scene looks (not photo hd, not the studio-lit face/body portraits) default to
+    -1.5: the neutral sun (3.5) under the Standard transform clipped a third of a sunny deck frame (2026-10-14, David: "way
+    too bright"). An explicit GT_EXPOSURE always wins (the Runpod handler always sets one). photo hd keeps 0: its own
+    tonemap / exposure (hdr_post) is applied to the scene-linear master."""
+    v = env.get("GT_EXPOSURE")
+    if v not in (None, ""): return float(v)
+    return QUICK_EXPOSURE if (not hd and kind == "scene") else 0.0
+
 def lens_for_vfov(vfov_deg, rx, ry):
     """Blender lens (mm) for a vertical field of view; sensor_fit AUTO puts the 36 mm sensor on the long side"""
     sh = 36.0 * (ry / rx if rx >= ry else 1.0)
@@ -1194,7 +1205,7 @@ else:
             log("focus", [round(v, 2) for v in rig.location], "dist", dist)
     world(0.5)
 sc.view_settings.view_transform = "Standard"  # SL shows textures as plain sRGB
-sc.view_settings.exposure = float(os.environ.get("GT_EXPOSURE", "0"))
+sc.view_settings.exposure = view_exposure(os.environ, HD, kind)
 if HD and kind == "scene" and M.get("env"): env_post(M["env"])
 if out.lower().endswith(".png"):   # `photo hd`: lossless master (look.py writes the high-quality JPG from it)
     sc.render.image_settings.file_format = "PNG"; sc.render.image_settings.color_mode = "RGB"; sc.render.image_settings.compression = 15

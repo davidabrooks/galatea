@@ -63,6 +63,7 @@
     <Compile Include="../galatay-text/Follow.cs" Link="Core/Follow.cs" />
     <Compile Include="../galatay-text/FrontApproach.cs" Link="Core/FrontApproach.cs" />
     <Compile Include="../galatay-text/SeatLinger.cs" Link="Core/SeatLinger.cs" />
+    <Compile Include="../galatay-text/LoadUrlLog.cs" Link="Core/LoadUrlLog.cs" />
     <Compile Include="../galatay-text/Experiences.cs" Link="Core/Experiences.cs" />
     <Compile Include="../galatay-text/Voice.cs" Link="Core/Voice.cs" />
     <Compile Include="../galatay-text/Outfit.cs" Link="Core/Outfit.cs" />

@@ -185,15 +185,37 @@ def batch_geometry(meta, work):
             T = np.frombuffer(buf, np.float32, nv * 2, o + nv * 24).reshape(-1, 2)
             lo, hi = P.min(0), P.max(0); c = (lo + hi) / 2
             rep = np.clip(T.max(0) - T.min(0), 1e-3, 1e4)
-            out[i] = (float(np.linalg.norm(c - m)), float(np.linalg.norm(hi - lo)) / 2, (float(rep[0]), float(rep[1])))
+            # + the nearest vertex: a deck 17 m long that she sits on has its centre ~4 m away but touches her
+            out[i] = (float(np.linalg.norm(c - m)), float(np.linalg.norm(hi - lo)) / 2, (float(rep[0]), float(rep[1])),
+                      float(np.sqrt(((P - m) ** 2).sum(1).min())))
         except (ValueError, KeyError): continue
     return out
 
+# David 2026-10-14 (Beach House deck): the subject's surroundings within a few metres get full resolution whatever the
+# memory bias, as Firestorm gives near, large on-screen faces discard 0. Measured to the face's nearest vertex (a
+# bounding sphere took in whole 100 m backdrop batches). Material maps (normal / ORM / spec) take the same full edge
+# within NEAR_MAPS_M; elsewhere they stream like the base colour, at most MAP_CAP (memory: every boat part has its own
+# 2048 PBR set; the Beach House boat within 3 m is ~145 textures = 4.6 GB at full size; 2 m / 1 m fit its budget)
+NEAR_FULL_M = float(os.environ.get("GT_TEX_NEAR_FULL_M", "2"))
+NEAR_MAPS_M = float(os.environ.get("GT_TEX_NEAR_MAPS_M", "1.0"))
+MAP_CAP = int(os.environ.get("GT_TEX_MAP_CAP", "1024"))
+
+def near_dist(geom):
+    return geom[3] if geom is not None and len(geom) > 3 else None
+
 def viewer_cap(geom, cap, height_px, bias=0.0):
-    """Pure: scene face texture edge per the viewer's discard logic; unknown geometry -> cap"""
+    """Pure: scene face texture edge per the viewer's discard logic; unknown geometry -> cap. A face reaching within
+    NEAR_FULL_M of her gets the full cap (no discard bias)"""
     if geom is None: return cap
-    d, r, rep = geom
+    d, r, rep = geom[:3]
+    nd = near_dist(geom)
+    if nd is not None and nd <= NEAR_FULL_M: return cap
     return discard_cap(virtual_size(d, r, rep, height_px, bias), cap)
+
+def map_cap(geom, scap, cap):
+    """Pure: material map edge for a scene face: full within NEAR_MAPS_M, else min(base colour edge, MAP_CAP)"""
+    nd = near_dist(geom)
+    return cap if nd is not None and nd <= NEAR_MAPS_M else min(scap, MAP_CAP)
 
 def tex_mem_mb(want):
     """Estimate of Blender + Cycles RAM for these textures: RGBA 8-bit, held twice (Blender image + Cycles copy)."""
@@ -220,7 +242,10 @@ def fetch_textures(meta, out, work):
             scap = viewer_cap(geom.get(i), sc_cap, height, bias) if tiered and scene else sc_cap
             pairs = [(b["tex"], crowd_cap(av_dist.get(b["group"]), av_cap) if b["group"].startswith("avatar") else scap)]
             if maps:
-                pairs += [(mat.get(k), min(512, scap if scene else sc_cap)) for k in ("normal", "spec", "mr", "emissive_tex")]
+                # material maps stream like the base colour (the viewer has one discard logic per face); until
+                # 2026-10-14 they were capped at 512: the deck's plank-groove normal map and ORM a quarter of its texels
+                mcap = map_cap(geom.get(i), scap, sc_cap) if tiered and scene else min(512, sc_cap)
+                pairs += [(mat.get(k), mcap) for k in ("normal", "spec", "mr", "emissive_tex")]
             for t, cap in pairs:
                 if isinstance(t, str) and UUID.match(t): want[t] = max(want.get(t, 0), cap)
         return want

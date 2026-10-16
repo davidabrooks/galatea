@@ -18,7 +18,7 @@ namespace GalatayText;
 public static partial class Program
 {
     internal sealed class NavDoor { public string Name; public UUID Id; public bool AlongX; public Vector2 OpenCenter, Leaf; public Vector3 Pos, Center; public Quaternion Rot; public float X0, Y0, X1, Y1; public DateTime LastTouch = DateTime.MinValue; }
-    sealed class NavGrid
+    internal sealed class NavGrid
     {
         public string File, Name, Region; public float X0, Y0, Cell, FloorZ, Radius = 0.4f; public int Nx, Ny; public byte[] C; public DateTime Mtime;
         public List<NavDoor> Doors = new(); public Dictionary<string, Vector2> Places = new(StringComparer.OrdinalIgnoreCase);
@@ -68,7 +68,7 @@ public static partial class Program
             return navGrids = list;
         }
     }
-    static NavGrid LoadNavGrid(string f, DateTime mt)
+    internal static NavGrid LoadNavGrid(string f, DateTime mt)
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(f)); var r = doc.RootElement;
         float Fl(JsonElement e) => e.ValueKind == JsonValueKind.Number ? e.GetSingle() : 0f;
@@ -106,8 +106,20 @@ public static partial class Program
         Log("nav", $"loaded grid '{g.Name}' ({g.Region}) {g.Nx}x{g.Ny} @ {g.Cell} m, {g.Doors.Count} doors, {g.Places.Count} places from {Path.GetFileName(f)}");
         return g;
     }
-    static NavGrid NavGridFor(string region, Vector3 a, Vector3 b) => NavGrids().FirstOrDefault(g => (g.Region == null || string.Equals(g.Region, region, StringComparison.OrdinalIgnoreCase))
+    internal static NavGrid NavGridFor(string region, Vector3 a, Vector3 b) => NavGrids().FirstOrDefault(g => (g.Region == null || string.Equals(g.Region, region, StringComparison.OrdinalIgnoreCase))
         && g.Contains(a.X, a.Y) && g.Contains(b.X, b.Y) && MathF.Abs(a.Z - g.FloorZ) < 3f);
+    // The grid to scan for doors ahead of the walker (2026-10-16 09:41: the front doors were never touched ahead of time).
+    // NavGridFor needs BOTH the walker and the look point inside the grid, but the home grid ends at y 84 and the front
+    // doors sit at y 79.5, so from s=14 (5 m before them) the look point (9 m ahead) was off the grid and the scan was
+    // skipped for the rest of the approach. Take the grid at the walker's feet, else at the look point, else one that holds
+    // either end; the crossing test itself already accepts a step with one end inside.
+    internal static NavGrid PickScanGrid(IEnumerable<NavGrid> grids, string region, Vector3 a, Vector3 b)
+    {
+        var ok = grids.Where(g => g.Region == null || string.Equals(g.Region, region, StringComparison.OrdinalIgnoreCase)).ToList();
+        bool At(NavGrid g, Vector3 p) => g.Contains(p.X, p.Y) && MathF.Abs(p.Z - g.FloorZ) < 3f;
+        return ok.FirstOrDefault(g => At(g, a)) ?? ok.FirstOrDefault(g => At(g, b)) ?? ok.FirstOrDefault(g => At(g, a) || At(g, b));
+    }
+    static NavGrid NavGridForScan(string region, Vector3 a, Vector3 b) => PickScanGrid(NavGrids(), region, a, b);
     internal static HashSet<UUID> NavDoorIds() => NavGrids().SelectMany(g => g.Doors).Select(d => d.Id).ToHashSet();
 
     // ---- planner (same rules as scripts/nav_map.py) ----
@@ -209,7 +221,7 @@ public static partial class Program
             .GroupBy(d => d.Id).Select(g => g.First()).ToList();
     }
     // doors crossed by the segment, each expanded to its pair group
-    static List<NavDoor> DoorsForCrossing(NavGrid g, Vector2 a, Vector2 b)
+    internal static List<NavDoor> DoorsForCrossing(NavGrid g, Vector2 a, Vector2 b)
     {
         var primary = DoorsOnSegment(g, a, b);
         if (primary.Count == 0) return primary;
@@ -237,6 +249,24 @@ public static partial class Program
         float end = Math.Min(len, s + scan);
         for (float u = s; u < end; u += step) { float v = Math.Min(end, u + step); if (crosses(at(u), at(v))) return u - s; }
         return null;
+    }
+    // Last-line guard (2026-10-16 David: 'you're still running into doors before you open them'): whatever the early scan
+    // did (or failed to do: window off the grid, touch lost, the leaf swung shut again), a closed nav door whose cells she
+    // is about to enter within DoorGuardFor(speed) metres stops her until it is touched open.
+    internal const float DoorGuardM = 1.5f;
+    internal static float DoorGuardFor(float speedMps) => Math.Max(DoorGuardM, Math.Max(0f, speedMps) * 0.5f + 0.5f);
+    // the doors (pair-expanded) whose cells the path enters within `reach` m ahead of s, with the distance; null when none.
+    // Unlike the early scan it ignores 'already touched' (the touch may have failed or the door closed again).
+    internal static (float dist, List<NavDoor> doors)? DoorGuardAhead(NavGrid ng, Func<float, Vector2> at, float s, float len, float reach)
+    {
+        if (ng == null) return null;
+        List<NavDoor> found = null;
+        var d = FirstCrossingAhead(at, s, len, (p, q) =>
+        {
+            if (!ng.Contains(p.X, p.Y) && !ng.Contains(q.X, q.Y)) return false;
+            var l = DoorsForCrossing(ng, p, q); if (l.Count == 0) return false; found = l; return true;
+        }, reach, 0.25f);
+        return d is float f ? (f, found) : null;
     }
     // How long we may pause after touches before walking through (auto-close; 2026-10-05 David: within ~0.3 s).
     internal const int DoorThroughDelayMs = 300;

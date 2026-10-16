@@ -31,7 +31,7 @@ public static partial class Program
     static readonly CultureInfo IC = CultureInfo.InvariantCulture;
 
     // ---- polyline ---------------------------------------------------------------------------------
-    sealed class Poly
+    internal sealed class Poly
     {
         public readonly List<Vector3> P; public readonly float[] C; public readonly float Len;
         public Poly(List<Vector3> pts)
@@ -355,7 +355,7 @@ public static partial class Program
         float s = 0, lastProgS = 0, recovAtS = -99, lane = 0, laneUntil = -1, maxDev = 0; Vector3 maxDevAt = Vector3.Zero;
         DateTime lastProgT = DateTime.Now, lastDriftLog = DateTime.MinValue; DateTime? blockedSince = null, belowSince = null;
         int recov = 0, pauses = 0, sidesteps = 0, stuckEvents = 0; Block lastBlock = null; bool triedSide = false;
-        var doorsOpened = new HashSet<UUID>(); bool doorSeqTried = false;
+        var doorsOpened = new HashSet<UUID>(); bool doorSeqTried = false; var doorGuardTouches = new Dictionary<UUID, int>();
         double idleSecs = 0; float nextIdle = o.Idle && MidLegIdlePauses(o.Label) ? 15f + (float)wRnd.NextDouble() * 30f : float.MaxValue; // wander: short natural pauses (not at home: MidLegIdlePauses)
         var start = client.Self.SimPosition;
         bool legacy = steerLegacy;
@@ -500,7 +500,7 @@ public static partial class Program
                 // once it is DoorTriggerM ahead, then give the leaf time to swing before walking into it (David 2026-10-07 09:23)
                 {
                     var look = Math.Min(poly.Len, s + DoorScanM);
-                    var ng = NavGridFor(region, poly.At(s), poly.At(look)) ?? NavGridFor(region, poly.At(look), poly.At(look));
+                    var ng = NavGridForScan(region, poly.At(s), poly.At(look));
                     if (ng != null)
                     {
                         List<NavDoor> ahead = null;
@@ -529,6 +529,27 @@ public static partial class Program
                             }
                             doorSeqTried = false; // allow unstick again if still blocked
                             now = DateTime.Now; lastProgT = now; lastProgS = s; needAim = true;
+                        }
+                    }
+                }
+                // safety net: a closed nav door whose cells she is about to enter is touched open first, even when the early scan
+                // above missed it (grid edge, lost touch, leaf swung shut again): stop rather than walk into it
+                {
+                    var spdG = new Vector2(client.Self.Velocity.X, client.Self.Velocity.Y).Length();
+                    var ngG = NavGridForScan(region, poly.At(s), poly.At(Math.Min(poly.Len, s + 1f)));
+                    if (DoorGuardAhead(ngG, u => V2(poly.At(u)), s, poly.Len, DoorGuardFor(spdG)) is var (dg, gdoors))
+                    {
+                        var shut = gdoors.Where(nd => { var st = DoorState(nd); return st.known && !st.open && doorGuardTouches.GetValueOrDefault(nd.Id) < 3; }).ToList();
+                        if (shut.Count > 0 && shut.Count == gdoors.Count(nd => DoorState(nd).known))
+                        {
+                            client.Self.AutoPilotCancel(); needAim = true;
+                            RLogR($"{o.Label}: DOOR GUARD - {string.Join(", ", shut.Select(nd => nd.Name))} still closed {dg:F1} m ahead (speed {spdG:F1} m/s): stopping to touch it open");
+                            foreach (var nd in shut) doorGuardTouches[nd.Id] = doorGuardTouches.GetValueOrDefault(nd.Id) + 1;
+                            await EnsureDoorsOpen(shut, ct);
+                            foreach (var nd in gdoors) doorsOpened.Add(nd.Id);
+                            var gT0 = DateTime.Now;
+                            while ((DateTime.Now - gT0).TotalMilliseconds < DoorSwingWaitMs && !gdoors.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
+                            doorSeqTried = false; now = DateTime.Now; lastProgT = now; lastProgS = s;
                         }
                     }
                 }

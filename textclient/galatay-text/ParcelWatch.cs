@@ -207,7 +207,7 @@ public static partial class Program
     }
 
     // ---- entry / leave watcher -----------------------------------------------------------------------------------------
-    static void ParcelWatchTick() { if (LoggedIn) ParcelWatchEval("tick"); }
+    static void ParcelWatchTick() { if (LoggedIn) ParcelWatchEval("tick"); try { NakedRedressTick(); } catch (Exception ex) { Log("outfit", "redress tick error: " + ex.GetBaseException().Message); } }
 
     static void ParcelWatchEval(string src)
     {
@@ -233,7 +233,7 @@ public static partial class Program
     static void ParcelIntruderReact(string who)
     {
         bool seated = client.Self.SittingOn != 0;
-        bool sexual = seated && PosePathIsSexual(wLastPosePath);
+        bool sexual = seated && SexualPoseRunningNow();
         var v = AloneCheckNow();
         var (act, why) = PoseIntruderDecision(seated, sexual, poseDavidOnSeat, v.Allowed, (DateTime.Now - parcelReactAt).TotalSeconds);
         if (act != "switch") { if (sexual || seated) Log("parcel", $"{who} entered our parcel: pose left as is ({why})"); return; }

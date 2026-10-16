@@ -110,6 +110,10 @@ public static partial class Program
     static bool SexualPosesAllowedNow() { try { return SexualPosesAllowed(AndroidWorn(), client.Network.CurrentSim?.Name, OtherAvatarsAround(), DavidId); } catch { return false; } }
     internal static bool PosePathIsSexual(IEnumerable<string> path) => (path ?? Enumerable.Empty<string>()).Any(l => PoseIsSexualNamed(l) || PoseAdultMenuName.IsMatch(PoseBare(l)));
 
+    /// <summary>Pure: true when the menu path is sexual and the android / alone rule does not allow it. Applies to every
+    /// way a button can be pressed (wander, pose change, explicit 'pose couples', 'pose path', recovery restore).</summary>
+    internal static bool PoseSexualRefused(IEnumerable<string> path, bool allowSexual) => !allowSexual && PosePathIsSexual(path);
+
     // pure: automatic paths never pick couples; only explicit 'pose couples' (David asked).
     public static bool AutoMayPickCouples(bool explicitCouplesRequest) => explicitCouplesRequest;
 
@@ -217,7 +221,7 @@ public static partial class Program
     // David 2026-10-12 15:24 (Lalou Ultra Sofa: Solo > Solo Couch > Sexy sit picked by solo wander): sexual / suggestive
     // pose and menu NAMES are never auto-picked, even inside a Solo menu. Word list from the Lalou catalogue's sexual names;
     // strong words match inside run-together names too (FoldFuck, CreamyCunt, Analwork, DeepThroat).
-    static readonly Regex PoseSexualWord = new(@"(?<![a-z])(sexy|sex\w*|seduc\w*|sensual\w*|naughty|tease\w*|teasing|horny|lust\w*|kink\w*|nude|naked|strip\w*|boobs?|breasts?|tits?|ass|butt|blow|suck\w*|lick\w*|cowgirl|doggy|grind\w*|hump\w*|ride\s*me|rodeo|milking|diddl\w*|juicy|drenched|pleasure|passion|bang|queened|deliver\w*ass|69|cuni\w*|cunn\w*|bop|wet|moan\w*|orgasm\w*|climax\w*|spread\w*|bend\s*over|touch(?:ing)?\s*(?:him|her|me))(?![a-z])|fuck|cunt|anal|clit|dick|cock|dildo|vibrat|throat|creamy|sticky|pussy|penis|vagina|jizz|cum(?![a-z]*ul)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex PoseSexualWord = new(@"(?<![a-z])(sexy|sex\w*|seduc\w*|sensual\w*|naughty|tease\w*|teasing|horny|lust\w*|kink\w*|nude|naked|strip\w*|boobs?|breasts?|tits?|ass|butt|blow|suck\w*|lick\w*|cowgirl|doggy|grind\w*|hump\w*|ride\s*me|rodeo|milking|diddl\w*|juicy|drenched|pleasure|passion|bang|queened|deliver\w*ass|69|cuni\w*|cunn\w*|bop|wet|moan\w*|orgasm\w*|climax\w*|spread\w*|bend\s*over|jobs?|bj|hj|choke|gag\w*|facial|scissor\w*|thrust\w*|pound\w*|finger(?:ing|ed)|touch(?:ing)?\s*(?:him|her|me))(?![a-z])|fuck|cunt|anal|clit|dick|cock|dildo|vibrat|throat|creamy|sticky|pussy|penis|vagina|jizz|cum(?![a-z]*ul)|fist|balls|gangbang|handjob|footjob|rimjob|nipple|creampie|squirt|penetrat|missionary|pegging", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static bool PoseIsSexualNamed(string raw) => PoseSexualWord.IsMatch(PoseBare(raw));
     static bool PoseIsAdultMenu(string raw) => PoseAdultMenuName.IsMatch(PoseBare(raw)) || PoseIsSexualNamed(raw);
     static bool PoseIsMale(string raw) => PoseMaleSkip.IsMatch(PoseBare(raw));
@@ -289,7 +293,7 @@ public static partial class Program
     // pure: which button to press (null = nothing suitable). submenu = AVsitter '*' label.
     // couplesMode: ONLY for explicit 'pose couples'. !couplesMode (default/recovery/wander): skip couples even if shared.
     // inSubmenu: already inside a submenu she chose (depth > 0); the "no clearly solo option" rule is for the top menu.
-    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false, bool allowSexual = false)
+    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false, bool allowSexual = false, bool inSexualMenu = false)
     {
         var ok = new List<string>(); var skipped = new List<string>(); bool risky = false;
         bool seatSel = PoseMenuLooksLikeSeatSelect(labels);
@@ -300,6 +304,9 @@ public static partial class Program
             // Never pick AVsitter seat-select chrome (⊘sitter, bare F/M roles)
             if (l.TrimStart().StartsWith("⊘") || l.TrimStart().StartsWith("⊘")) { skipped.Add(l); continue; }
             if (seatSel) { skipped.Add(l); continue; }
+            // 2026-10-16: the android / alone rule holds in EVERY mode, explicit 'pose couples' included. Inside a sexual
+            // menu (Fist*, Adult*, MF*...) nothing is picked, even entries whose own name looks harmless.
+            if (!allowSexual && (inSexualMenu || PoseIsAdultMenu(l))) { skipped.Add(l); risky = true; continue; }
             if (couplesMode)
             {
                 if (!inCouplesMenu)
@@ -450,7 +457,7 @@ public static partial class Program
                 WLog("POSE " + m); return m;
             }
         }
-        bool allowSexual = !couplesMode && SexualPosesAllowedNow();
+        bool allowSexual = SexualPosesAllowedNow();   // 2026-10-16: also for explicit 'pose couples' (it bypassed the android / alone rule)
         if (allowSexual) WLog($"POSE '{seatName}': sexual poses allowed (human outfit, only David around)");
         for (int depth = 0; depth < 3; depth++)
         {
@@ -465,11 +472,16 @@ public static partial class Program
             }
             var menuLabels = SeatPoseFilter(seat.ID, d.ButtonLabels);
             if (!couplesMode) menuLabels = PoseLabelsFree(seat, menuLabels, seatName);   // SeatOccupancy.cs
-            var (pick, sub, why) = PickPoseButton(menuLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual);
+            var (pick, sub, why) = PickPoseButton(menuLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual, inSexualMenu: PosePathIsSexual(path));
             if (pick == null)
             {
                 var m = $"'{seatName}': {why}; keeping the current pose {current ?? "?"}";
                 WLog("POSE " + m); return m;
+            }
+            if (PoseSexualRefused(path.Append(pick.Trim()), allowSexual))
+            {   // backstop: never press a sexual pick when the rule says no (android / someone else around / not Peronaut)
+                var mS = $"'{seatName}': refused sexual pick {string.Join(" > ", path.Append(pick.Trim()))} (android outfit / not alone with David); keeping {current ?? "?"}";
+                WLog("POSE " + mS); return mS;
             }
             if (!sub && allowSexual && PosePathIsSexual(path.Append(pick.Trim())))
             {
@@ -603,6 +615,7 @@ public static partial class Program
     static async Task<string> SeatPosePath(Primitive seat, string seatName, List<string> want, CancellationToken ct)
     {
         if (want == null || want.Count == 0) return "empty path";
+        if (PoseSexualRefused(want, SexualPosesAllowedNow())) return $"'{seatName}': refused sexual path {string.Join(" > ", want)} (android outfit / not alone with David)";
         lastSeatPoseMenuAt = DateTime.Now; seatPoseMissingSince = null;
         var t0 = DateTime.Now; client.Self.Touch(seat.LocalID);
         var d = await WaitSeatDialog(seat, t0, 5000, ct);

@@ -84,3 +84,27 @@ def test_second_size_reuses_the_raw_bytes_and_a_dead_texture_is_asked_once(tmp_p
     assert handler.fetch_tex(U[0], tex, 2048)[1] and gets == [U[0]]                   # one download for two sizes
     assert handler.fetch_tex(U[7], tex, 64)[1] is None and handler.fetch_tex(U[7], tex, 64)[2].startswith("recent CDN miss")
     assert gets == [U[0], U[7]]                                                       # the dead one: asked once, then remembered
+
+
+def test_prune_never_evicts_files_younger_than_min_age(tmp_path):
+    d = str(tmp_path)
+    for i, u in enumerate(U): _file(f"{d}/{u}.512.png", 100, age=7200 if i < 2 else 10)   # two old, six fresh
+    assert handler.prune_cache(d, 100, handler.DEC_NAME.match, min_age=3600)[3] == 2          # only the old two go
+    assert len(os.listdir(d)) == 6
+
+
+def test_aux_caches_share_the_policy_but_keep_their_own_files(tmp_path):
+    work, bake, mesh = tmp_path / "work", tmp_path / "bake-cache", tmp_path / "scene-mesher"
+    for i in range(6):
+        _file(str(work / "bakecache" / f"{i:024x}.1024.png"), 100, age=9000 - i * 100)
+        _file(str(bake / "ab" / f"{U[i]}.j2c"), 100, age=9000 - i * 100)
+        _file(str(mesh / "mesh" / U[i][:2] / U[i]), 100, age=9000 - i * 100)
+    _file(str(mesh / "mesh" / "00" / (U[0] + ".1a2b3c4d")), 9999, age=9999)                # a temp name: never matched
+    _file(str(work / "bakecache" / "notes.txt"), 9999, age=9999)
+    env = {"GT_BAKECACHE_CAP_MB": "0.0005", "GT_BAKE_CAP_MB": "0.0005", "SCENE_MESHER_CACHE_CAP_MB": "0.0005"}   # ~524 bytes each
+    r = handler.prune_aux_caches(str(work), str(bake), str(mesh), env)
+    assert set(r) == {"bakecache", "bake-cache", "scene-mesher"} and all(v[3] >= 2 and v[2] <= 420 for v in r.values())
+    assert (mesh / "mesh" / "00" / (U[0] + ".1a2b3c4d")).exists() and (work / "bakecache" / "notes.txt").exists()
+    # "off" and a missing bake dir are skipped; the defaults (512 / 2048 / 2048 MB) leave small caches alone
+    assert set(handler.prune_aux_caches(str(work), None, "off", {})) == {"bakecache"}
+    assert all(v[3] == 0 for v in handler.prune_aux_caches(str(work), str(bake), str(mesh), {}).values())

@@ -334,7 +334,7 @@ def cached_bakes(d, only, cap, work):
         k = os.path.basename(f)[5:-4]
         if only is not None and k not in only or not handler.BAKE_KEY.fullmatch(k): continue
         data = open(f, "rb").read(); c = f"{cache}/{bake_cache_key(data, cap)}"
-        if os.path.exists(c): place(c, f"{work}/tex/bake-{k}.png"); hits += 1; n += 1
+        if os.path.exists(c): os.utime(c); place(c, f"{work}/tex/bake-{k}.png"); hits += 1; n += 1   # a hit refreshes its age (LRU prune)
         else: todo.append((k, data, c))
     if todo:  # processes: decode + thumbnail + PNG encode hold the GIL long enough that threads managed ~2x on 8 cores
         with cf.ProcessPoolExecutor(min(8, os.cpu_count() or 4)) as ex:
@@ -536,6 +536,12 @@ def main(a):
         outs += got; times[kind] = round(time.time() - t, 1)
         if build is not None: times["build"] = build
         times["render_views"] = rend
+    try:   # keep the other UUID-keyed disk caches under their caps (handler.prune_aux_caches); never fails a render
+        mc = os.environ.get("SCENE_MESHER_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "scene-mesher")
+        aux = handler.prune_aux_caches(WORK, os.environ.get("GT_BAKE_CACHE", "/workspace/secondlife/vision/bake-cache"), mc)
+        for k_, v_ in aux.items():
+            if v_[3]: print(f"cache {k_}: evicted {v_[3]} files ({v_[1] >> 20} -> {v_[2] >> 20} MB)", file=sys.stderr)
+    except Exception as e: print(f"cache prune skipped: {e}", file=sys.stderr)
     for p in outs: print(p)
     crowd = crowd_summary(meta.get("others", []))
     if crowd["complete"] + crowd["stand_in"]:

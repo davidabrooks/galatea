@@ -152,8 +152,9 @@ def fetch_tex(uuid, outdir, cap=512):
         return (uuid, best, None) if best else (uuid, None, str(e)[:120])
 
 DEC_NAME = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.\d+)?\.png$")
-def prune_cache(root, cap_bytes, name_ok, recurse=False, low=0.8):
+def prune_cache(root, cap_bytes, name_ok, recurse=False, low=0.8, min_age=0):
     """Oldest-mtime-first eviction of files whose name passes name_ok once the total exceeds cap_bytes, down to low x cap.
+    Files younger than min_age seconds are never evicted (another process may be reading or just wrote them).
     Returns (files, bytes before, bytes after, evicted). Never touches other files (bakes, manifests, .missing.json)."""
     files = []
     def walk(d):
@@ -168,11 +169,29 @@ def prune_cache(root, cap_bytes, name_ok, recurse=False, low=0.8):
     walk(root)
     total = sum(f[1] for f in files); before = total; n = 0
     if cap_bytes > 0 and total > cap_bytes:
-        for _, sz, p in sorted(files):
+        now = time.time()
+        for mt, sz, p in sorted(files):
             if total <= cap_bytes * low: break
+            if now - mt < min_age: break      # sorted oldest first: everything after is younger still
             try: os.remove(p); total -= sz; n += 1
             except OSError: pass
     return len(files), before, total, n
+
+# The other UUID-keyed disk caches grew without a limit (2026-10-16: client bake-cache 0.5 GB, decoded bakecache 0.1 GB,
+# scene-mesher cache 0.3 GB). Same policy as the texture tiers: a cap per cache, oldest-used first down to 80%, nothing
+# younger than an hour. They are separate caches on purpose (different writers, formats and keys; see README).
+_UUID_NAME = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_BAKEC_NAME = re.compile(r"^[0-9a-f]{24}\.\d+\.png$")
+def prune_aux_caches(work, bake_dir, mesher_dir, env=None):
+    """-> {name: (files, bytes before, bytes after, evicted)} for the decoded bakecache (work/bakecache), the client's raw bake
+    cache (bake_dir, *.j2c) and the scene-mesher asset cache (mesher_dir, files named by UUID; None/"off" = skipped)"""
+    env = os.environ if env is None else env
+    cap = lambda k, d: float(env.get(k, d)) * 2 ** 20
+    out = {"bakecache": prune_cache(os.path.join(work, "bakecache"), cap("GT_BAKECACHE_CAP_MB", 512), _BAKEC_NAME.match, min_age=3600)}
+    if bake_dir: out["bake-cache"] = prune_cache(bake_dir, cap("GT_BAKE_CAP_MB", 2048), lambda n: n.endswith(".j2c"), recurse=True, min_age=3600)
+    if mesher_dir and mesher_dir != "off":
+        out["scene-mesher"] = prune_cache(mesher_dir, cap("SCENE_MESHER_CACHE_CAP_MB", 2048), _UUID_NAME.match, recurse=True, min_age=3600)
+    return out
 
 def prune_texture_caches(outdir):
     rc = float(os.environ.get("GT_TEX_RAW_CAP_MB", "2048")) * 2 ** 20; dc = float(os.environ.get("GT_TEX_DEC_CAP_MB", "2048")) * 2 ** 20

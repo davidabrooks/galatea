@@ -69,7 +69,7 @@ public static partial class Program
     {
         if (labels == null || labels.Count == 0) return false;
         if (PoseMenuLooksLikeRoot(labels) || PoseMenuLooksLikeSeatSelect(labels)) return false;
-        if (!labels.Any(PoseIsBackButton)) return false;
+        if (!PoseHasBack(labels)) return false;
         return currentIsCouples || labels.Any(l => PoseIsCouplesNamed(l) || PoseIsAdultMenu(l));
     }
     // pure: which button of the seat's root pose menu restores the default? 1) the recorded sit-alone pose,
@@ -77,6 +77,8 @@ public static partial class Program
     internal static (string pick, string why) PickDefaultPoseButton(IReadOnlyList<string> rootLabels, string recordedDefault, bool allowSexual = false)
     {
         var labels = rootLabels ?? new List<string>();
+        // 2026-10-16 13:43: never pick from a page that is not the top-level menu (a CUDDLES* page gave 'head massage', a couples pose)
+        if (!PoseMenuIsTopLevel(labels)) return (null, "not the top-level menu (has [BACK])");
         if (!string.IsNullOrWhiteSpace(recordedDefault))
         {
             var rec = labels.FirstOrDefault(l => PoseUsableAsDefault(l, allowSexual) && string.Equals(PoseBare(l), PoseBare(recordedDefault), StringComparison.OrdinalIgnoreCase));
@@ -217,9 +219,34 @@ public static partial class Program
         names != null && names.Any(n => n != null && n != "ME"
             && n.IndexOf("David Nightingale", StringComparison.OrdinalIgnoreCase) >= 0);
 
+    // 2026-10-16: record the seat's sit-alone default pose from the dialog header of the FIRST menu after I sit (any way of sitting: wander,
+    // 'sit', quick relog beside the bed ...), not only when SeatPose runs: the header "[Female seat] [F waits]" names the pose AVsitter started.
+    // Only when alone on the seat, no pose pressed since the sit, and the header pose is a usable (non-couples / male / sexual) single pose.
+    static DateTime poseSitRespAt = DateTime.MinValue; static string poseSitRespPath = "";
+    internal static void NotePoseSitResponse() { poseSitRespAt = DateTime.Now; poseSitRespPath = string.Join(">", wLastPosePath); }
+    internal static bool PoseSitDefaultWindowOk(DateTime sitAt, DateTime now, string pathAtSit, string pathNow) =>
+        sitAt != DateTime.MinValue && (now - sitAt).TotalSeconds <= 12 && pathAtSit == pathNow;
+    static void PoseRecordSitDefaultFromDialog(ScriptDialogEventArgs e)
+    {
+        try
+        {
+            if (client?.Self?.SittingOn is not uint sit || sit == 0) return;
+            if (!PoseSitDefaultWindowOk(poseSitRespAt, DateTime.Now, poseSitRespPath, string.Join(">", wLastPosePath))) return;
+            var sim = Sim; if (sim == null || !sim.ObjectsPrimitives.TryGetValue(sit, out var p) || p == null) return;
+            if (p.ParentID != 0 && sim.ObjectsPrimitives.TryGetValue(p.ParentID, out var root) && root != null) p = root;
+            if (!DialogFromSeat(e, p, sim)) return;
+            if (e.ButtonLabels == null || e.ButtonLabels.Any(PoseIsCouplesNamed) && !e.ButtonLabels.Any(PoseIsSoloMenu)) return;
+            var cur = PoseCurrent(e.Message);
+            if (PoseRecordSitDefault(p.ID.ToString(), cur, !SeatHasOtherSitters(p) && !SeatHasDavid(p), false, PoseLeafIsCouples(cur, wLastPosePath)))
+                WLog($"POSE '{p.Properties?.Name ?? p.ID.ToString()}': recorded sit-alone default pose [{cur}] from the first menu header after sitting");
+        }
+        catch { }
+    }
+
     static void WanderDialogIn(ScriptDialogEventArgs e)
     {
         wDialogs.Enqueue((DateTime.Now, e));
+        PoseRecordSitDefaultFromDialog(e);
         if (PoseMenuHasSoloSubmenu(e.ButtonLabels))
         {
             poseSinglesSeen[e.ObjectID.ToString()] = true;
@@ -264,10 +291,52 @@ public static partial class Program
     static bool PoseIsSexualNamed(string raw) => PoseSexualWord.IsMatch(PoseBare(raw));
     static bool PoseIsAdultMenu(string raw) => PoseAdultMenuName.IsMatch(PoseBare(raw)) || PoseIsSexualNamed(raw);
     static bool PoseIsMale(string raw) => PoseMaleSkip.IsMatch(PoseBare(raw));
-    static bool PoseIsBackButton(string raw)
+    // 2026-10-16 13:43 (Mirage bed): "[<<]" / "[>>]" are the PAGE buttons of a long menu, not [BACK]. Treating "[<<]" as BACK pressed
+    // "previous page" (CUDDLES page 1 -> page 2) and the page was mistaken for the root. Only a real [BACK] button goes up a level.
+    internal static bool PoseIsBackButton(string raw)
     {
         var b = PoseBare(raw).Trim().TrimStart('[').TrimEnd(']').Trim();
-        return b.Equals("BACK", StringComparison.OrdinalIgnoreCase) || b.Equals("<<", StringComparison.OrdinalIgnoreCase);
+        return b.Equals("BACK", StringComparison.OrdinalIgnoreCase);
+    }
+    // pure: index of the button that goes up one menu level, -1 = none (= this is the top-level menu).
+    // [BACK] always; a bare "<<" only on a menu that has no ">>" (a "<<"/">>" pair is paging).
+    internal static int PoseBackIndex(IReadOnlyList<string> labels)
+    {
+        if (labels == null) return -1;
+        for (int i = 0; i < labels.Count; i++) if (PoseIsBackButton(labels[i])) return i;
+        static bool Is(string l, string w) => (l ?? "").Trim().TrimStart('[').TrimEnd(']').Trim() == w;
+        if (!labels.Any(l => Is(l, ">>"))) for (int i = 0; i < labels.Count; i++) if (Is(labels[i], "<<")) return i;
+        return -1;
+    }
+    internal static bool PoseHasBack(IReadOnlyList<string> labels) => PoseBackIndex(labels) >= 0;
+    // pure: is this the top-level pose menu? The category-root heuristic (Solo* + Couples* siblings, which may still show a [BACK] to the
+    // seat-select), or simply a menu without any [BACK] that is not the seat-select chrome. Never by exact names.
+    internal static bool PoseMenuIsTopLevel(IReadOnlyList<string> labels)
+    {
+        if (labels == null || labels.Count == 0) return false;
+        if (PoseMenuLooksLikeRoot(labels)) return true;
+        if (PoseMenuLooksLikeSeatSelect(labels)) return false;
+        return !PoseHasBack(labels);
+    }
+    // pure core of 'go to the root': press [BACK] on the current menu (re-reading it each time) until it is the top-level menu.
+    // press(index,label) returns the new menu labels (null = no dialog came back). Depth is NOT assumed: 0..cap levels all work.
+    // atRoot=false => gave up (cap hit / stuck / no dialog); note says why.
+    internal static async Task<(List<string> labels, bool atRoot, int presses, string note)> PoseBackToRootCore(
+        List<string> labels, Func<int, string, Task<List<string>>> press, int cap = 8)
+    {
+        int presses = 0;
+        for (int i = 0; i < cap; i++)
+        {
+            if (labels == null) return (labels, false, presses, "no menu");
+            if (PoseMenuIsTopLevel(labels)) return (labels, true, presses, presses == 0 ? "already at the top-level menu" : $"top-level menu after {presses} BACK press(es)");
+            int back = PoseBackIndex(labels);
+            if (back < 0) return (labels, false, presses, "no [BACK] and not a pose menu (seat-select?)");
+            var next = await press(back, labels[back]); presses++;
+            if (next == null) return (labels, false, presses, "no dialog after pressing BACK");
+            if (next.SequenceEqual(labels)) return (next, false, presses, "BACK did not change the menu (stuck)");
+            labels = next;
+        }
+        return (labels, PoseMenuIsTopLevel(labels), presses, PoseMenuIsTopLevel(labels) ? "top-level menu" : $"gave up after {cap} BACK presses; menu is still not the top level");
     }
 
     // sitter name list on this seat's root (Sitters map: "ME", "David Nightingale", ...).
@@ -483,6 +552,11 @@ public static partial class Program
         if (!couplesMode && PoseNeedsRootSearch(d.ButtonLabels, PoseLeafIsCouples(current, wLastPosePath)))
         {
             var rootD = await SeatPoseBackToRoot(seat, d, ct);
+            if (rootD?.ButtonLabels != null && !PoseMenuIsTopLevel(rootD.ButtonLabels))
+            {   // 2026-10-16: could not get to the real top level (cap / stuck / no dialog): do not search or pick from a middle page
+                var mR = $"'{seatName}': could not reach the top-level menu from [{string.Join(" | ", d.ButtonLabels)}] (now [{string.Join(" | ", rootD.ButtonLabels)}]); keeping the current pose {current ?? "?"}";
+                WLog("POSE " + mR); return mR;
+            }
             if (rootD?.ButtonLabels != null && !ReferenceEquals(rootD, d))
             {
                 WLog($"POSE '{seatName}': open menu is a couples/adult one [{string.Join(" | ", d.ButtonLabels)}]; searching the root menu [{string.Join(" | ", rootD.ButtonLabels)}] for a solo pose");
@@ -530,7 +604,7 @@ public static partial class Program
             if (pick == null)
             {
                 // 2026-10-16 David: never leave a couples pose running alone. No clearly solo option -> the pose the seat gave when I first sat alone.
-                if (!couplesMode && depth == 0 && PoseLeafIsCouples(current, wLastPosePath))
+                if (!couplesMode && PoseLeafIsCouples(current, wLastPosePath))
                 {
                     var fb = await PoseSwitchToDefault(seat, seatName, d, current, allowSexual, why, ct);
                     if (fb != null) return fb;
@@ -603,6 +677,11 @@ public static partial class Program
         {
             var root = await SeatPoseBackToRoot(seat, d, ct);
             var labels = root?.ButtonLabels;
+            if (labels == null || !PoseMenuIsTopLevel(labels))
+            {
+                WLog($"POSE '{seatName}': default-pose fallback: not at the top-level menu [{string.Join(" | ", labels ?? new List<string>())}]; keeping the current pose {current ?? "?"}");
+                return null;
+            }
             poseSitDefault.TryGetValue(seat.ID.ToString(), out var was);
             var (pick, how) = PickDefaultPoseButton(labels, was, allowSexual);
             if (pick != null)
@@ -666,47 +745,41 @@ public static partial class Program
         return hasF && hasM; // both role buttons present
     }
 
-    // Press [BACK] until the top-level pose menu (AVsitter reopens in the last submenu).
-    // Do NOT press [BACK] when already on the category root (it still shows [BACK] — that goes to seat select).
+    // Press [BACK] until the top-level pose menu (AVsitter reopens in the last submenu), whatever the number of levels (0..8).
+    // Top level = no [BACK] button (or the Solo*+Couples* category root heuristic, whose [BACK] would go to seat-select).
+    // "[<<]" / "[>>]" are page buttons and are never pressed. Logs when it gives up; the returned dialog is then the last one seen.
     static async Task<ScriptDialogEventArgs> SeatPoseBackToRoot(Primitive seat, ScriptDialogEventArgs d, CancellationToken ct)
     {
-        for (int i = 0; i < 8; i++)
+        if (d?.ButtonLabels == null) return d;
+        var cur = d;
+        // seat-select overlay: re-touch for the pose menu (and press F) before navigating
+        if (PoseMenuLooksLikeSeatSelect(cur.ButtonLabels))
         {
-            if (d?.ButtonLabels == null) return d;
-            if (PoseMenuLooksLikeRoot(d.ButtonLabels)) return d; // already at pose root — keep it
-            // Ignore seat-select overlays: re-touch for the pose menu
-            if (PoseMenuLooksLikeSeatSelect(d.ButtonLabels))
+            var tTouch = DateTime.Now; client.Self.Touch(seat.LocalID);
+            var again = await WaitSeatDialog(seat, tTouch, 5000, ct);
+            if (again == null) return d;
+            cur = again;
+            int fIdx = PoseMenuLooksLikeSeatSelect(cur.ButtonLabels) ? cur.ButtonLabels.FindIndex(b => PoseBare(b).Equals("F", StringComparison.OrdinalIgnoreCase)) : -1;
+            if (fIdx >= 0)
             {
-                var tTouch = DateTime.Now; client.Self.Touch(seat.LocalID);
-                var again = await WaitSeatDialog(seat, tTouch, 5000, ct);
-                if (again == null) return d;
-                d = again;
-                if (PoseMenuLooksLikeRoot(d.ButtonLabels)) return d;
-                // if still seat-select, try pressing F (female role) then continue
-                int fIdx = d.ButtonLabels.FindIndex(b => PoseBare(b).Equals("F", StringComparison.OrdinalIgnoreCase));
-                if (fIdx >= 0)
-                {
-                    var tF = DateTime.Now;
-                    client.Self.ReplyToScriptDialog(d.Channel, fIdx, d.ButtonLabels[fIdx], d.ObjectID);
-                    again = await WaitSeatDialog(seat, tF, 5000, ct);
-                    if (again != null) d = again;
-                    if (PoseMenuLooksLikeRoot(d.ButtonLabels)) return d;
-                }
-                continue;
+                var tF = DateTime.Now;
+                client.Self.ReplyToScriptDialog(cur.Channel, fIdx, cur.ButtonLabels[fIdx], cur.ObjectID);
+                again = await WaitSeatDialog(seat, tF, 5000, ct);
+                if (again != null) cur = again;
             }
-            int back = d.ButtonLabels.FindIndex(PoseIsBackButton);
-            if (back < 0) return d; // no [BACK] => treat as root
-            var before = string.Join("|", d.ButtonLabels);
-            var t1 = DateTime.Now;
-            client.Self.ReplyToScriptDialog(d.Channel, back, d.ButtonLabels[back], d.ObjectID);
-            var next = await WaitSeatDialog(seat, t1, 5000, ct);
-            if (next == null) return d;
-            var after = string.Join("|", next.ButtonLabels ?? new List<string>());
-            d = next;
-            if (after == before) return d; // stuck
-            if (PoseMenuLooksLikeRoot(d.ButtonLabels)) return d;
         }
-        return d;
+        var res = await PoseBackToRootCore(cur.ButtonLabels.ToList(), async (idx, label) =>
+        {
+            var t1 = DateTime.Now;
+            client.Self.ReplyToScriptDialog(cur.Channel, idx, label, cur.ObjectID);
+            var next = await WaitSeatDialog(seat, t1, 5000, ct);
+            if (next?.ButtonLabels == null) return null;
+            cur = next;
+            return next.ButtonLabels.ToList();
+        });
+        if (!res.atRoot) WLog($"POSE '{seat.Properties?.Name ?? seat.ID.ToString()}': could not reach the top-level menu: {res.note} [{string.Join(" | ", res.labels ?? new List<string>())}]");
+        else if (res.presses > 0) WLog($"POSE '{seat.Properties?.Name ?? seat.ID.ToString()}': {res.note} [{string.Join(" | ", res.labels)}]");
+        return cur;
     }
 
     // Press an exact AVsitter menu path. If the open menu already has the final leaf (e.g. Cross legs on Solo Couch*),
@@ -969,7 +1042,7 @@ public static partial class Program
         }
         {
             bool back = PoseIsBackButton("[BACK]") && PoseIsBackButton("BACK") && PoseIsBackButton("[ BACK ]")
-                     && PoseIsBackButton("<<") && !PoseIsBackButton("Solo*") && !PoseIsBackButton("[ADJUST]");
+                     && !PoseIsBackButton("<<") && !PoseIsBackButton("[>>]") && PoseBackIndex(new[] { "x", "<<" }) == 1 && PoseBackIndex(new[] { "[<<]", "[>>]", "[BACK]" }) == 2 && PoseBackIndex(new[] { "[<<]", "[>>]", "a" }) < 0 && !PoseIsBackButton("Solo*") && !PoseIsBackButton("[ADJUST]");
             if (back) pass++; else fail++;
             lines.Add($"{(back ? "PASS" : "FAIL")} PoseIsBackButton detects [BACK]");
         }

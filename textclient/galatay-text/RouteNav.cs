@@ -374,9 +374,10 @@ public static partial class Program
         // The speed trigger below cannot do this: at a standing start the measured speed is 0, so it fired ~3 m ahead.
         try
         {
-            var ngS = PickScanGrid(NavGrids(), region, poly.At(0), poly.At(Math.Min(poly.Len, DoorPreOpenM)));
-            if (DoorsToPreOpen(ngS, u => V2(poly.At(u)), poly.Len) is var (dS, sdoors))
+            var preL = zoneGrids.Select(gz => DoorsToPreOpen(gz, u => V2(poly.At(u)), poly.Len)).Where(x => x != null).Select(x => x.Value).ToList();
+            if (preL.Count > 0)
             {
+                float dS = preL.Min(x => x.dist); var sdoors = preL.SelectMany(x => x.doors).GroupBy(nd => nd.Id).Select(gg => gg.First()).ToList();
                 var shutS = sdoors.Where(nd => { var st = DoorState(nd); return st.known && !st.open; }).ToList();
                 foreach (var nd in sdoors) doorsOpened.Add(nd.Id);
                 if (shutS.Count > 0)
@@ -516,39 +517,31 @@ public static partial class Program
                     }
                 }
                 // doors ahead on a nav grid: scan the path (not a chord, so bends can't miss a door) and touch the pair
-                // once it is DoorTriggerM ahead, then give the leaf time to swing before walking into it (David 2026-10-07 09:23)
+                // once it is DoorLeadTriggerM ahead (>= 7.5 m, whatever her measured speed: it dips on turns and stairs), together
+                // with any door within DoorTogetherM after it, then give the leaf time to swing before walking into it
+                // (David 2026-10-07 09:23, 2026-10-16 10:20: both doors were hit on the way in)
                 {
-                    var look = Math.Min(poly.Len, s + DoorScanM);
-                    var ng = NavGridForScan(region, poly.At(s), poly.At(look));
-                    if (ng != null)
+                    float measured = new Vector2(client.Self.Velocity.X, client.Self.Velocity.Y).Length();
+                    var due = DoorsDueAhead(zoneGrids, u => poly.At(u), s, poly.Len, doorsOpened, DoorLeadTriggerM(measured));
+                    if (due is var (da, ahead))
                     {
-                        List<NavDoor> ahead = null;
-                        var dAhead = FirstCrossingAhead(u => V2(poly.At(u)), s, poly.Len, (p, q) =>
+                        // touch while walking (no stop at an open door); hold outside only if the leaf would not have
+                        // DoorSwingWaitMs to swing before she reaches it (19:45 David: no pausing at doorways)
+                        RLogR($"{o.Label}: door(s) {da:F1} m ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching while walking (speed {measured:F1} m/s)");
+                        var touchT0 = DateTime.Now;
+                        float spd = DoorLeadSpeedMps(measured);
+                        int touched = await EnsureDoorsOpen(ahead, ct);
+                        foreach (var nd in ahead) doorsOpened.Add(nd.Id);
+                        var swingT0 = DateTime.Now;
+                        int hold = DoorApproachHoldMs(da, spd, (int)(swingT0 - touchT0).TotalMilliseconds, touched > 0);
+                        if (hold > 0 && !ahead.Any(nd => DoorState(nd).open))
                         {
-                            if (!ng.Contains(p.X, p.Y) && !ng.Contains(q.X, q.Y)) return false;
-                            var l = DoorsForCrossing(ng, p, q).Where(nd => !doorsOpened.Contains(nd.Id)).ToList();
-                            if (l.Count == 0) return false; ahead = l; return true;
-                        });
-                        if (dAhead is float da && DoorTouchDue(da, DoorLeadSpeedMps(new Vector2(client.Self.Velocity.X, client.Self.Velocity.Y).Length())))
-                        {
-                            // touch while walking (no stop at an open door); hold outside only if the leaf would not have
-                            // DoorSwingWaitMs to swing before she reaches it (19:45 David: no pausing at doorways)
-                            RLogR($"{o.Label}: door(s) {da:F1} m ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching while walking");
-                            var touchT0 = DateTime.Now;
-                            var vel = client.Self.Velocity; float spd = DoorLeadSpeedMps(new Vector2(vel.X, vel.Y).Length());
-                            int touched = await EnsureDoorsOpen(ahead, ct);
-                            foreach (var nd in ahead) doorsOpened.Add(nd.Id);
-                            var swingT0 = DateTime.Now;
-                            int hold = DoorApproachHoldMs(da, spd, (int)(swingT0 - touchT0).TotalMilliseconds, touched > 0);
-                            if (hold > 0 && !ahead.Any(nd => DoorState(nd).open))
-                            {
-                                client.Self.AutoPilotCancel();
-                                RLogR($"{o.Label}: holding {hold} ms before the door (speed {spd:F1} m/s, {da:F1} m) for the leaf to swing");
-                                while ((DateTime.Now - swingT0).TotalMilliseconds < hold && !ahead.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
-                            }
-                            doorSeqTried = false; // allow unstick again if still blocked
-                            now = DateTime.Now; lastProgT = now; lastProgS = s; needAim = true;
+                            client.Self.AutoPilotCancel();
+                            RLogR($"{o.Label}: holding {hold} ms before the door (speed {spd:F1} m/s, {da:F1} m) for the leaf to swing");
+                            while ((DateTime.Now - swingT0).TotalMilliseconds < hold && !ahead.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
                         }
+                        doorSeqTried = false; // allow unstick again if still blocked
+                        now = DateTime.Now; lastProgT = now; lastProgS = s; needAim = true;
                     }
                 }
                 // safety net: a closed nav door whose cells she is about to enter is opened first, even when the early scan

@@ -247,8 +247,13 @@ public static partial class Program
     // The speed to lead with. At the start of a walk (and while she is held or stuck) the measured speed is ~0, so the
     // trigger fell back to 3 m (the 10:02 bedroom door was touched 3.5 m ahead = ~1.1 s at 3.2 m/s, less than the swing plus
     // the touch round trip). Below DoorLeadFloorMps she is treated as walking at her normal speed.
-    internal const float DoorLeadFloorMps = 1.5f, DoorNominalWalkMps = 3.2f;
-    internal static float DoorLeadSpeedMps(float measuredMps) => measuredMps < DoorLeadFloorMps ? DoorNominalWalkMps : measuredMps;
+    // 2026-10-16 10:20 (inbound beach -> bedroom): the front doors were first touched only 3.5 m ahead although she walked
+    // at 3.2 m/s: the measured speed dips on the U-turn at the foot of the porch stairs and on the stairs themselves (~1.7 m/s,
+    // above the 1.5 m/s floor), and the lead shrank with it. The lead speed is now never below her walking speed, and the
+    // lead is never below DoorMinLeadM of path (a tick of 0.4 s costs ~1.3 m, so the first touch is >= ~6 m ahead).
+    internal const float DoorNominalWalkMps = 3.2f, DoorMinLeadM = 7.5f, DoorTogetherM = 8.0f;
+    internal static float DoorLeadSpeedMps(float measuredMps) => Math.Max(DoorNominalWalkMps, measuredMps);
+    internal static float DoorLeadTriggerM(float measuredMps) => Math.Max(DoorMinLeadM, DoorTriggerFor(DoorLeadSpeedMps(measuredMps)));
     internal static bool DoorTouchDue(float distAhead, float speedMps) => distAhead >= 0 && distAhead <= DoorTriggerFor(speedMps);
     // path distance from s to the first step [u, u+step] that crosses a door, or null within the scan window
     internal static float? FirstCrossingAhead(Func<float, Vector2> at, float s, float len, Func<Vector2, Vector2, bool> crosses, float scan = DoorScanM, float step = DoorScanStepM)
@@ -256,6 +261,32 @@ public static partial class Program
         float end = Math.Min(len, s + scan);
         for (float u = s; u < end; u += step) { float v = Math.Min(end, u + step); if (crosses(at(u), at(v))) return u - s; }
         return null;
+    }
+    // The doors to touch now: the first crossing ahead (not yet in `done`) when it is within `trigger`, and with it every door
+    // whose crossing lies within DoorTogetherM further along the path inside the scan window (two doors close together, such as
+    // the front doors and side-room-1, are both open before she reaches the first). The crossing may lie on any grid of the
+    // region whose floor is within 3.5 m of the path there: detection no longer depends on the walker's own position or height
+    // (the porch stairs are off the home grid and below its floor).
+    internal static (float dist, List<NavDoor> doors)? DoorsDueAhead(IReadOnlyList<NavGrid> grids, Func<float, Vector3> at, float s, float len, ISet<UUID> done, float trigger)
+    {
+        if (grids == null || grids.Count == 0) return null;
+        float end = Math.Min(len, s + DoorScanM);
+        var found = new List<NavDoor>(); var seen = new HashSet<UUID>(); float? first = null;
+        for (float u = s; u < end; u += DoorScanStepM)
+        {
+            if (first is float f0 && u - s > f0 + DoorTogetherM) break;
+            if (first == null && u - s > trigger) break;
+            float v = Math.Min(end, u + DoorScanStepM);
+            var a3 = at(u); var b3 = at(v); var a = new Vector2(a3.X, a3.Y); var b = new Vector2(b3.X, b3.Y);
+            foreach (var g in grids)
+            {
+                if (MathF.Abs(a3.Z - g.FloorZ) >= 3.5f && MathF.Abs(b3.Z - g.FloorZ) >= 3.5f) continue;
+                if (!g.Contains(a.X, a.Y) && !g.Contains(b.X, b.Y)) continue;
+                foreach (var nd in DoorsForCrossing(g, a, b))
+                    if (!done.Contains(nd.Id) && seen.Add(nd.Id)) { found.Add(nd); first ??= u - s; }
+            }
+        }
+        return first is float f && f <= trigger ? (f, found) : null;
     }
     // Start-of-walk pre-open (2026-10-16 10:04 David: 'when you're that close to a door, you should open it before you even
     // start walking'): every mapped door pair whose cells the path enters within DoorPreOpenM of its start, nearest first.
@@ -296,7 +327,7 @@ public static partial class Program
     // What the guard does about a closed door ahead, given how long ago it was touched (a toggle door shut again by a second
     // touch while it is still swinging open). Wait until DoorGuardHoldS after a touch; then re-touch at most DoorGuardRetouchMax
     // times, and only if the leaf has not moved at all; a leaf that has started to swing is waited for (up to DoorGuardSwingS).
-    internal const double DoorGuardHoldS = 1.5, DoorGuardSwingS = 2.5; internal const int DoorGuardRetouchMax = 1;
+    internal const double DoorGuardHoldS = 2.5, DoorGuardSwingS = 3.5; internal const int DoorGuardRetouchMax = 1;
     internal enum GuardStep { Wait, Touch, GiveUp }
     internal static GuardStep DoorGuardStep(double sinceTouchS, bool movedAtAll, int guardTouches)
     {
@@ -335,6 +366,7 @@ public static partial class Program
         {
             d.LastTouch = DateTime.Now; client.Self.Touch(p.LocalID);
             Log("door", $"touched nav door {d.Name} {d.Id} to open it (was {how})");
+            WatchDoorRead(d, d.LastTouch);
         }
         // Fixed short delay then GO — do not wait for every leaf; one opening is enough to pass
         await Task.Delay(DoorThroughDelayMs, ct);
@@ -346,6 +378,30 @@ public static partial class Program
     }
 
     // ---- doors ----
+    // How long after a touch DoorState first reads open (the object update can lag): logged per touch so the lead can be tuned
+    // from real data (2026-10-16 10:20: closed for >= 1.6 s after every touch). One watcher per door; a newer touch replaces it.
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<UUID, DateTime> doorWatch = new();
+    internal const int DoorWatchMaxMs = 8000;
+    static void WatchDoorRead(NavDoor d, DateTime t0)
+    {
+        doorWatch[d.Id] = t0;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while ((DateTime.Now - t0).TotalMilliseconds < DoorWatchMaxMs)
+                {
+                    await Task.Delay(50);
+                    if (!doorWatch.TryGetValue(d.Id, out var cur) || cur != t0) { Log("door", $"{d.Name} touched again before it read open (first touch {(int)(DateTime.Now - t0).TotalMilliseconds} ms ago)"); return; }
+                    var st = DoorState(d);
+                    if (st.known && st.open) { Log("door", $"{d.Name} read open {(int)(DateTime.Now - t0).TotalMilliseconds} ms after the touch ({st.how})"); doorWatch.TryRemove(new KeyValuePair<UUID, DateTime>(d.Id, t0)); return; }
+                }
+                Log("door", $"{d.Name} never read open within {DoorWatchMaxMs} ms after the touch ({DoorState(d).how})");
+                doorWatch.TryRemove(new KeyValuePair<UUID, DateTime>(d.Id, t0));
+            }
+            catch { }
+        });
+    }
     static float Yaw(Quaternion q) => MathF.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.Y * q.Y + q.Z * q.Z));
     // the grid with every open (turned) door leaf blocked where it now stands (hinge -> leaf end, inflated by the grid radius)
     static NavGrid WithOpenLeaves(NavGrid g)

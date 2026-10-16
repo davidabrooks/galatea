@@ -33,7 +33,15 @@ public static partial class Program
     static readonly Regex SeatAdultName = new(@"(?<![a-z])adults?(?![a-z])|xxx|nsfw", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> poseSinglesSeen = new(StringComparer.OrdinalIgnoreCase);
     // pure: may a solo wander sit use this seat? (ADULT-named only with a confirmed singles/solo menu)
-    public static bool SoloSeatNameOk(string name, bool singlesConfirmed) => singlesConfirmed || !SeatAdultName.IsMatch(name ?? "");
+    // 2026-10-16 David: every piece of furniture, even one with "adult" in its name, has at least one non-adult pose. The name no
+    // longer rejects a seat: the menu is opened and a pose that the name-based rules rate non-adult is picked (PoseRules.cs); a seat
+    // with none is skipped after sitting (PoseSeatClearPgByName, SkipSeatMarker). Kept as a function for callers / tests.
+    public static bool SoloSeatNameOk(string name, bool singlesConfirmed) => true;
+    internal const string SkipSeatMarker = "[skip-seat: no clearly non-adult pose]";
+    // pure: did the seat give a pose that is clearly non-adult by name? pickFound = the picker found a non-adult button;
+    // else the pose already showing (the seat's default) counts when it is plain by name and not under an adult menu.
+    internal static bool PoseSeatClearPgByName(bool pickFound, string current, IEnumerable<string> currentPath, bool adultSeat) =>
+        pickFound || (!string.IsNullOrWhiteSpace(current) && !PoseIsSexualNamed(current) && !PosePathIsSexual(currentPath ?? Enumerable.Empty<string>(), adultSeat));
     // pure: does this dialog offer a solo submenu (Singles*/SinglesSet*/Solo*/Sit*/Relax*)?
     public static bool PoseMenuHasSoloSubmenu(IReadOnlyList<string> labels) =>
         labels != null && labels.Any(b => (b ?? "").TrimEnd().EndsWith("*") && !PoseIsControl(b) && PoseIsSoloMenu(b) && !PoseIsCouplesNamed(b) && !PoseIsAdultMenu(b));
@@ -813,6 +821,11 @@ public static partial class Program
                     var fb = await PoseSwitchToDefault(seat, seatName, d, current, allowSexual, why, ct);
                     if (fb != null) return fb;
                 }
+                if (!change && !recovery && !couplesMode && (adultSeat || SeatAdultName.IsMatch(seatName ?? "")) && !PoseSeatClearPgByName(false, current, path, adultSeat))
+                {
+                    var mS = $"'{seatName}': {why}; no clearly non-adult pose by name (showing [{current ?? "?"}]) {SkipSeatMarker}";
+                    WLog("POSE " + mS); return mS;
+                }
                 var m = $"'{seatName}': {why}; keeping the current pose {current ?? "?"}";
                 WLog("POSE " + m); return m;
             }
@@ -1293,7 +1306,7 @@ public static partial class Program
             bool good = true;
             for (int i = 0; i < 40; i++) good &= PickPoseButton(hammock, null, rnd, preferPgSolo: true).pick == "SinglesSet*";
             good &= PickPoseButton(new() { "Adults*", "[ADJUST]", "Mirror*", "Cuddles*", "Clean*" }, null, rnd, preferPgSolo: true).pick == null;
-            good &= !SoloSeatNameOk("KraftWork Summer Shack . Beach Hammock ADULT", false) && SoloSeatNameOk("KraftWork Summer Shack . Beach Hammock ADULT", true);
+            good &= SoloSeatNameOk("KraftWork Summer Shack . Beach Hammock ADULT", false) && SoloSeatNameOk("KraftWork Summer Shack . Beach Hammock ADULT", true);
             if (good) pass++; else fail++;
             lines.Add($"{(good ? "PASS" : "FAIL")} Beach Hammock ADULT: SinglesSet* only; no solo option -> default pose; ADULT seat needs a singles menu");
         }

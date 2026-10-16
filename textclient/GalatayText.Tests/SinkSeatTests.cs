@@ -38,7 +38,7 @@ public class SinkSeatTests
         Assert.True(sink.Wander);
         Assert.Null(sink.Special);                                      // stays dressed
         Assert.True(Program.HomeSeatSoloMenuPath(sink));
-        Assert.False(Program.SoloSeatNameOk(sink.Name, false));          // the name alone would be skipped
+        Assert.True(Program.SoloSeatNameOk(sink.Name, false));           // 2026-10-16: seat names no longer reject a seat
         var picks = Enumerable.Range(0, 120).Select(k => Program.HomeSeatMenu(sink, new Random(k))).ToList();
         Assert.All(picks, m => { Assert.Equal(2, m.Count); Assert.Equal("Solo*", m[0]); });
         Assert.Equal(new HashSet<string> { "Wash Face", "Wash Hands", "Soap Face", "Eyebrows", "Wait", "Break" }, picks.Select(m => m[1]).ToHashSet());

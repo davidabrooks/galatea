@@ -829,7 +829,12 @@ public static partial class Program
         }
         else
         {
-            try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
+            try
+            {
+                var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose ");
+                if (pr.Contains(SkipSeatMarker)) { WLog($"'{c.name}': no clearly non-adult pose by name; standing up and skipping this seat for now"); client.Self.Stand(); await Task.Delay(1500, ct); MarkSeatFailed(c, "no clearly non-adult pose by name"); await DressAfterSeatIfPending(); return false; }
+            }
+            catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
         }
         if (info?.Special == "shower" && info.TouchChild != UUID.Zero && client.Self.SittingOn != 0)
         { await Task.Delay(1500, ct); waterOn = TouchChildPrim(info.TouchChild, "shower water ON (valve)"); }
@@ -1247,7 +1252,12 @@ public static partial class Program
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
         bool menu = false;
-        try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
+        try
+        {
+            var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose ");
+            if (pr.Contains(SkipSeatMarker)) { WLog($"'{c.name}': no clearly non-adult pose by name; standing up and skipping this seat for now"); client.Self.Stand(); await Task.Delay(1500, ct); MarkSeatFailed(c, "no clearly non-adult pose by name"); return false; }
+        }
+        catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
         double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
         while ((DateTime.Now - t0).TotalSeconds < stay && wanderPause == null && client.Self.SittingOn != 0)
         {

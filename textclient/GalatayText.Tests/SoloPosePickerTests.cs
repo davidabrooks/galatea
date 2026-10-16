@@ -52,11 +52,27 @@ public class SoloPosePickerTests
     }
 
     [Fact]
-    public void Adult_named_seat_needs_confirmed_singles()
+    public void Adult_named_seat_is_not_rejected_by_its_name()
     {
+        // 2026-10-16 David: every piece of furniture has at least one non-adult pose; the menu decides, not the seat name
         const string n = "KraftWork Summer Shack . Beach Hammock ADULT";
-        Assert.False(Program.SoloSeatNameOk(n, singlesConfirmed: false));
+        Assert.True(Program.SoloSeatNameOk(n, singlesConfirmed: false));
         Assert.True(Program.SoloSeatNameOk(n, singlesConfirmed: true));
         Assert.True(Program.SoloSeatNameOk("KraftWork Summer Shack . Beach Hammock", false));
+    }
+
+    [Fact]
+    public void Adult_named_seat_picks_a_non_adult_pose_by_name_or_is_skipped()
+    {
+        var menu = new System.Collections.Generic.List<string> { "Adult M+F*", "Couples*", "Singles*", "Masturbate*", "[BACK]" };
+        for (int i = 0; i < 100; i++) Assert.Equal("Singles*", Program.PickPoseButton(menu, null, new System.Random(i), preferPgSolo: true, adultSeat: true).pick);
+        // nothing clearly non-adult on the menu: no pick; the pose showing counts only when plain by name
+        var none = new System.Collections.Generic.List<string> { "Adult M+F*", "Masturbate*", "Sex*", "[BACK]" };
+        Assert.Null(Program.PickPoseButton(none, "Legs Up", new System.Random(1), preferPgSolo: true, adultSeat: true).pick);
+        Assert.True(Program.PoseSeatClearPgByName(true, null, null, true));
+        Assert.True(Program.PoseSeatClearPgByName(false, "Legs Up", new[] { "Solo*" }, true));          // the seat's plain default pose stands
+        Assert.False(Program.PoseSeatClearPgByName(false, "Jiller", new[] { "Solo*", "Masturbate*" }, true));
+        Assert.False(Program.PoseSeatClearPgByName(false, null, null, true));                           // nothing known: skip the seat for now
+        Assert.False(Program.PoseSeatClearPgByName(false, "Lady", new[] { "Zorble*", "Lady" }, true));  // unclear submenu on an adult seat
     }
 }

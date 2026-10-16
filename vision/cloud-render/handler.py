@@ -4,7 +4,7 @@ Input: {"scene": {...gather_scene.py JSON...}, "renders": ["scene", "face"], "ee
 Output: diagnostics, per-render timings and JPEG images (base64). Textures are fetched by UUID from SL's
 public asset CDN and decoded with Pillow (JPEG 2000) at reduced resolution.
 """
-import base64, math, concurrent.futures as cf, glob, gzip, io, json, lzma, os, re, subprocess, time, urllib.request
+import base64, math, threading, concurrent.futures as cf, glob, gzip, io, json, lzma, os, re, subprocess, time, urllib.request
 from PIL import Image
 
 CDN = "http://asset-cdn.glb.agni.lindenlab.com/?texture_id="
@@ -61,30 +61,123 @@ def to_png(data, path, cap):
     while max(im.size) >> (r + 1) >= cap: r += 1  # JPEG 2000: skip resolution levels we would throw away anyway
     try: im.reduce = r
     except Exception: pass
-    im = im.convert("RGBA"); im.thumbnail((cap, cap)); im.save(path)
+    im = im.convert("RGBA"); im.thumbnail((cap, cap)); im.save(path, compress_level=1)  # scratch cache: lossless, ~3x faster than level 6
+
+# Negative cache (profile 2026-10-15): a texture the CDN never answers (3 uuids in every Peronaut export) cost one full
+# 20 s urlopen timeout in EVERY photo, ~7% of a warm HD run. Remember the failure per cache dir for GT_TEX_MISS_TTL_H
+# hours (default 6); output is the same (the texture was missing before too), a later success just waits out the TTL.
+_MISS_LOCK = threading.Lock()
+def _miss_path(outdir): return os.path.join(outdir, ".missing.json")
+def _recent_miss(uuid, outdir):
+    try: ts = json.load(open(_miss_path(outdir))).get(uuid)
+    except (OSError, ValueError): return False
+    return ts is not None and time.time() - ts < float(os.environ.get("GT_TEX_MISS_TTL_H", "6")) * 3600
+def _note_miss(uuid, outdir):
+    with _MISS_LOCK:
+        try: d = json.load(open(_miss_path(outdir)))
+        except (OSError, ValueError): d = {}
+        d[uuid] = time.time()
+        try: json.dump(d, open(_miss_path(outdir) + ".tmp", "w")); os.replace(_miss_path(outdir) + ".tmp", _miss_path(outdir))
+        except OSError: pass
+
+# Raw JPEG2000 cache (profile phase 2, 2026-10-15), after the viewer's LLTextureCache: the CDN bytes are kept per UUID
+# (tex-raw/<first hex digit>/<uuid>.j2c, like texturecache/[0-f]/UUID.texture) and every size is DECODED from them, so a
+# different discard bias / cap (it follows free memory) costs a local decode, not a re-download, and one raw file serves
+# every cap. Decoded <uuid>.<cap>.png files stay the second tier. Both tiers are size-capped (GT_TEX_RAW_CAP_MB, default
+# 2048; GT_TEX_DEC_CAP_MB, default 2048) with oldest-use-first eviction down to 80% (the viewer purges 20% when full);
+# a hit refreshes the file's mtime (the viewer stamps entries on use).
+def raw_cache_dir(outdir): return os.environ.get("GT_TEX_RAW_DIR") or os.path.join(os.path.dirname(os.path.normpath(outdir)), "tex-raw")
+def _raw_path(outdir, uuid): return os.path.join(raw_cache_dir(outdir), uuid[0], uuid + ".j2c")
+def _touch(p):
+    try: os.utime(p)
+    except OSError: pass
+def _raw_read(outdir, uuid):
+    p = _raw_path(outdir, uuid)
+    try:
+        with open(p, "rb") as f: d = f.read()
+    except OSError: return None
+    if not d: return None
+    _touch(p); return d
+def _raw_write(outdir, uuid, data):
+    p = _raw_path(outdir, uuid)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
+        with open(tmp, "wb") as f: f.write(data)
+        os.replace(tmp, p)
+    except OSError: pass
+def _raw_drop(outdir, uuid):
+    try: os.remove(_raw_path(outdir, uuid))
+    except OSError: pass
+
+def tex_raw(uuid, outdir):
+    """raw CDN bytes: local raw cache first, else one CDN GET (then cached)"""
+    d = _raw_read(outdir, uuid)
+    if d is not None: return d
+    d = _cdn_get(uuid); _raw_write(outdir, uuid, d); return d
+
+LEGACY_NAME = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.png$")
+def retire_legacy_pngs(texdir):
+    """One-time migration (David OK'd 2026-10-16): the old uncapped <uuid>.png cache files bypassed the size cap (a 1024 copy
+    was used for a 2048 request) and made output depend on cache history. Delete only those; bakes, <uuid>.<cap>.png and
+    .missing.json stay. A marker file makes it run once per cache dir. Returns the number removed."""
+    marker = os.path.join(texdir, ".legacy-retired")
+    if os.path.exists(marker): return 0
+    n = 0
+    try:
+        for e in os.scandir(texdir):
+            if LEGACY_NAME.match(e.name):
+                try: os.remove(e.path); n += 1
+                except OSError: pass
+        open(marker, "w").write(f"{time.time()}\n")
+    except OSError: pass
+    return n
 
 def fetch_tex(uuid, outdir, cap=512):
     # Cap in the filename so a 256 look-around cache entry isn't reused as a 1024 portrait (and vice versa).
     path = os.path.join(outdir, f"{uuid}.{cap}.png")
-    legacy = os.path.join(outdir, uuid + ".png")
-    if os.path.exists(path): return uuid, path, None
-    # reuse / downscale legacy uncappped cache (uuid.png) so a cap change is free offline
-    if os.path.exists(legacy):
-        try:
-            with Image.open(legacy) as im:
-                im = im.convert("RGBA")
-                if max(im.size) <= cap:
-                    return uuid, legacy, None
-                im.thumbnail((cap, cap)); im.save(path)
-                return uuid, path, None
-        except Exception:
-            pass
+    if os.path.exists(path): _touch(path); return uuid, path, None
+    if _raw_read(outdir, uuid) is None and cached_fallback(uuid, outdir) is None and _recent_miss(uuid, outdir):
+        return uuid, None, "recent CDN miss (negative cache)"
     try:
-        to_png(_cdn_get(uuid), path, cap)
+        try: to_png(tex_raw(uuid, outdir), path, cap)
+        except Exception:
+            if _raw_read(outdir, uuid) is None: raise
+            _raw_drop(outdir, uuid)          # a corrupt raw file: drop it and fetch once more
+            to_png(tex_raw(uuid, outdir), path, cap)
         return uuid, path, None
     except Exception as e:
         best = cached_fallback(uuid, outdir)  # CDN down/offline: the largest size already cached beats plain colour
+        if best is None: _note_miss(uuid, outdir)
         return (uuid, best, None) if best else (uuid, None, str(e)[:120])
+
+DEC_NAME = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.\d+)?\.png$")
+def prune_cache(root, cap_bytes, name_ok, recurse=False, low=0.8):
+    """Oldest-mtime-first eviction of files whose name passes name_ok once the total exceeds cap_bytes, down to low x cap.
+    Returns (files, bytes before, bytes after, evicted). Never touches other files (bakes, manifests, .missing.json)."""
+    files = []
+    def walk(d):
+        try: it = list(os.scandir(d))
+        except OSError: return
+        for e in it:
+            if e.is_dir(follow_symlinks=False):
+                if recurse: walk(e.path)
+            elif name_ok(e.name):
+                try: st = e.stat(); files.append((st.st_mtime, st.st_size, e.path))
+                except OSError: pass
+    walk(root)
+    total = sum(f[1] for f in files); before = total; n = 0
+    if cap_bytes > 0 and total > cap_bytes:
+        for _, sz, p in sorted(files):
+            if total <= cap_bytes * low: break
+            try: os.remove(p); total -= sz; n += 1
+            except OSError: pass
+    return len(files), before, total, n
+
+def prune_texture_caches(outdir):
+    rc = float(os.environ.get("GT_TEX_RAW_CAP_MB", "2048")) * 2 ** 20; dc = float(os.environ.get("GT_TEX_DEC_CAP_MB", "2048")) * 2 ** 20
+    return {"raw": prune_cache(raw_cache_dir(outdir), rc, lambda n: n.endswith(".j2c"), recurse=True),
+            "decoded": prune_cache(outdir, dc, DEC_NAME.match)}
 
 def cached_fallback(uuid, outdir):
     """Largest cached <uuid>.<cap>.png (e.g. a 1024 copy when an HD photo asks for 4096 and the CDN can't be reached)."""
@@ -221,9 +314,13 @@ def tex_mem_mb(want):
     """Estimate of Blender + Cycles RAM for these textures: RGBA 8-bit, held twice (Blender image + Cycles copy)."""
     return sum(c * c * 4 * 2 for c in want.values()) / 2 ** 20
 
+POOL_MIN = 64   # fewer textures: threads (a process pool's start-up isn't worth it)
+def _fetch_tex_kv(a): return fetch_tex(*a)
+
 def fetch_textures(meta, out, work):
     """Every texture the batches reference (CDN, capped), into work/tex; None or an error string."""
     max_tex = int(os.environ.get("GT_MAX_TEXTURES", str(MAX_TEXTURES)))
+    retire_legacy_pngs(work + "/tex")
     maps = os.environ.get("GT_TEX_MAPS", "1") != "0"  # 0 = diffuse only (look around navigation)
     av_cap = int(os.environ.get("GT_TEX_CAP_AVATAR", "1024"))
     sc_cap = int(os.environ.get("GT_TEX_CAP_SCENE", "512"))
@@ -262,8 +359,24 @@ def fetch_textures(meta, out, work):
     if len(want) > max_tex: return f"{len(want)} textures > {max_tex}"
     t = time.time()
     workers = max(1, int(os.environ.get("GT_TEX_WORKERS", "8")))
-    with cf.ThreadPoolExecutor(workers) as ex:
-        res = list(ex.map(lambda kv: fetch_tex(kv[0], work + "/tex", kv[1]), want.items()))
+    procs = int(os.environ.get("GT_TEX_PROCS", str(min(8, os.cpu_count() or 1))))
+    if procs > 1 and len(want) >= POOL_MIN:   # PIL's JPEG2000 decode + PNG write hold the GIL most of the time (24 threads ran only ~2x one)
+        items = list(want.items()); tdir = work + "/tex"
+        def prefetch(kv):   # network-bound part on many threads (raw bytes -> raw cache); decoding below on processes
+            u, c = kv
+            if os.path.exists(os.path.join(tdir, f"{u}.{c}.png")) or os.path.exists(_raw_path(tdir, u)): return
+            if _recent_miss(u, tdir) and cached_fallback(u, tdir) is None: return
+            try: tex_raw(u, tdir)
+            except Exception:
+                if cached_fallback(u, tdir) is None: _note_miss(u, tdir)
+        with cf.ThreadPoolExecutor(workers) as ex: list(ex.map(prefetch, items))
+        with cf.ProcessPoolExecutor(procs) as ex:
+            res = list(ex.map(_fetch_tex_kv, [(u, work + "/tex", c) for u, c in items], chunksize=8))
+    else:
+        with cf.ThreadPoolExecutor(workers) as ex:
+            res = list(ex.map(lambda kv: fetch_tex(kv[0], work + "/tex", kv[1]), want.items()))
+    pr = prune_texture_caches(work + "/tex")
+    out["tex_cache"] = {k: {"files": v[0], "mb_before": round(v[1] / 2 ** 20), "mb_after": round(v[2] / 2 ** 20), "evicted": v[3]} for k, v in pr.items()}
     out["tex_paths"] = {r[0]: r[1] for r in res if r[1]}  # the exact file per texture (render_mesh: tex-manifest.json)
     out["textures"] = {"requested": len(want), "ok": sum(1 for r in res if r[1]), "errors": [r for r in res if r[2]][:5],
                        "seconds": round(time.time() - t, 1), "workers": workers, "maps": maps, "caps": [av_cap, sc_cap],

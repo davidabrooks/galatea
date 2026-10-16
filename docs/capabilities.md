@@ -169,10 +169,10 @@ restart status
   - **Cost and checks**: token use per call is appended to `fastchat-usage.jsonl` next to the client log. `fastchat status` shows settings; `fastchat test [--im|--voice] [--from <name>] <line>` makes a real call; the offline `--fastchat-test [--im] <line>` is a dry run that sends nothing. `fastchat` settings include enabled, visitors on/off, max tokens, timeout and history lines.
 
 ## Keeping the computer awake
-The box (the computer the client runs on) sleeps when idle and is paused by its host, and in-machine activity alone does not stop that. While Galatea is logged into Second Life, two silent Grok Bot routines wake it every few minutes so chat, IMs and kisses are not missed. They are not part of this repo; they are saved in the assistant's routine list.
+The box (the computer the client runs on) sleeps when idle and is paused by its host, and in-machine activity alone does not stop that. Two silent Grok Bot routines wake it every few minutes so chat, IMs and kisses are not missed. They are not part of this repo; they are saved in the assistant's routine list.
 - **Routines**: `Keep-awake ping A` (`*/5 8-23,0 * * *`, folder `pause-test-ping`) and `Keep-awake ping B` (`2-57/5 8-23,0 * * *`, folder `pause-test-ping-b`, offset 2 minutes because routines cannot run more often than every 5 minutes). Times are Pacific.
 - **What a ping does**: it reads `text-galatay.sh cmd status`. Only when it shows `connected=True` does it log `pingA`/`pingB <time> forks=<n>` to `/workspace/rtest/pause-ping.log` (truncated to its last 500 lines past 200 KB). When logged out it stops at once.
-- **Rule (David, Oct 15, 2026)**: nothing keeps the computer awake unless Galatea is logged into Second Life. Pause both routines when she logs out and resume them when she logs in.
+- **Rule (David, Oct 15, 2026, updated late evening)**: the pings may run whenever Galatea needs them so her work is never interrupted, including while she is logged out (long renders, builds, background jobs). Resume both routines before a long job and pause them when idle; keep them running while she is logged in. A ping still logs only when `connected=True`.
 - **`SL keep-awake check`** (:24 and :54): an hourly check that logs into `/workspace/secondlife/keepalive-log.md` and relogs her only if she is logged out by accident. A deliberate `text-galatay.sh stop` (marker set) is respected.
 
 ## Logs and log pruning

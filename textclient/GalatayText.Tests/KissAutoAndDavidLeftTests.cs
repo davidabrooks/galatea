@@ -22,7 +22,11 @@ public class KissAutoAndDavidLeftTests
         Assert.Equal("both", Program.KissResponse(0.9, now, old, true, 1.0));
         Assert.Equal("im", Program.KissResponse(0.1, now, old, true, 12.0));   // too far
         Assert.Equal("im", Program.KissResponse(0.9, now, old, false, 1.0));   // kissed him recently
-        Assert.Equal("none:cooldown", Program.KissResponse(0.1, now, now.AddSeconds(-30), true, 1.0));
+        Assert.Equal("none:cooldown", Program.KissResponse(0.1, now, now.AddSeconds(-10), true, 1.0));
+        Assert.Equal("none:cooldown", Program.KissResponse(0.1, now, now.AddSeconds(-29), true, 1.0));
+        Assert.Equal("kiss", Program.KissResponse(0.1, now, now.AddSeconds(-31), true, 1.0));   // 30 s cooldown (was 2 min)
+        Assert.Equal("im", Program.KissResponse(0.1, now, now.AddSeconds(-31), false, 1.0));    // inside kiss-back cooldown: sweet IM fallback still answers
+        Assert.Equal(TimeSpan.FromSeconds(30), Program.KissAutoCooldown);
     }
 
     [Fact]

@@ -233,8 +233,11 @@ public static partial class Program
     }
     // Door trigger (2026-10-07 David 09:23 'doors open too late, she bumps them'): touch when the door is <= 3 m ahead along
     // the path, scanning DoorScanM ahead in DoorScanStepM steps; then wait up to DoorSwingWaitMs (total) for a leaf to swing.
-    internal const float DoorTriggerM = 3.0f, DoorScanM = 12.0f, DoorScanStepM = 0.5f;
+    internal const float DoorTriggerM = 3.0f, DoorScanM = 16.0f, DoorScanStepM = 0.5f;
     internal const int DoorSwingWaitMs = 900;
+    // Measured 2026-10-16 10:31 (inbound walk): a touched leaf first READS open 2350 ms (front pair) and 2079 ms (side-room-1)
+    // after the touch. The lead, the pre-open wait and the hold before a door are built on this, not on the 0.9 s swing.
+    internal const int DoorOpenLagMs = 2500;
     internal static bool DoorTouchDue(float distAhead) => distAhead >= 0 && distAhead <= DoorTriggerM;
     // 2026-10-14 David: she still walks into doors at home. At her 3.2 m/s walk a 3 m trigger left 0.9 s, the same as
     // the leaf's swing (DoorSwingWaitMs) with nothing for the touch round trip or the 0.4 s route tick, so she either
@@ -243,7 +246,7 @@ public static partial class Program
     // safety margin (DoorMarginMs), and the speed used is never the measured 0 m/s of a walk that is only starting.
     internal const int DoorTouchLatencyMs = 300, DoorTickMs = 400, DoorMarginMs = 500;
     internal static float DoorTriggerFor(float speedMps)
-        => Math.Min(DoorScanM - DoorScanStepM, Math.Max(DoorTriggerM, Math.Max(0f, speedMps) * (DoorSwingWaitMs + DoorTouchLatencyMs + DoorTickMs + DoorMarginMs) / 1000f));
+        => Math.Min(DoorScanM - DoorScanStepM, Math.Max(DoorTriggerM, Math.Max(0f, speedMps) * (DoorOpenLagMs + DoorTouchLatencyMs + DoorTickMs + DoorMarginMs) / 1000f));
     // The speed to lead with. At the start of a walk (and while she is held or stuck) the measured speed is ~0, so the
     // trigger fell back to 3 m (the 10:02 bedroom door was touched 3.5 m ahead = ~1.1 s at 3.2 m/s, less than the swing plus
     // the touch round trip). Below DoorLeadFloorMps she is treated as walking at her normal speed.
@@ -251,7 +254,7 @@ public static partial class Program
     // at 3.2 m/s: the measured speed dips on the U-turn at the foot of the porch stairs and on the stairs themselves (~1.7 m/s,
     // above the 1.5 m/s floor), and the lead shrank with it. The lead speed is now never below her walking speed, and the
     // lead is never below DoorMinLeadM of path (a tick of 0.4 s costs ~1.3 m, so the first touch is >= ~6 m ahead).
-    internal const float DoorNominalWalkMps = 3.2f, DoorMinLeadM = 7.5f, DoorTogetherM = 8.0f;
+    internal const float DoorNominalWalkMps = 3.2f, DoorMinLeadM = 10.0f, DoorTogetherM = 8.0f;
     internal static float DoorLeadSpeedMps(float measuredMps) => Math.Max(DoorNominalWalkMps, measuredMps);
     internal static float DoorLeadTriggerM(float measuredMps) => Math.Max(DoorMinLeadM, DoorTriggerFor(DoorLeadSpeedMps(measuredMps)));
     internal static bool DoorTouchDue(float distAhead, float speedMps) => distAhead >= 0 && distAhead <= DoorTriggerFor(speedMps);
@@ -291,8 +294,12 @@ public static partial class Program
     // Start-of-walk pre-open (2026-10-16 10:04 David: 'when you're that close to a door, you should open it before you even
     // start walking'): every mapped door pair whose cells the path enters within DoorPreOpenM of its start, nearest first.
     // The walker touches them while still standing and waits for a leaf to swing before the first step.
-    internal const float DoorPreOpenM = 6.0f;
-    internal const int DoorPreOpenWaitMs = 1200;
+    internal const float DoorPreOpenM = 10.0f;
+    internal const int DoorPreOpenWaitMaxMs = 3000;
+    // How long she stands at the start of a walk for a leaf to read open: the open lag plus the margin, less the time she
+    // needs to walk to the door anyway (a door 10 m away needs no wait; one at her feet waits the full 3 s).
+    internal static int DoorPreOpenWaitFor(float distM)
+        => (int)Math.Clamp(DoorOpenLagMs + DoorMarginMs - Math.Max(0f, distM) / DoorNominalWalkMps * 1000f, 0f, DoorPreOpenWaitMaxMs);
     internal static (float dist, List<NavDoor> doors)? DoorsToPreOpen(NavGrid ng, Func<float, Vector2> at, float len, float reach = DoorPreOpenM)
     {
         if (ng == null) return null;
@@ -327,7 +334,7 @@ public static partial class Program
     // What the guard does about a closed door ahead, given how long ago it was touched (a toggle door shut again by a second
     // touch while it is still swinging open). Wait until DoorGuardHoldS after a touch; then re-touch at most DoorGuardRetouchMax
     // times, and only if the leaf has not moved at all; a leaf that has started to swing is waited for (up to DoorGuardSwingS).
-    internal const double DoorGuardHoldS = 2.5, DoorGuardSwingS = 3.5; internal const int DoorGuardRetouchMax = 1;
+    internal const double DoorGuardHoldS = 3.0, DoorGuardSwingS = 4.0; internal const int DoorGuardRetouchMax = 1;
     internal enum GuardStep { Wait, Touch, GiveUp }
     internal static GuardStep DoorGuardStep(double sinceTouchS, bool movedAtAll, int guardTouches)
     {
@@ -501,7 +508,7 @@ public static partial class Program
                 if (ok)
                 {
                     var pair = DoorsForCrossing(g, path[kd - 1], path[kd]);
-                    await EnsureDoorsOpen(pair, ct, DoorPreOpenWaitMs);   // standing at the door: wait (<= 1.2 s) for a leaf to swing, then GO
+                    await EnsureDoorsOpen(pair, ct, DoorPreOpenWaitFor(0f));   // standing at the door: wait (<= 3 s) for a leaf to read open, then GO
                     navTrack = true;
                     try { ok = await WalkLeg(new Vector3(through.X, through.Y, client.Self.SimPosition.Z), 0.6f, $"nav through {door.Name}", ct, navMode: true); }
                     finally { navTrack = false; }

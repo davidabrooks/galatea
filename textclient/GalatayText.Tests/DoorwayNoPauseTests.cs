@@ -55,9 +55,9 @@ public class DoorwayNoPauseTests
     [Fact]
     public void Door_touch_keeps_walking_when_the_leaf_has_time_to_swing()
     {
-        Assert.Equal(0, Program.DoorApproachHoldMs(3f, 3f, 300, anyTouched: true));    // 1 s away: no stop
+        Assert.Equal(0, Program.DoorApproachHoldMs(10f, 3f, 300, anyTouched: true));   // 3.3 s away: no stop (the leaf reads open after ~2.4 s)
         Assert.Equal(0, Program.DoorApproachHoldMs(0f, 0f, 300, anyTouched: false));   // already open: never stop
-        Assert.Equal(Program.DoorSwingWaitMs - 300, Program.DoorApproachHoldMs(0f, 3f, 300, anyTouched: true)); // at the leaf: wait for it
-        Assert.InRange(Program.DoorApproachHoldMs(1.5f, 3f, 300, true), 0, 150);
+        Assert.Equal(Program.DoorOpenLagMs - 300, Program.DoorApproachHoldMs(0f, 3f, 300, anyTouched: true)); // at the leaf: wait for it
+        Assert.InRange(Program.DoorApproachHoldMs(4.5f, 3.2f, 300, true), 700, 900);   // touched late (4.5 m = 1.4 s away): stop for the rest of the lag
     }
 }

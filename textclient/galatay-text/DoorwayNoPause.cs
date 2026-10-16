@@ -59,14 +59,14 @@ public static partial class Program
     internal static bool DeferBlockerPause(float s, float? zoneClearAt, float blockerS) =>
         zoneClearAt is float clear && blockerS >= clear + 0.8f && blockerS - s >= 1.2f;
 
-    // pure: hold before a door she just touched. She keeps walking when, at her speed, the leaf has DoorSwingWaitMs to
+    // pure: hold before a door she just touched. She keeps walking when, at her speed, the leaf has DoorOpenLagMs to
     // swing before she reaches it; otherwise she waits only the missing time, outside the doorway (09:23 rule: no bumping).
     internal static int DoorApproachHoldMs(float distAhead, float speedMps, int elapsedMs, bool anyTouched)
     {
         if (!anyTouched) return 0;                       // already-open doors: never stop for them
         float v = Math.Max(0.3f, speedMps);
         int reachMs = (int)(distAhead / v * 1000f);
-        return Math.Max(0, DoorSwingWaitMs - elapsedMs - reachMs);
+        return Math.Max(0, DoorOpenLagMs - elapsedMs - reachMs);
     }
 
     // a pause requested while she is in a doorway: apply it once she is clear (or after DeferredPauseMaxMs)

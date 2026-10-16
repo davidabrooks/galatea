@@ -383,7 +383,7 @@ public static partial class Program
                 if (shutS.Count > 0)
                 {
                     RLogR($"{o.Label}: door(s) {dS:F1} m ahead at the start ({string.Join(", ", sdoors.Select(nd => nd.Name))}): opening before walking");
-                    await EnsureDoorsOpen(shutS, ct, DoorPreOpenWaitMs);
+                    await EnsureDoorsOpen(shutS, ct, DoorPreOpenWaitFor(dS));
                 }
             }
         }
@@ -526,7 +526,7 @@ public static partial class Program
                     if (due is var (da, ahead))
                     {
                         // touch while walking (no stop at an open door); hold outside only if the leaf would not have
-                        // DoorSwingWaitMs to swing before she reaches it (19:45 David: no pausing at doorways)
+                        // DoorOpenLagMs to read open before she reaches it (19:45 David: no pausing at doorways)
                         RLogR($"{o.Label}: door(s) {da:F1} m ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching while walking (speed {measured:F1} m/s)");
                         var touchT0 = DateTime.Now;
                         float spd = DoorLeadSpeedMps(measured);

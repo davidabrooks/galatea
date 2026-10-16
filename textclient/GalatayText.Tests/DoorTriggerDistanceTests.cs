@@ -15,6 +15,7 @@ public class DoorTriggerDistanceTests
         Assert.Equal(3.0f, Program.DoorTriggerM);
         Assert.True(Program.DoorScanM > Program.DoorTriggerM);
         Assert.InRange(Program.DoorSwingWaitMs, Program.DoorThroughDelayMs + 300, 1500);
+        Assert.InRange(Program.DoorOpenLagMs, 2350, 3000);   // measured: leaves read open 2.1-2.4 s after the touch
         Assert.True(Program.DoorTouchDue(2.9f));
         Assert.True(Program.DoorTouchDue(0.2f));
         Assert.False(Program.DoorTouchDue(3.6f));

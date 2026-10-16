@@ -33,7 +33,7 @@ public class InboundDoorTests
         {
             float v = Speed(s, dips);
             // the pre-change trigger: measured speed >= 1.5 used as is
-            float trig = old ? Program.DoorTriggerFor(v < 1.5f ? 3.2f : v) : Program.DoorLeadTriggerM(v);
+            float trig = old ? Math.Max(3f, (v < 1.5f ? 3.2f : v) * (Program.DoorSwingWaitMs + Program.DoorTouchLatencyMs + Program.DoorTickMs) / 1000f) : Program.DoorLeadTriggerM(v);
             if (Program.DoorsDueAhead(new[] { grid }, poly.At, s, poly.Len, opened, trig) is var (da, ds))
                 foreach (var nd in ds) { touches.Add((nd.Name, da, s)); opened.Add(nd.Id); }
             s += v * 0.4f;
@@ -47,11 +47,11 @@ public class InboundDoorTests
         var poly = Inbound(); var grid = Grid();
         var t = Walk(poly, grid, dips: true, 0, old: true);
         foreach (var x in t) o.WriteLine($"OLD {x.door} {x.dAhead:F1} m at s={x.s:F1}");
-        Assert.Contains(t, x => x.door.StartsWith("front-double") && x.dAhead < 5.0f);   // the reported 3.5 m
+        Assert.Contains(t, x => x.door.StartsWith("front-double") && x.dAhead < 5.0f);   // the reported 3.5 m (old trigger = DoorTriggerFor with the 900 ms swing)
     }
 
     [Fact]
-    public void Every_inbound_door_is_first_touched_at_least_6_m_ahead_at_any_tick_phase_and_speed_dip()
+    public void Every_inbound_door_is_first_touched_at_least_9_m_ahead_at_any_tick_phase_and_speed_dip()
     {
         var poly = Inbound(); var grid = Grid();
         foreach (var dips in new[] { false, true })
@@ -61,7 +61,30 @@ public class InboundDoorTests
                 var names = t.Select(x => x.door).ToList();
                 foreach (var leaf in new[] { "front-double-east", "front-double-west", "side-room-1" })
                     Assert.True(names.Count(n => n == leaf) == 1, $"{leaf}: touched {names.Count(n => n == leaf)}x (dips {dips}, phase {phase:F1})");
-                foreach (var x in t) Assert.True(x.dAhead >= 6.0f, $"{x.door} first touched {x.dAhead:F1} m ahead at s={x.s:F1} (dips {dips}, phase {phase:F1})");
+                foreach (var x in t) Assert.True(x.dAhead >= 9.0f, $"{x.door} first touched {x.dAhead:F1} m ahead at s={x.s:F1} (dips {dips}, phase {phase:F1})");
+            }
+    }
+
+    // 2026-10-16 10:31: the route folds back on itself near the bedroom (a hairpin out to 230.0,72.4 and back); she cuts the
+    // corner, so her projected path position jumps ahead ~5 m in one tick and a door lead that was still > 7.5 m was skipped
+    // (side-room-1 first touched 4.5 m ahead). The lead must cover the jump: the door is touched BEFORE the jump starts.
+    [Fact]
+    public void A_corner_cutting_jump_of_6_m_at_the_hairpin_never_makes_a_door_first_touched_late()
+    {
+        var poly = Inbound(); var grid = Grid();
+        for (float jumpAt = 76.5f; jumpAt <= 80f; jumpAt += 0.5f)   // the cut starts at the hairpin apex (s~77-80)
+            for (float phase = 0; phase < 1.3f; phase += 0.1f)
+            {
+                var opened = new HashSet<LibreMetaverse.UUID>(); var touches = new List<(string, float)>();
+                float s = phase; bool jumped = false;
+                while (s < poly.Len)
+                {
+                    if (Program.DoorsDueAhead(new[] { grid }, poly.At, s, poly.Len, opened, Program.DoorLeadTriggerM(3.2f)) is var (da, ds))
+                        foreach (var nd in ds) { touches.Add((nd.Name, da)); opened.Add(nd.Id); }
+                    s += 3.2f * 0.4f;
+                    if (!jumped && s >= jumpAt) { s += 6f; jumped = true; }
+                }
+                foreach (var x in touches) Assert.True(x.Item2 >= 9.0f, $"{x.Item1} first touched {x.Item2:F1} m ahead (jump at {jumpAt}, phase {phase:F1})");
             }
     }
 
@@ -75,6 +98,7 @@ public class InboundDoorTests
         Assert.Contains(due!.Value.doors, d => d.Name == "front-double-east");
         Assert.Contains(due.Value.doors, d => d.Name == "front-double-west");
         Assert.InRange(due.Value.dist, 4f, Program.DoorLeadTriggerM(1.7f));
+        Assert.True(Program.DoorLeadTriggerM(1.7f) >= 10f);
     }
 
     [Fact]
@@ -85,10 +109,10 @@ public class InboundDoorTests
         Assert.NotNull(first);
         Assert.DoesNotContain(first!.Value.doors, d => d.Name == "side-room-1");
         var done = new HashSet<LibreMetaverse.UUID>(grid.Doors.Where(d => d.Name.StartsWith("front-double")).Select(d => d.Id));
-        var after = Program.DoorsDueAhead(new[] { grid }, poly.At, 80.0f, poly.Len, done, Program.DoorLeadTriggerM(3.2f));
+        var after = Program.DoorsDueAhead(new[] { grid }, poly.At, 76.0f, poly.Len, done, Program.DoorLeadTriggerM(3.2f));
         Assert.NotNull(after);
         Assert.Contains(after!.Value.doors, d => d.Name == "side-room-1");
-        Assert.True(after.Value.dist >= 6.0f, "side-room-1 first touched " + after.Value.dist);
+        Assert.True(after.Value.dist >= 9.0f, "side-room-1 first touched " + after.Value.dist);
     }
 
     // front doors (y 79.6) then side-room-1 (x 224.2, y 76) on one short path: 7-8 m apart

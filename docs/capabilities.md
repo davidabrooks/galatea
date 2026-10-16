@@ -74,6 +74,7 @@ wander start|stop|pause|hold|resume|status|seats
 - Where a **nav grid** (`routes/_nav-<name>.json`) covers both ends and the straight line is blocked, `moveto`, `goto_avatar` and `follow` plan a route around walls and through doors (touching them). `goto_place` uses the path graph of the region (`routes/_graph-<region>.json`); `nav places` lists named places for a grid.
 - `wander` is the idle loop (route legs, seats, greetings); `wander status` reports what she is doing, `wander hold|pause|resume` interrupt it, and it resumes after a restart or reboot (see its help line for the staleness rule after a deliberate stop). Tunable rules live in `routes/_wander-rules.json`.
 - `door [name filter|uuid]` touches the nearest door within 10 m; `door try` runs the full sequence.
+- Route walks (`goto_place`, `route walk`, wander legs) touch each mapped door pair early (about 5 m ahead at walking speed), also on the last stretch before the grid's edge (front double doors). A door guard stops her 1.5-2 m before a mapped door that is still closed, touches it open and then walks on (Oct 16, 2026).
 - Settings: `run/nofly.txt` (nofly), `routes/` (everything above), see `route status`.
 
 ## Sitting and poses

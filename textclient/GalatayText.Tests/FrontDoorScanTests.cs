@@ -22,27 +22,30 @@ public class FrontDoorScanTests
     }
     static Func<float, Vector2> At(Program.Poly p) => u => { var v = p.At(u); return new Vector2(v.X, v.Y); };
 
-    // the FollowPoly look-ahead scan, one tick at a time at a constant walking speed
+    // the FollowPoly look-ahead scan, one tick at a time at a constant walking speed (the old grid pick kept for the regression test)
     static List<(string door, float dAhead, float s)> Simulate(Program.Poly poly, Program.NavGrid grid, float speed, bool oldGridPick, float phase = 0)
     {
         var touches = new List<(string, float, float)>(); var opened = new HashSet<LibreMetaverse.UUID>();
         for (float s = phase; s < poly.Len; s += speed * 0.4f)
         {
-            var look = Math.Min(poly.Len, s + Program.DoorScanM);
-            var ng = oldGridPick
-                ? (Program.NavGridFor("Peronaut", poly.At(s), poly.At(look)) ?? Program.NavGridFor("Peronaut", poly.At(look), poly.At(look)))
-                : Program.PickScanGrid(new[] { grid }, "Peronaut", poly.At(s), poly.At(look));
-            if (ng == null) continue;
-            List<Program.NavDoor> ahead = null;
-            var d = Program.FirstCrossingAhead(At(poly), s, poly.Len, (p, q) =>
+            if (oldGridPick)
             {
-                if (!ng.Contains(p.X, p.Y) && !ng.Contains(q.X, q.Y)) return false;
-                var l = Program.DoorsForCrossing(ng, p, q).Where(nd => !opened.Contains(nd.Id)).ToList();
-                if (l.Count == 0) return false; ahead = l; return true;
-            });
-            if (d is float da && Program.DoorTouchDue(da, Program.DoorLeadSpeedMps(speed)))
+                var look = Math.Min(poly.Len, s + Program.DoorScanM);
+                var ng = Program.NavGridFor("Peronaut", poly.At(s), poly.At(look)) ?? Program.NavGridFor("Peronaut", poly.At(look), poly.At(look));
+                if (ng == null) continue;
+                List<Program.NavDoor> ahead = null;
+                var d = Program.FirstCrossingAhead(At(poly), s, poly.Len, (p, q) =>
+                {
+                    if (!ng.Contains(p.X, p.Y) && !ng.Contains(q.X, q.Y)) return false;
+                    var l = Program.DoorsForCrossing(ng, p, q).Where(nd => !opened.Contains(nd.Id)).ToList();
+                    if (l.Count == 0) return false; ahead = l; return true;
+                });
+                if (d is float da && Program.DoorTouchDue(da, speed)) foreach (var nd in ahead) { touches.Add((nd.Name, da, s)); opened.Add(nd.Id); }
+            }
+            else
             {
-                foreach (var nd in ahead) { touches.Add((nd.Name, da, s)); opened.Add(nd.Id); }
+                if (Program.DoorsDueAhead(new[] { grid }, poly.At, s, poly.Len, opened, Program.DoorLeadTriggerM(speed)) is var (da, ds))
+                    foreach (var nd in ds) { touches.Add((nd.Name, da, s)); opened.Add(nd.Id); }
             }
         }
         return touches;
@@ -71,7 +74,7 @@ public class FrontDoorScanTests
                     var tag = $"{leaf} at {speed:F1} m/s phase {phase:F1}";
                     Assert.True(hit.Count == 1, tag + ": touched " + hit.Count + " times");
                     // touched once the door is within the trigger (never later than it), and at most one tick (plus one scan step) after it came due
-                    var trig = Program.DoorTriggerFor(Program.DoorLeadSpeedMps(speed));
+                    var trig = Program.DoorLeadTriggerM(speed);
                     Assert.True(hit[0].dAhead <= trig && hit[0].dAhead >= trig - speed * 0.4f - Program.DoorScanStepM - 0.01f, tag + ": da " + hit[0].dAhead);
                 }
             }

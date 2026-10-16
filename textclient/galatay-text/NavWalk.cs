@@ -208,8 +208,8 @@ public static partial class Program
                     var doors = DoorsForCrossing(ng, V2(from), V2(sub));
                     if (doors.Count > 0)
                     {   // a door within DoorPreOpenM of where she stands is opened before the first step of the leg (wait for a leaf)
-                        bool close = doors.Any(dd => Vector2.Distance(V2(from), new Vector2(dd.Center.X, dd.Center.Y)) <= DoorPreOpenM);
-                        await EnsureDoorsOpen(doors, ct, close ? DoorPreOpenWaitMs : 0);
+                        float near = doors.Min(dd => Vector2.Distance(V2(from), new Vector2(dd.Center.X, dd.Center.Y)));
+                        await EnsureDoorsOpen(doors, ct, near <= DoorPreOpenM ? DoorPreOpenWaitFor(near) : 0);
                     }
                 }
                 if (!await WalkLeg(sub, last ? lastTol : 1.0f, $"{i + 1}/{pts.Count}{(n > 1 ? $".{k}" : "")}", ct)) return false;

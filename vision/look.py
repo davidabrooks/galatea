@@ -170,10 +170,10 @@ def oxipng_cmd(path, zopfli=False):
     """lossless max optimisation, metadata stripped (4K porch photo: 6.9 MB -> 6.1 MB in ~25 s; zopfli 6.04 MB but ~8 min)"""
     exe = shutil.which("oxipng") or next((x for x in ("/home/box/tools/bin/oxipng",) if os.path.exists(x)), None)
     if not exe: return None
-    return [exe, "-q", "-o", "max", "--strip", "all"] + (["--zopfli"] if zopfli else []) + [path]
+    return [exe, "-q", "-o", os.environ.get("GT_PNG_OPT", "2"), "--strip", "all"] + (["--zopfli"] if zopfli else []) + [path]
 
 def optimize_png(path):
-    """8-bit sRGB RGB PNG, then oxipng; -> 'before -> after bytes' (unchanged when oxipng is missing)"""
+    """oxipng (lossless; level GT_PNG_OPT, default 2) on the render's PNG, which is 16-bit RGB (~30 MB at 4K: oxipng gains only a few percent); -> 'before -> after bytes' (unchanged when oxipng is missing)"""
     from PIL import Image
     before = os.path.getsize(path)
     with Image.open(path) as im:

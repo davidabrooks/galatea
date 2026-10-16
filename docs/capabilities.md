@@ -8,7 +8,7 @@ Conventions:
 - Paths: the client is deployed under `/home/box/viewers/` (`text-galatay.sh`, `textclient/app/`, `textclient/run/`, `textclient/routes/`); logs and images go under `/workspace/secondlife/`. Nothing here needs a password on the command line: the client reads the account password itself from the box secret store.
 
 ## Contents
-[Starting, stopping, supervisor](#starting-stopping-supervisor-autostart) · [MCP connector](#mcp-connector-tools) · [Chat and IMs](#chat-and-ims) · [Seeing the surroundings](#seeing-the-surroundings) · [Moving](#moving) · [Sitting, poses](#sitting-and-poses) · [Following](#following) · [Outfits and attachments](#outfits-and-attachments) · [Touch and dialogs](#touch-and-dialogs) · [Inventory](#inventory-and-profile) · [Photos and renders](#photos-and-renders) · [Textures](#texture-vision) · [Voice](#voice) · [Teleports](#teleports-and-offers) · [Webhook and events](#webhook-and-events) · [Logs](#logs-and-log-pruning)
+[Starting, stopping, supervisor](#starting-stopping-supervisor-autostart) · [MCP connector](#mcp-connector-tools) · [Chat and IMs](#chat-and-ims) · [Seeing the surroundings](#seeing-the-surroundings) · [Moving](#moving) · [Sitting, poses](#sitting-and-poses) · [Following](#following) · [Outfits and attachments](#outfits-and-attachments) · [Touch and dialogs](#touch-and-dialogs) · [Inventory](#inventory-and-profile) · [Photos and renders](#photos-and-renders) · [Textures](#texture-vision) · [Voice](#voice) · [Teleports](#teleports-and-offers) · [Webhook and events](#webhook-and-events) · [Keeping awake](#keeping-the-computer-awake) · [Logs](#logs-and-log-pruning)
 
 ## Starting, stopping, supervisor, autostart
 ```
@@ -162,6 +162,13 @@ restart status
 - **Events** (`poll_events` in MCP): a queue of local chat, IMs, teleport and friendship offers, dialogs, alerts, sit and teleport results, `{time, kind, text}` per item, oldest first. Noisy internal kinds (`cmd`, `anim`, `mute`, ...) are not queued, and neither is `[loadurl]`.
 - **Chat webhook**: the client wakes an external chat routine by POSTing batches of IMs and chat. The URL is read from `textclient/webhook-url.txt` (`GT_WEBHOOK_URL_FILE`) and the key `GALATAY_WEBHOOK_KEY` from the box secret store; neither is in this repo. Per conversation, a single line is sent after a 4 s window and a burst after 20 s of quiet (max 60 s); there is a daily cap of 600 POSTs (`GT_WEBHOOK_DAILY_CAP`); urgent kinds (teleport/friend offers, group invites, region restarts) and the owner's messages are exempt. Check with `webhook status` / MCP `webhook_status`; probe with `webhook_test`; tune with `webhook debounce`, `webhook cap`. Full behaviour is described in the README.
 - **Fast chat** (`fastchat`) answers a few clear requests from `routes/_fast-chat.json` without a routine round trip.
+
+## Keeping the computer awake
+The box (the computer the client runs on) sleeps when idle and is paused by its host, and in-machine activity alone does not stop that. While Galatea is logged into Second Life, two silent Grok Bot routines wake it every few minutes so chat, IMs and kisses are not missed. They are not part of this repo; they are saved in the assistant's routine list.
+- **Routines**: `Keep-awake ping A` (`*/5 8-23,0 * * *`, folder `pause-test-ping`) and `Keep-awake ping B` (`2-57/5 8-23,0 * * *`, folder `pause-test-ping-b`, offset 2 minutes because routines cannot run more often than every 5 minutes). Times are Pacific.
+- **What a ping does**: it reads `text-galatay.sh cmd status`. Only when it shows `connected=True` does it log `pingA`/`pingB <time> forks=<n>` to `/workspace/rtest/pause-ping.log` (truncated to its last 500 lines past 200 KB). When logged out it stops at once.
+- **Rule (David, Oct 15, 2026)**: nothing keeps the computer awake unless Galatea is logged into Second Life. Pause both routines when she logs out and resume them when she logs in.
+- **`SL keep-awake check`** (:24 and :54): an hourly check that logs into `/workspace/secondlife/keepalive-log.md` and relogs her only if she is logged out by accident. A deliberate `text-galatay.sh stop` (marker set) is respected.
 
 ## Logs and log pruning
 | File (under `/workspace/secondlife/`) | What |

@@ -107,6 +107,7 @@ touch-attachment <attachment|ao> <link no.|prim name> [face]       bikini on|off
 - `wear add|remove` and `attach|detach` are reversible and logged; body parts need `wear bodypart`/`shape wear`. `outfit coffix` repairs missing COF links so a relog keeps the look.
 - An android body is never swapped to human automatically: not at login (the daily change waits for a human login) and not when walking back from the beach to the house. Only David's command or an explicit request changes it.
 - With an android body worn she does not plan any bedroom detour for the bikini (Oct 16, 2026): a beach-bound wander leg, a seat on the beach level or the pier goes straight to its target, and going back up does not walk to the bedroom to "change back" (nothing was changed). The same single check (`BikiniSwapSkipped`) decides the `bikini skipped: android body worn` log line and the planning. Human bodies behave as before (bikini in the bedroom first); `bikini on` typed by hand still wears it; the 30 min level dwell is unchanged.
+- Patio walks keep clear of the two Reiley net chairs (Oct 16, 2026): both chairs are mapped furniture footprints, and wander/`goto_place` routes from the south patio to the house or the east patio go west through patio-1 instead of through the 0.75 m gap east of the right-hand chair (she used to get STUCK there). `patio-se` stays reachable along the south edge. Data only (`routes/_graph-Peronaut.json`).
 - The README's "Standing rules" apply (never nude, save outfits only with the owner's OK).
 
 ## Touch and dialogs

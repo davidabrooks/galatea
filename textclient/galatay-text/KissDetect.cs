@@ -79,7 +79,7 @@ public static partial class Program
 
     // ---- automatic response (2026-10-13 David): randomly kiss back, a sweet IM, or both (~1/3 each), 2-5 s later;
     // one response per KissAutoCooldown however often he kisses; kiss back only within range and outside the kiss cooldown
-    internal static readonly TimeSpan KissAutoCooldown = TimeSpan.FromMinutes(2);
+    internal static readonly TimeSpan KissAutoCooldown = TimeSpan.FromSeconds(30);   // was 2 min until 2026-10-16 (David)
     static DateTime kissAutoLast = DateTime.MinValue;
     internal static readonly string[] KissSweetLines = { "Mmm, I love your kisses 💕", "You taste like sunshine, babe 😘", "More of those, please 💋",
         "That made me melt a little 🥰", "Kiss me like that again and I'm never letting go 💕", "Mmm... hi, handsome 😘" };
@@ -117,7 +117,7 @@ public static partial class Program
                     : $"You kissed him {(int)(now - kissLastAt).TotalMinutes} min ago (kiss-back cooldown {KissBackCooldown.TotalMinutes:F0} min): answer with something sweet by IM instead.");
                 var resp = KissResponse(Random.Shared.NextDouble(), now, kissAutoLast, back, dist);
                 Log("kiss", $"kissed: {k.Value.who} -> me ({k.Value.part}); kiss back allowed={back}; auto response {resp}; line '{e.Message}'");
-                if (resp.StartsWith("none")) return;   // already answered a kiss in the last 2 min: no spam, no webhook
+                if (resp.StartsWith("none")) return;   // already answered a kiss in the last 30 s: no spam, no webhook
                 kissAutoLast = now;
                 string line = KissSweetLines[Random.Shared.Next(KissSweetLines.Length)];
                 long mid = -(DateTime.UtcNow.Ticks / 10000);

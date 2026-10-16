@@ -496,6 +496,23 @@ public static partial class Program
     // strong words match inside run-together names too (FoldFuck, CreamyCunt, Analwork, DeepThroat).
     static bool PoseIsSexualNamed(string raw) => PoseRules.Current.IsSexualName(PoseBare(raw));
     static bool PoseIsAdultMenu(string raw) => PoseRules.Current.IsAdultMenuName(PoseBare(raw)) || PoseIsSexualNamed(raw);
+    // 2026-10-16 David: conversation poses (Reiley Net Chair PG: SINGLE* > Talk) are for talking to him from the paired seat. Data: PoseRules.cs.
+    internal static bool PoseIsConversation(string raw) => PoseRules.Current.IsConversationName(PoseBare(raw));
+    internal const float DavidSeatedNearM = 3.5f;
+    // pure: David sits close enough to be talked to (on my seat, or sitting somewhere within 3.5 m)
+    internal static bool DavidSeatedNear(bool onMySeat, bool davidSitting, float distM) => onMySeat || (davidSitting && distM <= DavidSeatedNearM);
+    static bool DavidSeatedNearNow()
+    {
+        try
+        {
+            if (DavidOnMySeatNow()) return true;
+            var sim = client?.Network?.CurrentSim; if (sim == null) return false;
+            foreach (var a in sim.ObjectsAvatars.Values)
+                if (a != null && a.ID == DavidId) return DavidSeatedNear(false, a.ParentID != 0, Vector3.Distance(a.Position, client.Self.SimPosition));
+        }
+        catch { }
+        return false;
+    }
     static bool PoseIsMale(string raw) => PoseMaleSkip.IsMatch(PoseBare(raw));
     // 2026-10-16 13:43 (Mirage bed): "[<<]" / "[>>]" are the PAGE buttons of a long menu, not [BACK]. Treating "[<<]" as BACK pressed
     // "previous page" (CUDDLES page 1 -> page 2) and the page was mistaken for the root. Only a real [BACK] button goes up a level.
@@ -607,7 +624,7 @@ public static partial class Program
     // pure: which button to press (null = nothing suitable). submenu = AVsitter '*' label.
     // couplesMode: ONLY for explicit 'pose couples'. !couplesMode (default/recovery/wander): skip couples even if shared.
     // inSubmenu: already inside a submenu she chose (depth > 0); the "no clearly solo option" rule is for the top menu.
-    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false, bool allowSexual = false, bool inSexualMenu = false, bool adultSeat = false)
+    internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false, bool allowSexual = false, bool inSexualMenu = false, bool adultSeat = false, bool conversationOk = false)
     {
         var ok = new List<string>(); var skipped = new List<string>(); bool risky = false;
         bool seatSel = PoseMenuLooksLikeSeatSelect(labels);
@@ -618,6 +635,7 @@ public static partial class Program
             // Never pick AVsitter seat-select chrome (⊘sitter, bare F/M roles)
             if (l.TrimStart().StartsWith("⊘") || l.TrimStart().StartsWith("⊘")) { skipped.Add(l); continue; }
             if (seatSel) { skipped.Add(l); continue; }
+            if (!conversationOk && PoseIsConversation(l)) { skipped.Add(l); continue; }   // Talk / Chat: only with David seated next to her
             // 2026-10-16: the android / alone rule holds in EVERY mode, explicit 'pose couples' included. Inside a sexual
             // menu (Fist*, Adult*, MF*...) nothing is picked, even entries whose own name looks harmless.
             if (!allowSexual && (inSexualMenu || PoseIsAdultMenu(l))) { skipped.Add(l); risky = true; continue; }
@@ -812,7 +830,7 @@ public static partial class Program
             var menuLabels = SeatPoseFilter(seat.ID, d.ButtonLabels);
             if (!couplesMode) menuLabels = PoseLabelsFree(seat, menuLabels, seatName);   // SeatOccupancy.cs
             if (PoseNoteSeatMenu(seat.ID.ToString(), d.ButtonLabels) && !adultSeat) { adultSeat = true; WLog($"POSE '{seatName}': a menu with an adult name was seen on this seat; its unclear submenu names count as adult"); }
-            var (pick, sub, why) = PickPoseButton(menuLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual, inSexualMenu: PosePathIsSexual(path, adultSeat), adultSeat: adultSeat);
+            var (pick, sub, why) = PickPoseButton(menuLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual, inSexualMenu: PosePathIsSexual(path, adultSeat), adultSeat: adultSeat, conversationOk: DavidSeatedNearNow());
             if (pick == null)
             {
                 // 2026-10-16 David: never leave a couples pose running alone. No clearly solo option -> the pose the seat gave when I first sat alone.

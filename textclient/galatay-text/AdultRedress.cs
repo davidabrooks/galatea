@@ -14,6 +14,7 @@ public static partial class Program
     static volatile bool nakedFlowBusy;          // stand / Naked / sit / pose in progress: no re-dress in between
     static DateTime nakedAt = DateTime.MinValue, nakedRetryAt = DateTime.MinValue;
     static int nakedRedressBusy;
+    static HomeSeatInfo nakedSeatInfo;           // the listed seat the Naked flow started from (the re-dress steps clear of it first, ClearFloor.cs)
 
     internal static bool NakedWornNow() => NakedNameRx.IsMatch((lastNamedOutfit ?? "").Trim());
 
@@ -69,8 +70,11 @@ public static partial class Program
         {
             if (name == null) return;
             WLog($"REDRESS: adult pose over ({why}); putting '{name}' back on");
+            using (var cc = new CancellationTokenSource(30000))   // not on top of the furniture she just left (David 2026-10-16 16:30)
+                try { await ClearFloorForOutfitChange("re-dress", nakedSeatInfo, cc.Token); } catch (Exception ex) { WLog("STEP CLEAR (re-dress): " + ex.GetBaseException().Message + "; changing where I stand"); }
+            if (nakedRedressOutfit == null) return;
             var r = BikiniNameRx.IsMatch(name) ? await BikiniOn() : await WearOutfitWithHuds(name, keepColor: true);
-            nakedRedressOutfit = null;
+            nakedRedressOutfit = null; nakedSeatInfo = null;
             WLog($"REDRESSED in '{name}': " + r.Replace("\n", " | ")[..Math.Min(300, r.Length)]);
             try { WLog("topless extras off: " + await ToplessExtrasOff()); } catch (Exception ex) { WLog("topless extras off failed: " + ex.GetBaseException().Message); }
         }
@@ -91,12 +95,15 @@ public static partial class Program
                 WLog($"POSE naked-first: will put '{nakedRedressOutfit ?? "?"}' back on after the adult pose");
             }
             nakedAt = DateTime.Now;
+            nakedSeatInfo = HomeSeatOf(seat);
             client.Self.Stand(); await Task.Delay(2500, ct);
+            await ClearFloorForOutfitChange("naked-first undress", nakedSeatInfo, ct);   // ClearFloor.cs: off the furniture before the swap (the table, 2026-10-16 16:30)
             var w = await OutfitWearNamed("Naked", true); WLog($"POSE naked-first: {w}");
             await Task.Delay(3000, ct);
             if (!NakedWornNow()) return ($"'{seatName}': the Naked outfit is not on ({w.Split('\n')[0]}); not taking the sexual pose", null);
             if (!SexualPosesAllowedNow()) return ($"'{seatName}': someone else arrived while undressing; not taking the sexual pose", null);
             client.Self.RequestSit(seat.ID, Vector3.Zero); await Task.Delay(1200, ct); client.Self.Sit(); await Task.Delay(3000, ct);
+            for (int k = 0; k < 20 && client.Self.SittingOn == 0; k++) await Task.Delay(250, ct);   // she walks back from the clear spot first
             var r = await SeatPosePath(seat, seatName, full, ct);
             return (null, r);
         }

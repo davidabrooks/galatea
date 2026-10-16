@@ -795,11 +795,13 @@ public static partial class Program
             pendingDressOutfit = lastNamedOutfit ?? (beachMode ? "Bikini" : null) ?? DailyOutfitAllow().FirstOrDefault();
             pendingDressSpot = info.ChangeSpot;
             if (!await GoToChangeSpot(info.ChangeSpot, "undressing", ct)) { pendingDressOutfit = null; MarkSeatFailed(c, "could not reach the change spot"); return false; }
+            await ClearFloorForOutfitChange("tub undress", info, ct);   // ClearFloor.cs
             await UndressForSeat(ct);
         }
         if (info?.Special == "toilet")
         {
             if (!await GoToChangeSpot(info.ChangeSpot, "toilet", ct)) { MarkSeatFailed(c, "could not reach the toilet spot"); return false; }
+            await ClearFloorForOutfitChange("toilet undress", info, ct);   // ClearFloor.cs
             await ToiletUndress(ct);
         }
         var sitReq = DateTime.Now;

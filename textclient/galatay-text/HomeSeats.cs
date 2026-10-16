@@ -243,6 +243,9 @@ public static partial class Program
 
     static async Task DressAfterSeatIfPending()
     {
+        if ((pendingToilet != null || pendingDressOutfit != null) && client.Self.SittingOn == 0)
+            using (var cc = new CancellationTokenSource(30000))   // ClearFloor.cs: not on the furniture she just left
+                try { await ClearFloorForOutfitChange("re-dress after seat", null, cc.Token); } catch (Exception ex) { WLog("STEP CLEAR (re-dress after seat): " + ex.GetBaseException().Message); }
         await ToiletRestoreIfPending();
         var name = pendingDressOutfit; if (name == null || client.Self.SittingOn != 0) return;
         try { await EnsureStandingForWalk(CancellationToken.None); using var cts = new CancellationTokenSource(45000); await GoToChangeSpot(pendingDressSpot, "dressing", cts.Token); } catch (Exception ex) { WLog("dress spot: " + ex.GetBaseException().Message); }

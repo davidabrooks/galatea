@@ -52,21 +52,31 @@ public static partial class Program
         List<FurnitureBox> boxes;
         try { var f = Path.Combine(RouteDir, "_graph-Peronaut.json"); boxes = File.Exists(f) ? ParseFurnitureBoxes(File.ReadAllText(f)) : new(); }
         catch (Exception ex) { WLog("stand out: footprints: " + ex.Message); boxes = new(); }
-        var me = client.Self.SimPosition;
-        var (how, to) = StandOutPlan(me, seat, boxes);
-        if (how == StandOutMove.None) return;
-        var inBox = InFurniture(me, boxes);
-        if (how == StandOutMove.Walk)
+        await standOutLock.WaitAsync(ct);   // ClearFloor.cs: one step-away at a time
+        try
         {
-            WLog($"stand out of '{seat.Name}': at {P3(me)}, stepping to the clear spot {P3(to)} first");
-            try { await WalkLeg(to, 0.4f, $"stand out of '{seat.Name}'", ct, navMode: true); }
+            var me = client.Self.SimPosition;
+            var (how, to) = StandOutPlan(me, seat, boxes);
+            if (how == StandOutMove.None) return;
+            await StandOutMoveTo($"stand out of '{seat.Name}'", me, to, how == StandOutMove.Hop, InFurniture(me, boxes), ct);
+        }
+        finally { standOutLock.Release(); }
+    }
+
+    // walk to the clear spot (no progress -> local hop), or hop at once when she stands inside a footprint (hopFirst)
+    static async Task StandOutMoveTo(string label, Vector3 me, Vector3 to, bool hopFirst, FurnitureBox inBox, CancellationToken ct)
+    {
+        if (!hopFirst)
+        {
+            WLog($"{label}: at {P3(me)}, stepping to the clear spot {P3(to)} first");
+            try { await WalkLeg(to, 0.4f, label, ct, navMode: true); }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { WLog("stand out walk: " + ex.GetBaseException().Message); }
             var end = client.Self.SimPosition;
             if (!StandOutNoProgress(me, end, to)) return;
-            WLog($"stand out of '{seat.Name}': no progress from {P3(me)} (now {P3(end)}) -> local hop");
+            WLog($"{label}: no progress from {P3(me)} (now {P3(end)}) -> local hop");
         }
-        else WLog($"stand out of '{seat.Name}': stood inside '{inBox?.Name}' at {P3(me)} -> local hop to {P3(to)}");
+        else WLog($"{label}: stood inside '{inBox?.Name}' at {P3(me)} -> local hop to {P3(to)}");
         await StandOutHop(to, ct);
     }
 

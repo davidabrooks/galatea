@@ -222,25 +222,200 @@ public static partial class Program
     // 2026-10-16: record the seat's sit-alone default pose from the dialog header of the FIRST menu after I sit (any way of sitting: wander,
     // 'sit', quick relog beside the bed ...), not only when SeatPose runs: the header "[Female seat] [F waits]" names the pose AVsitter started.
     // Only when alone on the seat, no pose pressed since the sit, and the header pose is a usable (non-couples / male / sexual) single pose.
-    static DateTime poseSitRespAt = DateTime.MinValue; static string poseSitRespPath = "";
-    internal static void NotePoseSitResponse() { poseSitRespAt = DateTime.Now; poseSitRespPath = string.Join(">", wLastPosePath); }
+    // 2026-10-16 14:00 (Mirage bed, sit cdedb159, header '[Female seat] [F waits]', nothing recorded, nothing logged): the AVsitter menu reaches me
+    // ~1 s after the sit response, often BEFORE the object update that sets Self.SittingOn, and the hook just returned when SittingOn was 0.
+    // Now: the sit anchor comes from the sit response AND from AvatarSitChanged (so every way of sitting counts); a menu that arrives before
+    // the sit state is known is kept and retried (sit-changed event + a few timed retries); every decline is logged with its reason; the
+    // recorded default is persisted (seat-default-poses.json next to the log) so it survives relogs and restarts.
+    static DateTime poseSitRespAt = DateTime.MinValue; static string poseSitRespPath = ""; static string poseSitAnchorSrc = "";
+    static bool poseSitDefaultDone; static string poseSitLastReason = "";
+    static readonly HashSet<string> poseSitNoAnchorLogged = new();
+    static ScriptDialogEventArgs poseSitPending; static DateTime poseSitPendingAt = DateTime.MinValue; static int poseSitRetryGen;
+    static readonly object poseSitLock = new();
+    internal const double PoseSitWindowS = 12, PoseSitEarlyDialogS = 5;
+    internal static void NotePoseSitResponse(UUID target = default)
+    {
+        lock (poseSitLock)
+        {
+            poseSitRespAt = DateTime.Now; poseSitRespPath = string.Join(">", wLastPosePath); poseSitAnchorSrc = "sit response";
+            poseSitDefaultDone = false; poseSitPending = null; poseSitLastReason = ""; poseSitNoAnchorLogged.Clear(); poseSitRetryGen++;
+        }
+    }
+    // AvatarSitChanged for me (any way of sitting incl. a login on the seat). Stand-up clears the anchor.
+    internal static void NotePoseSitChanged(uint seatLocalId)
+    {
+        ScriptDialogEventArgs pend = null;
+        lock (poseSitLock)
+        {
+            if (seatLocalId == 0)
+            {
+                poseSitRespAt = DateTime.MinValue; poseSitDefaultDone = false; poseSitPending = null; poseSitLastReason = ""; poseSitNoAnchorLogged.Clear(); poseSitRetryGen++;
+                return;
+            }
+            if (poseSitRespAt == DateTime.MinValue || (DateTime.Now - poseSitRespAt).TotalSeconds > 20)
+            {
+                poseSitRespAt = poseSitPending != null && (DateTime.Now - poseSitPendingAt).TotalSeconds < PoseSitEarlyDialogS ? poseSitPendingAt : DateTime.Now;
+                poseSitRespPath = string.Join(">", wLastPosePath); poseSitAnchorSrc = "sit changed"; poseSitDefaultDone = false; poseSitNoAnchorLogged.Clear();
+            }
+            pend = poseSitPending;
+        }
+        if (pend != null) PoseSitDefaultEval(pend, poseSitPendingAt, "sit changed");
+    }
     internal static bool PoseSitDefaultWindowOk(DateTime sitAt, DateTime now, string pathAtSit, string pathNow) =>
-        sitAt != DateTime.MinValue && (now - sitAt).TotalSeconds <= 12 && pathAtSit == pathNow;
-    static void PoseRecordSitDefaultFromDialog(ScriptDialogEventArgs e)
+        sitAt != DateTime.MinValue && (now - sitAt).TotalSeconds <= PoseSitWindowS && pathAtSit == pathNow;
+
+    // pure: may the first pose menu after a sit be recorded as this seat's sit-alone default? (record, conclusive, pose, reason).
+    // conclusive=false means "ask again later" (sit state not known yet, another object's dialog, seat-select menu).
+    internal static (bool record, bool conclusive, string cur, string reason) PoseSitDefaultCheck(
+        bool anchored, double dialogSinceSitS, bool pathSame, string pathAtSit, string pathNow, bool sitting, bool fromSeat,
+        string message, IReadOnlyList<string> labels, bool alone, bool headerChangedSince)
+    {
+        if (!anchored) return (false, false, null, "no sit seen (no sit response / sit change in the last 12 s)");
+        if (dialogSinceSitS > PoseSitWindowS || dialogSinceSitS < -PoseSitEarlyDialogS) return (false, true, null, $"window: this menu came {dialogSinceSitS:0.#} s after the sit (limit {PoseSitWindowS:0} s), so it is not the first menu");
+        if (!pathSame) return (false, true, null, $"pressed: a pose was pressed since the sit (path [{pathAtSit}] -> [{pathNow}])");
+        if (headerChangedSince) return (false, true, null, "pressed: the menu header changed after this first menu (a pose was picked)");
+        if (!sitting) return (false, false, null, "not sitting yet (Self.SittingOn is 0); will retry");
+        if (!fromSeat) return (false, false, null, "dialog is from another object, not my seat");
+        if (labels == null || labels.Count == 0) return (false, true, null, "menu has no buttons");
+        if (PoseMenuLooksLikeSeatSelect(labels)) return (false, false, null, "seat-select menu (F/M), waiting for the pose menu");
+        if (PoseHasBack(labels)) return (false, true, null, "menu has [BACK]: a submenu, not the first menu");
+        if (labels.Any(PoseIsCouplesNamed) && !labels.Any(PoseIsSoloMenu)) return (false, true, null, "couples menu (couples names, no solo submenu)");
+        var cur = PoseCurrent(message);
+        if (string.IsNullOrWhiteSpace(cur)) return (false, true, null, $"header parse: no [pose] in the dialog text '{(message ?? "").Replace("\n", " / ")}'");
+        if (!alone) return (false, true, cur, $"alone: someone else is on the seat (a default is only recorded when I sit alone), header pose [{cur}]");
+        if (!PoseUsableAsDefault(cur) || PoseLeafIsCouples(cur, null)) return (false, true, cur, $"pose [{cur}] is not usable as a default (submenu, control, male, couples or sexual)");
+        return (true, true, cur, "ok");
+    }
+
+    static bool PoseSitNoAnchorFirst(string k) { lock (poseSitLock) return poseSitNoAnchorLogged.Add(k); }
+    static void PoseRecordSitDefaultFromDialog(ScriptDialogEventArgs e) => PoseSitDefaultEval(e, DateTime.Now, "dialog");
+
+    static void PoseSitDefaultEval(ScriptDialogEventArgs e, DateTime dialogAt, string how)
     {
         try
         {
-            if (client?.Self?.SittingOn is not uint sit || sit == 0) return;
-            if (!PoseSitDefaultWindowOk(poseSitRespAt, DateTime.Now, poseSitRespPath, string.Join(">", wLastPosePath))) return;
-            var sim = Sim; if (sim == null || !sim.ObjectsPrimitives.TryGetValue(sit, out var p) || p == null) return;
-            if (p.ParentID != 0 && sim.ObjectsPrimitives.TryGetValue(p.ParentID, out var root) && root != null) p = root;
-            if (!DialogFromSeat(e, p, sim)) return;
-            if (e.ButtonLabels == null || e.ButtonLabels.Any(PoseIsCouplesNamed) && !e.ButtonLabels.Any(PoseIsSoloMenu)) return;
-            var cur = PoseCurrent(e.Message);
-            if (PoseRecordSitDefault(p.ID.ToString(), cur, !SeatHasOtherSitters(p) && !SeatHasDavid(p), false, PoseLeafIsCouples(cur, wLastPosePath)))
-                WLog($"POSE '{p.Properties?.Name ?? p.ID.ToString()}': recorded sit-alone default pose [{cur}] from the first menu header after sitting");
+            DateTime anchorAt; string pathAtSit, anchorSrc; bool done; int gen;
+            lock (poseSitLock) { anchorAt = poseSitRespAt; pathAtSit = poseSitRespPath; anchorSrc = poseSitAnchorSrc; done = poseSitDefaultDone; gen = poseSitRetryGen; }
+            uint sitLocal = client?.Self?.SittingOn ?? 0;
+            bool anchored = anchorAt != DateTime.MinValue;
+            if (done) return;                                   // first menu of this sit already decided
+            var sim = Sim; Primitive p = null;
+            if (sitLocal != 0 && sim != null && sim.ObjectsPrimitives.TryGetValue(sitLocal, out var sp) && sp != null)
+            {
+                p = sp;
+                if (p.ParentID != 0 && sim.ObjectsPrimitives.TryGetValue(p.ParentID, out var root) && root != null) p = root;
+            }
+            // only menus that look like a seat pose header ("[Seat] [pose]" + buttons) are of interest; others stay silent
+            if (e?.ButtonLabels == null || e.ButtonLabels.Count == 0 || PoseCurrent(e.Message) == null) return;
+            if (!anchored)
+            {   // sitting with no anchor (e.g. sat before the client started): say so once per seat, never record
+                if (sitLocal != 0 && p != null && DialogFromSeat(e, p, sim) && PoseSitNoAnchorFirst(p.ID.ToString()))
+                    WLog($"POSE '{p.Properties?.Name ?? p.ID.ToString()}': sit-alone default not recorded: no sit seen in the last {PoseSitWindowS:0} s (menu header [{PoseCurrent(e.Message)}])");
+                return;
+            }
+            string pathNow = string.Join(">", wLastPosePath);
+            var curHdr = PoseCurrent(e.Message);
+            bool changedSince = wDialogs.ToArray().Any(d => d.at > dialogAt && d.e != e && d.e.ObjectID == e.ObjectID && d.e.ButtonLabels != null
+                && !string.Equals(PoseCurrent(d.e.Message), curHdr, StringComparison.OrdinalIgnoreCase));
+            bool fromSeat = p != null && DialogFromSeat(e, p, sim);
+            bool alone = p != null && !SeatHasOtherSitters(p) && !SeatHasDavid(p);
+            var (rec, conclusive, cur, reason) = PoseSitDefaultCheck(true, (dialogAt - anchorAt).TotalSeconds, pathAtSit == pathNow, pathAtSit, pathNow,
+                sitLocal != 0 && p != null, fromSeat, e.Message, e.ButtonLabels, alone, changedSince);
+            string seatName = p?.Properties?.Name ?? e.ObjectName ?? "?";
+            if (rec)
+            {
+                lock (poseSitLock) { if (gen != poseSitRetryGen || poseSitDefaultDone) return; poseSitDefaultDone = true; poseSitPending = null; poseSitRetryGen++; }
+                if (PoseRecordSitDefault(p.ID.ToString(), cur, true, false, false))
+                {
+                    poseSitDefaultName[p.ID.ToString()] = seatName;
+                    PoseSitDefaultSave();
+                    WLog($"POSE '{seatName}': recorded sit-alone default pose [{cur}] from the first menu header after sitting ({anchorSrc}, {how}, {(dialogAt - anchorAt).TotalSeconds:0.0} s after the sit)");
+                }
+                return;
+            }
+            if (conclusive)
+            {
+                lock (poseSitLock) { if (gen != poseSitRetryGen || poseSitDefaultDone) return; poseSitDefaultDone = true; poseSitPending = null; poseSitRetryGen++; }
+                WLog($"POSE '{seatName}': sit-alone default NOT recorded ({how}): {reason}");
+                return;
+            }
+            // not conclusive: keep the menu and look again (sit state, seat-select -> pose menu ...)
+            bool start = false;
+            lock (poseSitLock)
+            {
+                if (poseSitPending == null || !ReferenceEquals(poseSitPending, e)) { poseSitPending = e; poseSitPendingAt = dialogAt; start = true; }
+                if (reason != poseSitLastReason) { poseSitLastReason = reason; WLog($"POSE '{seatName}': sit-alone default not recorded yet ({how}): {reason}"); }
+            }
+            if (start && how == "dialog") PoseSitRetryStart(e, dialogAt, gen);
+        }
+        catch (Exception ex) { WLog("POSE sit-alone default hook error: " + ex.GetBaseException().Message); }
+    }
+    static void PoseSitRetryStart(ScriptDialogEventArgs e, DateTime dialogAt, int gen)
+    {
+        _ = Task.Run(async () =>
+        {
+            foreach (var ms in new[] { 400, 800, 1500, 2500, 3500 })
+            {
+                await Task.Delay(ms);
+                lock (poseSitLock) { if (gen != poseSitRetryGen || poseSitDefaultDone || !ReferenceEquals(poseSitPending, e)) return; }
+                PoseSitDefaultEval(e, dialogAt, "retry");
+            }
+            lock (poseSitLock)
+            {
+                if (gen != poseSitRetryGen || poseSitDefaultDone || !ReferenceEquals(poseSitPending, e)) return;
+                poseSitDefaultDone = true; poseSitPending = null;
+            }
+            WLog($"POSE '{e.ObjectName}': sit-alone default NOT recorded: gave up after retries, last reason: {poseSitLastReason}");
+        });
+    }
+
+    // ---- persistence: the recorded per-seat default survives relogs/restarts (seat root UUID -> pose) ----
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> poseSitDefaultName = new();
+    static string PoseSitDefaultFile => Env("GT_SEAT_DEFAULTS", Path.Combine(Path.GetDirectoryName(LogPath) ?? "/tmp", "seat-default-poses.json"));
+    internal static string PoseSitDefaultsToJson(IDictionary<string, string> poses, IDictionary<string, string> names)
+    {
+        var o = new SortedDictionary<string, object>(StringComparer.Ordinal);
+        foreach (var kv in poses) o[kv.Key] = new Dictionary<string, string> { ["pose"] = kv.Value, ["seat"] = names != null && names.TryGetValue(kv.Key, out var n) ? n : "" };
+        return System.Text.Json.JsonSerializer.Serialize(o, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+    }
+    internal static Dictionary<string, (string pose, string seat)> PoseSitDefaultsFromJson(string json)
+    {
+        var res = new Dictionary<string, (string, string)>();
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            foreach (var pr in doc.RootElement.EnumerateObject())
+            {
+                string pose = pr.Value.ValueKind == System.Text.Json.JsonValueKind.String ? pr.Value.GetString()
+                    : pr.Value.TryGetProperty("pose", out var pe) ? pe.GetString() : null;
+                string seat = pr.Value.ValueKind == System.Text.Json.JsonValueKind.Object && pr.Value.TryGetProperty("seat", out var se) ? se.GetString() : "";
+                if (!string.IsNullOrWhiteSpace(pose) && PoseUsableAsDefault(pose)) res[pr.Name] = (PoseBare(pose), seat ?? "");
+            }
         }
         catch { }
+        return res;
+    }
+    static void PoseSitDefaultSave()
+    {
+        try
+        {
+            var f = PoseSitDefaultFile; Directory.CreateDirectory(Path.GetDirectoryName(f) ?? ".");
+            var tmp = f + ".tmp"; File.WriteAllText(tmp, PoseSitDefaultsToJson(poseSitDefault, poseSitDefaultName)); File.Move(tmp, f, true);
+        }
+        catch (Exception ex) { WLog("POSE sit-alone default save failed: " + ex.Message); }
+    }
+    internal static void PoseSitDefaultSaveForTest(string key, string name) { poseSitDefaultName[key] = name; PoseSitDefaultSave(); }
+    internal static void PoseSitDefaultLoad()
+    {
+        try
+        {
+            var f = PoseSitDefaultFile; if (!File.Exists(f)) return;
+            int n = 0;
+            foreach (var kv in PoseSitDefaultsFromJson(File.ReadAllText(f)))
+            { poseSitDefault.TryAdd(kv.Key, kv.Value.pose); poseSitDefaultName[kv.Key] = kv.Value.seat; n++; }
+            if (n > 0) WLog($"POSE loaded {n} recorded seat default pose(s) from {f}");
+        }
+        catch (Exception ex) { WLog("POSE sit-alone default load failed: " + ex.Message); }
     }
 
     static void WanderDialogIn(ScriptDialogEventArgs e)
@@ -545,7 +720,7 @@ public static partial class Program
         var path = new List<string>(); string current = PoseCurrent(d.Message); bool inCouples = false;
         // 2026-10-16: the pose showing on the initial, unchanged sit with nobody else on the seat = this seat's default (sit-alone) pose
         if (PoseRecordSitDefault(seat.ID.ToString(), current, !shared && !davidHere, change || recovery, PoseLeafIsCouples(current, wLastPosePath)))
-            WLog($"POSE '{seatName}': recorded sit-alone default pose [{current}]");
+        { poseSitDefaultName[seat.ID.ToString()] = seatName; PoseSitDefaultSave(); WLog($"POSE '{seatName}': recorded sit-alone default pose [{current}]"); }
         // 2026-10-16 13:28:32 (Mirage bed): a touch reopens the menu in the LAST submenu (CUDDLES*), and the solo pick only searched that
         // one ("no clearly solo option": hug you / in my eyes), never the SOLO F* submenu with selfie, champagne, texting, reading, laptop.
         // When the open menu is a couples / adult one, go BACK to the root first so the pick searches the whole tree like wander does.

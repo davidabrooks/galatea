@@ -172,6 +172,13 @@ public static partial class Program
     {
         var restore = beachRememberedOutfit;
         beachMode = false; PersistBeachState();
+        // 2026-10-15 David: an android body is never swapped to human automatically (the 17:29 restore did exactly that)
+        if (await AndroidWornSettled())
+        {
+            Log("outfit-zone", $"back from the beach, {where}: android body worn, keeping it (no restore of '{restore ?? "-"}')");
+            beachRememberedOutfit = null; PersistBeachState();
+            return;
+        }
         if (string.IsNullOrWhiteSpace(restore) || BikiniNameRx.IsMatch(restore))
         {
             Log("outfit-zone", $"back from the beach, {where}: no remembered outfit → bikini off (strapless+jeans)");

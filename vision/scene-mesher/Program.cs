@@ -317,7 +317,7 @@ static class Mesher
         if (kind == "material" && ExportDir.Length > 0 && File.Exists(Path.Combine(ExportDir, $"material-{id}.bin")))
             try { var eb = await File.ReadAllBytesAsync(Path.Combine(ExportDir, $"material-{id}.bin")); if (eb.Length > 0) return eb; } catch { }
         var path = CachePath(CacheDir, kind, id);
-        if (path != null && File.Exists(path)) { try { var b = await File.ReadAllBytesAsync(path); if (b.Length > 0) { Interlocked.Increment(ref cacheHits); return b; } } catch { } }
+        if (path != null && File.Exists(path)) { try { var b = await File.ReadAllBytesAsync(path); if (b.Length > 0) { Interlocked.Increment(ref cacheHits); try { File.SetLastWriteTimeUtc(path, DateTime.UtcNow); } catch { } return b; } } catch { } }
         byte[] data;
         try { data = await Http.GetByteArrayAsync($"{Cdn}?{kind}_id={id}"); } catch { return null; }
         Interlocked.Increment(ref cacheMisses);

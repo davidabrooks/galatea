@@ -83,6 +83,7 @@ sit <object uuid>        sit_near <avatar>        stand        pose [change|coup
 ```
 - `sit` sits on an object by UUID (find one with `nearby`). A sit guard re-checks pose and hover height a few seconds after sitting (`sitguard on|off`).
 - `pose` is a solo random pose by default and never starts a couples pose by itself (`pose couples` only when the owner asks; `pose path A>B>C` restores an exact menu path). The AO stays attached; `textclient/attach-block.txt` lists items taken off while seated and re-worn on standing.
+- The sexual-pose rule holds for every way a pose button is pressed, including `pose couples` and `pose path` (Oct 16, 2026): never in an android outfit; in a human outfit only in Naked and only when David is the only other avatar in Peronaut. A menu or leaf is treated as sexual by name (`fist`, `balls`, `job`, `MF*`, `Adult*` and the rest of the word list), and nothing is picked inside a sexual menu, even an entry that looks harmless. If every couples option is sexual, `pose couples` keeps the current pose and says so in the log (`refused sexual pick`).
 - Hover height is pinned in `textclient/hover.txt` (`hover set` writes it).
 
 ## Following

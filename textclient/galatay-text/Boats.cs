@@ -136,7 +136,7 @@ public static partial class Program
             if (!there && !await BoatTeleportToSpot(s, "before a boat sit")) return false;
         }
         // 2026-10-08 approved: at the beach without passing through the bedroom -> bikini on the spot
-        if (!BikiniWorn())
+        if (!BikiniWorn() && !BikiniSwapSkippedNow())   // 2026-10-16: android body: no bikini, so no remembered outfit / beach mode either
         {
             beachOutfitBusy = true;
             try

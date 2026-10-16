@@ -39,7 +39,7 @@ public static partial class Program
     static async Task ZoneBikiniViaBedroom(string why)
     {
         var sim = client.Network.CurrentSim; var back = client.Self.SimPosition;
-        if (AndroidWorn()) { Log("outfit-zone", $"{why}: android body: no bikini change"); zoneBedroomRetryAt = DateTime.UtcNow.AddMinutes(10); return; }
+        if (BikiniSwapSkippedNow()) { Log("outfit-zone", $"{why}: android body: no bikini change"); zoneBedroomRetryAt = DateTime.UtcNow.AddMinutes(10); return; }
         zoneBedroomRetryAt = DateTime.UtcNow.AddMinutes(3);
         Log("outfit-zone", $"{why}: not in the bedroom (at {back.X:F1},{back.Y:F1},{back.Z:F1}): walking to the bedroom to change, never in place");
         if (client.Self.SittingOn != 0) { client.Self.Stand(); await Task.Delay(2500); }

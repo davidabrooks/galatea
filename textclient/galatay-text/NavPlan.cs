@@ -233,15 +233,22 @@ public static partial class Program
     }
     // Door trigger (2026-10-07 David 09:23 'doors open too late, she bumps them'): touch when the door is <= 3 m ahead along
     // the path, scanning DoorScanM ahead in DoorScanStepM steps; then wait up to DoorSwingWaitMs (total) for a leaf to swing.
-    internal const float DoorTriggerM = 3.0f, DoorScanM = 9.0f, DoorScanStepM = 0.5f;
+    internal const float DoorTriggerM = 3.0f, DoorScanM = 12.0f, DoorScanStepM = 0.5f;
     internal const int DoorSwingWaitMs = 900;
     internal static bool DoorTouchDue(float distAhead) => distAhead >= 0 && distAhead <= DoorTriggerM;
     // 2026-10-14 David: she still walks into doors at home. At her 3.2 m/s walk a 3 m trigger left 0.9 s, the same as
     // the leaf's swing (DoorSwingWaitMs) with nothing for the touch round trip or the 0.4 s route tick, so she either
     // bumped the leaf or held in front of it. Touch when she is the swing + touch + tick lead time away (>= 3 m).
-    internal const int DoorTouchLatencyMs = 300, DoorTickMs = 400;
+    // 2026-10-16 10:02 David: 'you got through the bedroom door but you still ran into it': the touch must also cover a
+    // safety margin (DoorMarginMs), and the speed used is never the measured 0 m/s of a walk that is only starting.
+    internal const int DoorTouchLatencyMs = 300, DoorTickMs = 400, DoorMarginMs = 500;
     internal static float DoorTriggerFor(float speedMps)
-        => Math.Min(DoorScanM - DoorScanStepM, Math.Max(DoorTriggerM, Math.Max(0f, speedMps) * (DoorSwingWaitMs + DoorTouchLatencyMs + DoorTickMs) / 1000f));
+        => Math.Min(DoorScanM - DoorScanStepM, Math.Max(DoorTriggerM, Math.Max(0f, speedMps) * (DoorSwingWaitMs + DoorTouchLatencyMs + DoorTickMs + DoorMarginMs) / 1000f));
+    // The speed to lead with. At the start of a walk (and while she is held or stuck) the measured speed is ~0, so the
+    // trigger fell back to 3 m (the 10:02 bedroom door was touched 3.5 m ahead = ~1.1 s at 3.2 m/s, less than the swing plus
+    // the touch round trip). Below DoorLeadFloorMps she is treated as walking at her normal speed.
+    internal const float DoorLeadFloorMps = 1.5f, DoorNominalWalkMps = 3.2f;
+    internal static float DoorLeadSpeedMps(float measuredMps) => measuredMps < DoorLeadFloorMps ? DoorNominalWalkMps : measuredMps;
     internal static bool DoorTouchDue(float distAhead, float speedMps) => distAhead >= 0 && distAhead <= DoorTriggerFor(speedMps);
     // path distance from s to the first step [u, u+step] that crosses a door, or null within the scan window
     internal static float? FirstCrossingAhead(Func<float, Vector2> at, float s, float len, Func<Vector2, Vector2, bool> crosses, float scan = DoorScanM, float step = DoorScanStepM)
@@ -249,6 +256,24 @@ public static partial class Program
         float end = Math.Min(len, s + scan);
         for (float u = s; u < end; u += step) { float v = Math.Min(end, u + step); if (crosses(at(u), at(v))) return u - s; }
         return null;
+    }
+    // Start-of-walk pre-open (2026-10-16 10:04 David: 'when you're that close to a door, you should open it before you even
+    // start walking'): every mapped door pair whose cells the path enters within DoorPreOpenM of its start, nearest first.
+    // The walker touches them while still standing and waits for a leaf to swing before the first step.
+    internal const float DoorPreOpenM = 6.0f;
+    internal const int DoorPreOpenWaitMs = 1200;
+    internal static (float dist, List<NavDoor> doors)? DoorsToPreOpen(NavGrid ng, Func<float, Vector2> at, float len, float reach = DoorPreOpenM)
+    {
+        if (ng == null) return null;
+        var seen = new HashSet<UUID>(); var found = new List<NavDoor>(); float? first = null;
+        float end = Math.Min(len, reach);
+        for (float u = 0; u < end; u += DoorScanStepM)
+        {
+            var p = at(u); var q = at(Math.Min(end, u + DoorScanStepM));
+            if (!ng.Contains(p.X, p.Y) && !ng.Contains(q.X, q.Y)) continue;
+            foreach (var nd in DoorsForCrossing(ng, p, q)) if (seen.Add(nd.Id)) { found.Add(nd); first ??= u; }
+        }
+        return first is float f ? (f, found) : null;
     }
     // Last-line guard (2026-10-16 David: 'you're still running into doors before you open them'): whatever the early scan
     // did (or failed to do: window off the grid, touch lost, the leaf swung shut again), a closed nav door whose cells she
@@ -268,13 +293,27 @@ public static partial class Program
         }, reach, 0.25f);
         return d is float f ? (f, found) : null;
     }
+    // What the guard does about a closed door ahead, given how long ago it was touched (a toggle door shut again by a second
+    // touch while it is still swinging open). Wait until DoorGuardHoldS after a touch; then re-touch at most DoorGuardRetouchMax
+    // times, and only if the leaf has not moved at all; a leaf that has started to swing is waited for (up to DoorGuardSwingS).
+    internal const double DoorGuardHoldS = 1.5, DoorGuardSwingS = 2.5; internal const int DoorGuardRetouchMax = 1;
+    internal enum GuardStep { Wait, Touch, GiveUp }
+    internal static GuardStep DoorGuardStep(double sinceTouchS, bool movedAtAll, int guardTouches)
+    {
+        if (sinceTouchS < DoorGuardHoldS) return GuardStep.Wait;
+        if (movedAtAll) return sinceTouchS < DoorGuardSwingS ? GuardStep.Wait : GuardStep.GiveUp;
+        return guardTouches < DoorGuardRetouchMax ? GuardStep.Touch : GuardStep.GiveUp;
+    }
+    // has the leaf moved at all? Clearly displaced (below the 'open' thresholds) or changed since the first sample.
+    internal static bool DoorMovedAtAll(float mv0, float ang0, float mv1, float ang1)
+        => mv1 > 0.10f || ang1 > 3f || MathF.Abs(mv1 - mv0) > 0.02f || MathF.Abs(ang1 - ang0) > 1f;
     // How long we may pause after touches before walking through (auto-close; 2026-10-05 David: within ~0.3 s).
     internal const int DoorThroughDelayMs = 300;
     // Touch closed doors only (never re-touch an already-open leaf — these toggle shut). Touch the pair in one burst,
     // wait at most DoorThroughDelayMs, then return so the walker goes through at full speed. One open leaf is enough;
     // a slow/failed sibling must not delay the pass (2026-10-05).
     // returns how many leaves it touched (0 = all open/unknown: the walker never needs to stop)
-    static async Task<int> EnsureDoorsOpen(IReadOnlyList<NavDoor> doors, CancellationToken ct)
+    static async Task<int> EnsureDoorsOpen(IReadOnlyList<NavDoor> doors, CancellationToken ct, int waitOpenMs = 0)
     {
         if (doors == null || doors.Count == 0) return 0;
         var sim = client.Network.CurrentSim; if (sim == null) return 0;
@@ -299,7 +338,10 @@ public static partial class Program
         }
         // Fixed short delay then GO — do not wait for every leaf; one opening is enough to pass
         await Task.Delay(DoorThroughDelayMs, ct);
-        foreach (var (d, _, _) in need) Log("nav", $"door {d.Name}: {DoorState(d).how} (through after {DoorThroughDelayMs} ms)");
+        // standing at the door (start of a walk): stay until a leaf has actually swung (or waitOpenMs after the touch)
+        var tw = DateTime.Now.AddMilliseconds(-DoorThroughDelayMs);
+        while (waitOpenMs > 0 && (DateTime.Now - tw).TotalMilliseconds < waitOpenMs && !need.Any(n => DoorState(n.d).open)) await Task.Delay(100, ct);
+        foreach (var (d, _, _) in need) Log("nav", $"door {d.Name}: {DoorState(d).how} (through after {(int)(DateTime.Now - tw).TotalMilliseconds} ms)");
         return need.Count;
     }
 
@@ -332,6 +374,14 @@ public static partial class Program
             }
     }
     // open = the panel has left its exported (closed) pose: moved > 0.25 m or turned > 10 degrees
+    // how far the leaf is from its exported (closed) pose: metres and degrees
+    static (bool known, float mv, float ang) DoorMotion(NavDoor d)
+    {
+        var sim = client.Network.CurrentSim; var p = sim?.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == d.Id);
+        if (p == null) return (false, 0, 0);
+        var wp = WorldPos(sim, p, out var root); if (root == null) return (false, 0, 0);
+        return (true, Vector3.Distance(wp, d.Pos), (float)(Math.Acos(Math.Min(1.0, Math.Abs(Quaternion.Dot(p.Rotation, d.Rot)))) * 2 * 180 / Math.PI));
+    }
     static (bool known, bool open, string how) DoorState(NavDoor d)
     {
         var sim = client.Network.CurrentSim; var p = sim?.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == d.Id);
@@ -395,7 +445,7 @@ public static partial class Program
                 if (ok)
                 {
                     var pair = DoorsForCrossing(g, path[kd - 1], path[kd]);
-                    await EnsureDoorsOpen(pair, ct);   // <= DoorThroughDelayMs, then GO
+                    await EnsureDoorsOpen(pair, ct, DoorPreOpenWaitMs);   // standing at the door: wait (<= 1.2 s) for a leaf to swing, then GO
                     navTrack = true;
                     try { ok = await WalkLeg(new Vector3(through.X, through.Y, client.Self.SimPosition.Z), 0.6f, $"nav through {door.Name}", ct, navMode: true); }
                     finally { navTrack = false; }

@@ -104,6 +104,7 @@ touch-attachment <attachment|ao> <link no.|prim name> [face]       bikini on|off
 - `outfit wear` swaps in a My Outfits folder without stacking (one hair, one head, body replaced, AO untouched) and randomises the outfit's colour HUDs. The client also picks a random outfit once per day (`outfit daily status`) and swaps outfits on a beach/house zone boundary (`outfit zone status`); undressing and outfit changes share one wardrobe lock so they cannot overlap (`Wardrobe.cs`).
 - `wear add|remove` and `attach|detach` are reversible and logged; body parts need `wear bodypart`/`shape wear`. `outfit coffix` repairs missing COF links so a relog keeps the look.
 - An android body is never swapped to human automatically: not at login (the daily change waits for a human login) and not when walking back from the beach to the house. Only David's command or an explicit request changes it.
+- With an android body worn she does not plan any bedroom detour for the bikini (Oct 16, 2026): a beach-bound wander leg, a seat on the beach level or the pier goes straight to its target, and going back up does not walk to the bedroom to "change back" (nothing was changed). The same single check (`BikiniSwapSkipped`) decides the `bikini skipped: android body worn` log line and the planning. Human bodies behave as before (bikini in the bedroom first); `bikini on` typed by hand still wears it; the 30 min level dwell is unchanged.
 - The README's "Standing rules" apply (never nude, save outfits only with the owner's OK).
 
 ## Touch and dialogs

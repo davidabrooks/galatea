@@ -97,10 +97,17 @@ public static partial class Program
 
     // auto: wander/zone/shower/boat callers. The Bikini is a LaraX outfit, so they leave an android look alone (2026-10-11);
     // 'bikini on' typed by hand still wears it.
+    // pure, the ONE predicate for "the bikini swap will not happen" (2026-10-16): BikiniOn skips on it, and every caller that
+    // would walk somewhere to change (wander detour to the bedroom, the way back, pier, zone tick) asks it first, so no
+    // detour is planned for a change that cannot happen. auto = wander/zone/shower/boat callers (not 'bikini on' by hand).
+    internal static bool BikiniSwapSkipped(bool auto, bool androidWorn) => auto && androidWorn;
+    // the swap will be skipped right now for an automatic caller (android body worn)
+    static bool BikiniSwapSkippedNow() => BikiniSwapSkipped(true, AndroidWorn());
+
     static async Task<string> BikiniOn(bool auto = true)
     {
         if (!LoggedIn) return "not logged in";
-        if (auto && AndroidWorn()) { Log("outfit", "bikini skipped: android body worn"); return "bikini skipped: android body worn (the Bikini is a LaraX outfit)"; }
+        if (BikiniSwapSkipped(auto, AndroidWorn())) { Log("outfit", "bikini skipped: android body worn"); return "bikini skipped: android body worn (the Bikini is a LaraX outfit)"; }
         using var cts = new CancellationTokenSource(120000); var ct = cts.Token;
         var sb = new StringBuilder();
         // Prefer full My Outfits Bikini (or Spicy pre-rename); else clothing swap. Then HUD random among all D/W/T.

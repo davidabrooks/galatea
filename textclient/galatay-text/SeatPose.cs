@@ -120,7 +120,8 @@ public static partial class Program
 
     // David 2026-10-12 15:30: sexual poses NEVER while an android outfit is worn; in a human outfit only when the
     // only other avatar in Peronaut itself is David. 2026-10-14: neighbour regions no longer count (an avatar
-    // across the sim border isn't "around"); only the current sim's coarse map and its avatar objects. Taking one =
+    // across the sim border isn't "around"); only the current sim's coarse map and its avatar objects. 2026-10-16: only our own
+    // parcel counts (AloneCheck in ParcelWatch.cs); this region-wide test is its fail-safe when parcel data is missing. Taking one =
     // stand, wear Naked (Real Kisser stays), sit again, then the pose. Couples poses stay skipped on solo paths either way.
     internal static bool SexualPosesAllowed(bool androidWorn, string region, IEnumerable<UUID> otherAvatars, UUID davidId)
     {
@@ -148,7 +149,8 @@ public static partial class Program
         try { foreach (var sim in client.Network.Simulators.ToArray()) objs.Add(new(sim.Handle, sim.ObjectsAvatars.Values.Where(a => a != null).Select(a => a.ID).ToList())); } catch { }
         return AvatarsInSim(cur.Handle, coarse, objs, client.Self.AgentID);
     }
-    static bool SexualPosesAllowedNow() { try { return SexualPosesAllowed(AndroidWorn(), client.Network.CurrentSim?.Name, OtherAvatarsAround(), DavidId); } catch { return false; } }
+    // 2026-10-16: "alone" = nobody else on OUR OWN PARCEL (ParcelWatch.cs); no parcel data -> the strict region-wide count (OtherAvatarsAround)
+    static bool SexualPosesAllowedNow() { try { return AloneCheckNow().Allowed; } catch { return false; } }
     internal static bool PosePathIsSexual(IEnumerable<string> path) => (path ?? Enumerable.Empty<string>()).Any(l => PoseIsSexualNamed(l) || PoseAdultMenuName.IsMatch(PoseBare(l)));
 
     /// <summary>Pure: true when the menu path is sexual and the android / alone rule does not allow it. Applies to every

@@ -16,6 +16,9 @@ public class FrontDoorScanTests
     static Program.Poly HomeToBeach(string place = "beach")
     {
         var g = Program.LoadGraphFile(Routes("_graph-Peronaut.json"));
+        // these scan tests need the LONG bedroom route (front doors ~14 m after side-room-1): leave out the one-way shortcut 39 -> 48
+        // (2026-10-16; the real outbound route and its door hold are tested in BedroomDoorHoldTests)
+        g.E.RemoveAll(e => (e.a, e.b) == (39, 48));
         var (pts, err) = Program.GraphRoute(g, new Vector3(220.6f, 74.3f, 29.0f), g.Places[place].node);
         Assert.Null(err);
         return new Program.Poly(pts);

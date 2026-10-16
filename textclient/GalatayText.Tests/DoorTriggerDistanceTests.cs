@@ -24,8 +24,9 @@ public class DoorTriggerDistanceTests
     public void Door_found_ahead_on_a_straight_path_and_due_at_three_metres()
     {
         Func<float, Vector2> at = u => new Vector2(u, 0);
-        var far = Program.FirstCrossingAhead(at, 0f, 20f, CrossesX10);
-        Assert.Null(far); // 10 m away: beyond the scan window
+        var far = Program.FirstCrossingAhead(at, 0f, 40f, (p, q) => (p.X - 25f) * (q.X - 25f) <= 0 && p.X != q.X, Program.DoorScanM);
+        Assert.Null(far);
+        Assert.Null(Program.FirstCrossingAhead(at, 0f, 20f, (p, q) => (p.X - 10f) * (q.X - 10f) <= 0 && p.X != q.X, 5f)); // 10 m away: beyond a 5 m window
         var d = Program.FirstCrossingAhead(at, 5.5f, 20f, CrossesX10);
         Assert.NotNull(d); Assert.False(Program.DoorTouchDue(d!.Value));
         var near = Program.FirstCrossingAhead(at, 7.2f, 20f, CrossesX10);

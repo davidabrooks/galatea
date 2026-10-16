@@ -40,7 +40,7 @@ public class FrontDoorScanTests
                 var l = Program.DoorsForCrossing(ng, p, q).Where(nd => !opened.Contains(nd.Id)).ToList();
                 if (l.Count == 0) return false; ahead = l; return true;
             });
-            if (d is float da && Program.DoorTouchDue(da, speed))
+            if (d is float da && Program.DoorTouchDue(da, Program.DoorLeadSpeedMps(speed)))
             {
                 foreach (var nd in ahead) { touches.Add((nd.Name, da, s)); opened.Add(nd.Id); }
             }
@@ -71,7 +71,8 @@ public class FrontDoorScanTests
                     var tag = $"{leaf} at {speed:F1} m/s phase {phase:F1}";
                     Assert.True(hit.Count == 1, tag + ": touched " + hit.Count + " times");
                     // touched once the door is within the trigger (never later than it), and at most one tick (plus one scan step) after it came due
-                    Assert.True(hit[0].dAhead <= Program.DoorTriggerFor(speed) && hit[0].dAhead >= Program.DoorTriggerFor(speed) - speed * 0.4f - Program.DoorScanStepM - 0.01f, tag + ": da " + hit[0].dAhead);
+                    var trig = Program.DoorTriggerFor(Program.DoorLeadSpeedMps(speed));
+                    Assert.True(hit[0].dAhead <= trig && hit[0].dAhead >= trig - speed * 0.4f - Program.DoorScanStepM - 0.01f, tag + ": da " + hit[0].dAhead);
                 }
             }
     }

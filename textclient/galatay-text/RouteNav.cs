@@ -355,7 +355,7 @@ public static partial class Program
         float s = 0, lastProgS = 0, recovAtS = -99, lane = 0, laneUntil = -1, maxDev = 0; Vector3 maxDevAt = Vector3.Zero;
         DateTime lastProgT = DateTime.Now, lastDriftLog = DateTime.MinValue; DateTime? blockedSince = null, belowSince = null;
         int recov = 0, pauses = 0, sidesteps = 0, stuckEvents = 0; Block lastBlock = null; bool triedSide = false;
-        var doorsOpened = new HashSet<UUID>(); bool doorSeqTried = false; var doorGuardTouches = new Dictionary<UUID, int>();
+        var doorsOpened = new HashSet<UUID>(); bool doorSeqTried = false; var doorGuardTouches = new Dictionary<UUID, int>(); var guardGaveUp = new HashSet<UUID>();
         double idleSecs = 0; float nextIdle = o.Idle && MidLegIdlePauses(o.Label) ? 15f + (float)wRnd.NextDouble() * 30f : float.MaxValue; // wander: short natural pauses (not at home: MidLegIdlePauses)
         var start = client.Self.SimPosition;
         bool legacy = steerLegacy;
@@ -369,6 +369,25 @@ public static partial class Program
         var narrow = NarrowFor(region); bool narrowLogged = false;   // piers/docks: no corner cutting, no lane offsets
         if (doorCrossS.Count > 0) RLogR($"{o.Label}: doorway zones at s={string.Join(", ", doorCrossS.Select(x => x.ToString("F1", CultureInfo.InvariantCulture)))} (no pauses {DoorZoneBeforeM:F1} m before to {DoorZoneAfterM:F1} m past)");
         RLogR($"{o.Label}: start at {P3(start)}, {poly.Len:F0} m, {poly.P.Count} points, end {P3(poly.At(poly.Len))}; steer {(legacy ? "legacy" : "smooth")}");
+        // Doors within DoorPreOpenM of the start are opened while she is still standing, and she waits for a leaf to swing
+        // before the first step (2026-10-16 10:04 David: 'when you're that close to a door, open it before you start walking').
+        // The speed trigger below cannot do this: at a standing start the measured speed is 0, so it fired ~3 m ahead.
+        try
+        {
+            var ngS = PickScanGrid(NavGrids(), region, poly.At(0), poly.At(Math.Min(poly.Len, DoorPreOpenM)));
+            if (DoorsToPreOpen(ngS, u => V2(poly.At(u)), poly.Len) is var (dS, sdoors))
+            {
+                var shutS = sdoors.Where(nd => { var st = DoorState(nd); return st.known && !st.open; }).ToList();
+                foreach (var nd in sdoors) doorsOpened.Add(nd.Id);
+                if (shutS.Count > 0)
+                {
+                    RLogR($"{o.Label}: door(s) {dS:F1} m ahead at the start ({string.Join(", ", sdoors.Select(nd => nd.Name))}): opening before walking");
+                    await EnsureDoorsOpen(shutS, ct, DoorPreOpenWaitMs);
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { RLogR($"{o.Label}: start door pre-open failed: {ex.Message}"); }
         // steering state + heading instrumentation (sampled every 100 ms from the sim's own-avatar rotation while moving > 0.8 m/s)
         Vector3? aim = null; DateTime aimAt = DateTime.MinValue; bool needAim = true, driftMode = false; float aimLane = 0;
         int aimSends = 0, yawSnaps = 0, yawSamples = 0; float maxYawStep = 0, yawWalked = 0;
@@ -510,13 +529,13 @@ public static partial class Program
                             var l = DoorsForCrossing(ng, p, q).Where(nd => !doorsOpened.Contains(nd.Id)).ToList();
                             if (l.Count == 0) return false; ahead = l; return true;
                         });
-                        if (dAhead is float da && DoorTouchDue(da, new Vector2(client.Self.Velocity.X, client.Self.Velocity.Y).Length()))
+                        if (dAhead is float da && DoorTouchDue(da, DoorLeadSpeedMps(new Vector2(client.Self.Velocity.X, client.Self.Velocity.Y).Length())))
                         {
                             // touch while walking (no stop at an open door); hold outside only if the leaf would not have
                             // DoorSwingWaitMs to swing before she reaches it (19:45 David: no pausing at doorways)
                             RLogR($"{o.Label}: door(s) {da:F1} m ahead ({string.Join(", ", ahead.Select(nd => nd.Name))}): touching while walking");
                             var touchT0 = DateTime.Now;
-                            var vel = client.Self.Velocity; float spd = new Vector2(vel.X, vel.Y).Length();
+                            var vel = client.Self.Velocity; float spd = DoorLeadSpeedMps(new Vector2(vel.X, vel.Y).Length());
                             int touched = await EnsureDoorsOpen(ahead, ct);
                             foreach (var nd in ahead) doorsOpened.Add(nd.Id);
                             var swingT0 = DateTime.Now;
@@ -532,24 +551,41 @@ public static partial class Program
                         }
                     }
                 }
-                // safety net: a closed nav door whose cells she is about to enter is touched open first, even when the early scan
-                // above missed it (grid edge, lost touch, leaf swung shut again): stop rather than walk into it
+                // safety net: a closed nav door whose cells she is about to enter is opened first, even when the early scan
+                // above missed it (grid edge, lost touch, leaf swung shut again): stop rather than walk into it. A door touched
+                // < 1.5 s ago is never re-touched (touch toggles: it could shut a leaf that is still swinging open): hold instead.
                 {
                     var spdG = new Vector2(client.Self.Velocity.X, client.Self.Velocity.Y).Length();
                     var ngG = NavGridForScan(region, poly.At(s), poly.At(Math.Min(poly.Len, s + 1f)));
                     if (DoorGuardAhead(ngG, u => V2(poly.At(u)), s, poly.Len, DoorGuardFor(spdG)) is var (dg, gdoors))
                     {
-                        var shut = gdoors.Where(nd => { var st = DoorState(nd); return st.known && !st.open && doorGuardTouches.GetValueOrDefault(nd.Id) < 3; }).ToList();
-                        if (shut.Count > 0 && shut.Count == gdoors.Count(nd => DoorState(nd).known))
+                        var known = gdoors.Where(nd => DoorState(nd).known).ToList();
+                        var shut = known.Where(nd => !DoorState(nd).open).ToList();
+                        if (shut.Count > 0 && shut.Count == known.Count && !shut.All(nd => guardGaveUp.Contains(nd.Id)))
                         {
                             client.Self.AutoPilotCancel(); needAim = true;
-                            RLogR($"{o.Label}: DOOR GUARD - {string.Join(", ", shut.Select(nd => nd.Name))} still closed {dg:F1} m ahead (speed {spdG:F1} m/s): stopping to touch it open");
-                            foreach (var nd in shut) doorGuardTouches[nd.Id] = doorGuardTouches.GetValueOrDefault(nd.Id) + 1;
-                            await EnsureDoorsOpen(shut, ct);
+                            var m0 = shut.ToDictionary(nd => nd.Id, nd => DoorMotion(nd));
+                            RLogR($"{o.Label}: DOOR GUARD - {string.Join(", ", shut.Select(nd => nd.Name))} still closed {dg:F1} m ahead (speed {spdG:F1} m/s, touched {(shut.Max(nd => nd.LastTouch).Year < 2000 ? "never" : ((DateTime.Now - shut.Max(nd => nd.LastTouch)).TotalSeconds.ToString("F1") + " s ago"))}): holding");
+                            var gT0 = DateTime.Now; bool gaveUp = false;
+                            while (!known.Any(nd => DoorState(nd).open))
+                            {
+                                var sinceT = (DateTime.Now - shut.Max(nd => nd.LastTouch)).TotalSeconds;
+                                bool moved = shut.Any(nd => { var a = m0[nd.Id]; var b = DoorMotion(nd); return b.known && DoorMovedAtAll(a.mv, a.ang, b.mv, b.ang); });
+                                var step = DoorGuardStep(sinceT, moved, shut.Max(nd => doorGuardTouches.GetValueOrDefault(nd.Id)));
+                                if (step == GuardStep.GiveUp) { gaveUp = true; foreach (var nd in shut) guardGaveUp.Add(nd.Id); RLogR($"{o.Label}: DOOR GUARD - {string.Join(", ", shut.Select(nd => nd.Name))} still shut {sinceT:F1} s after the touch ({(moved ? "moving" : "not moving")}); not touching again, walking on"); break; }
+                                if (step == GuardStep.Touch)
+                                {
+                                    foreach (var nd in shut) doorGuardTouches[nd.Id] = doorGuardTouches.GetValueOrDefault(nd.Id) + 1;
+                                    RLogR($"{o.Label}: DOOR GUARD - {string.Join(", ", shut.Select(nd => nd.Name))} has not moved {sinceT:F1} s after the last touch: touching once more");
+                                    await EnsureDoorsOpen(shut, ct);
+                                    foreach (var nd in shut) m0[nd.Id] = DoorMotion(nd);
+                                    continue;
+                                }
+                                if ((DateTime.Now - gT0).TotalSeconds > 6) break;   // never hold longer than this per tick
+                                await Task.Delay(100, ct);
+                            }
                             foreach (var nd in gdoors) doorsOpened.Add(nd.Id);
-                            var gT0 = DateTime.Now;
-                            while ((DateTime.Now - gT0).TotalMilliseconds < DoorSwingWaitMs && !gdoors.Any(nd => DoorState(nd).open)) await Task.Delay(100, ct);
-                            doorSeqTried = false; now = DateTime.Now; lastProgT = now; lastProgS = s;
+                            doorSeqTried = gaveUp ? doorSeqTried : false; now = DateTime.Now; lastProgT = now; lastProgS = s;
                         }
                     }
                 }

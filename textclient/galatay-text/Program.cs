@@ -339,6 +339,7 @@ public static partial class Program
         HookKissDetect(); // David kisses her via the Real Kisser -> "kissed" webhook event (KissDetect.cs)
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
         HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
+        HookParcelWatch(); // our parcel + who is on it, entry/leave events (ParcelWatch.cs)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
         HookQuiet(); // other avatars' ground-sit animations for the session detector (Quiet.cs)
         HookAnimClock(); // every avatar's playing animations + since when, for scene export / look (SceneExport.cs)
@@ -647,6 +648,7 @@ public static partial class Program
             try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
             try { CameraAnchorTick(); } catch { }
             try { LastOnlineHeartbeat(); } catch { }
+            try { ParcelWatchTick(); } catch (Exception ex) { Log("parcel", "tick error: " + ex.GetBaseException().Message); } // ParcelWatch.cs
             try { NeighborTick(); } catch (Exception ex) { Log("regions", "tick error: " + ex.GetBaseException().Message); } // Neighbors.cs crossing watch + neighbor cap
             try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } // OutfitZones.cs beach/house
             try { await Task.Delay(1000, cts.Token); } catch { }
@@ -728,7 +730,8 @@ public static partial class Program
         {
             name = t.av.Name, uuid = t.av.ID.ToString(), distance = t.dist < 0 ? (float?)null : MathF.Round(t.dist, 1),
             pos = t.dist < 0 ? null : new[] { MathF.Round(t.pos.X, 1), MathF.Round(t.pos.Y, 1), MathF.Round(t.pos.Z, 1) },
-            seated_on = t.av.ParentID != 0 ? SeatName(t.av.ParentID) : null
+            seated_on = t.av.ParentID != 0 ? SeatName(t.av.ParentID) : null,
+            on_our_parcel = AvatarOnOurParcel(t.av.ID)
         }).ToList();
         foreach (var t in Avatars()) Remember(t.av.Name, t.av.ID);
         // neighbor regions (Neighbors.cs): avatars and objects across the border, pos in this region's frame + their region
@@ -736,7 +739,7 @@ public static partial class Program
         {
             Remember(a.Name, a.ID);
             avs.Add(new { name = a.Name, uuid = a.ID.ToString(), distance = (float?)MathF.Round(d, 1), pos = new[] { MathF.Round(p.X, 1), MathF.Round(p.Y, 1), MathF.Round(p.Z, 1) },
-                          seated_on = a.ParentID != 0 ? "(object in " + nsim.Name + ")" : null });
+                          seated_on = a.ParentID != 0 ? "(object in " + nsim.Name + ")" : null, on_our_parcel = (bool?)false });
         }
         var roots = ViewSims().SelectMany(v => v.sim.ObjectsPrimitives.Values
             .Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim)
@@ -1724,6 +1727,7 @@ public static partial class Program
   wear bodypart <item uuid>   wear a skin/shape/eyes/hair base, replacing the same type (old COF link removed)
   inv copy <item uuid> <new name>   copy a wearable next to the original; a copied shape becomes editable by 'shape set'
   scene export [radius]       READ-ONLY: prims (shapes, sculpt/mesh ids, faces) within radius + my attachments + my bakes -> /workspace/secondlife/vision/export-*/ (SceneExport.cs)
+  alone                      who is on OUR parcel (the sexual-pose check) and each avatar of the region on / off it; entry / leave events are logged as [parcel] PARCEL ENTER / LEAVE (ParcelWatch.cs)
   crowd [radius]             READ-ONLY: per nearby avatar, attachments received vs the sim's list (complete/partial/bare), map-only avatars, interest mode (Crowd.cs)
   far [metres]               show / set the draw distance the sim streams within (AgentUpdate Far; default 128)
   throttle [task <kbps>]      show / set the UDP object-update throttle (AgentThrottle; max 1338 kbps task)
@@ -1870,9 +1874,10 @@ public static partial class Program
             case "nearby":
             {
                 float r = 20; if (a.Length > 0 && !F(a[0], out r)) return "usage: nearby [radius]";
-                return "AVATARS\n" + AvatarList() + $"OBJECTS within {r} m\n" + await Objects(r, "");
+                return "AVATARS\n" + ParcelSummaryLine() + AvatarList() + $"OBJECTS within {r} m\n" + await Objects(r, "");
             }
-            case "avatars": return AvatarList();
+            case "avatars": return ParcelSummaryLine() + AvatarList();
+            case "alone": return AloneCmd();
             case "crowd": return CrowdCmd(a);
             case "throttle": return ThrottleCmd(a);
             case "far": return FarCmd(a);

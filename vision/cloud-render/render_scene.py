@@ -69,7 +69,7 @@ def look_at(cam, target):
 
 # ponytail: objects are boxes with one box-projected texture each, trees are blobs, Galatea is a cylinder.
 # Ceiling: shows layout, colors and signage; not mesh shapes, alpha cut-outs or avatars. The real path is the
-# bridge exporting glTF (mesh LODs, all faces) per DESIGN.md §6.5.1.
+# bridge exporting glTF (mesh LODs, all faces) per DESIGN.md §6.5.1 in the davidabrooks/sl-viewer repo.
 def build_scene():
     tr = S["terrain"]; nx, ny, st = tr["nx"], tr["ny"], tr["step"]
     verts, faces = [], []

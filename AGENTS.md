@@ -27,6 +27,6 @@ guideline. Only the ideas are adopted; the plugin is not vendored.
   `# ponytail: 512 px texture cap; ceiling = blurry close-ups`.
 
 ## Project rules that come with these
-- Galatea's live account and her text client are not touched by development work (see docs/unreal-viewer/DESIGN.md §8).
+- Galatea's live account and her text client are not touched by development work (the new viewer project lives in [davidabrooks/sl-viewer](https://github.com/davidabrooks/sl-viewer), docs/DESIGN.md §8).
 - Second Life viewer code (Linden Lab, Firestorm) is LGPL-2.1: read it to understand behavior, reimplement in our own
   words, never copy it into this BSD-3 repo.

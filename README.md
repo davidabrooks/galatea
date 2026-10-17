@@ -49,6 +49,7 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 - `scripts/` – helpers (map/overhead drawing, path graph, nav grid builder `nav_map.py`, password leak check).
 - `client-options.md` – comparison of viewer/client options tried.
 - `lelutka-evox-hud-SKILL.md` – notes on driving the LeLutka EvoX head HUD.
+- The new Second Life viewer (Unreal high-end client, chat-first web client, shared agent bridge) is a separate project in the private repo `davidabrooks/sl-viewer`; its design doc moved there from `docs/unreal-viewer/` on Oct 17, 2026.
 
 ## Photos and renders
 

@@ -129,7 +129,7 @@ public static partial class Program
     // only other avatar in Peronaut itself is David. 2026-10-14: neighbour regions no longer count (an avatar
     // across the sim border isn't "around"); only the current sim's coarse map and its avatar objects. 2026-10-16: only our own
     // parcel counts (AloneCheck in ParcelWatch.cs); this region-wide test is its fail-safe when parcel data is missing. Taking one =
-    // stand, wear Naked (Real Kisser stays), sit again, then the pose. Couples poses stay skipped on solo paths either way.
+    // wear Naked (Real Kisser stays) right on the seat, then the pose (2026-10-16: no standing up). Couples poses stay skipped on solo paths either way.
     internal static bool SexualPosesAllowed(bool androidWorn, string region, IEnumerable<UUID> otherAvatars, UUID davidId)
     {
         if (androidWorn) return false;
@@ -856,7 +856,7 @@ public static partial class Program
             {
                 var full = path.Append(pick.Trim()).ToList();
                 if (!SexualPosesAllowedNow()) { var m0 = $"'{seatName}': sexual pose {string.Join(" > ", full)} no longer allowed (someone else around / android); keeping {current ?? "?"}"; WLog("POSE " + m0); return m0; }
-                WLog($"POSE '{seatName}': sexual pose {string.Join(" > ", full)}: stand, wear Naked, sit again first");
+                WLog($"POSE '{seatName}': sexual pose {string.Join(" > ", full)}: wear Naked while seated first");
                 var (nfAbort, r) = await NakedFirstThenPose(seat, seatName, full, ct);   // AdultRedress.cs: remembers the outfit to put back
                 if (nfAbort != null) { WLog("POSE " + nfAbort); return nfAbort; }
                 var m2 = $"'{seatName}' {seat.ID}: chose {string.Join(" > ", full)} (naked first; {why}): {r}";

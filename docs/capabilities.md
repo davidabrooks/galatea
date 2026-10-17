@@ -120,6 +120,14 @@ touch <object uuid>          dialog <button label>
 ```
 `touch` presses an object that is in the region's object list; a menu it opens arrives as a `[dialog]` log line and `poll_events` item with its button labels. `dialog <label>` presses a button on the **most recent** dialog (labels are matched case-insensitively and trimmed; a wrong one lists the real buttons). The MCP `dialog_reply` refuses buttons containing L$, pay or buy: she never spends L$ except with the owner's explicit OK (`pay object <uuid> <L$> confirm`).
 
+### `[teleport] detail:` why a teleport was refused
+A failed teleport used to log only the reason text ("You are not allowed into the destination."). Since Oct 16, 2026 the client also logs what the grid sends with it, as extra `[teleport]` lines in `textclient.log` (and the console / `poll_events`):
+```
+2026-10-16 19:00:00 [teleport] detail: reason=<text>, alert_msg=<AlertInfo key>, extra=<ExtraParams>, via=udp
+2026-10-16 19:00:01 [teleport] detail: alert=AlertMessage, text=<text>, alert_msg=<id>, extra=<params>, dt=+1.5s
+```
+`alert_msg` is the AlertInfo message key (the grid's own name for the rule that refused, when it sends one) and `extra` its ExtraParams (LLSD as compact JSON, or the raw text); both are empty when the grid sends none. `via=udp` is the UDP `TeleportFailed` packet (one line per AlertInfo block), `via=eq` the EventQueue message (`MessageKey`, `ExtraParams`). `AlertMessage` / `AgentAlertMessage` packets within 5 s before or after a failure are logged as the second form (`dt` is the alert's time minus the failure's). Values are one line, capped at 600 characters. This is logging only: no retry, no maturity or other change, nothing is sent, and alerts far from a failure are not logged here.
+
 ### `[loadurl]`: scripts that open a web page
 Objects call `llLoadURL` to send a link (for example a control panel of a rental box or security orb). The client logs every one to `textclient.log` as
 ```

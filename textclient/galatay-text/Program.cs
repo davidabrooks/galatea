@@ -588,6 +588,7 @@ public static partial class Program
 
     static void HookRest()
     {
+        HookTeleportDetail(); // teleport failure details (AlertInfo, alerts) -> [teleport] detail: lines (TeleportDetail.cs)
         HookLoadUrl(); // llLoadURL -> [loadurl] log line + last-loadurl.txt (LoadUrlLog.cs)
         client.Self.ScriptDialog += (s, e) => { lastDialog = e; WanderDialogIn(e); Log("dialog", $"'{e.ObjectName}' ({e.FirstName} {e.LastName}) ch {e.Channel}: {e.Message} [buttons: {string.Join(" | ", e.ButtonLabels ?? new())}] (answer with: dialog <button>)"); };
         client.Self.TeleportProgress += (s, e) =>

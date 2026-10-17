@@ -106,6 +106,7 @@
     <Compile Include="../galatay-text/RedressFast.cs" Link="Core/RedressFast.cs" />
     <Compile Include="../galatay-text/SeatStandOut.cs" Link="Core/SeatStandOut.cs" />
     <Compile Include="../galatay-text/ClearFloor.cs" Link="Core/ClearFloor.cs" />
+    <Compile Include="../galatay-text/MaturityPref.cs" Link="Core/MaturityPref.cs" />
     <Compile Include="../galatay-text/WanderRest.cs" Link="Core/WanderRest.cs" />
     <Compile Include="../galatay-text/LookAt.cs" Link="Core/LookAt.cs" />
     <Compile Include="../galatay-text/TextureCmds.cs" Link="Core/TextureCmds.cs" />

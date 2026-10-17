@@ -684,7 +684,7 @@ public static partial class Program
                         // 2026-10-03: never keep a caller waiting forever (inv find hung for an hour): after CmdReplyCap the caller
                         // gets a "still running" reply; the command continues and its late result is logged as [cmd-late].
                         var cmdLine = line.Trim();
-                        var exec = Task.Run(() => Exec(cmdLine));
+                        var exec = Task.Run(() => { ExplicitCmd.Value = true; return Exec(cmdLine); }); // operator socket = explicit (MaturityPref.cs)
                         if (await Task.WhenAny(exec, Task.Delay(CmdReplyCap)) == exec)
                         {
                             try { resp = await exec; }
@@ -1760,6 +1760,8 @@ public static partial class Program
   bikini on|off                  on: wear Bikini outfit, attach Spicy Bikini HUD, random [TEXTURE] (D/W/T color or pattern), detach HUD; off: bikini off, strapless+jeans on. Auto on Peronaut beach zone; restore remembered outfit upstairs.
   invitem <item uuid>         check that an inventory item exists (FetchItem; never attaches)
   voice on|off|status|tail [n] | voice wake off|name|all|test|selftest   LISTEN-ONLY SL voice + webhook wake (default wake=name: only when a line mentions me); transcript /workspace/secondlife/voice/transcript-<date>.md; mic never sent; off after every login (Voice.cs)
+  maturity                    READ-ONLY: account maturity ceiling + preferred (General/Moderate/Adult) as the grid reports them, and the current region rating
+  maturity set <general|moderate|adult> --david-ok   CHANGES the account maturity preference (UpdateAgentInformation, then read back; one try, no retry). Needs DAVID'S OK (the flag); operator socket only, refused from any automated path; the grid may refuse (age verification)
   logout                      log out cleanly and exit";
 
     static async Task<string> Exec(string line)
@@ -1985,6 +1987,7 @@ public static partial class Program
             case "color": case "colour": return await ColorCmd(rest);
             case "texture" when a.Length > 0 && (a[0] == "set" || a[0] == "get"): return await TextureCmd(rest);
             case "shape": return await ShapeCmd(a);
+            case "maturity": return await MaturityCmd(a);
             case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a, rest);
             case "inv" when a.Length >= 1 && a[0] == "trash": return await InvTrashCmd(rest.Substring(rest.IndexOf("trash", StringComparison.Ordinal) + 5));
             case "inv" when a.Length >= 2 && a[0] == "ls": return await WearOpsCmd("invls", a[1..]);

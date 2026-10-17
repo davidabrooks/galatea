@@ -1,7 +1,9 @@
 // ClearFloor.cs (2026-10-16 16:30 PT, David: "you were standing on that makeup desk before you changed").
 // The 'naked first' adult-pose flow stood up from the Xplicit Makeup Table at 222.6,72.7,29.7 (inside its footprint, 0.7 m above
 // the floor) and changed outfit right there; the re-dress afterwards and the toilet / tub undress had the same hole.
-// Now, before any outfit change that follows a stand-up (Naked swap, re-dress, toilet / tub undress), she first steps to a clear
+// 2026-10-16 (later, David: standing up to change is too slow): the Naked swap and the re-dress of an adult pose now happen WHILE
+// SEATED (AdultRedress.cs), so they no longer use this. It stays for the toilet / tub flows, which by David's earlier rule (09:06)
+// undress and dress standing on the floor at the seat's change spot: before the undress and after standing up from them she first steps to a clear
 // floor spot beside the furniture: the seat's own spot from routes data (stand_spot, else approach, else change_spot) when it has one,
 // otherwise a computed spot within 2 m that is outside every furniture footprint (+0.35 m body margin), not a wall on the nav grid
 // and reachable in a straight line, preferring the side away from the furniture (the room). Log lines start with "STEP CLEAR".
@@ -60,23 +62,11 @@ public static partial class Program
         return true;
     }
 
-    // pure: the listed home seat she is next to (within 2.5 m), used when the seat is not known (re-dress after the pose)
+    // pure: the listed home seat she is next to (within 2.5 m), used when the seat is not known (re-dress after the tub / toilet)
     internal static HomeSeatInfo NearestHomeSeat(Vector3 me, IEnumerable<HomeSeatInfo> seats, float within = ClearSeatNearM)
         => (seats ?? Enumerable.Empty<HomeSeatInfo>()).Where(x => HDist(me, x.Pos) <= within).OrderBy(x => HDist(me, x.Pos)).FirstOrDefault();
 
     static readonly SemaphoreSlim standOutLock = new(1, 1);   // one step-away at a time (wander's stand-out and the re-dress tick can meet)
-
-    static HomeSeatInfo HomeSeatOf(Primitive seat)
-    {
-        try
-        {
-            var seats = LoadHomeSeats(); var sim = client.Network.CurrentSim;
-            var hit = seats.FirstOrDefault(s => s.Id == seat.ID);
-            if (hit == null && seat.ParentID != 0 && sim != null && sim.ObjectsPrimitives.TryGetValue(seat.ParentID, out var root) && root != null) hit = seats.FirstOrDefault(s => s.Id == root.ID);
-            return hit;
-        }
-        catch { return null; }
-    }
 
     static List<FurnitureBox> HomeFootprints()
     {

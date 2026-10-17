@@ -116,16 +116,52 @@ public class ClearFloorTests
         return File.ReadAllText(File.Exists(p) ? p : "/workspace/galatea-sl-repo/textclient/galatay-text/" + f);
     }
 
+    // David 2026-10-16: the adult-pose outfit changes happen seated; only the tub / toilet flows (change spot on the floor) still step clear
     [Fact]
-    public void Every_outfit_change_flow_steps_clear_first()
+    public void Adult_pose_outfit_changes_happen_seated_without_standing_or_stepping_clear()
     {
         var naked = Src("AdultRedress.cs");
-        int clear = naked.IndexOf("ClearFloorForOutfitChange(\"naked-first undress\"", StringComparison.Ordinal), wear = naked.IndexOf("OutfitWearNamed(\"Naked\"", StringComparison.Ordinal);
-        Assert.True(clear > 0 && clear < wear);
-        Assert.True(naked.IndexOf("ClearFloorForOutfitChange(\"re-dress\"", StringComparison.Ordinal) < naked.IndexOf("WearOutfitWithHuds(name, keepColor: true)", StringComparison.Ordinal));
+        Assert.DoesNotContain("ClearFloorForOutfitChange", naked);
+        Assert.DoesNotContain("Self.Stand(", naked);
+        Assert.DoesNotContain("RequestSit", naked);
+        Assert.DoesNotContain("Self.Sit(", naked);
+        int first = naked.IndexOf("NakedFirstThenPose(", StringComparison.Ordinal);
+        var body = naked[first..];
+        int seated = body.IndexOf("SittingOn == 0", StringComparison.Ordinal), wear = body.IndexOf("OutfitWearNamed(\"Naked\"", StringComparison.Ordinal),
+            pose = body.IndexOf("SeatPosePath(seat", StringComparison.Ordinal);
+        Assert.True(seated > 0 && seated < wear && wear < pose);   // seated check, Naked on, then the menu pose
+        Assert.True(body.IndexOf("if (!NakedWornNow()) return", StringComparison.Ordinal) < pose);   // abort when Naked did not go on
+        Assert.True(body.IndexOf("SexualPosesAllowedNow()", StringComparison.Ordinal) < pose);
+        Assert.Contains("STEP CLEAR", Src("ClearFloor.cs"));   // still there for the tub / toilet flows
+        Assert.DoesNotContain("stand, wear Naked", Src("SeatPose.cs"));
+    }
+
+    [Fact]
+    public void Wander_puts_the_outfit_back_before_it_stands_up_and_tub_toilet_still_step_clear()
+    {
         var w = Src("Wander.cs");
+        Assert.True(w.IndexOf("NakedRedressBeforeStand(", StringComparison.Ordinal) < w.IndexOf("await EnsureStandingForWalk(ct);\n        await StandOutAfterSeat", StringComparison.Ordinal));
         Assert.True(w.IndexOf("ClearFloorForOutfitChange(\"toilet undress\"", StringComparison.Ordinal) < w.IndexOf("await ToiletUndress(ct)", StringComparison.Ordinal));
         Assert.True(w.IndexOf("ClearFloorForOutfitChange(\"tub undress\"", StringComparison.Ordinal) < w.IndexOf("await UndressForSeat(ct)", StringComparison.Ordinal));
         Assert.Contains("ClearFloorForOutfitChange(\"re-dress after seat\"", Src("HomeSeats.cs"));
+    }
+
+    [Fact]
+    public void Redress_is_due_while_seated_once_the_pose_is_not_sexual_any_more()
+    {
+        Assert.True(NakedRedressDue("Black dress", false, true, false, 30, false).due);          // seated, safe pose, settled: re-dress in place
+        Assert.False(NakedRedressDue("Black dress", false, true, true, 30, false).due);          // adult pose still running
+        Assert.False(NakedRedressDue("Black dress", true, true, false, 30, false).due);          // Naked flow still running
+        Assert.False(NakedRedressDue("Black dress", false, true, false, 5, false).due);          // pose choice settling
+        Assert.True(NakedRedressDue("Black dress", false, false, false, 0, false).due);          // stood up
+    }
+
+    [Fact]
+    public void Couch_is_noted_as_needing_the_V_face_on_request()
+    {   // data note only (David 2026-10-16): nothing presses The V HUD faces by itself
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(RouteFile("_seats-peronaut-home.json")));
+        var couch = doc.RootElement.GetProperty("seats").EnumerateArray().Single(x => x.GetProperty("uuid").GetString() == "f6844138-499f-0f3e-ba6a-ce601a16eafe");
+        Assert.StartsWith("Lalou - Ultra Sofa", couch.GetProperty("name").GetString());
+        Assert.True(couch.GetProperty("needs_v_face").GetBoolean());
     }
 }

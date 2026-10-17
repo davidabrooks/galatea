@@ -865,6 +865,7 @@ public static partial class Program
         if (boat) await BoatLeave("sit over");   // teleport while seated, never stand on the boat first
         else
         {
+        await NakedRedressBeforeStand("sit over");   // AdultRedress.cs: the outfit goes back on while she is still seated
         await EnsureStandingForWalk(ct);
         await StandOutAfterSeat(info, ct);   // 2026-10-08 18:38: clear floor first (stood inside the sink cabinet)
         }

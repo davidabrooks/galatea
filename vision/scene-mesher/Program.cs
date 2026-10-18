@@ -1,5 +1,5 @@
 // scene-mesher: `scene export` dump -> geometry batches for the Blender worker (no SL login; assets from the public CDN).
-//   dotnet run -- --selftest | <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r] [--anim=<uuid>] [--nav]
+//   dotnet run -- --selftest | --mem-selftest | <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r] [--anim=<uuid>] [--nav]
 //   (scene prims only within r of c; --anim=a,b,.. poses her with the held frame of SL animations (priority-blended), e.g. the default sit)
 //   Without --anim she is posed from the export's me.anims (the client's animation clock). Other avatars (export "avatars"
 //   with agent_id, 2026-10-04+) get their own shape, bakes and animations, one group "avatar:<id8>" each (mesh.json "others").
@@ -157,6 +157,28 @@ static class Mesher
     // Firestorm "max non-impostor avatars" (High+ / Ultra 16; --avatar-max=, 0 = no limit): avatars past the N nearest are
     // impostors in the viewer (a low-detail billboard); here their attachments drop to the lowest LOD. Pure, CI-tested.
     internal static int AvatarMax = 0;
+    // heap guard: GC.GetGCMemoryInfo().TotalAvailableMemoryBytes honours DOTNET_GCHeapHardLimit (the 3 GB cap look.py sets)
+    internal static long Limit() => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+    // pure: 0 fine, 1 (>= 55 % of the limit live) = mesh the next avatar at its lowest LOD, 2 (>= 75 %) = stand-in only
+    internal static int PressureLevel(long live, long limit) => limit <= 0 ? 0 : live >= limit * 0.75 ? 2 : live >= limit * 0.55 ? 1 : 0;
+    internal static int MemoryPressure()
+    {
+        long limit = Limit(), live = GC.GetTotalMemory(false);
+        if (PressureLevel(live, limit) == 0 && live < limit * 0.40) return 0;
+        live = GC.GetTotalMemory(true);   // above 40 %: a blocking collect shows what is really held
+        return PressureLevel(live, limit);
+    }
+    // avatars meshed at once (GT_MESH_AVATARS, default 3: each one's prims are already meshed in parallel across all cores)
+    // pure (CI: --mem-selftest): pressure thresholds on a 3 GB cap, no limit = never
+    internal static bool MemSelftest()
+    {
+        const long GB = 1L << 30;
+        return PressureLevel(1 * GB, 3 * GB) == 0 && PressureLevel((long)(1.6 * GB), 3 * GB) == 0 && PressureLevel((long)(1.7 * GB), 3 * GB) == 1
+            && PressureLevel((long)(2.2 * GB), 3 * GB) == 1 && PressureLevel((long)(2.3 * GB), 3 * GB) == 2 && PressureLevel(10 * GB, 3 * GB) == 2
+            && PressureLevel(10 * GB, 0) == 0 && AvatarParallel() >= 1
+            ;
+    }
+    internal static int AvatarParallel() => int.TryParse(Environment.GetEnvironmentVariable("GT_MESH_AVATARS"), out var n) && n > 0 ? n : 3;
     // SL projector (LightImage extra param: texture, params = fov rad, focus, ambiance): points down the prim's -Z
     // (llvovolume.cpp getSpotLightPriority / LLPipeline::setupSpotLight). null for a plain point light. Pure, CI-tested.
     internal static object Projector(Primitive.LightImage lm, Quaternion rot)
@@ -383,6 +405,7 @@ static class Mesher
     {
         if (args.Length == 1 && args[0] == "--pbr-selftest") { bool pok = PbrSelftest(); Console.WriteLine(pok ? "pbr selftest ok" : "pbr selftest FAILED"); return pok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--skin-selftest") { bool sok = SkinSelftest(); Console.WriteLine(sok ? "skin selftest ok" : "skin selftest FAILED"); return sok ? 0 : 1; }
+        if (args.Length == 1 && args[0] == "--mem-selftest") { bool mok = MemSelftest(); Console.WriteLine(mok ? "mem selftest ok" : "mem selftest FAILED"); return mok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--lod-selftest") { bool lok = LodSelftest(); Console.WriteLine(lok ? "lod selftest ok" : "lod selftest FAILED"); return lok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--selftest")  // default skeleton sanity: pelvis ~1.07 m, head ~1.75 m, arms out (T-pose)
         {
@@ -460,12 +483,17 @@ static class Mesher
         Vector3 focus = me; float focusR = 1e9f;
         if (args.Length > 4) { var c = args[3].Split(',').Select(x => float.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray(); focus = new Vector3(c[0], c[1], c[2]); focusR = float.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture); }
         var clock = System.Diagnostics.Stopwatch.StartNew(); var phases = new List<string>();
-        void Phase(string name) { phases.Add($"{name} {clock.ElapsedMilliseconds} ms"); clock.Restart(); }
+        void Phase(string name) { phases.Add($"{name} {clock.ElapsedMilliseconds} ms"); if (Environment.GetEnvironmentVariable("GT_MESH_TRACE") == "1") Console.Error.WriteLine($"phase {name}: {clock.ElapsedMilliseconds} ms, managed {GC.GetTotalMemory(false) / 1048576} MB, rss {Environment.WorkingSet / 1048576} MB"); clock.Restart(); }
         var mf = new MeshFoundry();
         var batches = new ConcurrentDictionary<string, Batch>();
         var stats = new ConcurrentDictionary<string, int>();
         // avatar attachments by owner: "me" (hers) or the wearer's agent id (other avatars, exports from 2026-10-04)
-        var rigged = new ConcurrentBag<(string, Primitive, FacetedMesh)>(); var unrigged = new ConcurrentBag<(string, Primitive, FacetedMesh)>();
+        // per owner so one avatar's meshes can be released as soon as it is posed (2026-10-18: every attachment of ~36 avatars was
+        // held at once, 10 k prims / > 5 GB, Warehouse 21 out of memory)
+        var rigged = new ConcurrentDictionary<string, ConcurrentBag<(string, Primitive, FacetedMesh)>>(); var unrigged = new ConcurrentDictionary<string, ConcurrentBag<(string, Primitive, FacetedMesh)>>();
+        IEnumerable<(string, Primitive, FacetedMesh)> Of(ConcurrentDictionary<string, ConcurrentBag<(string, Primitive, FacetedMesh)>> d, string owner) =>
+            d.TryGetValue(owner, out var bag) ? bag : Enumerable.Empty<(string, Primitive, FacetedMesh)>();
+        var degraded = new ConcurrentDictionary<string, bool>();   // avatars meshed at the lowest LOD under memory pressure
         static string Owner(OSDMap o) => o.ContainsKey("attached_to_me") ? "me" : o.ContainsKey("attached_to") ? o["attached_to"].AsString() : null;
         void Count(string k) => stats.AddOrUpdate(k, 1, (_, v) => v + 1);
 
@@ -485,10 +513,13 @@ static class Mesher
         var sphere = LinksetSpheres(byLocal.Values.Where(o => Owner(o) == null), byLocal);
         float Nearest(OSDMap o) { var (c, r) = sphere[RootOf(o, byLocal)]; return MathF.Max(0, Vector3.Distance(c, focus) - r); }
         bool Far(OSDMap o) => Vector3.Distance(sphere[RootOf(o, byLocal)].c, focus) > farR;
-        var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => Owner(o) != null
-            ? only != "scene" && !loading.Contains(Owner(o)) : only != "avatar" && Nearest(o) <= focusR && (!Far(o) || sphere[RootOf(o, byLocal)].r >= 0.85f)
+        // scene prims before the "far and small" cut (re-cut below when the mesh is over its vertex budget); attachments by wearer
+        bool InScenePool(OSDMap o) => only != "avatar" && Nearest(o) <= focusR
               && (Vector3.Distance(byLocal[RootOf(o, byLocal)]["world_pos"].AsVector3(), focus) <= rootsR
-                  || RootOf(o, byLocal) == o["localid"].AsUInteger() && GroundSlab(o["world_pos"].AsVector3(), o["world_rot"].AsQuaternion(), o["scale"].AsVector3(), focus, focusR))).ToList();
+                  || RootOf(o, byLocal) == o["localid"].AsUInteger() && GroundSlab(o["world_pos"].AsVector3(), o["world_rot"].AsQuaternion(), o["scale"].AsVector3(), focus, focusR));
+        bool NotFarSmall(OSDMap o) => !Far(o) || sphere[RootOf(o, byLocal)].r >= 0.85f;
+        var prims = ((OSDArray)doc["prims"]).Cast<OSDMap>().Where(o => Owner(o) != null
+            ? only != "scene" && !loading.Contains(Owner(o)) : InScenePool(o) && NotFarSmall(o)).ToList();
         var lights = new List<object>();
         // the export's TextureEntry JSON drops "face_number" for face 0, so LibreMetaverse would read face 0 as the default
         // face: restore it (the only per-face entry that can lack the key)
@@ -496,23 +527,37 @@ static class Mesher
             if (o["textures"] is OSDArray tes)
                 foreach (var f in tes.Skip(1).OfType<OSDMap>().Where(f => !f.ContainsKey("face_number"))) f["face_number"] = 0;
         // fetch each distinct mesh / sculpt asset once
+        // Scene prims' assets are fetched up front and kept; an avatar's are fetched when it is meshed and dropped once no avatar
+        // in flight uses them (2026-10-18: every attachment's mesh bytes held at once was ~1 GB of the 3 GB heap).
         var assets = new ConcurrentDictionary<(string, UUID), byte[]>();
-        await Parallel.ForEachAsync(prims.Select(Primitive.FromOSD).Where(p => p.Sculpt != null && p.Sculpt.SculptTexture != UUID.Zero)
-                .Select(p => (p.Sculpt.Type == SculptType.Mesh ? "mesh" : "texture", p.Sculpt.SculptTexture)).Distinct(),
-            new ParallelOptions { MaxDegreeOfParallelism = 24 }, async (k, _) => assets[k] = await Get(k.Item1, k.Item2));
+        var assetRefs = new Dictionary<(string, UUID), int>();
+        static IEnumerable<(string, UUID)> AssetKeys(IEnumerable<OSDMap> list) => list.Select(Primitive.FromOSD).Where(p => p.Sculpt != null && p.Sculpt.SculptTexture != UUID.Zero)
+                .Select(p => (p.Sculpt.Type == SculptType.Mesh ? "mesh" : "texture", p.Sculpt.SculptTexture)).Distinct();
+        await Parallel.ForEachAsync(AssetKeys(prims.Where(o => Owner(o) == null)).Distinct(),
+            new ParallelOptions { MaxDegreeOfParallelism = 24 }, async (k, _) => { assets[k] = await Get(k.Item1, k.Item2); lock (assetRefs) assetRefs[k] = 1; });
+        long wornFetched = 0;
+        async Task MeshWorn(List<OSDMap> list)
+        {
+            var keys = AssetKeys(list).ToList();
+            List<(string, UUID)> need; lock (assetRefs) { foreach (var k in keys) assetRefs[k] = assetRefs.GetValueOrDefault(k) + 1; need = keys.Where(k => !assets.ContainsKey(k)).ToList(); }
+            await Parallel.ForEachAsync(need, new ParallelOptions { MaxDegreeOfParallelism = 24 }, async (k, _) => { assets[k] = await Get(k.Item1, k.Item2); Interlocked.Increment(ref wornFetched); });
+            try { MeshPrims(list); }
+            finally { lock (assetRefs) foreach (var k in keys) if (--assetRefs[k] <= 0) { assetRefs.Remove(k); assets.TryRemove(k, out _); } }
+        }
         // PBR (GLTF) material assets, per face, from the RenderMaterial extra param the export records
         var pbr = new ConcurrentDictionary<UUID, AssetMaterial>();
         await Parallel.ForEachAsync(prims.Where(o => o.ContainsKey("render_materials")).SelectMany(o => ((OSDMap)o["render_materials"]).Values.Select(v => v.AsUUID())).Distinct(),
             async (id, _) => { var d = await Get("material", id); var m = d == null ? null : new AssetMaterial(id, UnwrapMaterial(d)); if (m != null && m.Decode()) pbr[id] = m; });
         var legacy = doc.ContainsKey("materials") ? (OSDMap)doc["materials"] : new OSDMap();
         var gltfOv = doc.ContainsKey("gltf_overrides") && doc["gltf_overrides"] is OSDMap gom ? gom : new OSDMap();
-        Console.WriteLine($"assets: {assets.Count(a => a.Value != null)}/{assets.Count} fetched ({cacheHits} from the disk cache), {pbr.Count} pbr, {legacy.Count} legacy materials");
+        Console.WriteLine($"assets: {assets.Count(a => a.Value != null)}/{assets.Count} scene assets fetched (avatar attachments are fetched as each avatar is meshed) ({cacheHits} from the disk cache), {pbr.Count} pbr, {legacy.Count} legacy materials");
         Phase("fetch");
 
         // one bad prim (odd mesh asset, malformed TE) must not kill a whole crowd render (2026-10-05 Warehouse 21: the look
         // failed with only the Parallel.ForEach frame visible): count it, keep the first error for the log, skip that prim
         int primErrors = 0; string firstPrimError = null;
-        Parallel.ForEach(prims, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, o =>
+        // scene prims now; each avatar's attachments are meshed when that avatar is posed (below) and released right after
+        void MeshPrims(IEnumerable<OSDMap> list) => Parallel.ForEach(list, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, o =>
         {
             try { PrimBody(o); }
             catch (Exception ex)
@@ -521,6 +566,9 @@ static class Mesher
                     firstPrimError = $"prim {(o.ContainsKey("id") ? o["id"].AsUUID().ToString() : "?")} '{(o.ContainsKey("name") ? o["name"].AsString() : "")}': {ex.GetType().Name}: {ex.Message} @ {ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}";
             }
         });
+        var wornPrims = prims.Where(o => Owner(o) != null).GroupBy(o => Owner(o)).ToDictionary(g => g.Key, g => g.ToList());
+        var scenePrims = prims.Where(o => Owner(o) == null).ToList();
+        MeshPrims(scenePrims);
         Phase("prims");
         if (primErrors > 0) { stats["prim_error_skipped"] = primErrors; Console.Error.WriteLine($"warning: {primErrors} prim(s) skipped after errors; first: {firstPrimError}"); }
         void PrimBody(OSDMap o)
@@ -542,7 +590,7 @@ static class Mesher
             // someone else's attachment: LOD by the wearer's distance (hers stay Highest)
             float? avDist = owner != null && owner != "me" && wearerAt.TryGetValue(owner, out var wp0)
                 ? Vector3.Distance(wp0, focusR < 1e9f ? focus : me) : null;
-            bool imp = owner != null && avRank.TryGetValue(owner, out var rk) && Impostor(rk, AvatarMax);
+            bool imp = owner != null && (avRank.TryGetValue(owner, out var rk) && Impostor(rk, AvatarMax) || degraded.ContainsKey(owner));
             if (imp) avDist = 1e4f;   // impostor: lowest LOD (AvatarLod/AttachmentLod past 20 m)
             DetailLevel? avLod = avDist is float ad ? AvatarLod(ad) : null;
             FacetedMesh fm = null; float[] bind = null;
@@ -578,7 +626,7 @@ static class Mesher
             if (!mine && p.Light is { Intensity: > 0 } li && (!far || Vector3.Distance(pos, focus) - li.Radius <= farR))
                 lock (lights) lights.Add(new { pos = new[] { pos.X, pos.Y, pos.Z }, color = new[] { li.Color.R, li.Color.G, li.Color.B }, intensity = li.Intensity, radius = li.Radius, falloff = li.Falloff, proj = Projector(p.LightMap, rot) });
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
-            if (mine) { (bind != null ? rigged : unrigged).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
+            if (mine) { (bind != null ? rigged : unrigged).GetOrAdd(owner, _ => new()).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
             Emit(p, fm, nav ? $"nav:{p.LocalID}" : far ? "far" : "scene", null, null, pos, rot, o);
         }
 
@@ -669,7 +717,7 @@ static class Mesher
             var overrides = new Dictionary<string, Vector3>(); var lockScale = new HashSet<string>();
             // joint-position overrides: highest mesh-asset UUID wins per joint (SL viewer conflict rule)
             var ovrFrom = new Dictionary<string, UUID>();
-            foreach (var (_, p0, fm) in rigged.Where(x => x.Item1 == owner))
+            foreach (var (_, p0, fm) in Of(rigged, owner))
             {
                 var sk = fm.SkinData;
                 if (sk.AltInverseBindMatrices.Length != sk.JointNames.Length * 16) continue;   // SL ignores a mismatched list
@@ -772,7 +820,7 @@ static class Mesher
                 if (frames.TryGetValue(jn, out var fj)) Console.WriteLine($"joint {owner[..Math.Min(8, owner.Length)]} {jn} pos {fj.Pos} rest {rest[jn].Pos}");
             // non-rigged attachments: root prim sits at its attach point (avatar_lad.xml offset/rotation) on that point's joint
             var points = lad.AttachmentPoints.ToDictionary(ap => ap.Id);
-            foreach (var (_, p, fm) in unrigged.Where(x => x.Item1 == owner))
+            foreach (var (_, p, fm) in Of(unrigged, owner))
             {
                 var o = byLocal[p.LocalID]; var root = o; Vector3 lp = p.Position; var lr = p.Rotation;
                 if (byLocal.TryGetValue(p.ParentID, out var r0)) { root = r0; var rr = r0["rotation"].AsQuaternion(); lp = r0["position"].AsVector3() + p.Position * rr; lr = rr * p.Rotation; }
@@ -782,7 +830,7 @@ static class Mesher
                 var wr = jf.Rot * apRot * lr; var wp = jf.Pos + (ap.Position + lp * apRot) * jf.Rot;
                 Count("attachment_unrigged"); Emit(p, fm, group, bakePrefix, null, wp, wr, o);
             }
-            foreach (var (_, p, fm) in rigged.Where(x => x.Item1 == owner))
+            foreach (var (_, p, fm) in Of(rigged, owner))
             {
                 var sk = fm.SkinData; var bs = sk.BindShapeMatrix;
                 var jm = SkinPalette(sk, world); var jn = SkinPalette(sk, world, false); var bsInv = Skeleton.Invert(bs);
@@ -817,23 +865,46 @@ static class Mesher
         static float Yaw(Quaternion q) => MathF.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.Y * q.Y + q.Z * q.Z)) * 180 / MathF.PI;
         var meMap = (OSDMap)doc["me"];
         animId ??= meMap.ContainsKey("anims") ? meMap["anims"].AsString() : null;   // the client's own animation clock (2026-10-04+)
+        if (only != "scene" && wornPrims.TryGetValue("me", out var myPrims)) await MeshWorn(myPrims);
         var frames = only == "scene" ? null : await PoseAvatar("me", "avatar", "", doc.ContainsKey("visual_params") ? (OSDMap)doc["visual_params"] : null, animId);
+        rigged.TryRemove("me", out _); unrigged.TryRemove("me", out _);
         var others = new List<object>();
         var avList = only == "scene" || !doc.ContainsKey("avatars") ? new List<OSDMap>() : ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id")).ToList();
         // each avatar poses independently (its own animation fetches, skinning); Emit locks per batch. Was serial: ~8 s for 50.
         var otherAt = new object[avList.Count];
-        await Parallel.ForEachAsync(Enumerable.Range(0, avList.Count), new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (ai, _) =>
+        // Nearest avatars first, a few at a time: each one's attachments are meshed, posed, emitted and released before the next
+        // starts (peak = a few avatars' meshes, not the whole crowd's). Under heap pressure the remaining (farther) avatars drop to
+        // the lowest LOD, then to a stand-in without attachments, instead of the whole render running out of memory.
+        var avOrder = Enumerable.Range(0, avList.Count).OrderBy(i => avRank.TryGetValue(avList[i]["agent_id"].AsString(), out var rk) ? rk : int.MaxValue).ToList();
+        await Parallel.ForEachAsync(avOrder, new ParallelOptions { MaxDegreeOfParallelism = AvatarParallel() }, async (ai, ct) =>
             {
                 var av = avList[ai];
                 var id = av["agent_id"].AsString();
-                bool worn = rigged.Any(x => x.Item1 == id) || unrigged.Any(x => x.Item1 == id);
+                try
+                {
+                switch (MemoryPressure())
+                {
+                    case 2: Count("avatar_skipped_memory"); Console.Error.WriteLine($"warning: avatar {id[..8]} drawn as a stand-in (heap {GC.GetTotalMemory(false) / 1048576} MB of {Limit() / 1048576} MB)"); break;
+                    case 1: degraded[id] = true; Count("avatar_lowest_lod_memory"); goto default;
+                    default: if (wornPrims.TryGetValue(id, out var avPrims)) await MeshWorn(avPrims); break;
+                }
+                bool worn = rigged.ContainsKey(id) || unrigged.ContainsKey(id);
                 string g = "avatar:" + id[..8];
                 var f = await PoseAvatar(id, g, id[..8] + "-", av.ContainsKey("visual_params") ? (OSDMap)av["visual_params"] : null, av.ContainsKey("anims") ? av["anims"].AsString() : null);
+                rigged.TryRemove(id, out _); unrigged.TryRemove(id, out _); wornPrims.Remove(id);
                 var ap = av["pos"].AsVector3();
                 // placeholder when export held no attachment prims: render_mesh draws a bake-textured stand-in so every
                 // nearby avatar still shows (Warehouse 21: 34 in the export, only 1 had attachments on the wire)
                 otherAt[ai] = new { group = g, agent_id = id, name = av.ContainsKey("name") ? av["name"].AsString() : "", pos = new[] { ap.X, ap.Y, ap.Z }, yaw = Yaw(av["rot"].AsQuaternion()), agent_off = agentOff[id], agent_off_seated = agentOffSeated[id], head = new[] { f["mHead"].Pos.X, f["mHead"].Pos.Y, f["mHead"].Pos.Z }, bones = Bones(f), placeholder = !worn, bake_prefix = id[..8], seated = av.ContainsKey("seated") && av["seated"].AsBoolean(), dressed = av.ContainsKey("dressed") ? av["dressed"].AsString() : null };
                 Console.WriteLine($"avatar {av["name"].AsString()} ({id[..8]}): posed as {g}{(worn ? "" : loading.Contains(id) ? $" (STAND-IN: still loading, {(av.ContainsKey("attach_have") ? av["attach_have"].AsInteger() : 0)}/{(av.ContainsKey("attach_expected") ? av["attach_expected"].AsInteger() : 0)} attachments)" : " (no attachments: STAND-IN)")}");
+                }
+                catch (Exception ex) when (ex is OutOfMemoryException or InvalidOperationException or ArgumentException or KeyNotFoundException or IOException)
+                {
+                    // one avatar failing (out of memory mid-pose) must not lose the whole crowd render: drop it, keep the rest
+                    rigged.TryRemove(id, out _); unrigged.TryRemove(id, out _); Count("avatar_failed");
+                    Console.Error.WriteLine($"warning: avatar {id[..8]} skipped: {ex.GetType().Name}: {ex.Message}");
+                    GC.Collect();
+                }
             });
         others.AddRange(otherAt);
         Phase("avatars");

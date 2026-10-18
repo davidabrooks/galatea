@@ -828,6 +828,10 @@ def env_post(env):
     fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", rl.outputs["Mist"], 0.9999))
     h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
     mx = nt.nodes.new("CompositorNodeMixRGB"); L(fog, mx.inputs[0]); L(rl.outputs["Image"], mx.inputs[1]); mx.inputs[2].default_value = (*[c * s for c in h], 1)
+    if LAYER == "batch":   # premultiplied RGBA of a holdout pass: the fog colour only exists where there is something (x alpha), else the
+        # anti-aliased edge of every holdout would glow sky-blue (alpha 0 but colour > 0)
+        ha = nt.nodes.new("CompositorNodeMixRGB"); ha.blend_type = "MULTIPLY"; ha.inputs[0].default_value = 1.0
+        ha.inputs[1].default_value = (*[c * s for c in h], 1); L(rl.outputs["Alpha"], ha.inputs[2]); L(ha.outputs[0], mx.inputs[2])
     L(mx.outputs[0], cp.inputs["Image"])
 
 def particle_systems():

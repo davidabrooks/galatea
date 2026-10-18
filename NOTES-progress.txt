@@ -1,0 +1,3 @@
+10:45 4K layered render running log /workspace/layer-test4.out; branch pushed (WIP) ; docs+tests done; remaining: verify image, PR, automerge, report
+render done 54m; final png secondlife/photos/photo-20261018-104638-self.png
+11:3x halos remain around avatars in 4K result (png photo-20261018-104638-self): cause = Mist pass at AA edges unreliable (blends sky/holdout). Fix in progress: batch passes write mist file-output, render_mesh numpy fills edge mist from alpha>0.9 neighbours and applies haze premultiplied (replace compositor haze in batch)

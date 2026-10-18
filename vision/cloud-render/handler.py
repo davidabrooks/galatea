@@ -374,9 +374,20 @@ def fetch_textures(meta, out, work):
             for t, cap in pairs:
                 if isinstance(t, str) and UUID.match(t): want[t] = max(want.get(t, 0), cap)
         return want
-    want = collect(bias); est0 = tex_mem_mb(want)
+    # layered photo hd (look.py render_layered): one Blender pass holds the world + her + a batch of the other avatars, never the whole
+    # crowd, so the budget only counts GT_LAYER_TEX_FRAC of the crowd's own textures (the world's, hers and the shared ones in full)
+    lfrac = float(os.environ.get("GT_LAYER_TEX_FRAC", "1") or 1)
+    world_keys = set()
+    if lfrac < 1:
+        for b in meta["batches"]:
+            if not b["group"].startswith("avatar:"):
+                world_keys.update(t for t in [b["tex"], *(b.get("mat") or {}).values()] if isinstance(t, str))
+    def est_pass(w):
+        if lfrac >= 1: return tex_mem_mb(w)
+        return tex_mem_mb({t: c for t, c in w.items() if t in world_keys}) + lfrac * tex_mem_mb({t: c for t, c in w.items() if t not in world_keys})
+    want = collect(bias); est0 = est_pass(want)
     # LLViewerTexture::updateClass under low memory: bias to >= 1.5, then up until it fits (here: in 0.5 steps, max 5)
-    while tiered and budget and tex_mem_mb(want) > budget and bias < 5.0:
+    while tiered and budget and est_pass(want) > budget and bias < 5.0:
         bias = max(1.5, bias + 0.5); want = collect(bias)
     os.environ["GT_TEX_BIAS"] = f"{bias:g}"   # the bias in effect: a lighter retry starts above it
     near = {t for b in meta["batches"] if b["group"] != "far" for t in [b["tex"], *(b.get("mat") or {}).values()] if isinstance(t, str)}

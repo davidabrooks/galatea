@@ -16,10 +16,11 @@ usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
 Prints one image path per line (then a JSON summary line). Read-only: never talks to SL; only CDN asset GETs.
 Needs: dotnet + SCENE_MESHER (built scene-mesher), BLENDER, the imgvenv python (imagecodecs, pillow).
 """
-import json, os, re, shutil, subprocess, sys, time
+import glob, json, os, re, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, f"{HERE}/cloud-render")
 os.environ.setdefault("GT_MAX_TEXTURES", "4000")  # Warehouse 21 crowd: ~3200 scene + avatar textures (3000 dropped ~200 far ones); disk-cached after the first look
 os.environ.setdefault("GT_TEX_WORKERS", "24")  # local disk cache; parallel CDN GETs (crowd looks were ~50 s at 8)
+import layers  # layered photo hd (crowds)
 import handler, llsky, make_job  # texture fetch (CDN, capped) + bake decode / region sky: same code as the Runpod path
 
 MESHER = os.environ.get("SCENE_MESHER", "/home/box/tools/scene-mesher/SceneMesher.dll")
@@ -31,6 +32,8 @@ WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work") 
 VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
 PHOTO_OUT = os.environ.get("GT_PHOTO_OUT", "/workspace/secondlife/photos")
 HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
+if os.environ.get("GT_HD_RES"):   # test hook: a smaller "HD" frame (WxH, landscape; portrait is transposed)
+    _w, _h = os.environ["GT_HD_RES"].split("x"); HD_RES = {"landscape": f"{_w}x{_h}", "portrait": f"{_h}x{_w}"}
 
 # render profiles = David's Firestorm graphics presets (2026-10-13). highplus = his photo preset "High+" (screenshots):
 # textures max 2048, tonemap ACES mix 0.0, CAS sharpening 0.4, exposure 1.0, draw distance 128, LOD volume 2.0 / avatar 1.0 /
@@ -274,11 +277,17 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
     with tempfile.TemporaryFile("w+") as fo, tempfile.TemporaryFile("w+") as fe:
         p = subprocess.Popen(cmd, stdout=fo, stderr=fe, text=True, env=env, preexec_fn=_child_preexec)
         _CHILDREN.add(p)
-        tripped = None
+        tripped = None; peak_mb = 0; peak_anon = 0
         while p.poll() is None:
             try:
                 with open("/proc/meminfo") as f: avail = mem_available_mb(f.read())
             except OSError: avail = None
+            try:   # the render's own peak resident memory (VmRSS polled; the process is gone by the time VmHWM could be read)
+                with open(f"/proc/{p.pid}/status") as f:
+                    for l_ in f:
+                        if l_.startswith("VmRSS:"): peak_mb = max(peak_mb, int(l_.split()[1]) // 1024)
+                        elif l_.startswith("RssAnon:"): peak_anon = max(peak_anon, int(l_.split()[1]) // 1024); break
+            except (OSError, ValueError): pass
             if mem_guard_trip(avail, floor_mb):
                 tripped = avail
                 try: os.killpg(p.pid, signal.SIGKILL)
@@ -292,7 +301,8 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
     if tripped is not None:
         err += f"\nGT: memory guard: box MemAvailable {tripped} MB < {floor_mb} MB, render killed to keep the box responsive"
         print(f"memory guard: MemAvailable {tripped} MB < {floor_mb} MB: render killed", file=sys.stderr)
-    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+    cp = subprocess.CompletedProcess(cmd, p.returncode, out, err); cp.peak_mb = peak_mb; cp.peak_anon_mb = peak_anon
+    return cp
 
 def mesher_error(text):
     """The exception line itself (a .NET trace's tail is just Parallel.ForEach frames), then the tail."""
@@ -317,6 +327,68 @@ def run_mesher(run, args, env):
     if not mesher_oom(r): return r, False
     print("scene-mesher ran out of memory; retrying once with fewer, simpler avatars", file=sys.stderr)
     return run(mesher_retry_args(args), dict(env, GT_MESH_AVATARS="1")), True
+
+LAYER_STATS = []   # per pass: {"pass", "peak_mb", "seconds", ...} for the summary line
+
+def render_layered(out, env, meta, refetch, avail_mb):
+    """photo hd for a crowd that does not fit one Blender process: see vision/layers.py. Returns (files, hdr files, [seconds], build)"""
+    import numpy as np, layers, hdr_post
+    from PIL import Image
+    t0 = time.time(); ldir = f"{WORK}/layers"; shutil.rmtree(ldir, ignore_errors=True); os.makedirs(ldir)
+    plan_path = f"{WORK}/layer-plan.json"
+    try: os.remove(plan_path)
+    except OSError: pass
+    def run_pass(penv, label, retry_base=False):
+        t = time.time(); r = None
+        for attempt in range(3):
+            if attempt:
+                if r.returncode != -9 or not retry_base: break
+                penv = {**penv, **retry_env(r.returncode, True, attempt)}
+                os.environ["GT_TEX_BIAS"] = penv["GT_TEX_BIAS"]; os.environ["GT_TEX_BUDGET_MB"] = penv["GT_TEX_BUDGET_MB"]; refetch()
+            r = run_mem_guarded(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
+                                 f"{HERE}/cloud-render/render_mesh.py", "--", WORK, "scene", "CYCLES", out], penv)
+            if r.returncode >= 0: break
+        try: open(f"{ldir}/pass-{len(LAYER_STATS)}.log", "w").write(f"{label} exit {r.returncode}\n" + "\n".join(l for l in r.stdout.splitlines() if l.startswith("GT:"))[-20000:] + f"\n{r.stdout[-3000:]}\n--- stderr\n{r.stderr[-3000:]}")
+        except OSError: pass
+        LAYER_STATS.append({"pass": label, "peak_mb": getattr(r, "peak_mb", 0), "peak_anon_mb": getattr(r, "peak_anon_mb", 0), "seconds": round(time.time() - t, 1), "exit": r.returncode})
+        print(f"layer pass {label}: peak {LAYER_STATS[-1]['peak_mb']} MB (anon {LAYER_STATS[-1]['peak_anon_mb']}), {LAYER_STATS[-1]['seconds']} s, exit {r.returncode}", file=sys.stderr)
+        return r
+    base_npy = f"{ldir}/base.npy"
+    r = run_pass({**env, "GT_LAYER": "base", "GT_LAYER_NPY": base_npy}, "base", retry_base=True)
+    if r.returncode or not os.path.exists(base_npy) or not os.path.exists(plan_path):
+        sys.exit("blender layer base failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
+    for l in r.stdout.splitlines():
+        if l.startswith("GT: avatar omitted") or l.startswith("GT: avatar stand-in"): print(l[4:], file=sys.stderr)
+    build = next((float(l.split()[3]) for l in r.stdout.splitlines() if l.startswith("GT: build seconds")), None)
+    plan = layers.read_plan(plan_path); budget = layers.batch_budget_verts(meta["batches"], avail_mb)
+    batches = layers.plan_batches(plan, budget)
+    print(f"layers: {sum(1 for p in plan if p['visible'])}/{len(plan)} avatars in view, {len(batches)} batch pass(es), budget {budget} vertices each", file=sys.stderr)
+    order = []; skipped = []
+    def do(groups):
+        npy = f"{ldir}/batch-{len(order) + len(skipped)}.npy"
+        r = run_pass({**env, "GT_LAYER": "batch", "GT_LAYER_AVATARS": ",".join(groups), "GT_LAYER_NPY": npy}, f"batch {','.join(g[7:] for g in groups)}")
+        if r.returncode == -9 and len(groups) > 1:
+            for half in layers.split_batch(groups): do(half)
+            return
+        if r.returncode or not os.path.exists(npy):
+            print(f"layers: batch {groups} failed (exit {r.returncode}): its avatar(s) are left out", file=sys.stderr); skipped.extend(groups); return
+        order.append(npy)
+    for g in batches: do(g)
+    # composite (scene-linear), glow bloom, ONE tonemap on the finished frame, then the same outputs as a single-pass photo hd
+    base = np.load(base_npy); h, w = base.shape[:2]
+    rgb = layers.composite(base, (lambda p=p: np.load(p) for p in order)); del base
+    gp = base_npy[:-4] + "-glow.npy"
+    if os.path.exists(gp):
+        st = hdr_post.settings_from_env(env); rgb += hdr_post.bloom(np.load(gp), st["glow_iterations"], st["glow_strength"]).astype(np.float32)
+    ldr, info = hdr_post.firestorm_ldr(rgb, meta.get("env"), 2.0 ** float(env.get("GT_EXPOSURE", "0")), hdr_post.settings_from_env(env))
+    Image.fromarray((np.clip(ldr[::-1], 0, 1) * 255 + 0.5).astype(np.uint8), "RGB").save(out); del ldr   # Blender rows are bottom-up
+    hdr = out[:-4] + ".hdr"; hdr_post.write_rgbe(hdr, rgb[::-1])
+    exr = out[:-4] + ".exr"; np.save(f"{ldir}/final.npy", rgb); del rgb
+    rr = subprocess.run([BLENDER, "-b", "--factory-startup", "-noaudio", "--python", f"{HERE}/cloud-render/npy_to_exr.py", "--", f"{ldir}/final.npy", exr], capture_output=True, text=True)
+    files = [out] + ([exr] if os.path.exists(exr) else []) + [hdr]
+    for f_ in glob.glob(f"{ldir}/*.npy"): os.remove(f_)   # keep the per-pass logs (layers/pass-N.log) for diagnosis
+    print(f"layers: composited {len(order)} batch layer(s) over the base, tonemap {json.dumps(info)}" + (f"; left out {len(skipped)} avatar(s)" if skipped else ""), file=sys.stderr)
+    return [out], [p for p in files[1:]], [round(time.time() - t0, 1)], build
 
 def bake_keys(meta, doc):
     """Exact bake-<key>.j2c keys needed: batch bake: refs + stand-in heads for placeholder others."""
@@ -488,6 +560,9 @@ def main(a):
         os.environ.setdefault("GT_TEX_MAPS", "0")
         os.environ.setdefault("GT_TEX_CAP_AVATAR", "512")
         os.environ.setdefault("GT_TEX_CAP_SCENE", "256")
+    # photo hd of a crowd that one Blender process could not hold: layered passes (layers.py); a pass carries ~1/4 of the crowd's textures
+    layered = bool(hd) and layers.needs_layers(meta["batches"], read_mem_available(), int(os.environ.get("GT_MEM_FLOOR_MB", "1500")), layers.layers_mode())
+    if layered: os.environ.setdefault("GT_LAYER_TEX_FRAC", "0.25"); print("photo hd: crowd too big for one pass: layered render", file=sys.stderr)
     if hd:   # the viewer's texture streaming: discard levels from on-screen size, bias under memory pressure
         os.environ.setdefault("GT_TEX_DIST", "1"); os.environ["GT_RES"] = hd_env.get("GT_RES", "3840x2160")
         _avail = read_mem_available()
@@ -525,27 +600,35 @@ def main(a):
             env.setdefault("GT_NOSKY", "1")
             env.setdefault("GT_DENOISE", "0")
             env.setdefault("GT_MIN_TRIS", "12")  # drop dust; keep chairs/walls/avatars
-        for attempt in range(3):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
-            if attempt:
-                if r.returncode != -9 and attempt > 1: break
-                env = {**env, **retry_env(r.returncode, hd, attempt)}
-                if hd and r.returncode == -9:   # memory-guard / OOM kill: re-stream textures at a higher discard bias
-                    os.environ["GT_TEX_BIAS"] = env["GT_TEX_BIAS"]; os.environ["GT_TEX_BUDGET_MB"] = env["GT_TEX_BUDGET_MB"]
-                    info2 = {}
-                    if not handler.fetch_textures(meta, info2, WORK):
-                        info = info2; write_manifest(WORK, {**info2.get("tex_paths", {}), **bake_paths, **{k: v for k, v in proj_paths.items() if v}})
-                        print(f"retry {attempt}: bias {env['GT_TEX_BIAS']}, textures ~{info2['textures']['est_mb']} MB", file=sys.stderr)
-            r = run_mem_guarded(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
-                                 f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], env)
-            if r.returncode >= 0: break
-        lines = r.stdout.splitlines()
-        got = [l.split()[-1] for l in lines if l.startswith("GT: render seconds")]
-        for l in lines:
-            if l.startswith("GT: avatar omitted") or l.startswith("GT: avatar stand-in"): print(l[4:], file=sys.stderr)
-        hdr_files = [x for l in lines if l.startswith("GT: hdr master") for x in l.split()[3:5]]   # photo hd: EXR + .hdr masters
-        rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
-        build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
-        if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
+        if layered and kind == "scene":
+            def refetch():
+                info2 = {}
+                if not handler.fetch_textures(meta, info2, WORK):
+                    write_manifest(WORK, {**info2.get("tex_paths", {}), **bake_paths, **{k: v for k, v in proj_paths.items() if v}})
+                    print(f"layer base retry: bias {os.environ['GT_TEX_BIAS']}, textures ~{info2['textures']['est_mb']} MB", file=sys.stderr)
+            got, hdr_files, rend, build = render_layered(out, env, meta, refetch, read_mem_available())
+        else:
+            for attempt in range(3):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
+                if attempt:
+                    if r.returncode != -9 and attempt > 1: break
+                    env = {**env, **retry_env(r.returncode, hd, attempt)}
+                    if hd and r.returncode == -9:   # memory-guard / OOM kill: re-stream textures at a higher discard bias
+                        os.environ["GT_TEX_BIAS"] = env["GT_TEX_BIAS"]; os.environ["GT_TEX_BUDGET_MB"] = env["GT_TEX_BUDGET_MB"]
+                        info2 = {}
+                        if not handler.fetch_textures(meta, info2, WORK):
+                            info = info2; write_manifest(WORK, {**info2.get("tex_paths", {}), **bake_paths, **{k: v for k, v in proj_paths.items() if v}})
+                            print(f"retry {attempt}: bias {env['GT_TEX_BIAS']}, textures ~{info2['textures']['est_mb']} MB", file=sys.stderr)
+                r = run_mem_guarded(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
+                                     f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], env)
+                if r.returncode >= 0: break
+            lines = r.stdout.splitlines()
+            got = [l.split()[-1] for l in lines if l.startswith("GT: render seconds")]
+            for l in lines:
+                if l.startswith("GT: avatar omitted") or l.startswith("GT: avatar stand-in"): print(l[4:], file=sys.stderr)
+            hdr_files = [x for l in lines if l.startswith("GT: hdr master") for x in l.split()[3:5]]   # photo hd: EXR + .hdr masters
+            rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
+            build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
+            if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
         if hd:   # the PNG is the photo (David 2026-10-13: small but lossless); a quality-95 JPG next to it, secondary
             from PIL import Image
             for p in list(got):
@@ -571,7 +654,7 @@ def main(a):
     if os.environ.get("GT_LOOK_EXPORT_S"): times["client_export_stages"] = export_stages(os.environ["GT_LOOK_EXPORT_S"])
     print(json.dumps({"mode": mode, "target": view if mode == "at" else None, "fast": fast, "far": far, "hd": hd, "seconds": times, "total": round(time.time() - t0, 1), "total_with_client": round(time.time() - t0 + sum(float(v_) for v_ in pre.values()), 1),
                       "others": [o["name"] for o in meta.get("others", [])], "avatars": crowd, "textures": info["textures"], "bakes": n_bake, "bake_cache_hits": bake_hits}
-                     | ({"mesh_warnings": mesh_warn} if mesh_warn else {})))
+                     | ({"mesh_warnings": mesh_warn} if mesh_warn else {}) | ({"layers": LAYER_STATS} if LAYER_STATS else {})))
 
 if __name__ == "__main__":
     main(sys.argv[1:])

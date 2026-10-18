@@ -1247,7 +1247,22 @@ if kind == "scene":
         if sc.camera and sc.camera.get("focus_target") is not None:
             _d = Vector(sc.camera["focus_target"]) - sc.camera.matrix_world.translation; retint_sun((_d.normalized().z if _d.length > 1e-6 else 0.0) - 0.25)
         memlog("before others"); setup_dof(); add_others(); memlog("others added")
-        if LAYER == "base": layer_plan()
+        if LAYER == "base":
+            layer_plan()
+            # same light-tree memory cost as the batch passes (5.6 GB at the 3 M-triangle world): emissive faces farther than
+            # GT_BASE_MIS_RADIUS metres from the camera (default 25) are not importance-sampled; nearer ones, and any material
+            # shared with a near object, keep full sampling so her own lighting stays as clean as before
+            R = float(os.environ.get("GT_BASE_MIS_RADIUS", "25")); cam = sc.camera.matrix_world.translation if sc.camera else None
+            if cam is not None and R > 0:
+                near_m = set(); far_m = set()
+                for ob in sc.objects:
+                    if ob.type != "MESH": continue
+                    bb = np.array([tuple(c) for c in ob.bound_box], np.float64); c_ = (bb.min(0) + bb.max(0)) / 2
+                    (near_m if float(np.linalg.norm(c_ - np.array(cam))) - float(np.linalg.norm(bb.max(0) - bb.min(0))) / 2 < R else far_m).update(ob.data.materials)
+                n_ = 0
+                for m_ in far_m - near_m:
+                    if hasattr(m_.cycles, "emission_sampling"): m_.cycles.emission_sampling = "NONE"; n_ += 1
+                log("layer base: emission sampling off on", n_, "far materials of", len(far_m | near_m))
         else:
             sc.render.film_transparent = True
             keep = set(layer_real)

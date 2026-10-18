@@ -39,7 +39,7 @@ def mb_needed(verts, bpv=BYTES_PER_VERTEX, base_mb=BASE_MB):
 
 def layers_mode(env=None):
     """GT_HD_LAYERS: on / off / auto (default)"""
-    v = ((env or os.environ).get("GT_HD_LAYERS", "auto") or "auto").strip().lower()
+    v = ((os.environ if env is None else env).get("GT_HD_LAYERS", "auto") or "auto").strip().lower()
     return v if v in ("on", "off", "auto") else "auto"
 
 def needs_layers(batches, avail_mb, floor_mb=1500, mode="auto"):

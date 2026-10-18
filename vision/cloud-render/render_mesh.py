@@ -16,6 +16,10 @@ T0 = time.time()
 bpy.ops.wm.read_factory_settings(use_empty=True)
 sc = bpy.context.scene
 def log(*a): print("GT:", *a, flush=True)
+def memlog(tag):   # GT_MEM_TRACE=1: this process's resident/anonymous memory at a milestone
+    if os.environ.get("GT_MEM_TRACE"):
+        d = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith(("VmRSS", "RssAnon", "RssFile")))
+        log("mem", tag, {k: int(v.split()[0]) // 1024 for k, v in d.items()}, "MB")
 # photo hd layered crowd (vision/layers.py): "base" = world + her + shadow-only proxies of everyone else; "batch" = a few avatars
 # (GT_LAYER_AVATARS = their mesh.json groups) with the world and her as holdouts on a transparent film, same camera/lighting.
 # Both save scene-linear RGBA as GT_LAYER_NPY (.npy) and skip the tonemap: look.py composites back-to-front, then tonemaps once.
@@ -1120,7 +1124,7 @@ def layer_plan():
     log("layer plan", len(plan), "avatars,", sum(1 for p in plan if p["visible"]), "in view")
 
 if kind == "scene":
-    build("scene")
+    build("scene"); memlog("scene built")
     if LAYER != "batch": build("far")   # a batch pass only needs what can occlude / light its avatars: the backdrop is > 30 m out
     terrain()
     if LAYER != "batch": water(); particle_systems()
@@ -1236,7 +1240,7 @@ if kind == "scene":
         # same sun tint + DOF focus in every pass, both measured before any avatar exists in the scene
         if sc.camera and sc.camera.get("focus_target") is not None:
             _d = Vector(sc.camera["focus_target"]) - sc.camera.matrix_world.translation; retint_sun((_d.normalized().z if _d.length > 1e-6 else 0.0) - 0.25)
-        setup_dof(); add_others()
+        memlog("before others"); setup_dof(); add_others(); memlog("others added")
         if LAYER == "base": layer_plan()
         else:
             sc.render.film_transparent = True
@@ -1316,7 +1320,7 @@ def hd_render_hdr(png):
             sc.render.use_border = True; sc.render.use_crop_to_border = False
             sc.render.border_min_x, sc.render.border_max_x = 0.0, 1.0
             sc.render.border_min_y, sc.render.border_max_y = lo / H_, hi / H_
-        bpy.ops.render.render(write_still=True)
+        memlog("render start"); bpy.ops.render.render(write_still=True); memlog("render done")
         img = bpy.data.images.load(exr); w, h = img.size; px = np.empty(w * h * 4, np.float32); img.pixels.foreach_get(px)
         bpy.data.images.remove(img)
         if rgb is None: rgb = np.zeros((h, w, 4 if LAYER else 3), np.float32)

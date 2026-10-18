@@ -16,7 +16,7 @@ usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
 Prints one image path per line (then a JSON summary line). Read-only: never talks to SL; only CDN asset GETs.
 Needs: dotnet + SCENE_MESHER (built scene-mesher), BLENDER, the imgvenv python (imagecodecs, pillow).
 """
-import json, os, re, shutil, subprocess, sys, time
+import glob, json, os, re, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, f"{HERE}/cloud-render")
 os.environ.setdefault("GT_MAX_TEXTURES", "4000")  # Warehouse 21 crowd: ~3200 scene + avatar textures (3000 dropped ~200 far ones); disk-cached after the first look
 os.environ.setdefault("GT_TEX_WORKERS", "24")  # local disk cache; parallel CDN GETs (crowd looks were ~50 s at 8)
@@ -348,7 +348,7 @@ def render_layered(out, env, meta, refetch, avail_mb):
             r = run_mem_guarded(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
                                  f"{HERE}/cloud-render/render_mesh.py", "--", WORK, "scene", "CYCLES", out], penv)
             if r.returncode >= 0: break
-        try: open(f"{ldir}/pass-{len(LAYER_STATS)}.log", "w").write(f"{label} exit {r.returncode}\n{r.stdout[-6000:]}\n--- stderr\n{r.stderr[-3000:]}")
+        try: open(f"{ldir}/pass-{len(LAYER_STATS)}.log", "w").write(f"{label} exit {r.returncode}\n" + "\n".join(l for l in r.stdout.splitlines() if l.startswith("GT:"))[-20000:] + f"\n{r.stdout[-3000:]}\n--- stderr\n{r.stderr[-3000:]}")
         except OSError: pass
         LAYER_STATS.append({"pass": label, "peak_mb": getattr(r, "peak_mb", 0), "peak_anon_mb": getattr(r, "peak_anon_mb", 0), "seconds": round(time.time() - t, 1), "exit": r.returncode})
         print(f"layer pass {label}: peak {LAYER_STATS[-1]['peak_mb']} MB (anon {LAYER_STATS[-1]['peak_anon_mb']}), {LAYER_STATS[-1]['seconds']} s, exit {r.returncode}", file=sys.stderr)
@@ -386,7 +386,7 @@ def render_layered(out, env, meta, refetch, avail_mb):
     exr = out[:-4] + ".exr"; np.save(f"{ldir}/final.npy", rgb); del rgb
     rr = subprocess.run([BLENDER, "-b", "--factory-startup", "-noaudio", "--python", f"{HERE}/cloud-render/npy_to_exr.py", "--", f"{ldir}/final.npy", exr], capture_output=True, text=True)
     files = [out] + ([exr] if os.path.exists(exr) else []) + [hdr]
-    shutil.rmtree(ldir, ignore_errors=True)
+    for f_ in glob.glob(f"{ldir}/*.npy"): os.remove(f_)   # keep the per-pass logs (layers/pass-N.log) for diagnosis
     print(f"layers: composited {len(order)} batch layer(s) over the base, tonemap {json.dumps(info)}" + (f"; left out {len(skipped)} avatar(s)" if skipped else ""), file=sys.stderr)
     return [out], [p for p in files[1:]], [round(time.time() - t0, 1)], build
 

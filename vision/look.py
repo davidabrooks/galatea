@@ -277,7 +277,7 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
     with tempfile.TemporaryFile("w+") as fo, tempfile.TemporaryFile("w+") as fe:
         p = subprocess.Popen(cmd, stdout=fo, stderr=fe, text=True, env=env, preexec_fn=_child_preexec)
         _CHILDREN.add(p)
-        tripped = None; peak_mb = 0
+        tripped = None; peak_mb = 0; peak_anon = 0
         while p.poll() is None:
             try:
                 with open("/proc/meminfo") as f: avail = mem_available_mb(f.read())
@@ -285,7 +285,8 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
             try:   # the render's own peak resident memory (VmRSS polled; the process is gone by the time VmHWM could be read)
                 with open(f"/proc/{p.pid}/status") as f:
                     for l_ in f:
-                        if l_.startswith("VmRSS:"): peak_mb = max(peak_mb, int(l_.split()[1]) // 1024); break
+                        if l_.startswith("VmRSS:"): peak_mb = max(peak_mb, int(l_.split()[1]) // 1024)
+                        elif l_.startswith("RssAnon:"): peak_anon = max(peak_anon, int(l_.split()[1]) // 1024); break
             except (OSError, ValueError): pass
             if mem_guard_trip(avail, floor_mb):
                 tripped = avail
@@ -300,7 +301,7 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
     if tripped is not None:
         err += f"\nGT: memory guard: box MemAvailable {tripped} MB < {floor_mb} MB, render killed to keep the box responsive"
         print(f"memory guard: MemAvailable {tripped} MB < {floor_mb} MB: render killed", file=sys.stderr)
-    cp = subprocess.CompletedProcess(cmd, p.returncode, out, err); cp.peak_mb = peak_mb
+    cp = subprocess.CompletedProcess(cmd, p.returncode, out, err); cp.peak_mb = peak_mb; cp.peak_anon_mb = peak_anon
     return cp
 
 def mesher_error(text):
@@ -349,8 +350,8 @@ def render_layered(out, env, meta, refetch, avail_mb):
             if r.returncode >= 0: break
         try: open(f"{ldir}/pass-{len(LAYER_STATS)}.log", "w").write(f"{label} exit {r.returncode}\n{r.stdout[-6000:]}\n--- stderr\n{r.stderr[-3000:]}")
         except OSError: pass
-        LAYER_STATS.append({"pass": label, "peak_mb": getattr(r, "peak_mb", 0), "seconds": round(time.time() - t, 1), "exit": r.returncode})
-        print(f"layer pass {label}: peak {LAYER_STATS[-1]['peak_mb']} MB, {LAYER_STATS[-1]['seconds']} s, exit {r.returncode}", file=sys.stderr)
+        LAYER_STATS.append({"pass": label, "peak_mb": getattr(r, "peak_mb", 0), "peak_anon_mb": getattr(r, "peak_anon_mb", 0), "seconds": round(time.time() - t, 1), "exit": r.returncode})
+        print(f"layer pass {label}: peak {LAYER_STATS[-1]['peak_mb']} MB (anon {LAYER_STATS[-1]['peak_anon_mb']}), {LAYER_STATS[-1]['seconds']} s, exit {r.returncode}", file=sys.stderr)
         return r
     base_npy = f"{ldir}/base.npy"
     r = run_pass({**env, "GT_LAYER": "base", "GT_LAYER_NPY": base_npy}, "base", retry_base=True)

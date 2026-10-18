@@ -19,7 +19,7 @@ def log(*a): print("GT:", *a, flush=True)
 def memlog(tag):   # GT_MEM_TRACE=1: this process's resident/anonymous memory at a milestone
     if os.environ.get("GT_MEM_TRACE"):
         d = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith(("VmRSS", "RssAnon", "RssFile")))
-        log("mem", tag, {k: int(v.split()[0]) // 1024 for k, v in d.items()}, "MB")
+        log("mem", tag, {k: int(v.split()[0]) // 1024 for k, v in d.items()}, "MB", "images", len(bpy.data.images), "Mpx", round(sum(i.size[0] * i.size[1] for i in bpy.data.images) / 1e6, 1))
 # photo hd layered crowd (vision/layers.py): "base" = world + her + shadow-only proxies of everyone else; "batch" = a few avatars
 # (GT_LAYER_AVATARS = their mesh.json groups) with the world and her as holdouts on a transparent film, same camera/lighting.
 # Both save scene-linear RGBA as GT_LAYER_NPY (.npy) and skip the tonemap: look.py composites back-to-front, then tonemaps once.
@@ -403,7 +403,8 @@ def build(group, bones=None, lining=True):
             # dust = few triangles AND small: a 2-triangle floor face (Warehouse 21 courtyard, a skybox) is not dust
             ext = P.reshape(-1, 3).max(0) - P.reshape(-1, 3).min(0) if nv else np.zeros(3)
             if float(ext.max()) < 1.0: continue
-        imgs = mat_images(b, small=LAYER == "batch" and group not in LAYER_AVS)
+        hold = LAYER == "batch" and group not in LAYER_AVS   # a batch pass's holdout world: seen as a silhouette only
+        imgs = mat_images(b, small=hold)
         tn = imgs.get("diffuse") or next(iter(imgs.values()), None)
         # blank SL textures (32x32 all-alpha-0, e.g. Scentual f54a0c32 "clothing" layer): skip so they don't
         # sit as hashed ghosts over BOM skin (decided before any mesh is made: removing objects is slow in a big scene)
@@ -420,7 +421,8 @@ def build(group, bones=None, lining=True):
         tint.data.foreach_set("color", np.tile(np.asarray(b["rgba"], np.float32), nv))
         if GLOW_ON:   # SL face glow (photo hd): per-point attribute so the templates stay shared
             gl = me.attributes.new("sl_glow", "FLOAT", "POINT"); gl.data.foreach_set("value", np.full(nv, float(b.get("glow") or 0.0), np.float32))
-        me.update(); me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
+        me.update()
+        if not (hold and os.environ.get("GT_HOLD_FLAT", "1") == "1"): me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
         ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs))
         obs.append(ob)
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
@@ -464,6 +466,10 @@ def gpu_setup():
             sc.cycles.use_auto_tile = True; sc.cycles.tile_size = int(os.environ.get("GT_TILE", "1024"))
         if os.environ.get("GT_TEX_LIMIT"): sc.cycles.texture_limit_render = os.environ["GT_TEX_LIMIT"]
         log("cycles device", sc.cycles.device)
+        if os.environ.get("GT_BVH_COMPACT") == "1":   # Embree compact BVH: less memory for the ~3 M-triangle holdout world
+            for k_, v_ in (("debug_use_compact_bvh", True), ("debug_bvh_type", "STATIC_BVH")):
+                try: setattr(sc.cycles, k_, v_)
+                except Exception as e: log("bvh option", k_, e)
     elif engine == "WORKBENCH":  # flat preview: textures, no lighting model (cheapest; CPU/llvmpipe friendly)
         sc.render.engine = "BLENDER_WORKBENCH"; sc.display.shading.color_type = "TEXTURE"; sc.display.shading.light = "STUDIO"
     else:
@@ -1245,6 +1251,12 @@ if kind == "scene":
         else:
             sc.render.film_transparent = True
             keep = set(layer_real)
+            # Cycles "Updating Lights" builds a light-tree entry per emissive triangle (fullbright faces): +3.5 GB of the ~5 GB peak with
+            # the 3 M-triangle world. A holdout's emission still lights the avatars (BSDF sampling), it just isn't importance-sampled.
+            if os.environ.get("GT_HOLD_EMIT_MIS", "0") != "1":
+                real_mats = {m for ob in keep for m in ob.data.materials}
+                for m_ in bpy.data.materials:
+                    if m_ not in real_mats and hasattr(m_.cycles, "emission_sampling"): m_.cycles.emission_sampling = "NONE"
             for ob in sc.objects:
                 if ob.type == "MESH" and ob not in keep and ob.visible_get() and getattr(ob, "visible_camera", True): ob.is_holdout = True
             log("layer batch", sorted(LAYER_AVS), "holdout world")

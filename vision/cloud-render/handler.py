@@ -238,6 +238,14 @@ def crowd_cap(dist, av_cap):
     if dist is None: return av_cap
     return av_cap if dist < 6 else min(av_cap, 256) if dist < 15 else min(av_cap, 128)
 
+def crowd_bias_cap(cap, bias):
+    """Pure: another avatar's outfit edge under the viewer's low-memory discard bias (LLViewerTexture::updateClass): bias >= 1 divides
+    the wanted size by 4^(b-1) = the edge halves per whole bias step (1.5 -> /2, 2.5 -> /4 ... 5 -> /16), never under 64 px.
+    2026-10-18 Warehouse 21 photo hd: 88 avatars, ~15 within 6 m at 2048 px = 24 GB of textures that the bias loop (scene faces only)
+    could not shrink, so every retry was killed by the memory guard. Her own textures never come here."""
+    if bias < 1: return cap
+    return max(64, min(cap, cap >> math.ceil(bias - 1)))
+
 def crowd_drop_order(meta, av_dist, want):
     """Textures used only by other avatars, farthest wearer first (her own and scene textures never listed)."""
     nearest = {}
@@ -356,7 +364,8 @@ def fetch_textures(meta, out, work):
             mat = b.get("mat") or {}
             scene = b["group"] in ("scene", "far")
             scap = viewer_cap(geom.get(i), sc_cap, height, bias) if tiered and scene else sc_cap
-            pairs = [(b["tex"], crowd_cap(av_dist.get(b["group"]), av_cap) if b["group"].startswith("avatar") else scap)]
+            other = tiered and b["group"].startswith("avatar:") and av_dist.get(b["group"]) is not None   # another avatar (not her own "avatar" group)
+            pairs = [(b["tex"], (crowd_bias_cap(crowd_cap(av_dist.get(b["group"]), av_cap), bias) if other else crowd_cap(av_dist.get(b["group"]), av_cap)) if b["group"].startswith("avatar") else scap)]
             if maps:
                 # material maps stream like the base colour (the viewer has one discard logic per face); until
                 # 2026-10-14 they were capped at 512: the deck's plank-groove normal map and ORM a quarter of its texels

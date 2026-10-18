@@ -58,6 +58,24 @@ def mesher_error(text):
     exc = next((l for l in lines if "Exception" in l and not l.startswith("at ")), "")
     return ((exc[:300] + " | ") if exc else "") + (text or "")[-300:]
 
+def mesher_oom(r):
+    """Pure: did the mesher die of memory? (a .NET OutOfMemoryException / 'Out of memory.' crash, or the OOM killer's SIGKILL)"""
+    text = (r.stderr or "") + (r.stdout or "")
+    return bool(r.returncode) and (r.returncode in (-9, 137) or "OutOfMemory" in text or "Out of memory" in text)
+
+def mesher_retry_args(args):
+    """Pure: the mesher's args for the one retry after an out-of-memory crash: every avatar but the 4 nearest at the lowest LOD
+    (--avatar-max=4). The mesher also degrades by itself under heap pressure; this is the backstop for a hard crash."""
+    return [a for a in args if not a.startswith("--avatar-max=")] + ["--avatar-max=4"]
+
+def run_mesher(run, args, env):
+    """Run the mesher; on a memory crash retry once, one avatar at a time (GT_MESH_AVATARS=1) and with mesher_retry_args.
+    Returns (CompletedProcess, retried)."""
+    r = run(args, env)
+    if not mesher_oom(r): return r, False
+    print("scene-mesher ran out of memory; retrying once with fewer, simpler avatars", file=sys.stderr)
+    return run(mesher_retry_args(args), dict(env, GT_MESH_AVATARS="1")), True
+
 def bake_keys(meta, doc):
     """Exact bake-<key>.j2c keys needed: batch bake: refs + stand-in heads for placeholder others."""
     keys = set()
@@ -173,9 +191,10 @@ def main(a):
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
         pt = [av["pos"][0], av["pos"][1], av["pos"][2] + 0.7] if av else obj["world_pos"] if obj else None
         if pt: args.append("--look=" + ",".join(str(v) for v in pt))
-    r = subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + args, capture_output=True, text=True, env=mesher_env(os.environ))
+    r, mesh_retried = run_mesher(lambda a_, e_: subprocess.run(["nice", "-n", "10", DOTNET, MESHER] + a_, capture_output=True, text=True, env=e_), args, mesher_env(os.environ))
     if r.returncode: sys.exit("scene-mesher failed: " + mesher_error(r.stderr or r.stdout))
     mesh_warn = [l for l in (r.stderr or "").splitlines() if l.startswith("warning:")]
+    if mesh_retried: mesh_warn.append("warning: scene-mesher ran out of memory once; retried with the far avatars simplified")
     times["mesh"] = round(time.time() - t0, 1)
     meta = json.load(open(f"{d}/mesh.json")); meta["env"] = None; meta["backdrop"] = far   # her own renders: no environment (David 2026-10-13)
     if far: meta["water_height"] = doc.get("water_height")

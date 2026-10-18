@@ -4,7 +4,7 @@ blender -b --factory-startup --python render_mesh.py -- <jobdir> {scene|face|bod
 jobdir holds mesh.json, mesh.bin, terrain.json and tex/<uuid>.png, tex/bake-<name>.png.
 Galatea's rigged attachments are in bind pose (= SL's default T-pose), in avatar space (+X forward, feet near z=0).
 """
-import bpy, json, math, os, re, sys, time
+import bpy, json, math, os, re, sys, time, warnings
 import numpy as np
 from mathutils import Vector
 
@@ -812,6 +812,25 @@ def sky_hd(nt, co, sp, col, env, night):
         col = mixc(md, col, mc.outputs["Color"])
     return col
 
+HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: applied to the pass by haze_batch
+def haze_batch(rgba, mist, k, D, col, solid=0.9, iters=16):
+    """Distance haze on a premultiplied holdout-pass RGBA (h, w, 4), in place. mist (h, w) is Cycles' linear 0..1 mist, which at an
+    anti-aliased edge blends in the sky or the holdout in front; so a pixel under `solid` alpha takes the mist of the nearest solid
+    pixels beside it (grown one ring per iteration). fog = 1 - exp(-k D mist) toward `col`, the fog colour only where there is something (x alpha)."""
+    a = rgba[..., 3]; m = np.where(a >= solid, mist, np.nan).astype(np.float32)
+    for _ in range(iters):
+        hole = np.isnan(m) & (a > 0.001)
+        if not hole.any(): break
+        pad = np.pad(m, 1, constant_values=np.nan)
+        nb = np.stack([pad[dy:dy + m.shape[0], dx:dx + m.shape[1]] for dy in range(3) for dx in range(3)])
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore"); avg = np.nanmean(nb, axis=0)
+        m = np.where(hole & ~np.isnan(avg), avg, m)
+    m = np.where(np.isnan(m), mist, m)
+    fog = (1.0 - np.exp(-k * D * m)) * (m < 0.9999)
+    rgba[..., :3] = rgba[..., :3] * (1.0 - fog[..., None]) + np.asarray(col, np.float32) * (fog * a)[..., None]
+    return rgba
+
 def env_post(env):
     """photo hd: EEP scene gamma and distance haze (the viewer's atmospheric fog on far geometry).
     gamma: LL scaleSoftClip 1 - (1 - c)^gamma ~ Blender view gamma (1 = unchanged). Haze: transmittance
@@ -837,11 +856,18 @@ def env_post(env):
     ex = m("EXPONENT", m("MULTIPLY", rl.outputs["Mist"], -k * D), 0)
     fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", rl.outputs["Mist"], 0.9999))
     h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
+    if LAYER == "batch":
+        # premultiplied RGBA of a holdout pass: the compositor's mist at an anti-aliased silhouette is a blend with the sky / the holdout in
+        # front (it painted a sky-blue halo round every avatar). The Mist pass goes to a file; hd_render_hdr fills the edge pixels' mist from
+        # the solid pixels beside them and fogs the colour there (haze_batch).
+        global HAZE
+        HAZE = (k, D, [c * s for c in h])
+        mdir = os.environ["GT_LAYER_NPY"][:-4] + "-mist"
+        fo = nt.nodes.new("CompositorNodeOutputFile"); fo.base_path = mdir; fo.format.file_format = "OPEN_EXR"; fo.format.color_depth = "32"
+        fo.file_slots[0].path = "mist"; L(rl.outputs["Mist"], fo.inputs[0])
+        L(rl.outputs["Image"], cp.inputs["Image"])
+        return
     mx = nt.nodes.new("CompositorNodeMixRGB"); L(fog, mx.inputs[0]); L(rl.outputs["Image"], mx.inputs[1]); mx.inputs[2].default_value = (*[c * s for c in h], 1)
-    if LAYER == "batch":   # premultiplied RGBA of a holdout pass: the fog colour only exists where there is something (x alpha), else the
-        # anti-aliased edge of every holdout would glow sky-blue (alpha 0 but colour > 0)
-        ha = nt.nodes.new("CompositorNodeMixRGB"); ha.blend_type = "MULTIPLY"; ha.inputs[0].default_value = 1.0
-        ha.inputs[1].default_value = (*[c * s for c in h], 1); L(rl.outputs["Alpha"], ha.inputs[2]); L(ha.outputs[0], mx.inputs[2])
     L(mx.outputs[0], cp.inputs["Image"])
 
 def particle_systems():
@@ -1340,7 +1366,7 @@ def hd_render_hdr(png):
     # outside the kept rows) and stitches them: that end-of-render spike drops to ~1/n. look.py picks n from free memory.
     bands = max(1, int(os.environ.get("GT_HD_BANDS", "1") or 1))
     W_, H_ = sc.render.resolution_x, sc.render.resolution_y
-    rgb = glow = None; t = time.time()
+    rgb = glow = mist = None; t = time.time()
     for y0, y1 in band_rows(H_, bands):
         if bands > 1:
             lo, hi = max(0, y0 - BAND_OVERLAP), min(H_, y1 + BAND_OVERLAP)
@@ -1361,10 +1387,19 @@ def hd_render_hdr(png):
                 if glow is None: glow = np.zeros((h, w, 3), np.float32)
                 glow[y0:y1] = gp.reshape(h, w, 4)[y0:y1, :, :3]; del gp
             shutil.rmtree(gexr, ignore_errors=True)
+        if LAYER == "batch" and HAZE:
+            import glob
+            mf = sorted(glob.glob(os.environ["GT_LAYER_NPY"][:-4] + "-mist/mist*.exr"))
+            if mf:
+                mi = bpy.data.images.load(mf[0]); mp = np.empty(w * h * 4, np.float32); mi.pixels.foreach_get(mp); bpy.data.images.remove(mi)
+                if mist is None: mist = np.zeros((h, w), np.float32)
+                mist[y0:y1] = mp.reshape(h, w, 4)[y0:y1, :, 0]; del mp
     secs = round(time.time() - t, 1)
     if LAYER:   # layered photo: scene-linear RGBA (premultiplied; base alpha 1) + glow for look.py to composite, tonemap there
         npy = os.environ["GT_LAYER_NPY"]; rgba = rgb.reshape(h, w, 4)
         if LAYER == "base": rgba[..., 3] = 1.0
+        elif HAZE and mist is not None: haze_batch(rgba, mist, *HAZE)
+        import shutil; shutil.rmtree(npy[:-4] + "-mist", ignore_errors=True)
         np.save(npy, rgba)
         if glow is not None: np.save(npy[:-4] + "-glow.npy", glow)
         log("layer raw", LAYER, npy, "alpha mean", round(float(rgba[..., 3].mean()), 4), "render seconds", secs)

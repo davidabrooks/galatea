@@ -122,12 +122,36 @@ def test_render_mesh_batch_is_holdout_and_premultiplied():
     # batch pass: transparent film, every non-batch mesh a holdout, the other avatars' stand-ins shadow-only (not holdout)
     assert "sc.render.film_transparent = True" in RM and "ob.is_holdout = True" in RM
     assert "ob not in keep" in RM and "visible_camera" in RM
-    # the compositor's distance haze must not tint alpha-0 holdout edges (they glowed sky-blue)
-    assert re.search(r'if LAYER == "batch":.*Alpha', RM, re.S)
+    # the compositor's distance haze must not tint anti-aliased holdout edges (they glowed sky-blue): batch passes fog in numpy instead
+    assert 'if LAYER == "batch":' in RM and "haze_batch(rgba, mist, *HAZE)" in RM
     # world textures are shrunk to a silhouette + average colour in a batch pass
-    assert "GT_LAYER_HOLD_PX" in RM and "small=LAYER == \"batch\"" in RM
+    assert "GT_LAYER_HOLD_PX" in RM and "mat_images(b, small=hold)" in RM and "emission_sampling" in RM
 
 
 def test_render_mesh_layer_outputs_rgba_npy():
     assert 'np.save(npy, rgba)' in RM and 'GT_LAYER_NPY' in RM
     assert 'rgba[..., 3] = 1.0' in RM        # the base is opaque
+
+
+def _haze_batch():
+    m = re.search(r"def haze_batch\(.*?\n    return rgba\n", RM, re.S)
+    import warnings; ns = {"np": np, "warnings": warnings}; exec(m.group(0), ns)
+    return ns["haze_batch"]
+
+
+def test_haze_batch_ignores_edge_mist_and_alpha_zero():
+    haze = _haze_batch()
+    h, w = 9, 9
+    rgba = np.zeros((h, w, 4), np.float32)
+    rgba[3:6, 3:6] = (0.5, 0.5, 0.5, 1.0)         # a solid avatar
+    rgba[2, 3:6] = (0.25, 0.25, 0.25, 0.5)        # its half-covered top edge (premultiplied)
+    mist = np.full((h, w), 1.0, np.float32)        # sky behind...
+    mist[3:6, 3:6] = 0.05                          # ...the avatar at 200 m of a 4 km mist
+    mist[2, 3:6] = 0.52                            # the edge pixel's mist is a blend of avatar and sky
+    fog_col = np.array([0.4, 0.5, 0.9], np.float32)
+    out = haze(rgba.copy(), mist, 0.0005, 4000.0, fog_col)
+    f = 1 - np.exp(-0.0005 * 4000 * 0.05)
+    assert np.allclose(out[4, 4, :3], 0.5 * (1 - f) + fog_col * f, atol=1e-5)
+    # the edge pixel is fogged with the SOLID neighbour's mist (not its own blended 0.52), colour scaled by its alpha
+    assert np.allclose(out[2, 4, :3], 0.25 * (1 - f) + fog_col * f * 0.5, atol=1e-5)
+    assert np.allclose(out[0, 0], 0) and np.allclose(out[8, 8], 0)       # alpha 0 stays black: no halo

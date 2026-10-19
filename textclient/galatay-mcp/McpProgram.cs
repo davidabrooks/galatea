@@ -193,6 +193,15 @@ public sealed class SlTools
         return R($"touch {u}");
     }
 
+    [McpServerTool(Name = "display_name"), Description("Read my SL display name (no args), or set it with new_name (SetDisplayName capability; SL allows one change per week, the reply gives the next allowed time). Changes nothing else.")]
+    public static async Task<string> DisplayName([Description("empty = read only; else the exact new display name")] string new_name = "")
+    {
+        var n = (new_name ?? "").Trim();
+        if (n.Length == 0) return Json(await Core.DisplayNameObj());
+        if (n.IndexOfAny(new[] { '"', '\'', '\u2018', '\u2019', '\u201C', '\u201D', '`' }) >= 0) return Json(new { ok = false, result = "refused: quote characters in the name" });
+        return Json(await Core.SetDisplayNameObj(n));
+    }
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

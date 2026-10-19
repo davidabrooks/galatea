@@ -149,6 +149,31 @@ public sealed class SlTools
         return R(a == "tail" ? $"voice tail {Math.Clamp(lines, 1, 200)}" : "voice " + a);
     }
 
+    [McpServerTool(Name = "pay_object"), Description("Pay an in-world object (vendor) an exact L$ amount (MoneyTransferRequest, PayObject 5008). ONLY with David's explicit OK in chat for this exact object and amount. Refused above the GT_PAY_MAX cap (default L$2500), over the balance, or for an object not in view. Returns balance before/after, the MoneyBalanceReply and any new inventory offer. Never retry without checking 'balance' first.")]
+    public static Task<string> PayObject([Description("object UUID")] string object_uuid, [Description("exact L$ amount")] int amount)
+    {
+        if (!LibreMetaverse.UUID.TryParse(Clean(object_uuid), out var u) || u == LibreMetaverse.UUID.Zero) return Task.FromResult(Json(new { ok = false, result = "refused: explicit object uuid required" }));
+        if (amount < 1 || amount > Core.PayMax) return Task.FromResult(Json(new { ok = false, result = $"refused: amount must be 1..L${Core.PayMax} (GT_PAY_MAX)" }));
+        return R($"pay object {u} {amount} confirm");
+    }
+
+    [McpServerTool(Name = "balance"), Description("Current L$ balance (read-only).")]
+    public static Task<string> Balance() => R("balance");
+
+    [McpServerTool(Name = "stop_animations"), Description("Stop every animation playing on me and pause the wander. A worn AO in dance mode restarts dances: toggle it on the HUD with touch_attachment first.")]
+    public static Task<string> StopAnimations() => R("stopanims");
+
+    [McpServerTool(Name = "touch_attachment"), Description("Touch one prim/face of a worn attachment or HUD ('ao' = the Vista AO HUD). link = link number or prim name; omit link to list the attachment's child prims (names, link numbers). Never for anything involving payment.")]
+    public static Task<string> TouchAttachment([Description("attachment name, or 'ao'")] string attachment, [Description("link number or prim name; empty = list prims")] string link = "", int face = -1, [Description("optional touch UV 'u,v'")] string st = "")
+    {
+        var at = Clean(attachment).Replace("\"", ""); var l = Clean(link).Replace("\"", "");
+        if (l.Length == 0) return R($"worn links \"{(at == "ao" ? "MARTHA STS BENTO AO" : at)}\"");
+        return R($"touch-attachment \"{at}\" \"{l}\"{(face >= 0 ? " " + face : "")}{(Clean(st).Length > 0 ? " st=" + Clean(st) : "")}");
+    }
+
+    [McpServerTool(Name = "anim_list"), Description("List animations currently playing on me with their source.")]
+    public static Task<string> AnimList() => R("anim list");
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

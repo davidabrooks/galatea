@@ -53,6 +53,14 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 - The new Second Life viewer (Unreal high-end client, chat-first web client, shared agent bridge) is a separate project in the private repo `davidabrooks/sl-viewer`; its design doc moved there from `docs/unreal-viewer/` on Oct 17, 2026.
 - [`docs/rlv-design.md`](docs/rlv-design.md) – DRAFT design for RLV (Restrained Love) support: David-only control, written limits, milestones (1: undress, 2: furniture). Design only, nothing implemented.
 
+## MCP tools added in Oct 2026
+
+- `balance`, `pay_object` (exact uuid + amount, only with David's OK; hard cap `GT_PAY_MAX`, default L$2500)
+- `anim_list`, `stop_animations`, `touch_attachment` (HUD buttons; an empty link lists the HUD's prims)
+- `offers`, `accept_offer` (accept/decline one pending offer by id)
+
+See docs/capabilities.md for details.
+
 ## Photos and renders
 
 Galatea can see (`look`) and take photos (`photo hd`) of what is around her. Both are **read-only in-world**: the client writes a `scene export` (prims, her attachments, bakes, terrain, environment) and a separate box script, [`vision/look.py`](vision/look.py), meshes it and renders it offline with Blender Cycles on the CPU. Everything it needs on a fresh clone:

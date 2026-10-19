@@ -174,6 +174,17 @@ public sealed class SlTools
     [McpServerTool(Name = "anim_list"), Description("List animations currently playing on me with their source.")]
     public static Task<string> AnimList() => R("anim list");
 
+    [McpServerTool(Name = "offers"), Description("List pending inventory/friendship offers (id, sender, item, allow-listed or not). Read-only.")]
+    public static Task<string> Offers([Description("pending (default) or all")] string which = "pending") => R(Clean(which) == "all" ? "offers all" : "offers list");
+
+    [McpServerTool(Name = "accept_offer"), Description("Accept or decline ONE pending offer by id (from 'offers'). Accepting an offer from a sender that is not allow-listed needs confirm=true, i.e. David's explicit OK for that exact offer.")]
+    public static Task<string> AcceptOffer([Description("offer id (#n from offers)")] int id, [Description("accept | decline")] string action = "accept", bool confirm = false)
+    {
+        var a = Clean(action).ToLowerInvariant();
+        if (a is not ("accept" or "decline")) return Task.FromResult(Json(new { ok = false, result = "action must be accept or decline" }));
+        return R($"offers {a} {id}{(a == "accept" && confirm ? " confirm" : "")}");
+    }
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

@@ -376,7 +376,7 @@ def render_layered(out, env, meta, refetch, avail_mb):
     for g in batches: do(g)
     # composite (scene-linear), glow bloom, ONE tonemap on the finished frame, then the same outputs as a single-pass photo hd
     base = np.load(base_npy); h, w = base.shape[:2]
-    rgb = layers.composite(base, (lambda p=p: np.load(p) for p in order)); del base
+    rgb = layers.composite(base, (lambda p=p: (np.load(p), *layers.read_haze(p)) for p in order)); del base
     gp = base_npy[:-4] + "-glow.npy"
     if os.path.exists(gp):
         st = hdr_post.settings_from_env(env); rgb += hdr_post.bloom(np.load(gp), st["glow_iterations"], st["glow_strength"]).astype(np.float32)
@@ -386,7 +386,7 @@ def render_layered(out, env, meta, refetch, avail_mb):
     exr = out[:-4] + ".exr"; np.save(f"{ldir}/final.npy", rgb); del rgb
     rr = subprocess.run([BLENDER, "-b", "--factory-startup", "-noaudio", "--python", f"{HERE}/cloud-render/npy_to_exr.py", "--", f"{ldir}/final.npy", exr], capture_output=True, text=True)
     files = [out] + ([exr] if os.path.exists(exr) else []) + [hdr]
-    for f_ in glob.glob(f"{ldir}/*.npy"): os.remove(f_)   # keep the per-pass logs (layers/pass-N.log) for diagnosis
+    for f_ in ([] if os.environ.get("GT_LAYER_KEEP") else glob.glob(f"{ldir}/*.npy")): os.remove(f_)   # keep the per-pass logs (layers/pass-N.log) for diagnosis
     print(f"layers: composited {len(order)} batch layer(s) over the base, tonemap {json.dumps(info)}" + (f"; left out {len(skipped)} avatar(s)" if skipped else ""), file=sys.stderr)
     return [out], [p for p in files[1:]], [round(time.time() - t0, 1)], build
 

@@ -812,24 +812,7 @@ def sky_hd(nt, co, sp, col, env, night):
         col = mixc(md, col, mc.outputs["Color"])
     return col
 
-HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: applied to the pass by haze_batch
-def haze_batch(rgba, mist, k, D, col, solid=0.9, iters=16):
-    """Distance haze on a premultiplied holdout-pass RGBA (h, w, 4), in place. mist (h, w) is Cycles' linear 0..1 mist, which at an
-    anti-aliased edge blends in the sky or the holdout in front; so a pixel under `solid` alpha takes the mist of the nearest solid
-    pixels beside it (grown one ring per iteration). fog = 1 - exp(-k D mist) toward `col`, the fog colour only where there is something (x alpha)."""
-    a = rgba[..., 3]; m = np.where(a >= solid, mist, np.nan).astype(np.float32)
-    for _ in range(iters):
-        hole = np.isnan(m) & (a > 0.001)
-        if not hole.any(): break
-        pad = np.pad(m, 1, constant_values=np.nan)
-        nb = np.stack([pad[dy:dy + m.shape[0], dx:dx + m.shape[1]] for dy in range(3) for dx in range(3)])
-        with np.errstate(all="ignore"), warnings.catch_warnings():
-            warnings.simplefilter("ignore"); avg = np.nanmean(nb, axis=0)
-        m = np.where(hole & ~np.isnan(avg), avg, m)
-    m = np.where(np.isnan(m), mist, m)
-    fog = (1.0 - np.exp(-k * D * m)) * (m < 0.9999)
-    rgba[..., :3] = rgba[..., :3] * (1.0 - fog[..., None]) + np.asarray(col, np.float32) * (fog * a)[..., None]
-    return rgba
+HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: its ONE per-layer fog fraction is written next to the layer
 
 def env_post(env):
     """photo hd: EEP scene gamma and distance haze (the viewer's atmospheric fog on far geometry).
@@ -857,9 +840,10 @@ def env_post(env):
     fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", rl.outputs["Mist"], 0.9999))
     h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
     if LAYER == "batch":
-        # premultiplied RGBA of a holdout pass: the compositor's mist at an anti-aliased silhouette is a blend with the sky / the holdout in
-        # front (it painted a sky-blue halo round every avatar). The Mist pass goes to a file; hd_render_hdr fills the edge pixels' mist from
-        # the solid pixels beside them and fogs the colour there (haze_batch).
+        # premultiplied RGBA of a holdout pass = avatars only, NO haze or sky colour in any pixel: the per-pixel mist at an anti-aliased or
+        # depth-of-field-blurred silhouette is a blend with the sky / the holdout in front (20-40x the avatar's own), and fogging with it painted a
+        # pale sky-blue fringe round every background avatar (Oct 18 2026). The Mist pass goes to a file; hd_render_hdr turns the SOLID
+        # pixels' mist into one fog fraction per layer (-haze.json) and look.py adds that haze when it composites (layers.alpha_over).
         global HAZE
         HAZE = (k, D, [c * s for c in h])
         mdir = os.environ["GT_LAYER_NPY"][:-4] + "-mist"
@@ -1398,7 +1382,11 @@ def hd_render_hdr(png):
     if LAYER:   # layered photo: scene-linear RGBA (premultiplied; base alpha 1) + glow for look.py to composite, tonemap there
         npy = os.environ["GT_LAYER_NPY"]; rgba = rgb.reshape(h, w, 4)
         if LAYER == "base": rgba[..., 3] = 1.0
-        elif HAZE and mist is not None: haze_batch(rgba, mist, *HAZE)
+        elif HAZE and mist is not None:
+            if os.environ.get("GT_LAYER_DEBUG_RAW"): np.save(npy[:-4] + "-pre.npy", rgba); np.save(npy[:-4] + "-mist.npy", mist)   # diagnosis
+            sel = rgba[..., 3] >= 0.9; k_, D_, col_ = HAZE; m_ = float(np.median(mist[sel])) if sel.any() else 1.0   # == layers.layer_fog
+            fog_ = 0.0 if m_ >= 0.9999 else float(1.0 - np.exp(-k_ * D_ * m_))
+            json.dump({"fog": fog_, "col": [float(c) for c in col_]}, open(npy[:-4] + "-haze.json", "w")); log("layer haze fog", round(fog_, 4), "solid mist", round(m_, 4))
         import shutil; shutil.rmtree(npy[:-4] + "-mist", ignore_errors=True)
         np.save(npy, rgba)
         if glow is not None: np.save(npy[:-4] + "-glow.npy", glow)

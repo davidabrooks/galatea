@@ -74,19 +74,48 @@ def split_batch(groups):
     h = (len(groups) + 1) // 2
     return [groups[:h], groups[h:]] if len(groups) > 1 else [groups]
 
-def alpha_over(rgb, layer):
-    """rgb (h, w, 3) float32 scene-linear, modified in place; layer (h, w, 4) premultiplied RGBA from a holdout pass"""
+def alpha_over(rgb, layer, fog=0.0, fog_col=None):
+    """rgb (h, w, 3) float32 scene-linear, modified in place; layer (h, w, 4) premultiplied RGBA from a holdout pass.
+    A batch layer is avatar-only: transparent film, no sky / world background and no haze in any pixel (edge pixels included).
+    The distance haze in front of the layer's avatars is added here, once per layer, as a scalar `fog` toward `fog_col` and only
+    where the layer has coverage (x alpha): an anti-aliased or depth-of-field-blurred edge pixel therefore carries the avatar's own colour
+    at its alpha, never a background tint."""
     a = layer[..., 3:4]
-    rgb *= (1.0 - a); rgb += layer[..., :3]
+    rgb *= (1.0 - a)
+    if fog and fog_col is not None:
+        rgb += layer[..., :3] * np.float32(1.0 - fog) + np.asarray(fog_col, np.float32) * (a * np.float32(fog))
+    else:
+        rgb += layer[..., :3]
     return rgb
 
 def composite(base_rgba, layers):
-    """layers: iterable of (h, w, 4) arrays (or loader callables) farthest first -> (h, w, 3) float32"""
+    """layers: iterable of (h, w, 4) arrays, or loaders returning one, or (array, fog, fog_col) -- farthest first -> (h, w, 3) float32"""
     rgb = np.array(base_rgba[..., :3], np.float32)
     for L in layers:
         L = L() if callable(L) else L
-        alpha_over(rgb, L); del L
+        if isinstance(L, tuple): alpha_over(rgb, L[0], L[1], L[2])
+        else: alpha_over(rgb, L)
+        del L
     return rgb
+
+def haze_path(npy):
+    return npy[:-4] + "-haze.json"
+
+def read_haze(npy):
+    """(fog, colour) a batch pass left next to its layer, or (0.0, None)"""
+    try:
+        with open(haze_path(npy)) as f: d = json.load(f)
+        return float(d["fog"]), d["col"]
+    except (OSError, ValueError, KeyError): return 0.0, None
+
+def layer_fog(alpha, mist, k, D, solid=0.9):
+    """One fog fraction for a whole batch layer: 1 - exp(-k D m) at the median mist m (0..1 of D metres) of its SOLID pixels (alpha >= solid).
+    Edge pixels' mist is a blend with whatever was behind (sky, holdout) and is never used. A batch is a contiguous slice of depth, so one
+    value is within a fraction of a percent for every avatar in it."""
+    sel = alpha >= solid
+    if not sel.any(): return 0.0
+    m = float(np.median(mist[sel]))
+    return 0.0 if m >= 0.9999 else float(1.0 - np.exp(-k * D * m))
 
 def read_plan(path):
     with open(path) as f: return json.load(f)

@@ -126,14 +126,18 @@ def sky_track(doc, dc):
     """EEP sky track for her altitude, as LLEnvironment::calculateSkyTrackForAltitude: tracks 1 (ground) .. 4 (sky 3) by the region's track
     altitudes; an empty track falls back to the next lower one (finally the ground track). Oct 19 2026: Warehouse 21 floats at 2003 m: its
     parcel day cycle has a dark club sky on tracks 2-4 and a bright default on the ground track, and we always used the ground track.
-    GT_SKY_TRACK=<1-4> forces a track, GT_SKY_TRACK=ground the old behaviour."""
+    GT_SKY_TRACK=<1-4> forces a track, GT_SKY_TRACK=ground the ground track, GT_SKY_TRACK=auto the altitude track even with the LL default
+    altitudes. Default (Oct 19 2026 re-fit to David's viewer photo): the altitude track only when the export carries the region's own
+    track_altitudes; without them the ground track (with the default altitudes track 3 rendered the floor at 0.04-0.07 vs 0.20 in-viewer)."""
     force = os.environ.get("GT_SKY_TRACK", "")
     tracks = dc.get("tracks") or []
     if force == "ground": return 1
     if force.isdigit(): t = int(force)
     else:
         env = doc.get("environment") or {}
-        alts = env.get("track_altitudes") or (env.get("environment") or {}).get("track_altitudes") or TRACK_ALTITUDES
+        alts = env.get("track_altitudes") or (env.get("environment") or {}).get("track_altitudes")
+        if not alts and force != "auto": return 1
+        alts = alts or TRACK_ALTITUDES
         try: z = float(((doc.get("me") or {}).get("pos") or [0, 0, 0])[2] or 0)
         except (TypeError, ValueError): z = 0.0
         i = next((j for j, a in enumerate(alts) if not z > float(a)), len(alts))

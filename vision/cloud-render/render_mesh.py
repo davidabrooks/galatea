@@ -904,6 +904,7 @@ def sky_hd(nt, co, sp, col, env, night):
         col = mixc(md, col, mc.outputs["Color"])
     return col
 
+MIST_ERODE = int(os.environ.get("GT_MIST_ERODE", "-1"))   # px; -1 = auto (1 px per 1080 of the frame's short side, at least 1), 0 = off
 HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: its ONE per-layer fog fraction is written next to the layer
 
 def env_post(env):
@@ -928,8 +929,15 @@ def env_post(env):
             if isinstance(v, (int, float)): n.inputs[i].default_value = v
             else: L(v, n.inputs[i])
         return n.outputs[0]
-    ex = m("EXPONENT", m("MULTIPLY", rl.outputs["Mist"], -k * D), 0)
-    fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", rl.outputs["Mist"], 0.9999))
+    mist = rl.outputs["Mist"]; er_px = MIST_ERODE if MIST_ERODE >= 0 else max(1, round(min(sc.render.resolution_x, sc.render.resolution_y) / 1080))
+    if LAYER != "batch" and er_px > 0:
+        # the per-pixel mist of a pixel that is half hashed-alpha hair / anti-aliased edge and half far sky (or backdrop) is the MEAN of 0.0008 and 1.0,
+        # i.e. ~0.5 = 2000 m of haze on a surface 3 m away, and it is not denoised like the colour: every such pixel was fogged to the sky's pale
+        # lavender (the speckled hair, the fringe round the hair and the stage truss, Oct 18 2026). The nearest surface in a few pixels decides the
+        # fog instead (a minimum filter = erode): the blend of near + far is then fogged like the near one, the far one's own 1-2 px edge a hair less
+        er = nt.nodes.new("CompositorNodeDilateErode"); er.mode = "DISTANCE"; er.distance = -er_px; L(mist, er.inputs[0]); mist = er.outputs[0]
+    ex = m("EXPONENT", m("MULTIPLY", mist, -k * D), 0)
+    fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", mist, 0.9999))
     h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
     if LAYER == "batch":
         # premultiplied RGBA of a holdout pass = avatars only, NO haze or sky colour in any pixel: the per-pixel mist at an anti-aliased or

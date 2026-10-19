@@ -57,7 +57,8 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 
 - `balance`, `pay_object` (exact uuid + amount, only with David's OK; hard cap `GT_PAY_MAX`, default L$2500)
 - `anim_list`, `stop_animations`, `touch_attachment` (HUD buttons; an empty link lists the HUD's prims)
-- `offers`, `accept_offer` (accept/decline one pending offer by id)
+- `offers`, `accept_offer` (accept/decline one pending offer by id; saved offers reload at connector start)
+- `touch_object` (touch an in-world object by uuid, e.g. vendor redelivery)
 
 See docs/capabilities.md for details.
 

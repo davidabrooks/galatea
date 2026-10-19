@@ -592,6 +592,79 @@ def light_shadow_ids(lights, me, n=None, mode=None):
     near = sorted((l for l in lights if l.get("proj")), key=lambda l: sum((a - b) ** 2 for a, b in zip(l["pos"], me)))
     return {id(l) for l in near[:n]}
 
+# Light effects (Oct 18 2026, David: "as good as possible"): SL draws no beam for a spot light and only the fixture's own tiny glow for a
+# lamp, so stage lights were small dots. Camera-only emissive geometry (invisible to every light / shadow / reflection ray, so it lights
+# nothing): a soft cone for each projector / spot (apex at the light, half angle = fov/2 capped, fading along the throw and toward the cone's
+# silhouette) and a soft halo ball at each lamp. Cycles surface shaders only (no volume: no memory, ~free render time); base / single pass
+# only, never an avatar batch layer. GT_LIGHT_FX=0 off, GT_LIGHT_BEAM / GT_LIGHT_HALO strengths (0 = that part off).
+LIGHT_FX = os.environ.get("GT_LIGHT_FX", "1") != "0" and LAYER != "batch"
+LIGHT_BEAM = float(os.environ.get("GT_LIGHT_BEAM", "0.05")); LIGHT_HALO = float(os.environ.get("GT_LIGHT_HALO", "3.0"))
+BEAM_MAX_HALF = math.radians(float(os.environ.get("GT_LIGHT_BEAM_MAX_DEG", "28")))
+
+def beam_params(l):
+    """(half angle rad, length m, radiance) of a projector's visible cone, or None: wide fill projectors (fov > 120 deg, the ambiance ones) and dim ones get none"""
+    pj = l.get("proj")
+    if not pj or LIGHT_BEAM <= 0: return None
+    fov = float(pj.get("fov") or 0)
+    if fov > 2.1 or l.get("intensity", 0) < 0.15: return None
+    half = min(max(fov / 2, 0.05), BEAM_MAX_HALF)
+    length = min(max(l.get("radius", 10) * 1.5, 1.0), 18.0)
+    return half, length, LIGHT_BEAM * min(l["intensity"], 1.5) * (0.35 / max(math.tan(half), 0.2))
+
+def halo_params(l):
+    """(radius m, radiance) of a lamp's glow ball, or None"""
+    if LIGHT_HALO <= 0 or l.get("intensity", 0) < 0.15 or max(l["color"]) < 0.05: return None
+    return 0.18 + 0.02 * min(l.get("radius", 2), 10), LIGHT_HALO * min(l["intensity"], 1.5)
+
+def fx_material(name, col, k, beam_len=None, power=2.0):
+    """Add(Transparent, Emission(col, k x profile)): profile = |N.V|^2 (thick middle, soft silhouette) x, for a beam, apex fade-in x throw fade-out"""
+    m = bpy.data.materials.new(name); m.use_nodes = True; nt = m.node_tree; nt.nodes.clear()
+    def n(t): return nt.nodes.new(t)
+    def mm(kind, a, b, clamp=False):
+        x = n("ShaderNodeMath"); x.operation = kind; x.use_clamp = clamp
+        for i, v in enumerate((a, b)):
+            if isinstance(v, (int, float)): x.inputs[i].default_value = v
+            else: nt.links.new(v, x.inputs[i])
+        return x.outputs[0]
+    g = n("ShaderNodeNewGeometry"); dt = n("ShaderNodeVectorMath"); dt.operation = "DOT_PRODUCT"
+    nt.links.new(g.outputs["Normal"], dt.inputs[0]); nt.links.new(g.outputs["Incoming"], dt.inputs[1])
+    prof = mm("POWER", mm("ABSOLUTE", dt.outputs["Value"], 0.0), power)
+    if beam_len:
+        tc = n("ShaderNodeTexCoord"); sp = n("ShaderNodeSeparateXYZ"); nt.links.new(tc.outputs["Object"], sp.inputs[0])
+        s = mm("MULTIPLY", sp.outputs["Z"], -1.0 / beam_len, True)
+        fin = mm("MINIMUM", mm("MULTIPLY", s, 12.5), 1.0)                  # apex fade-in over the first 8% (no bright point at the lamp)
+        fout = mm("POWER", mm("SUBTRACT", 1.0, s, True), 1.5)
+        prof = mm("MULTIPLY", prof, mm("MULTIPLY", fin, fout))
+    cd = n("ShaderNodeCameraData")   # nothing glows in the camera's face: fade in over 1.5 .. 5 m (a cone whose apex is beside the lens would tint the whole frame)
+    prof = mm("MULTIPLY", prof, mm("DIVIDE", mm("SUBTRACT", cd.outputs["View Distance"], 1.5, False), 3.5, True))
+    em = n("ShaderNodeEmission"); em.inputs["Color"].default_value = (*col, 1.0); nt.links.new(mm("MULTIPLY", prof, k), em.inputs["Strength"])
+    tr = n("ShaderNodeBsdfTransparent"); ad = n("ShaderNodeAddShader"); out = n("ShaderNodeOutputMaterial")
+    nt.links.new(tr.outputs[0], ad.inputs[0]); nt.links.new(em.outputs[0], ad.inputs[1]); nt.links.new(ad.outputs[0], out.inputs["Surface"])
+    return m
+
+def fx_object(name, me, mat, loc, rot=None):
+    me.materials.append(mat); o = bpy.data.objects.new(name, me); o.location = loc
+    if rot is not None: o.rotation_euler = rot
+    for a in ("visible_diffuse", "visible_glossy", "visible_transmission", "visible_volume_scatter", "visible_shadow"): setattr(o, a, False)
+    bpy.context.scene.collection.objects.link(o); return o
+
+def light_fx(lights):
+    from mathutils import Vector
+    import bmesh; nb = nh = 0; seg = 24
+    for l in lights:
+        col = light_linear(l["color"]); bp = beam_params(l)
+        if bp:
+            half, length, k = bp; r = length * math.tan(half)
+            me = bpy.data.meshes.new("beam")
+            vs = [(0, 0, 0)] + [(r * math.cos(2 * math.pi * i / seg), r * math.sin(2 * math.pi * i / seg), -length) for i in range(seg)]
+            me.from_pydata(vs, [], [(0, 1 + i, 1 + (i + 1) % seg) for i in range(seg)]); me.update()
+            fx_object("beam", me, fx_material("beam", col, k, length), l["pos"], Vector(l["proj"]["dir"]).to_track_quat("-Z", "Y").to_euler()); nb += 1
+        hp = halo_params(l)
+        if hp:
+            rad, k = hp; me = bpy.data.meshes.new("halo"); bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=rad); bm.to_mesh(me); bm.free()
+            fx_object("halo", me, fx_material("halo", col, k, None, 3.5), l["pos"]); nh += 1
+    log("light fx", "beams", nb, "halos", nh, "beam", LIGHT_BEAM, "halo", LIGHT_HALO)
+
 def eep(env):
     """Region EEP sky at export time (make_job.py): sun or, below the horizon, moon; sky colour as ambient; SL point lights."""
     sun = Vector(env["sun_dir"]).normalized(); night = sun.z < 0
@@ -636,6 +709,7 @@ def eep(env):
         nt.links.new(fo.outputs["Constant"], nt.nodes["Emission"].inputs["Strength"])
         o = bpy.data.objects.new("sl", d); o.location = l["pos"]; sc.collection.objects.link(o)
         if pj: projector(d, o, pj, op)
+    if LIGHT_FX: light_fx(M.get("lights", []))
     log("eep", "night" if night else "day", "ambient", round(AMB, 4), "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
 
 def proj_spot(fov):

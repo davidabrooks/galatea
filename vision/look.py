@@ -362,6 +362,7 @@ def render_layered(out, env, meta, refetch, avail_mb):
     build = next((float(l.split()[3]) for l in r.stdout.splitlines() if l.startswith("GT: build seconds")), None)
     plan = layers.read_plan(plan_path); budget = layers.batch_budget_verts(meta["batches"], avail_mb)
     batches = layers.plan_batches(plan, budget)
+    if os.environ.get("GT_LAYER_MAX_BATCHES"): batches = batches[:int(os.environ["GT_LAYER_MAX_BATCHES"])]   # test hook: GT_LAYER_MAX_BATCHES=0 = the base pass only
     print(f"layers: {sum(1 for p in plan if p['visible'])}/{len(plan)} avatars in view, {len(batches)} batch pass(es), budget {budget} vertices each", file=sys.stderr)
     order = []; skipped = []
     def do(groups):

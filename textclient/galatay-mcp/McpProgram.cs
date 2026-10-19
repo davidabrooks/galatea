@@ -221,6 +221,15 @@ public sealed class SlTools
     [McpServerTool(Name = "inv_dump"), Description("READ-ONLY: list every item in an inventory folder (recursive) with owner/next-owner perms; saves readable scripts (owner mod) and notecards as text under /workspace/secondlife/scripts/thirdparty/. No-mod scripts are reported as not readable.")]
     public static Task<string> InvDump(string folder_uuid) => R("invdump " + Clean(folder_uuid));
 
+    [McpServerTool(Name = "rlv_status"), Description("RLV (Rlv.cs): version advertised, active restrictions per worn source object (e.g. the N° 9 collar). Commands are only accepted from my own worn attachments; relay for world objects is off.")]
+    public static Task<string> RlvStatus() => R("rlv status");
+
+    [McpServerTool(Name = "rlv_clear"), Description("EMERGENCY OVERRIDE: clear every RLV restriction locally right now (saying MAYDAY in chat does this too).")]
+    public static Task<string> RlvClear() => R("rlv clear");
+
+    [McpServerTool(Name = "rlv_log"), Description("Last n lines of the RLV log (/workspace/secondlife/rlv/rlv-log.md): every @ command my worn items sent and what I did.")]
+    public static Task<string> RlvLogTail(int n = 30) => R("rlv log " + Math.Clamp(n, 1, 200));
+
     [McpServerTool(Name = "wear_item"), Description("ADD-attach one object item from my inventory by uuid (never replaces). Refuses anything named like the NX Remote (David's controller HUD: never wear it).")]
     public static async Task<string> WearItem(string item_uuid, [Description("item name as listed (checked against the NX Remote ban)")] string item_name)
     {

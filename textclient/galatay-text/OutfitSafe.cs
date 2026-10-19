@@ -99,6 +99,7 @@ public static partial class Program
         var s = new HashSet<UUID> { RetiredAwpAo };
         foreach (var k in KeepAttachedIds()) s.Add(k);   // routes/_keep-attached.txt (Real Kisser): never detached by outfit/undress/bikini
         foreach (var k in AlwaysWearIds()) s.Add(k);     // routes/_always-wear.txt (N° 9 collar): never detached either
+        foreach (var k in RlvLockedItems()) s.Add(k);    // Rlv.cs: items an RLV source locked on (@detach=n)
         try { var ao = AoItem; if (ao != UUID.Zero) s.Add(ao); } catch { }
         foreach (var p in WornPrims())
         {

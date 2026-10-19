@@ -504,6 +504,7 @@ public static partial class Program
         };
         client.Self.IM += (s, e) => HandleIm(e.IM);
         client.Self.AlertMessage += (s, e) => { NoteAlertForSit(e.Message); Log("alert", e.Message); };
+        RlvHook();   // Rlv.cs
         HookRest();
     }
 
@@ -1777,6 +1778,12 @@ public static partial class Program
         if (cmd == "remind") return RemindCmd(a); // works logged out (FriendWatch.cs)
         if (!LoggedIn && cmd != "help" && cmd != "restart") return "not logged in" + (cmd is "status" or "where" ? "" : " (use login)");
         if (cmd is "say" or "shout" or "whisper" || (cmd == "chan" && a.Length > 0 && a[0] == "0")) { var qg = QuietChatGuard(); if (qg != null) { Log("quiet", $"manual {cmd} {qg}"); return qg; } }
+        {   // Rlv.cs: restrictions from her worn RLV items (collar); MAYDAY always passes and clears them locally
+            var rb = RlvGuard(cmd, rest);
+            if (rb == null && cmd == "detach" && a.Length == 1 && UUID.TryParse(a[0], out var dl) && RlvLockedItems().Contains(dl)) rb = "refused (RLV @detach=n: this item is locked on)";
+            if (rb != null) { RlvLog($"own command '{line}' {rb}"); return rb; }
+            if (cmd is "say" or "shout" or "whisper" && IsSafeword(rest)) { var n = rlv.ClearAll(); RlvLog($"SAFEWORD said ('{rest}'): {n} local restriction(s) cleared"); }
+        }
         bool imRead = cmd == "im" && IsImHistoryCmd(a); // read-only, no rate guard (ImGuard.cs)
         if (cmd is "say" or "shout" or "whisper" or "chan" or "im" && !imRead) { var rg = RateGuard(); if (rg != null) return rg; WanderOwnChat(); }
         switch (cmd)
@@ -1969,6 +1976,7 @@ public static partial class Program
             case "payprice": return await PayPriceCmd(a);
             case "pay": return await PayCmd(a);
             case "stopanims": return await StopAnimsCmd();   // StopAnims.cs
+            case "rlv": return RlvCmdText(a);   // Rlv.cs
             case "invdump": return await InvDumpCmd(a);   // InvDump.cs
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
             case "sethome": return await SetHomeCmd();

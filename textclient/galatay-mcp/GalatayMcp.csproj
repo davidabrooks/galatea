@@ -89,6 +89,7 @@
     <Compile Include="../galatay-text/AdultRedress.cs" Link="Core/AdultRedress.cs" />
     <Compile Include="../galatay-text/PoseRules.cs" Link="Core/PoseRules.cs" />
     <Compile Include="../galatay-text/Pay.cs" Link="Core/Pay.cs" />
+    <Compile Include="../galatay-text/StopAnims.cs" Link="Core/StopAnims.cs" />
     <Compile Include="../galatay-text/SceneExport.cs" Link="Core/SceneExport.cs" />
     <Compile Include="../galatay-text/Look.cs" Link="Core/Look.cs" />
     <Compile Include="../galatay-text/TheV.cs" Link="Core/TheV.cs" />

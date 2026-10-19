@@ -36,6 +36,8 @@ The connector (`galatay-mcp.sh`) is the same client core as a stdio MCP server. 
 | Profile | `get_profile`, `set_profile` (About text only, backs up the old profile first) |
 | Voice | `voice` (`action` = on, off, status, tail, wake) |
 | Dialogs | `dialog_reply` (`button`; refuses anything that looks like payment) |
+| Money | `balance` (read-only); `pay_object` (`object_uuid`, `amount`; PayObject 5008, only with David's explicit OK for that object and amount; hard cap `GT_PAY_MAX`, default L$2500; reports balance before/after, the MoneyBalanceReply and new inventory offers) |
+| Animations / HUDs | `anim_list`; `stop_animations` (stops every animation on me, pauses the wander; text `stopanims`); `touch_attachment` (`attachment` or `ao`, `link`, `face`, `st`; empty `link` lists the HUD's prims). The Vista AO in dance mode restarts dances: touch its **AO** button to return to the normal AO |
 
 Everything else (outfits, photos, `touch`, `goto_place`, `wander`, `inv`, ...) is a CLI command. Adding a connector build needs `build-all.sh --stage-mcp`; the MCP server namespace has to be restarted by its owner to pick it up.
 

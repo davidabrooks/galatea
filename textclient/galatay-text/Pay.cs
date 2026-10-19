@@ -39,8 +39,11 @@ public static partial class Program
     }
 
     // pure (selftest): why a payment is refused, or null
-    public static string PayRefusal(int amount, bool confirm, int? balance) =>
-        amount < 1 ? "amount must be >= L$1" : !confirm ? $"refused: paying L${amount} needs 'confirm' (David's explicit OK)" :
+    // hard cap (2026-10-19): GT_PAY_MAX (default L$2500); any payment above it is refused, confirm or not
+    public static int PayMax => int.TryParse(Environment.GetEnvironmentVariable("GT_PAY_MAX"), out var m) && m > 0 ? m : 2500;
+    public static string PayRefusal(int amount, bool confirm, int? balance) => PayRefusal(amount, confirm, balance, PayMax);
+    public static string PayRefusal(int amount, bool confirm, int? balance, int max) =>
+        amount < 1 ? "amount must be >= L$1" : amount > max ? $"refused: L${amount} is over the pay cap L${max} (GT_PAY_MAX)" : !confirm ? $"refused: paying L${amount} needs 'confirm' (David's explicit OK)" :
         balance == null ? "refused: balance unknown (no reply)" : amount > balance ? $"refused: L${amount} is over the balance L${balance}" : null;
 
     static async Task<string> PayCmd(string[] a)
@@ -51,6 +54,7 @@ public static partial class Program
             C(PayRefusal(10, false, 100)?.Contains("confirm") == true, "no 'confirm' -> refused");
             C(PayRefusal(101, true, 100)?.Contains("over the balance") == true, "over the balance -> refused");
             C(PayRefusal(0, true, 100) != null && PayRefusal(10, true, null) != null, "amount 0 / unknown balance -> refused");
+            C(PayRefusal(2501, true, 99999, 2500)?.Contains("pay cap") == true, "over the cap -> refused");
             C(PayRefusal(100, true, 100) == null, "L$100 of L$100 with confirm -> allowed");
             return $"pay selftest: {pass} PASS, {fail} FAIL (pure; nothing paid)\n" + sb.ToString().TrimEnd();
         }
@@ -64,18 +68,25 @@ public static partial class Program
         var replies = new List<string>();
         void Ch(object s, ChatEventArgs e) { if (e.SourceID == p.ID || e.FromName == name) lock (replies) replies.Add($"chat {e.Type}: {e.Message}"); }
         void Im(object s, InstantMessageEventArgs e) { if (e.IM.FromAgentID == p.ID || e.IM.FromAgentName == name) lock (replies) replies.Add($"im ({e.IM.Dialog}): {e.IM.Message}"); }
-        client.Self.ChatFromSimulator += Ch; client.Self.IM += Im;
+        var mbr = new List<string>();
+        void Mb(object s, MoneyBalanceReplyEventArgs e) { lock (mbr) mbr.Add($"MoneyBalanceReply success={e.Success} balance=L${e.Balance} tx={e.TransactionID} '{e.Description}'" +
+            (e.TransactionInfo != null ? $" [type {e.TransactionInfo.TransactionType} amount L${e.TransactionInfo.Amount} dest {e.TransactionInfo.DestID} '{e.TransactionInfo.ItemDescription}']" : "")); }
+        int offersBefore; lock (pendingOffers) offersBefore = offerSeq;
+        client.Self.ChatFromSimulator += Ch; client.Self.IM += Im; client.Self.MoneyBalanceReply += Mb;
         try
         {
             Log("pay", $"PAYING '{name}' {p.ID} L${amount} (balance before L${before})");
             client.Self.GiveObjectMoney(p.ID, amount, name);
             await Task.Delay(10000);
         }
-        finally { client.Self.ChatFromSimulator -= Ch; client.Self.IM -= Im; }
+        finally { client.Self.ChatFromSimulator -= Ch; client.Self.IM -= Im; client.Self.MoneyBalanceReply -= Mb; }
         var after = await BalanceAsync();
         var res = $"paid '{name}' {p.ID} L${amount}: balance L${before} -> {(after.HasValue ? "L$" + after : "?")}" +
                   (after == before ? " (UNCHANGED: payment may have failed)" : "") +
-                  $"; object replies in 10 s: {(replies.Count == 0 ? "none" : string.Join(" | ", replies))}";
+                  $"; object replies in 10 s: {(replies.Count == 0 ? "none" : string.Join(" | ", replies))}" +
+                  $"; {(mbr.Count == 0 ? "no MoneyBalanceReply" : string.Join(" | ", mbr))}";
+        List<string> newOffers; lock (pendingOffers) newOffers = pendingOffers.Where(o => o.N > offersBefore).Select(OfferLine).ToList();
+        res += $"; new inventory offers: {(newOffers.Count == 0 ? "none (see 'offers' later)" : string.Join(" | ", newOffers))}";
         Log("pay", res); return res;
     }
 }

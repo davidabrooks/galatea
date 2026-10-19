@@ -35,6 +35,7 @@ SSR = os.environ.get("GT_SSR", "1") != "0"
 # razor edges and a solid weave shadow; a wider disc reproduces the blurred penumbra (fitted on the 2026-10-13 porch).
 SHADOW_ANGLE_NIGHT = float(os.environ.get("GT_SHADOW_ANGLE", "0.53")); SHADOW_ANGLE_DAY = float(os.environ.get("GT_SHADOW_ANGLE_DAY", "0.53"))
 FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
+INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.2")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
 SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)
 # 2026-10-14 David's Ultra (photo hd default): SSR + mirrors on. Cycles traces reflections in world space, so they are the
 # same in every 4K tile (no screen-edge fade, nothing off-screen missing): SSR on = every face keeps Principled's specular
@@ -196,9 +197,17 @@ def mat_images(b, small=False):
 TEMPLATES = {}; MAT_CACHE = {}
 # glow/bloom (Firestorm "Glow", High+ strength 2 = RenderGlowIterations): only photo hd scenes with a glowing face
 GLOW_ON = HD and LAYER != "batch" and os.environ.get("GT_GLOW", "1") != "0" and any((b.get("glow") or 0) > 0 for b in M.get("batches", []))
-def material(b, imgs=None):
+# Batch passes: a holdout's see-through (blended / hashed) alpha made it a PARTIAL holdout, so an avatar behind her hair showed through every
+# hashed gap in the batch layer, and alpha-over onto the base (which already has her hair over the world) darkened the hair there: fine
+# dark dots over her hair (Oct 19 2026). A holdout is never seen, only its silhouette: its blended alpha is cut at GT_HOLD_ALPHA_CUT
+# (default 0.5, the usual mask cutoff; 0 = the old partial holdout), so the layer is either fully held out or not, never dithered.
+HOLD_ALPHA_CUT = float(os.environ.get("GT_HOLD_ALPHA_CUT", "0.5"))
+
+def material(b, imgs=None, hold=False):
     imgs = mat_images(b) if imgs is None else imgs
     mat = b.get("mat") or {"alpha": "auto"}
+    if hold and HOLD_ALPHA_CUT > 0 and mat.get("alpha", "auto") in ("auto", "blend"):
+        mat = {**mat, "alpha": "mask", "cutoff": HOLD_ALPHA_CUT}; b = {**b, "mat": mat}
     cut = has_alpha(imgs["diffuse"]) if "diffuse" in imgs else None
     sig = json.dumps([{k: v for k, v in mat.items() if k not in ("normal", "spec", "mr", "emissive_tex")}, sorted(imgs),
                       b["rgba"][3] < 0.999, bool(b["fullbright"]), cut], sort_keys=True)
@@ -308,6 +317,15 @@ def _material(b, slots, cut):
             ao = nt.nodes.new("ShaderNodeAmbientOcclusion"); ao.inputs["Distance"].default_value = SSAO_DIST; ao.samples = 8
             k = nt.nodes.new("ShaderNodeMapRange"); L(ao.outputs["AO"], k.inputs["Value"]); k.inputs[3].default_value = 1 - SSAO
             L(mul(k.outputs["Result"], float(p.inputs["Emission Strength"].default_value)), p.inputs["Emission Strength"])
+        if HD and INDOOR_AMB < 1:
+            # indoors (Oct 19 2026, David at Warehouse 21: "darker in-world, the light comes from the spotlights"): the sky ambient was emission
+            # on every face, so a roofed club got the full open-sky fill. Its sky share now follows how much open sky the point sees (AO
+            # over GT_INDOOR_DIST m: roof and walls block it), down to GT_INDOOR_AMB of it under a closed roof (1 = the old unoccluded fill).
+            # The sun / moon and the world light are real Cycles lights and already blocked by the roof; the SL point / spot lights are untouched.
+            ia = nt.nodes.new("ShaderNodeAmbientOcclusion"); ia.inputs["Distance"].default_value = INDOOR_DIST; ia.samples = 4; ia.only_local = False
+            kk = nt.nodes.new("ShaderNodeMapRange"); L(ia.outputs["AO"], kk.inputs["Value"]); kk.inputs[3].default_value = INDOOR_AMB
+            src = p.inputs["Emission Strength"].links[0].from_socket if p.inputs["Emission Strength"].links else float(p.inputs["Emission Strength"].default_value)
+            L(mul(kk.outputs["Result"], src), p.inputs["Emission Strength"])
     # Opaque clothes must depth-test solid: always-HASHED let body BOM show through jeans/tops (Scentual90).
     if mode in ("none", "emissive"):
         m.blend_method = "OPAQUE"
@@ -440,7 +458,7 @@ def build(group, bones=None, lining=True):
             gl = me.attributes.new("sl_glow", "FLOAT", "POINT"); gl.data.foreach_set("value", np.full(nv, float(b.get("glow") or 0.0), np.float32))
         me.update()
         if not (hold and os.environ.get("GT_HOLD_FLAT", "1") == "1"): me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
-        ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs))
+        ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs, hold))
         obs.append(ob)
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
         # shadow drew a grey "text" mark beside her nose. The SL viewer's sun shadow map is far too coarse to resolve them.
@@ -477,7 +495,7 @@ def gpu_setup():
             sc.cycles.denoising_prefilter = os.environ.get("GT_DENOISE_PREFILTER", "ACCURATE")
             if hasattr(sc.cycles, "denoising_quality"): sc.cycles.denoising_quality = os.environ.get("GT_DENOISE_QUALITY", "HIGH")
             sc.cycles.max_bounces = 6; sc.cycles.diffuse_bounces = 3; sc.cycles.glossy_bounces = 3
-            sc.cycles.transparent_max_bounces = 24; sc.cycles.filter_width = 1.5 if os.environ.get("GT_SMAA", "1") != "0" else 0.01   # pixel filter = anti-aliasing (SMAA Ultra; `nosmaa` = aliased)
+            sc.cycles.transparent_max_bounces = int(os.environ.get("GT_TRANSPARENT_BOUNCES", "24")); sc.cycles.filter_width = 1.5 if os.environ.get("GT_SMAA", "1") != "0" else 0.01   # pixel filter = anti-aliasing (SMAA Ultra; `nosmaa` = aliased)
             # 2026-10-13 20:05 photo hd self landscape: Blender OOM-killed at 7.2 GB RSS (15 GB box, client running) after
             # 8 min. Tiles bound the film/denoise buffers; look.py's retry after a kill also sets GT_TEX_LIMIT
             sc.cycles.use_auto_tile = True; sc.cycles.tile_size = int(os.environ.get("GT_TILE", "1024"))
@@ -924,6 +942,19 @@ def sky_hd(nt, co, sp, col, env, night):
 MIST_ERODE = int(os.environ.get("GT_MIST_ERODE", "-1"))   # px; -1 = auto (1 px per 1080 of the frame's short side, at least 1), 0 = off
 HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: its ONE per-layer fog fraction is written next to the layer
 
+INDOOR_HAZE = os.environ.get("GT_INDOOR_HAZE", "")   # fog colour scale with the camera under a roof; "" = GT_INDOOR_AMB, 1 = old
+
+def indoor_haze():
+    """the haze in-scatter colour is sky light; under a roof (Warehouse 21) the far walls fogged to a pale grey-blue glow
+    (Oct 19 2026). Camera under geometry within 80 m straight up -> scale the fog colour (base and batch layers alike)"""
+    f = float(INDOOR_HAZE) if INDOOR_HAZE else INDOOR_AMB
+    if f >= 1: return 1.0
+    cam = sc.camera
+    if cam is None: return 1.0
+    hit = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), cam.matrix_world.translation, Vector((0.0, 0.0, 1.0)), distance=80.0)[0]
+    log("indoor haze", "roof" if hit else "open sky", round(f, 3) if hit else 1.0)
+    return f if hit else 1.0
+
 def env_post(env):
     """photo hd: EEP scene gamma and distance haze (the viewer's atmospheric fog on far geometry).
     gamma: LL scaleSoftClip 1 - (1 - c)^gamma ~ Blender view gamma (1 = unchanged). Haze: transmittance
@@ -956,6 +987,7 @@ def env_post(env):
     ex = m("EXPONENT", m("MULTIPLY", mist, -k * D), 0)
     fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", mist, 0.9999))
     h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
+    s *= indoor_haze()
     if LAYER == "batch":
         # premultiplied RGBA of a holdout pass = avatars only, NO haze or sky colour in any pixel: the per-pixel mist at an anti-aliased or
         # depth-of-field-blurred silhouette is a blend with the sky / the holdout in front (20-40x the avatar's own), and fogging with it painted a

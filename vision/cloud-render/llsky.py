@@ -120,12 +120,34 @@ def build_env(p, sun, moon, frac=None, t=0.0, horizon=None):
         out["night_sky"] = {**out["sky"], "stars": out["stars"]}
     return out
 
+TRACK_ALTITUDES = [0.0, 1000.0, 2000.0, 3000.0]   # LL region defaults (water, sky 1-3 floors); an export may carry its own
+
+def sky_track(doc, dc):
+    """EEP sky track for her altitude, as LLEnvironment::calculateSkyTrackForAltitude: tracks 1 (ground) .. 4 (sky 3) by the region's track
+    altitudes; an empty track falls back to the next lower one (finally the ground track). Oct 19 2026: Warehouse 21 floats at 2003 m: its
+    parcel day cycle has a dark club sky on tracks 2-4 and a bright default on the ground track, and we always used the ground track.
+    GT_SKY_TRACK=<1-4> forces a track, GT_SKY_TRACK=ground the old behaviour."""
+    force = os.environ.get("GT_SKY_TRACK", "")
+    tracks = dc.get("tracks") or []
+    if force == "ground": return 1
+    if force.isdigit(): t = int(force)
+    else:
+        env = doc.get("environment") or {}
+        alts = env.get("track_altitudes") or (env.get("environment") or {}).get("track_altitudes") or TRACK_ALTITUDES
+        try: z = float(((doc.get("me") or {}).get("pos") or [0, 0, 0])[2] or 0)
+        except (TypeError, ValueError): z = 0.0
+        i = next((j for j, a in enumerate(alts) if not z > float(a)), len(alts))
+        t = 1 if i == 0 else 4 if i >= len(alts) else min(i, 4)
+    t = max(1, min(t, 4))
+    while t > 1 and (t >= len(tracks) or not tracks[t]): t -= 1
+    return t
+
 def env_at(doc):
     """scene.json -> env dict (see module doc), or None without a usable day cycle"""
     try:
         e = doc["environment"]["environment"]; dc = e["day_cycle"]
         frac, at = day_frac(doc)
-        keys = sorted(((k.get("key_keyframe") or 0.0), dc["frames"][k["key_name"]]) for k in dc["tracks"][1])
+        keys = sorted(((k.get("key_keyframe") or 0.0), dc["frames"][k["key_name"]]) for k in dc["tracks"][sky_track(doc, dc)])
         i = max(j for j, (t, _) in enumerate(keys) if t <= frac)
     except (KeyError, TypeError, ValueError, IndexError):
         return None

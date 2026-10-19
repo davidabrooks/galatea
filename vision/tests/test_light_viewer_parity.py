@@ -32,4 +32,4 @@ def test_only_two_nearest_projectors_cast_shadows():
 
 
 def test_renderer_uses_it():
-    assert "d.use_shadow = id(l) in shadow_ids" in SRC and "light_shadow_ids(M.get(" in SRC
+    assert "d.use_shadow = shad" in SRC and "lights_.append((l, 1.0, id(l) in shadow_ids))" in SRC and "light_shadow_ids(M.get(" in SRC

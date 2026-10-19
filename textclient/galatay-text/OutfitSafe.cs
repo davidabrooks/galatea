@@ -98,6 +98,7 @@ public static partial class Program
     {
         var s = new HashSet<UUID> { RetiredAwpAo };
         foreach (var k in KeepAttachedIds()) s.Add(k);   // routes/_keep-attached.txt (Real Kisser): never detached by outfit/undress/bikini
+        foreach (var k in AlwaysWearIds()) s.Add(k);     // routes/_always-wear.txt (N° 9 collar): never detached either
         try { var ao = AoItem; if (ao != UUID.Zero) s.Add(ao); } catch { }
         foreach (var p in WornPrims())
         {
@@ -120,6 +121,17 @@ public static partial class Program
         }
         return l;
     }
+    // routes/_always-wear.txt (2026-10-19 David: the N° 9 collar is part of EVERY outfit, Naked included): same format as
+    // _keep-attached.txt; every outfit wear re-attaches (ADD) any listed item that is not worn, and nothing takes it off.
+    static List<UUID> AlwaysWearIds()
+    {
+        try { var f = Path.Combine(RouteDir, "_always-wear.txt"); return File.Exists(f) ? ParseKeepAttached(File.ReadAllText(f)) : new(); }
+        catch { return new(); }
+    }
+    // pure (tested): always-wear items to attach for this outfit = listed and not worn now (outfit-independent)
+    internal static List<UUID> AlwaysWearMissing(IEnumerable<UUID> wornItems, IEnumerable<UUID> alwaysWear)
+    { var w = wornItems.ToHashSet(); return alwaysWear.Where(a => a != UUID.Zero && !w.Contains(a)).Distinct().ToList(); }
+
     static List<UUID> KeepAttachedIds()
     {
         try { var f = Path.Combine(RouteDir, "_keep-attached.txt"); return File.Exists(f) ? ParseKeepAttached(File.ReadAllText(f)) : new(); }
@@ -159,6 +171,14 @@ public static partial class Program
             var (detach, attach, notes) = PlanAttachmentSwap(worn, target, prot);
             foreach (var hid in ExtraHudsOff(worn, target.Select(t => t.Item).ToHashSet(), ToplessExtras().Select(e => e.id))) if (!detach.Contains(hid)) detach.Add(hid);
             foreach (var n in notes) sb.AppendLine("  " + n);
+            foreach (var aw in AlwaysWearMissing(worn.Select(w => w.Item), AlwaysWearIds()))
+            {
+                var awi = await FetchItemRO(aw, ct);
+                if (awi is not (InventoryObject or InventoryAttachment)) { sb.AppendLine($"  always-wear {aw}: not an object item, skipped"); continue; }
+                if (!objs.Any(o => o.UUID == aw)) objs.Add(awi);
+                if (!attach.Contains(aw)) attach.Add(aw);
+                sb.AppendLine($"  always-wear: '{awi.Name}' goes on with every outfit");
+            }
 
             // plan the wearables first (body parts replace by type, clothing layers swapped), then run everything in one
             // batch (RedressFast.OutfitSwapOrder): old attachments off together, layer + COF changes in one go each, the bake

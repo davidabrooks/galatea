@@ -1969,6 +1969,7 @@ public static partial class Program
             case "payprice": return await PayPriceCmd(a);
             case "pay": return await PayCmd(a);
             case "stopanims": return await StopAnimsCmd();   // StopAnims.cs
+            case "invdump": return await InvDumpCmd(a);   // InvDump.cs
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
             case "sethome": return await SetHomeCmd();
             case "autofollow": return AutoFollowCmd(a);

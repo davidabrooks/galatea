@@ -218,6 +218,9 @@ public sealed class SlTools
     [McpServerTool(Name = "offer_allow"), Description("Accept, for N minutes (max 15), ONE inventory give from my own rezzed object with exactly this name (an unpacker box). Everything else stays pending.")]
     public static Task<string> OfferAllow(string object_name, int minutes = 5) => R($"offer allow {Clean(object_name)} {Math.Clamp(minutes, 1, 15)}");
 
+    [McpServerTool(Name = "inv_dump"), Description("READ-ONLY: list every item in an inventory folder (recursive) with owner/next-owner perms; saves readable scripts (owner mod) and notecards as text under /workspace/secondlife/scripts/thirdparty/. No-mod scripts are reported as not readable.")]
+    public static Task<string> InvDump(string folder_uuid) => R("invdump " + Clean(folder_uuid));
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

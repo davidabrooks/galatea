@@ -575,6 +575,23 @@ def retint_sun(vy):
     L.data.energy = (1.2 * lum(c) * pk / max(lum(ca), 1e-3) if os.environ.get("GT_SUN_LUMKEEP", "1") == "1" else 1.2 * pk) * GT_SUN_MUL   # keep the sun's luminance (hue only) unless LUMKEEP=0
     log("sun tint", [round(x, 3) for x in ca], "energy", round(L.data.energy, 3), "vy", round(vy, 3))
 
+# the viewer (pipeline.cpp renderDeferredLighting) draws every in-world light with size = prim light radius x 1.5 and falloff =
+# prim falloff x DEFERRED_LIGHT_FALLOFF (0.5); mesh.json carries the raw prim values. Without these a radius-10 stage spot reached 10 m, not 15 m,
+# i.e. not the floor 10-12 m below it, and every light's falloff was twice too steep (Oct 18 2026: the club's 33 spotlights lit nothing).
+LIGHT_RADIUS_SCALE = float(os.environ.get("GT_LIGHT_RADIUS_SCALE", "1.5")); LIGHT_FALLOFF_FUDGE = float(os.environ.get("GT_LIGHT_FALLOFF_FUDGE", "0.5"))
+
+SPOT_SHADOWS = 2   # LL: RenderShadowDetail 2 gives shadows to at most two projectors (mShadowSpotLight[2]); point lights never cast any
+
+def light_shadow_ids(lights, me, n=None, mode=None):
+    """ids of the lights that cast shadows, the way the viewer does: none of the point lights and only the n nearest projectors
+    (the rest shine through their own fixture housings, walls and trusses; Cycles shadowing them blacked out ~every stage spot).
+    GT_LIGHT_SHADOW=all restores the old every-light-shadows behaviour"""
+    mode = mode or os.environ.get("GT_LIGHT_SHADOW", "sl")
+    if mode == "all": return {id(l) for l in lights}
+    n = SPOT_SHADOWS if n is None else n
+    near = sorted((l for l in lights if l.get("proj")), key=lambda l: sum((a - b) ** 2 for a, b in zip(l["pos"], me)))
+    return {id(l) for l in near[:n]}
+
 def eep(env):
     """Region EEP sky at export time (make_job.py): sun or, below the horizon, moon; sky colour as ambient; SL point lights."""
     sun = Vector(env["sun_dir"]).normalized(); night = sun.z < 0
@@ -598,21 +615,22 @@ def eep(env):
         # light on top filled the shadows twice. Keep a quarter for bounce / reflections
         bg.inputs["Strength"].default_value *= float(os.environ.get("GT_CLASSIC_WORLD", "0.1"))
     sky_backdrop(w, env, night)
+    shadow_ids = light_shadow_ids(M.get("lights", []), M.get("me") or [0, 0, 0])
     for l in M.get("lights", []):
         # SL point light, reimplemented from the LL viewer's deferred light shader: radiance = albedo x linear colour x
         # intensity x atten x N.L x 3.25/pi, atten = 2 (1 - clamp((d/radius + falloff) / (1 + falloff)))^2, zero past the
         # radius. Cycles: constant falloff (no inverse square), the curve on Light Path ray length (= distance);
         # 4 pi^2 cancels Cycles' point-light normalisation (calibrated: 1 W constant -> 1/(4 pi^2) on a white plane).
         pj = l.get("proj")
-        d = bpy.data.lights.new("sl", "SPOT" if pj else "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05
-        d.energy = 4 * math.pi ** 2 * 3.25 / math.pi; d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75)
+        d = bpy.data.lights.new("sl", "SPOT" if pj else "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05; d.use_shadow = id(l) in shadow_ids
+        d.energy = 4 * math.pi ** 2 * 3.25 / math.pi * float(os.environ.get("GT_PROJ_SCALE", "1") if pj else os.environ.get("GT_POINT_SCALE", "1")); d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75) * LIGHT_FALLOFF_FUDGE; radius = l["radius"] * LIGHT_RADIUS_SCALE
         def op(kind, a, b, clamp=False):
             n = nt.nodes.new("ShaderNodeMath"); n.operation = kind; n.use_clamp = clamp
             for i, v in enumerate((a, b)):
                 if isinstance(v, (int, float)): n.inputs[i].default_value = v
                 else: nt.links.new(v, n.inputs[i])
             return n.outputs[0]
-        x = op("DIVIDE", nt.nodes.new("ShaderNodeLightPath").outputs["Ray Length"], max(l["radius"], 0.01))
+        x = op("DIVIDE", nt.nodes.new("ShaderNodeLightPath").outputs["Ray Length"], max(radius, 0.01))
         k = op("SUBTRACT", 1.0, op("DIVIDE", op("ADD", x, f), 1 + f, clamp=True))
         fo = nt.nodes.new("ShaderNodeLightFalloff"); nt.links.new(op("MULTIPLY", op("POWER", k, 2.0), 2 * l["intensity"]), fo.inputs["Strength"])
         nt.links.new(fo.outputs["Constant"], nt.nodes["Emission"].inputs["Strength"])
@@ -632,7 +650,7 @@ def projector(d, o, pj, op):
     from mathutils import Vector
     size, t = proj_spot(pj.get("fov")); d.spot_size = size; d.spot_blend = 0.1
     o.rotation_euler = Vector(pj["dir"]).to_track_quat("-Z", "Y").to_euler()
-    tp = tex_path(pj.get("tex"))
+    tp = tex_path(pj.get("tex")) if os.environ.get("GT_PROJ_NOTEX") != "1" else None   # GT_PROJ_NOTEX=1: diagnosis, plain coloured spot
     if not tp: return
     nt = d.node_tree; tc = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); nt.links.new(tc.outputs["Normal"], sp.inputs[0])
     z = op("MAXIMUM", op("MULTIPLY", sp.outputs["Z"], -1.0), 1e-4)
@@ -1285,6 +1303,19 @@ if kind == "scene":
             for ob in sc.objects:
                 if ob.type == "MESH" and ob not in keep and ob.visible_get() and getattr(ob, "visible_camera", True): ob.is_holdout = True
             log("layer batch", sorted(LAYER_AVS), "holdout world")
+    if os.environ.get("GT_DEBUG_PROJ"):   # diagnosis: where the SL lights and glowing / fullbright faces land in the frame (pixels, y down)
+        bpy.context.view_layer.update()
+        from bpy_extras.object_utils import world_to_camera_view
+        W_, H_ = sc.render.resolution_x, sc.render.resolution_y; out = {"lights": [], "glow": []}
+        def px(p):
+            v = world_to_camera_view(sc, sc.camera, Vector(p)); return [round(v.x * W_), round((1 - v.y) * H_), round(v.z, 1)]
+        for o_ in sc.objects:
+            if o_.type == "LIGHT": out["lights"].append({"type": o_.data.type, "px": px(o_.location), "color": [round(c, 2) for c in o_.data.color], "spot": round(math.degrees(o_.data.spot_size), 1) if o_.data.type == "SPOT" else None})
+        for b_ in M["batches"]:
+            if b_["group"] in ("scene", "far") and ((b_.get("glow") or 0) > 0 or b_.get("fullbright")) and b_["nv"]:
+                P_ = arrays(b_)[0].reshape(-1, 3); c_ = (P_.min(0) + P_.max(0)) / 2
+                out["glow"].append({"px": px(c_), "nv": b_["nv"], "glow": b_.get("glow"), "fb": bool(b_.get("fullbright")), "ext": [round(float(e), 2) for e in P_.max(0) - P_.min(0)], "rgba": [round(c, 2) for c in b_["rgba"]], "tex": b_["tex"][:8]})
+        json.dump(out, open(os.environ["GT_DEBUG_PROJ"], "w"))
 else:
     lo, hi, _ = build("avatar", M.get("bones"))
     # face: the mHead joint (base of the skull) + ~7 cm up to the eyes; older mesh.json: from the avatar's top

@@ -44,6 +44,7 @@ public static partial class Program
     {
         if (alphaFollowing.Value) return;
         var ids = removedItems.Where(i => i != UUID.Zero).Distinct().ToList(); if (ids.Count == 0) return;
+        VAutoCheckSoon(why);   // VAuto.cs
         _ = Task.Run(async () =>
         {
             alphaFollowing.Value = true;

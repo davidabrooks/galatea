@@ -27,3 +27,16 @@ The NX Remote is never worn.
 **Log:** every @ line, its source name/uuid/item, and what I did → `/workspace/secondlife/rlv/rlv-log.md` (`rlv_log`).
 
 **Clothing tattoos and alphas (2026-10-19):** `@remoutfit:tattoo` / `:alpha` and removal by item name (`@remoutfit:<name>`, or `@detach:<name>` when the name is a worn layer) only take garments: a name or folder with underwear/panties/bra/... words and no skin/makeup/body/brow/lip/freckle/BoM words (`IsClothingLayer`). Everything else is protected (`rlv layers` lists the classification). When a garment comes off (RLV, undress, detach), an alpha tied to it (same folder, or "X Alpha" naming) follows; body/head/skin alphas without a tie and the collar stay (`AlphaFollow.cs`, logged here). `rlv force <cmd>` / MCP `rlv_force` tests a force locally.
+
+**The V (VAuto.cs):** when nothing covers the groin (shorts/skirt/dress/panties... by name, underpants/pants/skirt layers, panties
+tattoos), The V goes on; when a cover is back on, it comes off unless the outfit is Naked or includes The V. Never in Android* outfits.
+MCP `redress` puts back the outfit worn before the strip (its own alphas come back, The V comes off).
+
+**Placement (RlvPlace.cs):** RLV sit / unsit / `@tpto` send an `rlv_placed` webhook event (object, region + position, @unsit state).
+After an RLV sit she is held: wander pauses ('rlv'), autofollow snoozes, and any automatic stand-up is undone by re-sitting on the
+same seat (closes the wander auto-stand gap). Released by a deliberate stand, `@unsit=force`, MAYDAY or `rlv clear`.
+Self-stand rule (David, 4:44 PM): `@unsit=n` always blocks; while held, the collar's **TPE** checkbox ON also blocks her own stand
+(TPE OFF: a deliberate stand is allowed). TPE is read (never changed) from the collar's Access menu buttons and cached in
+`/workspace/secondlife/rlv/collar-tpe.txt`. Note: the N° 9 README ties TPE only to who can turn it off, run away and configure
+owner features; it says nothing about standing, so this stand rule is ours, not the collar's. Leash pulls (llMoveToTarget) are not
+detected.

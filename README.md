@@ -61,6 +61,7 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 - `inv_find`, `inv_ls`, `inv_dump`, `rez_item`, `offer_allow`, `take_object` (unpack a box: rez, touch, accept its folder, take it back)
 - `wear_item` (ADD-attach; NX Remote refused); `routes/_always-wear.txt` keeps the N° 9 collar on in every outfit
 - RLV phase 1 (`Rlv.cs`, see docs/rlv.md): answers @version* as RLVa 2.4.2, accepts @ commands only from my own worn attachments (no relay), force sit/unsit/remoutfit/detach/detachall, per-source restrictions; never removes the always-wear collar; MAYDAY always reaches chat and clears locally; `rlv_status`, `rlv_clear` (emergency override), `rlv_log`; every @ line logged to `/workspace/secondlife/rlv/rlv-log.md`
+- RLV strip support: @getpathnew/@getinvworn/@findfolder answered (unknown @get* answered empty); clothing tattoos removable, skin/makeup tattoos protected; tied alphas follow their garment off (`AlphaFollow.cs`); `rlv_layers`, `rlv_force`
 - `outfit_wear` (MCP); Android* outfits turn the N° 9 collar's Stealth on via its own menu (About → Stealth, only if off; `collar_stealth`); always-wear items are refused by every detach path
 - `display_name` (read, or set once a week)
 - `touch_object` (touch an in-world object by uuid, e.g. vendor redelivery)

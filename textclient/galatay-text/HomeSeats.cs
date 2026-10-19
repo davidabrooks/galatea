@@ -176,7 +176,7 @@ public static partial class Program
             foreach (var step in UndressOrder(atts.Count, layers.Count, 0, orphanCheck: false))
                 switch (step)
                 {
-                    case LegStep.LayersOff: client.Appearance.RemoveFromOutfit(layers); break;
+                    case LegStep.LayersOff: client.Appearance.RemoveFromOutfit(layers); AlphaFollowAfterRemove(layers.Select(l => l.UUID), "undress (tub)"); break;
                     case LegStep.DetachClothing: foreach (var (id, nm) in atts) { DetachItem(id, "undress (tub)"); sb.Append($"off '{nm}'; "); } break;
                     case LegStep.CofLinksOff: await CofLinksOffBatch(atts.Select(x => x.id).Concat(layers.Select(l => l.UUID)), "undress (tub)", ct); break;
                     case LegStep.RebakeNow: await RebakeNow("undress (tub)"); break;

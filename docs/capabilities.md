@@ -237,3 +237,4 @@ The Real Kisser announces each kiss in nearby chat in math-bold letters ("David 
 - Club v7 (Oct 19, 2026): indoors, every dancer gets the brighter avatar fill (it only reached Galatea before), depth of field is off so the room and crowd are crisp, and the room is a little brighter. All automatic under a roof.
 - Club floor (Oct 19, 2026): indoor floors are a bit brighter, with the stage lights' soft coloured fill (automatic under a roof).
 - Club floor 2 (Oct 19, 2026): indoor floors brighter again, lit by the club's own coloured lights (automatic under a roof).
+- Spotlights show on dancers indoors (Oct 19, 2026): less flat fill on avatars under a roof, so the club's coloured spots visibly light the people standing in them.

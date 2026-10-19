@@ -69,7 +69,7 @@ def test_indoor_haze_dims_fog_colour_under_a_roof():
 
 
 def test_avatar_ambient_separate_from_room():
-    assert 'AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "4"))' in SRC
+    assert 'AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "1.5"))' in SRC
     assert 'amb_floor = AVATAR_AMB if str(b.get("group", "")).startswith("avatar") else INDOOR_AMB' in SRC
     assert 'kk.inputs[3].default_value = amb_floor' in SRC
     assert 'cut, str(b.get("group", "")).startswith("avatar")]' in SRC   # avatar and room materials never share a template

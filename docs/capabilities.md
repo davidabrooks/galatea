@@ -36,6 +36,7 @@ The connector (`galatay-mcp.sh`) is the same client core as a stdio MCP server. 
 | Profile | `get_profile`, `set_profile` (About text only, backs up the old profile first) |
 | Voice | `voice` (`action` = on, off, status, tail, wake) |
 | Dialogs | `touch_object` (`object_uuid`; opens an object's menu, e.g. vendor redelivery); `dialog_reply` (`button`; refuses anything that looks like payment) |
+| Display name | `display_name` (no args = read; `new_name` = set via the SetDisplayName cap, once a week; quote characters refused) |
 | Offers | `offers` (`which`: pending/all, read-only; saved offers in run/pending-offers.json are reloaded when the connector starts, in MCP mode too); `accept_offer` (`id`, `action` accept/decline, `confirm` = David's OK for a sender not on the allow-list) |
 | Money | `balance` (read-only); `pay_object` (`object_uuid`, `amount`; PayObject 5008, only with David's explicit OK for that object and amount; hard cap `GT_PAY_MAX`, default L$2500; reports balance before/after, the MoneyBalanceReply and new inventory offers) |
 | Animations / HUDs | `anim_list`; `stop_animations` (stops every animation on me, pauses the wander; text `stopanims`); `touch_attachment` (`attachment` or `ao`, `link`, `face`, `st`; empty `link` lists the HUD's prims). The Vista AO in dance mode restarts dances: touch its **AO** button to return to the normal AO |

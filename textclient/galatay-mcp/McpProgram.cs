@@ -202,6 +202,22 @@ public sealed class SlTools
         return Json(await Core.SetDisplayNameObj(n));
     }
 
+    [McpServerTool(Name = "inv_find"), Description("READ-ONLY recursive inventory search (path, type, item id).")]
+    public static Task<string> InvFind(string text) => R("inv find " + Clean(text));
+
+    [McpServerTool(Name = "inv_ls"), Description("READ-ONLY direct contents of one inventory folder by uuid.")]
+    public static Task<string> InvLs(string folder_uuid) => R("inv ls " + Clean(folder_uuid));
+
+    [McpServerTool(Name = "rez_item"), Description("Rez one of MY Object items (e.g. a delivery box) 1.5 m in front of me. Never wears anything.")]
+    public static Task<string> RezItem(string item_uuid) => R("rez " + Clean(item_uuid));
+
+    [McpServerTool(Name = "take_object"), Description("Take back an object I own (action take = to Objects, delete = to Trash). Refused for objects I don't own.")]
+    public static Task<string> TakeObject(string object_uuid, [Description("take | delete")] string action = "take")
+        => R((Clean(action) == "delete" ? "delete " : "take ") + Clean(object_uuid));
+
+    [McpServerTool(Name = "offer_allow"), Description("Accept, for N minutes (max 15), ONE inventory give from my own rezzed object with exactly this name (an unpacker box). Everything else stays pending.")]
+    public static Task<string> OfferAllow(string object_name, int minutes = 5) => R($"offer allow {Clean(object_name)} {Math.Clamp(minutes, 1, 15)}");
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

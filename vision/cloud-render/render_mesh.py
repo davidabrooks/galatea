@@ -605,7 +605,7 @@ def eep(env):
         # 4 pi^2 cancels Cycles' point-light normalisation (calibrated: 1 W constant -> 1/(4 pi^2) on a white plane).
         pj = l.get("proj")
         d = bpy.data.lights.new("sl", "SPOT" if pj else "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05
-        d.energy = 4 * math.pi ** 2 * 3.25 / math.pi; d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75)
+        d.energy = 4 * math.pi ** 2 * 3.25 / math.pi * float(os.environ.get("GT_PROJ_SCALE", "1") if pj else os.environ.get("GT_POINT_SCALE", "1")); d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75)
         def op(kind, a, b, clamp=False):
             n = nt.nodes.new("ShaderNodeMath"); n.operation = kind; n.use_clamp = clamp
             for i, v in enumerate((a, b)):
@@ -1285,6 +1285,19 @@ if kind == "scene":
             for ob in sc.objects:
                 if ob.type == "MESH" and ob not in keep and ob.visible_get() and getattr(ob, "visible_camera", True): ob.is_holdout = True
             log("layer batch", sorted(LAYER_AVS), "holdout world")
+    if os.environ.get("GT_DEBUG_PROJ"):   # diagnosis: where the SL lights and glowing / fullbright faces land in the frame (pixels, y down)
+        bpy.context.view_layer.update()
+        from bpy_extras.object_utils import world_to_camera_view
+        W_, H_ = sc.render.resolution_x, sc.render.resolution_y; out = {"lights": [], "glow": []}
+        def px(p):
+            v = world_to_camera_view(sc, sc.camera, Vector(p)); return [round(v.x * W_), round((1 - v.y) * H_), round(v.z, 1)]
+        for o_ in sc.objects:
+            if o_.type == "LIGHT": out["lights"].append({"type": o_.data.type, "px": px(o_.location), "color": [round(c, 2) for c in o_.data.color], "spot": round(math.degrees(o_.data.spot_size), 1) if o_.data.type == "SPOT" else None})
+        for b_ in M["batches"]:
+            if b_["group"] in ("scene", "far") and ((b_.get("glow") or 0) > 0 or b_.get("fullbright")) and b_["nv"]:
+                P_ = arrays(b_)[0].reshape(-1, 3); c_ = (P_.min(0) + P_.max(0)) / 2
+                out["glow"].append({"px": px(c_), "nv": b_["nv"], "glow": b_.get("glow"), "fb": bool(b_.get("fullbright")), "ext": [round(float(e), 2) for e in P_.max(0) - P_.min(0)], "rgba": [round(c, 2) for c in b_["rgba"]], "tex": b_["tex"][:8]})
+        json.dump(out, open(os.environ["GT_DEBUG_PROJ"], "w"))
 else:
     lo, hi, _ = build("avatar", M.get("bones"))
     # face: the mHead joint (base of the skull) + ~7 cm up to the eyes; older mesh.json: from the avatar's top

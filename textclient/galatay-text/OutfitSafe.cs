@@ -153,7 +153,7 @@ public static partial class Program
 
     // Wear a My Outfits folder without stacking (see header). Returns a report.
     static async Task<string> OutfitWearSafe(InventoryFolder folder, CancellationToken ct)
-        => await WithWardrobe($"outfit wear '{folder.Name}'", async () => { var r = await OutfitWearSafeLocked(folder, ct); WardrobeDressed(folder.Name); return r; }, ct);
+        => await WithWardrobe($"outfit wear '{folder.Name}'", async () => { var r = await OutfitWearSafeLocked(folder, ct); WardrobeDressed(folder.Name); CollarStealthAfterOutfit(folder.Name); return r; }, ct);
 
     static async Task<string> OutfitWearSafeLocked(InventoryFolder folder, CancellationToken ct)
     {

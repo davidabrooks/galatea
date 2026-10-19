@@ -1977,6 +1977,7 @@ public static partial class Program
             case "pay": return await PayCmd(a);
             case "stopanims": return await StopAnimsCmd();   // StopAnims.cs
             case "rlv": return RlvCmdText(a);   // Rlv.cs
+            case "collar" when a.Length == 1 && a[0] == "stealth": return await CollarStealthOn("command");   // CollarStealth.cs
             case "invdump": return await InvDumpCmd(a);   // InvDump.cs
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
             case "sethome": return await SetHomeCmd();

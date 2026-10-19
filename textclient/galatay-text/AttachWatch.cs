@@ -380,6 +380,7 @@ public static partial class Program
 
     static string DetachItem(UUID item, string why)
     {
+        if (AlwaysWearIds().Contains(item)) { Log("height", $"detach of always-wear item {item} REFUSED ({why})"); return $"REFUSED: item {item} is on the always-wear list (routes/_always-wear.txt)"; }
         var p = WornPrims().FirstOrDefault(x => AttachItemId(x) == item);
         var desc = p == null ? "(not currently worn)" : $"'{p.Properties?.Name ?? "?"}' @{p.PrimData.AttachmentPoint} obj {p.ID}";
         // Stop the object's own playing anims so they cannot linger after detach. Seat-off (AO) items are also remembered.

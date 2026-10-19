@@ -230,6 +230,12 @@ public sealed class SlTools
     [McpServerTool(Name = "rlv_log"), Description("Last n lines of the RLV log (/workspace/secondlife/rlv/rlv-log.md): every @ command my worn items sent and what I did.")]
     public static Task<string> RlvLogTail(int n = 30) => R("rlv log " + Math.Clamp(n, 1, 200));
 
+    [McpServerTool(Name = "outfit_wear"), Description("Change into a saved outfit from My Outfits by name (the always-wear collar stays on; Android* outfits also turn the collar's Stealth on).")]
+    public static Task<string> OutfitWear(string name) => R("outfit wear " + Clean(name));
+
+    [McpServerTool(Name = "collar_stealth"), Description("Make my N° 9 collar invisible: its own menu About -> Stealth, pressed only if not already on. Changes nothing else.")]
+    public static Task<string> CollarStealth() => R("collar stealth");
+
     [McpServerTool(Name = "wear_item"), Description("ADD-attach one object item from my inventory by uuid (never replaces). Refuses anything named like the NX Remote (David's controller HUD: never wear it).")]
     public static async Task<string> WearItem(string item_uuid, [Description("item name as listed (checked against the NX Remote ban)")] string item_name)
     {

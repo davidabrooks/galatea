@@ -35,7 +35,7 @@ SSR = os.environ.get("GT_SSR", "1") != "0"
 # razor edges and a solid weave shadow; a wider disc reproduces the blurred penumbra (fitted on the 2026-10-13 porch).
 SHADOW_ANGLE_NIGHT = float(os.environ.get("GT_SHADOW_ANGLE", "0.53")); SHADOW_ANGLE_DAY = float(os.environ.get("GT_SHADOW_ANGLE_DAY", "0.53"))
 FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
-INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.1")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "1")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
+INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.1")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "4")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
 SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)
 # 2026-10-14 David's Ultra (photo hd default): SSR + mirrors on. Cycles traces reflections in world space, so they are the
 # same in every 4K tile (no screen-edge fade, nothing off-screen missing): SSR on = every face keeps Principled's specular
@@ -318,7 +318,7 @@ def _material(b, slots, cut):
             k = nt.nodes.new("ShaderNodeMapRange"); L(ao.outputs["AO"], k.inputs["Value"]); k.inputs[3].default_value = 1 - SSAO
             L(mul(k.outputs["Result"], float(p.inputs["Emission Strength"].default_value)), p.inputs["Emission Strength"])
         amb_floor = AVATAR_AMB if b.get("group") == "avatar" else INDOOR_AMB   # avatars keep their own indoor fill (readable dancers)
-        if HD and amb_floor < 1:
+        if HD and amb_floor != 1:
             # indoors (Oct 19 2026, David at Warehouse 21: "darker in-world, the light comes from the spotlights"): the sky ambient was emission
             # on every face, so a roofed club got the full open-sky fill. Its sky share now follows how much open sky the point sees (AO
             # over GT_INDOOR_DIST m: roof and walls block it), down to GT_INDOOR_AMB of it under a closed roof (1 = the old unoccluded fill).

@@ -221,6 +221,14 @@ public sealed class SlTools
     [McpServerTool(Name = "inv_dump"), Description("READ-ONLY: list every item in an inventory folder (recursive) with owner/next-owner perms; saves readable scripts (owner mod) and notecards as text under /workspace/secondlife/scripts/thirdparty/. No-mod scripts are reported as not readable.")]
     public static Task<string> InvDump(string folder_uuid) => R("invdump " + Clean(folder_uuid));
 
+    [McpServerTool(Name = "wear_item"), Description("ADD-attach one object item from my inventory by uuid (never replaces). Refuses anything named like the NX Remote (David's controller HUD: never wear it).")]
+    public static async Task<string> WearItem(string item_uuid, [Description("item name as listed (checked against the NX Remote ban)")] string item_name)
+    {
+        var n = Clean(item_name);
+        if (n.Contains("NX", StringComparison.OrdinalIgnoreCase) || n.Contains("Remote", StringComparison.OrdinalIgnoreCase)) return Json(new { ok = false, result = "refused: the NX Remote is never worn" });
+        return await R("wear add " + Clean(item_uuid));
+    }
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

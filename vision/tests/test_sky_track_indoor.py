@@ -55,7 +55,7 @@ def test_env_at_uses_the_altitude_track():
 
 
 def test_indoor_ambient_and_holdout_cut_wired():
-    assert 'INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.3"))' in SRC and 'ia.inputs["Distance"].default_value = INDOOR_DIST' in SRC
+    assert 'INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.45"))' in SRC and 'ia.inputs["Distance"].default_value = INDOOR_DIST' in SRC
     assert 'if HD and amb_floor != 1:' in SRC
     assert 'HOLD_ALPHA_CUT = float(os.environ.get("GT_HOLD_ALPHA_CUT", "0.5"))' in SRC
     assert 'def material(b, imgs=None, hold=False):' in SRC and 'me.materials.append(material(b, imgs, hold))' in SRC
@@ -76,7 +76,7 @@ def test_avatar_ambient_separate_from_room():
 
 
 def test_indoor_light_boost_and_projector_ambiance():
-    assert 'INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "3"))' in SRC
+    assert 'INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "5"))' in SRC
     assert 'PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "1"))' in SRC
     assert "boost = indoor_light_boost()" in SRC and "* boost * ek;" in SRC
     assert "if not HD or INDOOR_LIGHT == 1 or not under_roof(): return 1.0" in SRC
@@ -93,4 +93,4 @@ def test_indoor_beams_off_and_layer_plan_camera_refresh():
 
 def test_indoor_dof_off():
     assert 'if os.environ.get("GT_INDOOR_DOF", "0") != "1" and under_roof():' in SRC
-    assert 'os.environ.get("GT_INDOOR_AMB", "0.3"))' in SRC
+    assert 'os.environ.get("GT_INDOOR_AMB", "0.45"))' in SRC

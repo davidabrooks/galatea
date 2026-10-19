@@ -35,7 +35,7 @@ SSR = os.environ.get("GT_SSR", "1") != "0"
 # razor edges and a solid weave shadow; a wider disc reproduces the blurred penumbra (fitted on the 2026-10-13 porch).
 SHADOW_ANGLE_NIGHT = float(os.environ.get("GT_SHADOW_ANGLE", "0.53")); SHADOW_ANGLE_DAY = float(os.environ.get("GT_SHADOW_ANGLE_DAY", "0.53"))
 FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
-INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.3")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "4")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
+INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.45")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "4")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
 SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)
 # 2026-10-14 David's Ultra (photo hd default): SSR + mirrors on. Cycles traces reflections in world space, so they are the
 # same in every 4K tile (no screen-edge fade, nothing off-screen missing): SSR on = every face keeps Principled's specular
@@ -765,7 +765,7 @@ def eep(env):
     if LIGHT_FX: light_fx(M.get("lights", []))
     log("eep", "night" if night else "day", "ambient", round(AMB, 4), "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
 
-INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "3"))   # SL point/spot light energy x this when the camera is under a roof; 1 = off
+INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "5"))   # SL point/spot light energy x this when the camera is under a roof; 1 = off
 PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "1"))   # projector ambiance fill (x the direct term), 0 = off (the old behaviour)
 
 def under_roof():

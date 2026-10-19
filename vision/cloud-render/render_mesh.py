@@ -35,7 +35,7 @@ SSR = os.environ.get("GT_SSR", "1") != "0"
 # razor edges and a solid weave shadow; a wider disc reproduces the blurred penumbra (fitted on the 2026-10-13 porch).
 SHADOW_ANGLE_NIGHT = float(os.environ.get("GT_SHADOW_ANGLE", "0.53")); SHADOW_ANGLE_DAY = float(os.environ.get("GT_SHADOW_ANGLE_DAY", "0.53"))
 FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
-INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.45")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "1.5")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
+INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.6")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "1.5")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
 SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)
 # 2026-10-14 David's Ultra (photo hd default): SSR + mirrors on. Cycles traces reflections in world space, so they are the
 # same in every 4K tile (no screen-edge fade, nothing off-screen missing): SSR on = every face keeps Principled's specular
@@ -781,6 +781,14 @@ def indoor_light_boost():
     so outdoor and daylight scenes are unchanged"""
     if not HD or INDOOR_LIGHT == 1 or not under_roof(): return 1.0
     log("indoor light boost", INDOOR_LIGHT); return INDOOR_LIGHT
+
+INDOOR_SAMPLES = int(os.environ.get("GT_INDOOR_SAMPLES", "96"))   # Cycles samples at least this under a roof (photo hd); 0 = off
+
+def indoor_samples():
+    """Oct 19 2026 Warehouse 21 floor: a dark room lit by dozens of coloured SL lights is noisy at the HD default 24 samples, and the
+    denoiser turned that noise into smooth red/green blotches that hid the concrete. Under a roof: at least GT_INDOOR_SAMPLES"""
+    if HD and INDOOR_SAMPLES > 0 and sc.render.engine == "CYCLES" and sc.cycles.samples < INDOOR_SAMPLES and under_roof():
+        log("indoor samples", sc.cycles.samples, "->", INDOOR_SAMPLES); sc.cycles.samples = INDOOR_SAMPLES
 
 def proj_spot(fov):
     """SL projector field of view (LightImage params.x, radians, full cone) -> (Blender spot_size, tan(half angle)) """
@@ -1557,7 +1565,7 @@ def hd_render_hdr(png):
             sc.render.use_border = True; sc.render.use_crop_to_border = False
             sc.render.border_min_x, sc.render.border_max_x = 0.0, 1.0
             sc.render.border_min_y, sc.render.border_max_y = lo / H_, hi / H_
-        memlog("render start"); bpy.ops.render.render(write_still=True); memlog("render done")
+        indoor_samples(); memlog("render start"); bpy.ops.render.render(write_still=True); memlog("render done")
         img = bpy.data.images.load(exr); w, h = img.size; px = np.empty(w * h * 4, np.float32); img.pixels.foreach_get(px)
         bpy.data.images.remove(img)
         if rgb is None: rgb = np.zeros((h, w, 4 if LAYER else 3), np.float32)
@@ -1643,4 +1651,4 @@ for i, v in enumerate(views):
     if not LAYER: setup_dof()
     if HD and sc.render.filepath.lower().endswith(".png"):
         hd_render_hdr(sc.render.filepath); continue
-    t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)
+    indoor_samples(); t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)

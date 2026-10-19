@@ -725,14 +725,20 @@ def eep(env):
         bg.inputs["Strength"].default_value *= float(os.environ.get("GT_CLASSIC_WORLD", "0.1"))
     sky_backdrop(w, env, night)
     shadow_ids = light_shadow_ids(M.get("lights", []), M.get("me") or [0, 0, 0])
+    boost = indoor_light_boost()
+    lights_ = []
     for l in M.get("lights", []):
+        lights_.append((l, 1.0, id(l) in shadow_ids))
+        a_ = float((l.get("proj") or {}).get("ambiance") or 0)
+        if PROJ_AMBIANCE > 0 and a_ > 0: lights_.append((l, PROJ_AMBIANCE * min(a_, 1.0), False))   # the projector's ambiance fill: unshadowed
+    for l, ek, shad in lights_:
         # SL point light, reimplemented from the LL viewer's deferred light shader: radiance = albedo x linear colour x
         # intensity x atten x N.L x 3.25/pi, atten = 2 (1 - clamp((d/radius + falloff) / (1 + falloff)))^2, zero past the
         # radius. Cycles: constant falloff (no inverse square), the curve on Light Path ray length (= distance);
         # 4 pi^2 cancels Cycles' point-light normalisation (calibrated: 1 W constant -> 1/(4 pi^2) on a white plane).
         pj = l.get("proj")
-        d = bpy.data.lights.new("sl", "SPOT" if pj else "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05; d.use_shadow = id(l) in shadow_ids
-        d.energy = 4 * math.pi ** 2 * 3.25 / math.pi * float(os.environ.get("GT_PROJ_SCALE", "1") if pj else os.environ.get("GT_POINT_SCALE", "1")); d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75) * LIGHT_FALLOFF_FUDGE; radius = l["radius"] * LIGHT_RADIUS_SCALE
+        d = bpy.data.lights.new("sl", "SPOT" if pj else "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05; d.use_shadow = shad
+        d.energy = 4 * math.pi ** 2 * 3.25 / math.pi * float(os.environ.get("GT_PROJ_SCALE", "1") if pj else os.environ.get("GT_POINT_SCALE", "1")) * boost * ek; d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75) * LIGHT_FALLOFF_FUDGE; radius = l["radius"] * LIGHT_RADIUS_SCALE
         def op(kind, a, b, clamp=False):
             n = nt.nodes.new("ShaderNodeMath"); n.operation = kind; n.use_clamp = clamp
             for i, v in enumerate((a, b)):
@@ -747,6 +753,23 @@ def eep(env):
         if pj: projector(d, o, pj, op)
     if LIGHT_FX: light_fx(M.get("lights", []))
     log("eep", "night" if night else "day", "ambient", round(AMB, 4), "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
+
+INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "3"))   # SL point/spot light energy x this when the camera is under a roof; 1 = off
+PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "0.5"))   # projector ambiance fill (x the direct term), 0 = off (the old behaviour)
+
+def under_roof():
+    """camera under geometry within 80 m straight up (a club, a house): Oct 19 2026 Warehouse 21"""
+    # from her head (the light setup can run before the camera is placed: a camera ray from the origin found no roof)
+    at = Vector(M.get("me") or (sc.camera.location if sc.camera else (0, 0, 0))) + Vector((0.0, 0.0, 1.8))
+    hit = bool(sc.ray_cast(bpy.context.evaluated_depsgraph_get(), at, Vector((0.0, 0.0, 1.0)), distance=80.0)[0])
+    log("roof check at", [round(v, 1) for v in at], "roof" if hit else "open sky"); return hit
+
+def indoor_light_boost():
+    """Oct 19 2026, David at Warehouse 21: with the room's sky light cut to GT_INDOOR_AMB the SL lights (stage spots, neon, lamps)
+    must carry the scene as in his viewer photo (coloured pools on the floor and the dancers): x GT_INDOOR_LIGHT under a roof only,
+    so outdoor and daylight scenes are unchanged"""
+    if not HD or INDOOR_LIGHT == 1 or not under_roof(): return 1.0
+    log("indoor light boost", INDOOR_LIGHT); return INDOOR_LIGHT
 
 def proj_spot(fov):
     """SL projector field of view (LightImage params.x, radians, full cone) -> (Blender spot_size, tan(half angle)) """
@@ -952,7 +975,7 @@ def indoor_haze():
     if f >= 1: return 1.0
     cam = sc.camera
     if cam is None: return 1.0
-    hit = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), cam.matrix_world.translation, Vector((0.0, 0.0, 1.0)), distance=80.0)[0]
+    hit = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(cam.location), Vector((0.0, 0.0, 1.0)), distance=80.0)[0]
     log("indoor haze", "roof" if hit else "open sky", round(f, 3) if hit else 1.0)
     return f if hit else 1.0
 

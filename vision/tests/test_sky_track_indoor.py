@@ -73,3 +73,13 @@ def test_avatar_ambient_separate_from_room():
     assert 'amb_floor = AVATAR_AMB if b.get("group") == "avatar" else INDOOR_AMB' in SRC
     assert 'kk.inputs[3].default_value = amb_floor' in SRC
     assert 'cut, b.get("group") == "avatar"]' in SRC   # avatar and room materials never share a template
+
+
+def test_indoor_light_boost_and_projector_ambiance():
+    assert 'INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "3"))' in SRC
+    assert 'PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "0.5"))' in SRC
+    assert "boost = indoor_light_boost()" in SRC and "* boost * ek;" in SRC
+    assert "if not HD or INDOOR_LIGHT == 1 or not under_roof(): return 1.0" in SRC
+    # roof check from her head, not the camera (the camera may not be placed yet: a ray from the origin found no roof)
+    assert 'at = Vector(M.get("me")' in SRC
+    assert "lights_.append((l, PROJ_AMBIANCE * min(a_, 1.0), False))" in SRC

@@ -55,7 +55,7 @@ def test_env_at_uses_the_altitude_track():
 
 
 def test_indoor_ambient_and_holdout_cut_wired():
-    assert 'INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.1"))' in SRC and 'ia.inputs["Distance"].default_value = INDOOR_DIST' in SRC
+    assert 'INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.2"))' in SRC and 'ia.inputs["Distance"].default_value = INDOOR_DIST' in SRC
     assert 'if HD and amb_floor != 1:' in SRC
     assert 'HOLD_ALPHA_CUT = float(os.environ.get("GT_HOLD_ALPHA_CUT", "0.5"))' in SRC
     assert 'def material(b, imgs=None, hold=False):' in SRC and 'me.materials.append(material(b, imgs, hold))' in SRC
@@ -70,9 +70,9 @@ def test_indoor_haze_dims_fog_colour_under_a_roof():
 
 def test_avatar_ambient_separate_from_room():
     assert 'AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "4"))' in SRC
-    assert 'amb_floor = AVATAR_AMB if b.get("group") == "avatar" else INDOOR_AMB' in SRC
+    assert 'amb_floor = AVATAR_AMB if str(b.get("group", "")).startswith("avatar") else INDOOR_AMB' in SRC
     assert 'kk.inputs[3].default_value = amb_floor' in SRC
-    assert 'cut, b.get("group") == "avatar"]' in SRC   # avatar and room materials never share a template
+    assert 'cut, str(b.get("group", "")).startswith("avatar")]' in SRC   # avatar and room materials never share a template
 
 
 def test_indoor_light_boost_and_projector_ambiance():
@@ -89,3 +89,8 @@ def test_indoor_beams_off_and_layer_plan_camera_refresh():
     assert 'INDOOR_BEAM = os.environ.get("GT_INDOOR_BEAM", "0")' in SRC
     assert 'if INDOOR_BEAM != "" and LIGHT_BEAM > 0 and under_roof(): LIGHT_BEAM = float(INDOOR_BEAM)' in SRC
     i = SRC.index("def layer_plan():"); assert "bpy.context.view_layer.update()" in SRC[i:i + 900]
+
+
+def test_indoor_dof_off():
+    assert 'if os.environ.get("GT_INDOOR_DOF", "0") != "1" and under_roof():' in SRC
+    assert 'os.environ.get("GT_INDOOR_AMB", "0.2"))' in SRC

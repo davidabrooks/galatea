@@ -241,3 +241,7 @@ The Real Kisser announces each kiss in nearby chat in math-bold letters ("David 
 - Club floor 2 (Oct 19, 2026): indoor floors brighter again, lit by the club's own coloured lights (automatic under a roof).
 - Spotlights show on dancers indoors (Oct 19, 2026): less flat fill on avatars under a roof, so the club's coloured spots visibly light the people standing in them.
 - Indoor floors render clean (Oct 19, 2026): more render samples automatically under a roof, so dark, many-light rooms no longer get coloured denoiser blotches over the floor texture; the room is a little brighter.
+
+## Reminders on David's login
+
+The `david_login` wake text names reminders only when one is pending (`inworld-reminders.md`). With none, neither the event text nor the already-greeted note says anything about reminders, so the greeting must not mention them either (tests: `NoReminderMentionTests`, `friendwatch selftest`).

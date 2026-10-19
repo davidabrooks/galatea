@@ -109,7 +109,7 @@ public static partial class Program
             var pending = Reminders().Select((r, i) => (n: i + 1, r)).Where(x => x.r.pending).ToList();
             var text = DavidLoginText(simulated, atMyLogin, source, DateTime.Now, pending.Select(x => (x.n, x.r.text)).ToList());
             if (!simulated && instantGreetAtUtc >= myLoginAt && instantGreetAtUtc >= davidOnlineAt && instantGreetAtUtc != DateTime.MinValue)
-                text += $" NOTE: I already greeted him in an instant reply at {instantGreetAtUtc.ToLocalTime():HH:mm:ss} PT (see chatlog); do not greet him again, only deliver reminders if any.";
+                text += AlreadyGreetedNote(instantGreetAtUtc.ToLocalTime(), pending.Count);
             Log("friendwatch", $"{kind}: waking the chat routine ({pending.Count} pending reminder(s))");
             if (!simulated) NoteSpokeTo(DavidAgent, "david_login wake; the chat routine greets him"); // 19:38 double hi race
             Notify(kind, DavidName, DavidAgent, text, null);
@@ -176,6 +176,11 @@ public static partial class Program
         $"{DavidName} ({DavidAgent}) {(atMyLogin ? "is online" : "came online")} ({source}) at {nowPt:HH:mm} PT." +
         (pending == null || pending.Count == 0 ? "" : $" Pending reminders ({pending.Count}): " + string.Join(" | ", pending.Select(x => $"#{x.n}: {x.text}")) + " (after delivering: 'remind done <n>')");
 
+    // pure (selftest): reminders are named ONLY when one is pending (David 2026-10-19: never mention reminders otherwise)
+    internal static string AlreadyGreetedNote(DateTime greetedPt, int pendingCount) =>
+        $" NOTE: I already greeted him in an instant reply at {greetedPt:HH:mm:ss} PT (see chatlog); do not greet him again" +
+        (pendingCount > 0 ? ", only deliver the pending reminders above." : ".");
+
     static string FriendWatchCmd(string[] a)
     {
         var sub = a.Length > 0 ? a[0].ToLowerInvariant() : "status";
@@ -194,6 +199,9 @@ public static partial class Program
             var t0 = new DateTime(2026, 10, 5, 17, 45, 0);
             var none = DavidLoginText(false, false, "friend online", t0, new List<(int, string)>());
             C(!none.Contains("eminder", StringComparison.OrdinalIgnoreCase) && none.EndsWith("17:45 PT."), "no pending reminders -> no reminder clause at all ('" + none + "')");
+            var full = none + AlreadyGreetedNote(t0, 0) + DavidLoginText(false, true, "galatea_login", t0, null);
+            C(!full.Contains("eminder", StringComparison.OrdinalIgnoreCase), "empty reminder list -> greeting/wake text (incl. already-greeted note, galatea_login) has no reminder text");
+            C(AlreadyGreetedNote(t0, 1).Contains("reminder"), "already-greeted note names reminders only when one is pending");
             var some = DavidLoginText(false, true, "galatea_login", t0, new List<(int, string)> { (2, "buy milk") });
             C(some.Contains("Pending reminders (1): #2: buy milk") && some.Contains("remind done"), "pending reminders are still listed");
             return $"friendwatch selftest: {pass} PASS, {fail} FAIL (pure; nothing sent)\n" + sb.ToString().TrimEnd();

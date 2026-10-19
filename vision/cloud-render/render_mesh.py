@@ -684,7 +684,14 @@ def fx_object(name, me, mat, loc, rot=None):
     for a in ("visible_diffuse", "visible_glossy", "visible_transmission", "visible_volume_scatter", "visible_shadow"): setattr(o, a, False)
     bpy.context.scene.collection.objects.link(o); return o
 
+INDOOR_BEAM = os.environ.get("GT_INDOOR_BEAM", "0")   # beam strength under a roof ("" = GT_LIGHT_BEAM): Oct 19 2026 Warehouse 21
+
 def light_fx(lights):
+    """beams: in a roofed club 30+ stage spots drew 18 m emissive cones across the whole room; summed and blurred by depth of
+    field they laid a pale grey veil over the walls and signs (David: "washed out, blurry grey-white" vs his crisp dark brick).
+    The viewer draws no light volumes; under a roof the beams use GT_INDOOR_BEAM (default 0 = none); halos stay"""
+    global LIGHT_BEAM
+    if INDOOR_BEAM != "" and LIGHT_BEAM > 0 and under_roof(): LIGHT_BEAM = float(INDOOR_BEAM)
     from mathutils import Vector
     import bmesh; nb = nh = 0; seg = 24
     for l in lights:
@@ -1295,6 +1302,9 @@ def layer_plan():
     """base pass: which avatars the camera can see (their boxes projected with a margin) and how far from it; look.py batches them.
     Written to <jobdir>/layer-plan.json"""
     from bpy_extras.object_utils import world_to_camera_view
+    # the camera's matrix_world is only refreshed by a depsgraph update: without depth of field (which ray-casts first) it was still the
+    # origin and the plan put 0/85 avatars in view, a "nodof" crowd photo had nobody but her (Oct 19 2026)
+    bpy.context.view_layer.update()
     cam = sc.camera; margin = float(os.environ.get("GT_LAYER_MARGIN", "0.2")); plan = []
     verts = {}
     for b in M["batches"]: verts[b["group"]] = verts.get(b["group"], 0) + b["nv"]

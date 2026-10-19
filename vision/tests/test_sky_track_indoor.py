@@ -83,3 +83,9 @@ def test_indoor_light_boost_and_projector_ambiance():
     # roof check from her head, not the camera (the camera may not be placed yet: a ray from the origin found no roof)
     assert 'at = Vector(M.get("me")' in SRC
     assert "lights_.append((l, PROJ_AMBIANCE * min(a_, 1.0), False))" in SRC
+
+
+def test_indoor_beams_off_and_layer_plan_camera_refresh():
+    assert 'INDOOR_BEAM = os.environ.get("GT_INDOOR_BEAM", "0")' in SRC
+    assert 'if INDOOR_BEAM != "" and LIGHT_BEAM > 0 and under_roof(): LIGHT_BEAM = float(INDOOR_BEAM)' in SRC
+    i = SRC.index("def layer_plan():"); assert "bpy.context.view_layer.update()" in SRC[i:i + 900]

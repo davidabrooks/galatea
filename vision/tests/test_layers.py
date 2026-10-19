@@ -122,8 +122,8 @@ def test_render_mesh_batch_is_holdout_and_premultiplied():
     # batch pass: transparent film, every non-batch mesh a holdout, the other avatars' stand-ins shadow-only (not holdout)
     assert "sc.render.film_transparent = True" in RM and "ob.is_holdout = True" in RM
     assert "ob not in keep" in RM and "visible_camera" in RM
-    # the compositor's distance haze must not tint anti-aliased holdout edges (they glowed sky-blue): batch passes fog in numpy instead
-    assert 'if LAYER == "batch":' in RM and "haze_batch(rgba, mist, *HAZE)" in RM
+    # the compositor haze must not tint anti-aliased holdout edges: batch passes leave haze to one scalar per layer (layers.layer_fog)
+    assert "-haze.json" in RM and "layer_fog" in RM
     # world textures are shrunk to a silhouette + average colour in a batch pass
     assert "GT_LAYER_HOLD_PX" in RM and "mat_images(b, small=hold)" in RM and "emission_sampling" in RM
 
@@ -133,25 +133,49 @@ def test_render_mesh_layer_outputs_rgba_npy():
     assert 'rgba[..., 3] = 1.0' in RM        # the base is opaque
 
 
-def _haze_batch():
-    m = re.search(r"def haze_batch\(.*?\n    return rgba\n", RM, re.S)
-    import warnings; ns = {"np": np, "warnings": warnings}; exec(m.group(0), ns)
-    return ns["haze_batch"]
+def test_batch_layer_edges_carry_no_background_colour():
+    """David's rule: a batch layer is avatar-only. A depth-of-field-blurred / anti-aliased silhouette (alpha ramp) must composite to the
+    avatar's own colour at that alpha: unpremultiplied, the fringe equals the avatar (plus the tiny distance haze), not the sky/horizon colour."""
+    avatar = np.array([0.05, 0.05, 0.06], np.float32)          # a dark-clad avatar
+    sky = np.array([0.45, 0.55, 0.95], np.float32)             # the horizon/sky colour a flat quick-photo background would have
+    alpha = np.linspace(0.0, 1.0, 21, dtype=np.float32)[None, :]
+    layer = np.zeros((1, 21, 4), np.float32)
+    layer[..., :3] = avatar * alpha[..., None]; layer[..., 3] = alpha          # premultiplied, nothing else in the pixel
+    for fog in (0.0, 0.02):
+        out = layers.alpha_over(np.zeros((1, 21, 3), np.float32), layer.copy(), fog, sky)
+        # what the layer itself added at each pixel, divided by alpha = the fringe colour
+        add = out[0, 1:]; un = add / alpha[0, 1:, None]
+        want = avatar * (1 - fog) + sky * fog
+        assert np.allclose(un, want, atol=1e-5), f"fringe tinted at fog={fog}"
+        assert np.allclose(out[0, 0], 0)                                       # alpha 0: nothing
+    # a 2 % haze nudges a dark avatar's fringe by 2 % of the sky colour; the old per-pixel edge mist (fog ~1 at the edge) gave ~ the sky colour
+    assert (np.abs(un - avatar).max() < 0.02 * sky.max() + 1e-5)
 
 
-def test_haze_batch_ignores_edge_mist_and_alpha_zero():
-    haze = _haze_batch()
-    h, w = 9, 9
-    rgba = np.zeros((h, w, 4), np.float32)
-    rgba[3:6, 3:6] = (0.5, 0.5, 0.5, 1.0)         # a solid avatar
-    rgba[2, 3:6] = (0.25, 0.25, 0.25, 0.5)        # its half-covered top edge (premultiplied)
-    mist = np.full((h, w), 1.0, np.float32)        # sky behind...
-    mist[3:6, 3:6] = 0.05                          # ...the avatar at 200 m of a 4 km mist
-    mist[2, 3:6] = 0.52                            # the edge pixel's mist is a blend of avatar and sky
-    fog_col = np.array([0.4, 0.5, 0.9], np.float32)
-    out = haze(rgba.copy(), mist, 0.0005, 4000.0, fog_col)
-    f = 1 - np.exp(-0.0005 * 4000 * 0.05)
-    assert np.allclose(out[4, 4, :3], 0.5 * (1 - f) + fog_col * f, atol=1e-5)
-    # the edge pixel is fogged with the SOLID neighbour's mist (not its own blended 0.52), colour scaled by its alpha
-    assert np.allclose(out[2, 4, :3], 0.25 * (1 - f) + fog_col * f * 0.5, atol=1e-5)
-    assert np.allclose(out[0, 0], 0) and np.allclose(out[8, 8], 0)       # alpha 0 stays black: no halo
+def test_layer_fog_ignores_edge_mist():
+    alpha = np.zeros((9, 9), np.float32); alpha[3:6, 3:6] = 1.0; alpha[2, 3:6] = 0.4
+    mist = np.ones((9, 9), np.float32); mist[3:6, 3:6] = 0.05; mist[2, 3:6] = 0.8     # the edge's mist blends the sky in
+    f = layers.layer_fog(alpha, mist, 0.0005, 4000.0)
+    assert abs(f - (1 - np.exp(-0.0005 * 4000 * 0.05))) < 1e-6
+    assert layers.layer_fog(np.zeros((3, 3), np.float32), np.ones((3, 3), np.float32), 0.0005, 4000.0) == 0.0
+    assert layers.layer_fog(alpha, np.ones((9, 9), np.float32), 0.0005, 4000.0) == 0.0   # solid pixels at the sky: no fog
+
+
+def test_haze_sidecar_roundtrip(tmp_path):
+    p = str(tmp_path / "batch-0.npy")
+    assert layers.read_haze(p) == (0.0, None)
+    open(layers.haze_path(p), "w").write(json.dumps({"fog": 0.03, "col": [0.4, 0.5, 0.9]}))
+    assert layers.read_haze(p) == (0.03, [0.4, 0.5, 0.9])
+
+
+def test_composite_applies_per_layer_haze():
+    base = np.zeros((1, 1, 4), np.float32)
+    lay = np.array([[[0.5, 0.5, 0.5, 1.0]]], np.float32)
+    out = layers.composite(base, [lambda: (lay, 0.1, [1.0, 0.0, 0.0])])
+    assert np.allclose(out[0, 0], (0.5 * 0.9 + 0.1, 0.45, 0.45))
+
+
+def test_render_mesh_batch_writes_raw_layer_and_no_compositor_haze():
+    # the compositor's mist/haze mix is base-pass only; a batch pass writes its Mist to a file for one scalar fog and bakes nothing in
+    assert "haze_batch" not in RM
+    assert "def layer_haze_sidecar" in RM or "layers-haze" in RM or "-haze.json" in RM

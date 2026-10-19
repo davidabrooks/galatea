@@ -1976,6 +1976,10 @@ public static partial class Program
             case "payprice": return await PayPriceCmd(a);
             case "pay": return await PayCmd(a);
             case "stopanims": return await StopAnimsCmd();   // StopAnims.cs
+            case "rlv" when a.Length > 0 && a[0] == "layers": return await RlvLayersReport();
+            case "rlv" when a.Length >= 2 && a[0] == "force":   // local test of an RLV force (same code path, logged)
+            { var fc = rest[5..].Trim().Replace("_SP_", " "); var c = RlvParse("@" + fc + (fc.Contains('=') ? "" : "=force"))?.FirstOrDefault(); if (c == null || c.Param != "force") return "usage: rlv force <behaviour[:option]>";
+              var r = await RlvForce(c.Behav, c.Option); RlvLog($"LOCAL TEST force {c.Behav}:{c.Option} -> {r}"); return r; }
             case "rlv": return RlvCmdText(a);   // Rlv.cs
             case "collar" when a.Length == 1 && a[0] == "stealth": return await CollarStealthOn("command");   // CollarStealth.cs
             case "invdump": return await InvDumpCmd(a);   // InvDump.cs

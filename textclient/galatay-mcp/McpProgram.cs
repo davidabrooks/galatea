@@ -236,6 +236,12 @@ public sealed class SlTools
     [McpServerTool(Name = "collar_stealth"), Description("Make my N° 9 collar invisible: its own menu About -> Stealth, pressed only if not already on. Changes nothing else.")]
     public static Task<string> CollarStealth() => R("collar stealth");
 
+    [McpServerTool(Name = "rlv_layers"), Description("List worn tattoo/alpha layers and whether each is a removable clothing layer or protected (skin/makeup/body).")]
+    public static Task<string> RlvLayers() => R("rlv layers");
+
+    [McpServerTool(Name = "rlv_force"), Description("LOCAL TEST: run one RLV force on myself through the same code as the collar, e.g. 'remoutfit:tattoo' or 'detach:<item name>'. Logged.")]
+    public static Task<string> RlvForceTest(string command) => R("rlv force " + Clean(command).Replace(" ", "_SP_"));
+
     [McpServerTool(Name = "wear_item"), Description("ADD-attach one object item from my inventory by uuid (never replaces). Refuses anything named like the NX Remote (David's controller HUD: never wear it).")]
     public static async Task<string> WearItem(string item_uuid, [Description("item name as listed (checked against the NX Remote ban)")] string item_name)
     {

@@ -403,6 +403,7 @@ public static partial class Program
         detachIntent[item] = (DateTime.Now, keepCof, why);
         try { File.AppendAllText(DetachLog, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} detach item {item} {desc} point={(p == null ? "?" : ((int)p.PrimData.AttachmentPoint).ToString())} ({why}){(keepCof ? " [COF kept]" : " [COF remove]")}; re-attach: text-galatay.sh cmd \"attach {item}\"\n"); } catch { }
         client.Appearance.Detach(item);
+        if (why != "outfit swap" && why != "alpha follow") AlphaFollowAfterRemove(new[] { item }, why);   // AlphaFollow.cs
         lastDetachSent[item] = DateTime.Now; // worn all: a chat before this no longer proves the item is attached
         Log("height", $"detached item {item} {desc} ({why}){(keepCof ? "; COF link kept" : "; COF link will be removed")}");
         return $"detach sent for item {item} {desc}" + (keepCof ? " (COF link kept)" : "");

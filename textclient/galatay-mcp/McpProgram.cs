@@ -31,6 +31,7 @@ public static class McpProgram
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
         builder.Services.AddMcpServer().WithStdioServerTransport().WithTools<SlTools>();
         var app = builder.Build();
+        Core.LoadOfferStoreForMcp(); // saved pending offers / group invites survive a connector restart (OfferStore.cs)
         Webhook.Init();
         // GT_AUTOLOGIN honours the deliberate-stop marker like the boot autostart (2026-10-13); the login tool stays explicit
         if (Environment.GetEnvironmentVariable("GT_AUTOLOGIN") == "1" && !AutoLoginBlocked(Environment.GetEnvironmentVariable("GT_STOP_MARKER") ?? "/home/box/viewers/textclient/run/deliberate-stop"))
@@ -183,6 +184,13 @@ public sealed class SlTools
         var a = Clean(action).ToLowerInvariant();
         if (a is not ("accept" or "decline")) return Task.FromResult(Json(new { ok = false, result = "action must be accept or decline" }));
         return R($"offers {a} {id}{(a == "accept" && confirm ? " confirm" : "")}");
+    }
+
+    [McpServerTool(Name = "touch_object"), Description("Touch an in-world object by UUID (e.g. a vendor's redelivery menu); any menu arrives as a dialog event. Never use to buy or pay.")]
+    public static Task<string> TouchObject([Description("object UUID")] string object_uuid)
+    {
+        if (!LibreMetaverse.UUID.TryParse(Clean(object_uuid), out var u) || u == LibreMetaverse.UUID.Zero) return Task.FromResult(Json(new { ok = false, result = "explicit object uuid required" }));
+        return R($"touch {u}");
     }
 
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]

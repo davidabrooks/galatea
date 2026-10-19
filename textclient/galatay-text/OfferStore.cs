@@ -90,6 +90,10 @@ public static partial class Program
     }
 
     // startup, before login
+    // MCP mode (2026-10-19): the connector's Main calls this before any login; without it a restart dropped saved offers
+    // and the next new offer overwrote the store file
+    public static void LoadOfferStoreForMcp() => LoadOfferStore();
+
     static void LoadOfferStore()
     {
         try

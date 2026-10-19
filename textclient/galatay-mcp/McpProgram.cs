@@ -242,6 +242,9 @@ public sealed class SlTools
     [McpServerTool(Name = "rlv_force"), Description("LOCAL TEST: run one RLV force on myself through the same code as the collar, e.g. 'remoutfit:tattoo' or 'detach:<item name>'. Logged.")]
     public static Task<string> RlvForceTest(string command) => R("rlv force " + Clean(command).Replace(" ", "_SP_"));
 
+    [McpServerTool(Name = "redress"), Description("Get dressed again: put back the outfit I wore before being stripped (takes The V off, brings that outfit's alphas back).")]
+    public static Task<string> Redress() => R("redress");
+
     [McpServerTool(Name = "wear_item"), Description("ADD-attach one object item from my inventory by uuid (never replaces). Refuses anything named like the NX Remote (David's controller HUD: never wear it).")]
     public static async Task<string> WearItem(string item_uuid, [Description("item name as listed (checked against the NX Remote ban)")] string item_name)
     {

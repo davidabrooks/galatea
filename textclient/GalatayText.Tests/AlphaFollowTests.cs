@@ -32,3 +32,60 @@ public class AlphaFollowTests
     [InlineData("Eyebrows dark", "", false)]
     public void ClothingLayerClassifier(string name, string folder, bool clothing) => Assert.Equal(clothing, Program.IsClothingLayer(name, folder));
 }
+
+public class VAutoTests
+{
+    [Fact]
+    public void GroinCover_ByNameLayerOrPantiesTattoo()
+    {
+        Assert.True(Program.GroinCovered(new[] { "TETRA - Geena ripped shorts - LaraX" }, new (WearableType, string)[0]));
+        Assert.False(Program.GroinCovered(new[] { "[ARTi'S] Strapless Top", "Shorts HUD" }, new (WearableType, string)[0]));
+        Assert.True(Program.GroinCovered(new string[0], new[] { (WearableType.Underpants, "x") }));
+        Assert.True(Program.GroinCovered(new string[0], new[] { (WearableType.Tattoo, "Lace panties tattoo") }));
+        Assert.False(Program.GroinCovered(new string[0], new[] { (WearableType.Tattoo, "ANGEL Skin for LaraX") }));
+    }
+
+    [Fact]
+    public void Decisions()
+    {
+        Assert.Equal("wear", Program.VDecision(false, false, "ARTi'S Strapless Top shorts", false));
+        Assert.Equal("detach", Program.VDecision(true, true, "ARTi'S Strapless Top shorts", false));
+        Assert.Null(Program.VDecision(true, true, "Naked", false));
+        Assert.Null(Program.VDecision(true, true, "Bikini", true));     // outfit includes it
+        Assert.Null(Program.VDecision(false, false, "Android Base", false));
+        Assert.Null(Program.VDecision(false, true, "x", false));
+    }
+}
+
+public class RlvPlaceTests
+{
+    [Fact]
+    public void HoldResitsOnlyWhenHeldStandingAndNotReleasing()
+    {
+        Assert.True(Program.RlvHoldResit("seat", 0, false));
+        Assert.False(Program.RlvHoldResit(null, 0, false));
+        Assert.False(Program.RlvHoldResit("seat", 123, false));
+        Assert.False(Program.RlvHoldResit("seat", 0, true));
+    }
+    [Fact]
+    public void OnlyDeliberateStandsRelease()
+    {
+        Assert.True(Program.RlvReleasesHold("stand command")); Assert.True(Program.RlvReleasesHold("safeword"));
+        Assert.False(Program.RlvReleasesHold("wander")); Assert.False(Program.RlvReleasesHold("height guard"));
+    }
+}
+
+public class TpeStandTests
+{
+    [Fact]
+    public void TpeRules()
+    {
+        Assert.NotNull(Program.SelfStandBlock(true, false, false));   // @unsit=n always
+        Assert.NotNull(Program.SelfStandBlock(false, true, true));    // placed + TPE on
+        Assert.Null(Program.SelfStandBlock(false, true, false));      // placed, TPE off: deliberate stand ok
+        Assert.Null(Program.SelfStandBlock(false, false, true));
+        Assert.Equal(false, Program.TpeFromButtons(new[] { "☐ Group", "☐ TPE" }));
+        Assert.Equal(true, Program.TpeFromButtons(new[] { "☑ TPE" }));
+        Assert.Null(Program.TpeFromButtons(new[] { "About" }));
+    }
+}

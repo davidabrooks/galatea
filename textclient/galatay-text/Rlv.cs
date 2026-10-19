@@ -179,6 +179,7 @@ public static partial class Program
             _ = Task.Run(() => RlvHandle(id, name, msg));
         };
         _ = Task.Run(async () => { while (true) { await Task.Delay(15000); try { RlvSweep(); } catch { } } });
+        RlvHoldLoop();   // RlvPlace.cs
     }
 
     static async Task RlvHandle(UUID srcPrim, string srcName, string msg)
@@ -244,9 +245,13 @@ public static partial class Program
             case "sit":
                 if (!UUID.TryParse(o, out var seat)) return "bad uuid";
                 if (client.Self.SittingOn != 0 && rlv.Has("unsit")) return "refused: @unsit restricted and already seated";
-                rlvForcing.Value = true; return await Exec("sit " + seat);
+                rlvForcing.Value = true; rlvReleasing = true;
+                try { var sr = await Exec("sit " + seat); if (client.Self.SittingOn != 0) RlvPlaced("sit", SeatName(client.Self.SittingOn), seat); return sr; } finally { rlvReleasing = false; }
             case "unsit":
-                rlvForcing.Value = true; return await Exec("stand");
+                rlvForcing.Value = true; rlvReleasing = true;
+                try { RlvRelease("rlv unsit"); var ur = await Exec("stand"); RlvPlaced("stand", "", UUID.Zero); return ur; } finally { rlvReleasing = false; }
+            case "tpto":
+                { var tr = RlvTpTo(o); if (tr.StartsWith("teleport")) _ = Task.Run(async () => { await Task.Delay(8000); RlvPlaced("teleport", "", UUID.Zero); }); return tr; }
             case "remoutfit":
             {
                 bool isLayer = o.Length == 0 || RlvLayers.Any(x => x.name == o.ToLowerInvariant());
@@ -437,7 +442,7 @@ public static partial class Program
     // her own actions under restrictions (null = allowed). RLV forces bypass sit/unsit; MAYDAY always passes.
     internal static string RlvBlocks(string cmd, string text, bool forcing, Func<string, bool> has) => cmd switch
     {
-        "stand" when !forcing && has("unsit") => "refused (RLV @unsit is on; say MAYDAY or use 'rlv clear' to release)",
+        "stand" when !forcing && SelfStandBlock(has("unsit"), rlvHoldSeat != null, rlvTpe) is string sb => sb,
         "sit" when !forcing && (has("sit") || has("unsit")) => "refused (RLV @sit/@unsit is on; say MAYDAY or use 'rlv clear' to release)",
         "say" or "shout" or "whisper" when has("sendchat") && !IsSafeword(text) => "refused (RLV @sendchat is on; MAYDAY still works)",
         _ => null
@@ -449,7 +454,7 @@ public static partial class Program
         switch (a.Length > 0 ? a[0] : "status")
         {
             case "status": return $"RLV on ({RlvVersionNew}); relay for world objects: off; restrictions: {rlv.Describe()}; log {RlvLogFile}";
-            case "clear": { var n = rlv.ClearAll(); RlvLog($"LOCAL OVERRIDE 'rlv clear': {n} restriction(s) cleared"); return $"cleared {n} restriction(s) locally"; }
+            case "clear": { RlvRelease("rlv clear"); var n = rlv.ClearAll(); RlvLog($"LOCAL OVERRIDE 'rlv clear': {n} restriction(s) cleared"); return $"cleared {n} restriction(s) locally"; }
             case "log":
             {
                 int n = a.Length > 1 && int.TryParse(a[1], out var x) ? Math.Clamp(x, 1, 200) : 30;

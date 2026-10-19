@@ -1782,7 +1782,7 @@ public static partial class Program
             var rb = RlvGuard(cmd, rest);
             if (rb == null && cmd == "detach" && a.Length == 1 && UUID.TryParse(a[0], out var dl) && RlvLockedItems().Contains(dl)) rb = "refused (RLV @detach=n: this item is locked on)";
             if (rb != null) { RlvLog($"own command '{line}' {rb}"); return rb; }
-            if (cmd is "say" or "shout" or "whisper" && IsSafeword(rest)) { var n = rlv.ClearAll(); RlvLog($"SAFEWORD said ('{rest}'): {n} local restriction(s) cleared"); }
+            if (cmd is "say" or "shout" or "whisper" && IsSafeword(rest)) { RlvRelease("safeword"); var n = rlv.ClearAll(); RlvLog($"SAFEWORD said ('{rest}'): {n} local restriction(s) cleared"); }
         }
         bool imRead = cmd == "im" && IsImHistoryCmd(a); // read-only, no rate guard (ImGuard.cs)
         if (cmd is "say" or "shout" or "whisper" or "chan" or "im" && !imRead) { var rg = RateGuard(); if (rg != null) return rg; WanderOwnChat(); }
@@ -1976,6 +1976,7 @@ public static partial class Program
             case "payprice": return await PayPriceCmd(a);
             case "pay": return await PayCmd(a);
             case "stopanims": return await StopAnimsCmd();   // StopAnims.cs
+            case "redress": return await RedressCmd();   // VAuto.cs
             case "rlv" when a.Length > 0 && a[0] == "layers": return await RlvLayersReport();
             case "rlv" when a.Length >= 2 && a[0] == "force":   // local test of an RLV force (same code path, logged)
             { var fc = rest[5..].Trim().Replace("_SP_", " "); var c = RlvParse("@" + fc + (fc.Contains('=') ? "" : "=force"))?.FirstOrDefault(); if (c == null || c.Param != "force") return "usage: rlv force <behaviour[:option]>";
@@ -2056,6 +2057,8 @@ public static partial class Program
                 if (a.Length == 1 && (a[0] == "on" || a[0] == "off")) sitGuard = a[0] == "on";
                 return $"sit guard {(sitGuard ? "on" : "off")}; last check: {lastHeightCheck}";
             case "stand":
+                if (!rlvForcing.Value) RlvRelease("stand command");   // RlvPlace.cs: David asked her to stand
+                rlvReleasing = true; _ = Task.Run(async () => { await Task.Delay(3000); rlvReleasing = false; });
                 Interlocked.Increment(ref sitGen);
                 client.Self.Stand();
                 await Task.Delay(800);

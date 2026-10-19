@@ -320,6 +320,20 @@ def _material(b, slots, cut):
     if GLOW_ON: glow_aov(nt, p, tint)
     return m
 
+# Hair bases: some hair meshes carry a scalp-cap piece whose texture region is a flat fill with a blob-shaped alpha (hair 8d5ad85f: UV
+# strip u > 0.83, flat brown). Drawn with its alpha-MASK material (cutoff 0.94) it is an opaque flat patch with a hard scalloped edge lying
+# on the forehead, between the skin and the strands. Her own avatar's mask-mode triangles whose UVs all lie inside that strip are dropped
+# (keyed by texture id, never by prim id): the strands and the blended soft layer are untouched. GT_HAIR_SCALP_HIDE=0 keeps the cap.
+SCALP_HIDE = os.environ.get("GT_HAIR_SCALP_HIDE", "1") != "0"
+SCALP_CAPS = {"8d5ad85f-453b-ed86-31b3-c7356150164f": 0.83}   # texture id -> u0 of the cap strip
+
+def scalp_cap_filter(b, T, I):
+    """triangle index array without the scalp-cap triangles of a mask-mode batch of a known hair texture (else I unchanged)"""
+    u0 = SCALP_CAPS.get(b.get("tex"))
+    if not SCALP_HIDE or u0 is None or (b.get("mat") or {}).get("alpha") != "mask": return I
+    tri = np.asarray(I).reshape(-1, 3); cap = T.reshape(-1, 2)[tri][:, :, 0].min(1) > u0
+    return tri[~cap].ravel() if cap.any() else I
+
 def arrays(b):
     nv, ni, o = b["nv"], b["ni"], b["offset"]
     P = np.frombuffer(BIN, np.float32, nv * 3, o); o += nv * 12
@@ -399,6 +413,9 @@ def build(group, bones=None, lining=True):
         if str(bi) in HIDE_BATCH: continue   # diagnosis: GT_DEBUG_HIDE_BATCH=45,60
         nv, ni = b["nv"], b["ni"]
         P, N, T, I = arrays(b)
+        if b["group"] == "avatar" and SCALP_HIDE:   # her own avatar only (others in a crowd keep their hair as authored)
+            I = scalp_cap_filter(b, T, I); ni = len(I)
+            if not ni: continue
         if min_tris and ni // 3 < min_tris and not b["group"].startswith("avatar"):
             # dust = few triangles AND small: a 2-triangle floor face (Warehouse 21 courtyard, a skybox) is not dust
             ext = P.reshape(-1, 3).max(0) - P.reshape(-1, 3).min(0) if nv else np.zeros(3)

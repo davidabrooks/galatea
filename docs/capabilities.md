@@ -238,3 +238,4 @@ The Real Kisser announces each kiss in nearby chat in math-bold letters ("David 
 - Club floor (Oct 19, 2026): indoor floors are a bit brighter, with the stage lights' soft coloured fill (automatic under a roof).
 - Club floor 2 (Oct 19, 2026): indoor floors brighter again, lit by the club's own coloured lights (automatic under a roof).
 - Spotlights show on dancers indoors (Oct 19, 2026): less flat fill on avatars under a roof, so the club's coloured spots visibly light the people standing in them.
+- Indoor floors render clean (Oct 19, 2026): more render samples automatically under a roof, so dark, many-light rooms no longer get coloured denoiser blotches over the floor texture; the room is a little brighter.

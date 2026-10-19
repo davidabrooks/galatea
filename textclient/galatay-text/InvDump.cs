@@ -29,7 +29,7 @@ public static partial class Program
                 var own = it.Permissions.OwnerMask; var next = it.Permissions.NextOwnerMask;
                 var line = $"{path}/{it.Name}  [{it.AssetType}] owner {PermStr(own)} next {PermStr(next)} item {it.UUID}";
                 bool readable = it.AssetType == AssetType.LSLText ? (own & PermissionMask.Modify) != 0
-                              : it.AssetType == AssetType.Notecard ? (own & PermissionMask.Copy) != 0 && (own & PermissionMask.Modify) != 0 : false;
+                              : it.AssetType == AssetType.Notecard ? (own & PermissionMask.Copy) != 0 : false; // a no-mod notecard still opens read-only
                 if (it.AssetType is AssetType.LSLText or AssetType.Notecard)
                 {
                     if (!readable) line += it.AssetType == AssetType.LSLText ? "  -> source not readable (no-mod)" : "  -> text not readable (perms)";
@@ -61,6 +61,16 @@ public static partial class Program
         }
         string name = client.Inventory.Store.Contains(fid) ? client.Inventory.Store[fid].Name : fid.ToString();
         await Walk(fid, root, "/" + name);
+        try   // every URL in the saved notecards -> urls.txt next to them
+        {
+            var dir0 = outdir ?? Path.Combine("/workspace/secondlife/scripts/thirdparty", SafeName(name));
+            if (Directory.Exists(dir0))
+            {
+                var urls = Directory.GetFiles(dir0, "*.txt").Where(f => !f.EndsWith("urls.txt")).SelectMany(f => System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(f), @"(?:https?|secondlife)://[^\s""'<>)\]]+").Select(m => m.Value)).Distinct().OrderBy(x => x).ToList();
+                File.WriteAllLines(Path.Combine(dir0, "urls.txt"), urls); sb.AppendLine($"urls.txt: {urls.Count} URL(s)");
+            }
+        }
+        catch { }
         var res = $"invdump '{name}': {saved} text file(s) saved (read-only; nothing worn or changed)\n" + sb.ToString().TrimEnd();
         Log("inv", res.Split('\n')[0]); return res;
     }

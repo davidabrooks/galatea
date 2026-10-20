@@ -138,7 +138,7 @@ public static partial class Program
     internal static string RlvNoStripWhy(UUID item, string name, bool hud, ISet<UUID> protectedIds)
     {
         if (hud) return "hud";
-        if (item == TheVItem) return "body";
+        if (item == TheVItem || item == NippleRingsItem) return "body";
         if (protectedIds.Contains(item)) return "protected";
         if (OutfitGroup(name) is string g) return g;
         if (ClothingWordRx.IsMatch(name ?? "") || StripWearRx.IsMatch(name ?? "")) return null;   // garments fitted 'for LaraX' stay strippable

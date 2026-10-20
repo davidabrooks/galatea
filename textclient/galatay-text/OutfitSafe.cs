@@ -153,7 +153,7 @@ public static partial class Program
 
     // Wear a My Outfits folder without stacking (see header). Returns a report.
     static async Task<string> OutfitWearSafe(InventoryFolder folder, CancellationToken ct)
-        => await WithWardrobe($"outfit wear '{folder.Name}'", async () => { var r = await OutfitWearSafeLocked(folder, ct); WardrobeDressed(folder.Name); CollarStealthAfterOutfit(folder.Name); currentOutfit = folder.Name; VAutoCheckSoon("outfit " + folder.Name); return r; }, ct);
+        => await WithWardrobe($"outfit wear '{folder.Name}'", async () => { var r = await OutfitWearSafeLocked(folder, ct); WardrobeDressed(folder.Name); CollarStealthAfterOutfit(folder.Name); currentOutfit = folder.Name; preStripOutfit = null; VAutoCheckSoon("outfit " + folder.Name); return r; }, ct);
 
     static async Task<string> OutfitWearSafeLocked(InventoryFolder folder, CancellationToken ct)
     {
@@ -169,7 +169,7 @@ public static partial class Program
                             .Where(w => w.Item != UUID.Zero).GroupBy(w => w.Item).Select(g => g.First()).ToList();
             var objs = items.Where(i => i is InventoryObject || i is InventoryAttachment).ToList();
             var target = objs.Select(o => new TargetObj(o.UUID, o.Name)).ToList();
-            lastOutfitHasV = objs.Any(o => o.UUID == TheVItem);   // VAuto.cs
+            lastOutfitHasV = objs.Any(o => o.UUID == TheVItem); lastOutfitHasRings = objs.Any(o => o.UUID == NippleRingsItem);   // VAuto.cs
             var (detach, attach, notes) = PlanAttachmentSwap(worn, target, prot);
             foreach (var hid in ExtraHudsOff(worn, target.Select(t => t.Item).ToHashSet(), ToplessExtras().Select(e => e.id))) if (!detach.Contains(hid)) detach.Add(hid);
             foreach (var n in notes) sb.AppendLine("  " + n);

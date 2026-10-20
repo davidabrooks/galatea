@@ -129,3 +129,32 @@ public class NoStripTests
         Assert.Null(Program.RlvNoStripWhy(LibreMetaverse.UUID.Random(), n, false, None));
     }
 }
+
+public class NippleRingsAndRedressTests
+{
+    static readonly (WearableType, string)[] NoLayers = new (WearableType, string)[0];
+    [Fact]
+    public void ChestCover()
+    {
+        Assert.True(Program.ChestCovered(new[] { "[ARTi'S] Strapless Top - Lara PetiteX" }, NoLayers));
+        Assert.True(Program.ChestCovered(new[] { "PCP Beth Tube Top" }, NoLayers));
+        Assert.False(Program.ChestCovered(new[] { "TETRA - Geena ripped shorts", "[ARTi'S] Strapless Top - HUD" }, NoLayers));
+        Assert.True(Program.ChestCovered(new string[0], new[] { (WearableType.Tattoo, "Lace bra tattoo") }));
+        Assert.False(Program.ChestCovered(new string[0], new[] { (WearableType.Tattoo, "Freckles body tattoo") }));
+    }
+
+    [Fact]
+    public void RingsAreNoStrip() => Assert.Equal("body", Program.RlvNoStripWhy(Program.NippleRingsItem, "[BB] Nipple Rings", false, new HashSet<LibreMetaverse.UUID>()));
+
+    [Fact]
+    public void GetDressedAfterStrip_RedressesNotRandom()
+    {
+        // 2026-10-19 17:28: 'get dressed babe' picked a random outfit (PCP Beth Tube Top) instead of the pre-strip one
+        Assert.Equal(("redress", "ARTi'S Strapless Top shorts"), Program.FastRedressOverride("random", "PCP Beth Tube Top", true, "ARTi'S Strapless Top shorts"));
+        Assert.Equal(("random", "PCP Beth Tube Top"), Program.FastRedressOverride("random", "PCP Beth Tube Top", false, null));
+        Assert.Equal(("named", "Bikini"), Program.FastRedressOverride("named", "Bikini", true, "ARTi'S Strapless Top shorts"));
+        Assert.Equal("ARTi'S Strapless Top shorts", Program.PreStripCandidate(null, "ARTi'S Strapless Top shorts"));
+        Assert.Equal("A", Program.PreStripCandidate("A", "B"));
+        Assert.Null(Program.PreStripCandidate(null, "Naked")); Assert.Null(Program.PreStripCandidate(null, "Android Base"));
+    }
+}

@@ -123,6 +123,8 @@ public static partial class Program
                     lock (fastOutfitNames) { fastOutfitNames.Clear(); fastOutfitNames.AddRange(names); }
                     var (kind, name, why) = ResolveFastOutfit(req, names, lastNamedOutfit, DailyOutfitAllow(), Random.Shared);
                     if (kind == null) return new FastOutfitRun(false, null, null, why, sw.ElapsedMilliseconds);
+                    (kind, name) = FastRedressOverride(kind, name, preStripOutfit != null, preStripOutfit);   // VAuto.cs: "get dressed" after a strip
+                    if (kind == "redress") { Log("fastoutfit", $"'{Short(text, 40)}': stripped, so redress into '{name}' (not a random outfit)"); RlvLog($"fast chat '{Short(text, 40)}' -> redress '{name}'"); }
                     string rep; bool ok;
                     if (kind == "top_color")
                     {
@@ -132,6 +134,7 @@ public static partial class Program
                         else { rep = await OutfitClothingHuds(f, cts.Token, keepColor: false); ok = rep.Contains("': attached"); }
                     }
                     else if (BikiniNameRx.IsMatch(name)) { rep = await BikiniOn(); ok = rep.Contains("wearing outfit") || rep.Contains("worn"); }
+                    else if (kind == "redress") { rep = await RedressCmd(); ok = rep.StartsWith("wearing outfit"); }
                     else { rep = await WearOutfitWithHuds(name, KeepHudColorFor(name, lastNamedOutfit, true)); ok = rep.StartsWith("wearing outfit"); }
                     Log("fastoutfit", $"{kind} '{name}': {(ok ? "done" : "FAILED")} in {sw.ElapsedMilliseconds / 1000.0:0.0} s: " + rep.Replace("\n", " | ")[..Math.Min(400, rep.Length)]);
                     return new FastOutfitRun(ok, kind, name, ok ? null : "change failed: " + Short(rep.Replace("\n", " "), 120), sw.ElapsedMilliseconds);

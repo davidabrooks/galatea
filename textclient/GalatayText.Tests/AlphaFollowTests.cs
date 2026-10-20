@@ -75,17 +75,57 @@ public class RlvPlaceTests
     }
 }
 
-public class TpeStandTests
+public class StandRuleTests
+{
+    // N° 9 README (Force Sit): Strict (@unsit=n) is what keeps her seated; TPE has nothing to do with standing
+    [Fact]
+    public void OnlyUnsitRestrictionBlocksDeliberateStand()
+    {
+        Assert.NotNull(Program.SelfStandBlock(true));
+        Assert.Null(Program.SelfStandBlock(false));   // soft hold after a placement: a deliberate stand is fine
+        Assert.NotNull(Program.RlvBlocks("stand", "", false, b => b == "unsit"));
+        Assert.Null(Program.RlvBlocks("stand", "", true, b => b == "unsit"));   // the collar's own @unsit=force
+    }
+
+    [Fact]
+    public void StoreExportRoundTrip()
+    {
+        var s = new Program.RlvStore(); var a = LibreMetaverse.UUID.Random();
+        s.Add(a, "collar", "unsit", ""); s.Add(a, "collar", "tplure", "x");
+        var e = s.Export().Single();
+        Assert.Equal(new[] { "tplure:x", "unsit" }, e.keys.OrderBy(k => k));
+    }
+}
+
+public class RlvDetachByUuidTests
 {
     [Fact]
-    public void TpeRules()
+    public void RemattachByObjectUuid_TakesThatAttachmentOnly_CollarProtected()
     {
-        Assert.NotNull(Program.SelfStandBlock(true, false, false));   // @unsit=n always
-        Assert.NotNull(Program.SelfStandBlock(false, true, true));    // placed + TPE on
-        Assert.Null(Program.SelfStandBlock(false, true, false));      // placed, TPE off: deliberate stand ok
-        Assert.Null(Program.SelfStandBlock(false, false, true));
-        Assert.Equal(false, Program.TpeFromButtons(new[] { "☐ Group", "☐ TPE" }));
-        Assert.Equal(true, Program.TpeFromButtons(new[] { "☑ TPE" }));
-        Assert.Null(Program.TpeFromButtons(new[] { "About" }));
+        var shortsPrim = LibreMetaverse.UUID.Random(); var shorts = LibreMetaverse.UUID.Random();
+        var collar = LibreMetaverse.UUID.Random(); var collarPrim = LibreMetaverse.UUID.Random();
+        var worn = new[] { new Program.RlvWorn(shorts, shortsPrim, "TETRA - Geena ripped shorts", 10),
+                           new Program.RlvWorn(LibreMetaverse.UUID.Random(), LibreMetaverse.UUID.Random(), "Top", 1),
+                           new Program.RlvWorn(collar, collarPrim, "No 9 Collar", 39) };
+        var none = new HashSet<LibreMetaverse.UUID>();
+        Assert.Equal(new[] { shorts }, Program.RlvDetachPlan(worn, shortsPrim.ToString(), none, none).Select(w => w.Item));
+        Assert.Empty(Program.RlvDetachPlan(worn, collarPrim.ToString(), new HashSet<LibreMetaverse.UUID> { collar }, none));
+    }
+}
+
+public class NoStripTests
+{
+    static readonly HashSet<LibreMetaverse.UUID> None = new();
+    [Theory]
+    [InlineData("Maitreya Mesh Body - LaraX V1.1")] [InlineData("/ EYES / lel evox 4.0")] [InlineData("Lelutka teeth & gums")]
+    [InlineData("DOUX - Oasis Hairstyle [M/Long]")] [InlineData("MISAKI -Kay HandR")] [InlineData("VELOUR: BODY NECKFIX")]
+    public void BodyPartsHidden(string n) => Assert.NotNull(Program.RlvNoStripWhy(LibreMetaverse.UUID.Random(), n, false, None));
+
+    [Theory]
+    [InlineData("TETRA - Geena ripped shorts - LaraX (low waist)")] [InlineData("[ARTi'S] Strapless Top - Lara PetiteX")]
+    public void ClothingShown(string n)
+    {
+        // clothing fitted 'for LaraX' must stay strippable
+        Assert.Null(Program.RlvNoStripWhy(LibreMetaverse.UUID.Random(), n, false, None));
     }
 }

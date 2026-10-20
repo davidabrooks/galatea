@@ -88,6 +88,7 @@ public static partial class Program
                 return string.Concat(keys.Select(k => sep + k));
             }
         }
+        public List<(UUID src, string name, List<string> keys)> Export() { lock (l) return src.Select(kv => (kv.Key, kv.Value.name, kv.Value.r.ToList())).ToList(); }
         public string Describe() { lock (l) return src.Count == 0 ? "none" : string.Join("; ", src.Select(kv => $"'{kv.Value.name}' ({kv.Key}): {string.Join(",", kv.Value.r.OrderBy(x => x))}")); }
     }
     internal static readonly RlvStore rlv = new();
@@ -131,15 +132,30 @@ public static partial class Program
         RlvLayers.Where(x => x.t is not (WearableType.Shape or WearableType.Skin or WearableType.Hair or WearableType.Eyes)
                              && (layer.Length == 0 || x.name == layer.ToLowerInvariant())).Select(x => x.t).ToList();
 
+    static readonly Regex StripWearRx = new(@"\b(boots?|shoes?|heels|sandals|sneakers|earrings?|bracelets?|necklace|rings?|jewel(le)?ry|jacket|coat|sweater|hoodie|vest|belt|gloves?|hat|cap|glasses|choker|lingerie|stockings)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex NoStripNameRx = new(@"\b(eyes?|teeth|tooth|gums?|tongue|lash(es)?|brows?|eyebrows?|nails?|hands?|feet|foot|head|evo\s*x|lelutka|lel|lara\s*x?|maitreya|body|hair|hairbase|skin|shape|neck\s*fix|add-?on|bom|bento|kay|misaki|calista|skeleton|ears?|mouth|jaw|palm|hip|the v)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // pure (tested): why a worn item must be hidden from strip menus (null = clothing, strippable)
+    internal static string RlvNoStripWhy(UUID item, string name, bool hud, ISet<UUID> protectedIds)
+    {
+        if (hud) return "hud";
+        if (item == TheVItem) return "body";
+        if (protectedIds.Contains(item)) return "protected";
+        if (OutfitGroup(name) is string g) return g;
+        if (ClothingWordRx.IsMatch(name ?? "") || StripWearRx.IsMatch(name ?? "")) return null;   // garments fitted 'for LaraX' stay strippable
+        if (NoStripNameRx.IsMatch(name ?? "")) return "body";
+        return null;
+    }
+
     internal sealed record RlvWorn(UUID Item, UUID Prim, string Name, int Point);
     // pure (tested): which worn attachments a @detach[:opt]=force takes off. Never: protected items (always-wear collar,
     // keep-attached, AO), detach-locked sources, body/head/hair, HUDs. opt = point name or exact object name ("" = all).
     internal static List<RlvWorn> RlvDetachPlan(IEnumerable<RlvWorn> worn, string opt, ISet<UUID> protectedItems, ISet<UUID> lockedPrims)
     {
         int pt = opt.Length > 0 ? RlvPointIndex(opt) : -1;
+        bool byId = UUID.TryParse(opt, out var oid);   // RLVa: @detach/@remattach:<object uuid> = that worn attachment
         return worn.Where(w => w.Item != UUID.Zero && !protectedItems.Contains(w.Item) && !lockedPrims.Contains(w.Prim)
                                && OutfitGroup(w.Name) == null && !(w.Point >= 31 && w.Point <= 38)
-                               && (opt.Length == 0 || (pt >= 0 ? w.Point == pt : string.Equals(w.Name, opt, StringComparison.OrdinalIgnoreCase))))
+                               && (opt.Length == 0 || (byId ? w.Prim == oid || w.Item == oid : pt >= 0 ? w.Point == pt : string.Equals(w.Name, opt, StringComparison.OrdinalIgnoreCase))))
                    .ToList();
     }
 
@@ -169,6 +185,7 @@ public static partial class Program
         return null;
     }
 
+    static int rlvLoopsStarted;
     static void RlvHook()
     {
         client.Self.ChatFromSimulator += (s, e) =>
@@ -178,8 +195,12 @@ public static partial class Program
             var (id, name, msg) = (e.SourceID, e.FromName, e.Message);
             _ = Task.Run(() => RlvHandle(id, name, msg));
         };
-        _ = Task.Run(async () => { while (true) { await Task.Delay(15000); try { RlvSweep(); } catch { } } });
-        RlvHoldLoop();   // RlvPlace.cs
+        RlvRestoreAtLogin();   // RlvPlace.cs: every login (new client), restrictions + hold from before the relog
+        if (Interlocked.Exchange(ref rlvLoopsStarted, 1) == 0)
+        {
+            _ = Task.Run(async () => { while (true) { await Task.Delay(15000); try { RlvSweep(); } catch { } } });
+            RlvHoldLoopRun();
+        }
     }
 
     static async Task RlvHandle(UUID srcPrim, string srcName, string msg)
@@ -188,7 +209,7 @@ public static partial class Program
         for (int i = 0; i < 20 && (root = RlvOwnAttachmentRoot(srcPrim)) == null; i++) await Task.Delay(500); // just-attached: prims may lag
         if (root == null) { RlvLog($"IGNORED (not one of my worn attachments) '{srcName}' ({srcPrim}): {msg}"); return; }
         var cmds = RlvParse(msg) ?? new();
-        var res = new List<string>();
+        var res = new List<string>(); rlvSrcItem[srcPrim] = AttachItemId(root);
         foreach (var c in cmds)
         {
             string r;
@@ -196,6 +217,7 @@ public static partial class Program
             res.Add($"{c.Behav}{(c.Option.Length > 0 ? ":" + c.Option : "")}={c.Param} -> {r}");
         }
         RlvLog($"'{srcName}' ({srcPrim}, item {AttachItemId(root)}): `{msg}` | {string.Join(" | ", res)}");
+        RlvSaveState();   // RlvPlace.cs: survives a relog
     }
 
     static bool RlvChannel(string p, out int ch) => int.TryParse(p, NumberStyles.Integer, CultureInfo.InvariantCulture, out ch) && ch > 0;
@@ -282,7 +304,7 @@ public static partial class Program
                 List<RlvWorn> plan;
                 if (b == "detach" && o.Length > 0 && RlvPointIndex(o) < 0 && !worn.Any(w => string.Equals(w.Name, o, StringComparison.OrdinalIgnoreCase)) && await RlvWornLayerNamed(o))
                     return await RlvForce("remoutfit", o);
-                bool folder = b == "detachall" || (o.Length > 0 && RlvPointIndex(o) < 0 && !worn.Any(w => string.Equals(w.Name, o, StringComparison.OrdinalIgnoreCase)));
+                bool folder = b == "detachall" || (o.Length > 0 && !UUID.TryParse(o, out _) && RlvPointIndex(o) < 0 && !worn.Any(w => string.Equals(w.Name, o, StringComparison.OrdinalIgnoreCase)));
                 if (folder)
                 {
                     if (o.Length == 0) return "detachall needs a folder";
@@ -331,7 +353,14 @@ public static partial class Program
         else { var l = RlvLayers.FirstOrDefault(x => x.name == o.ToLowerInvariant()); if (l.name != null) ids.AddRange(SafeWearables().Where(w => w.WearableType == l.t).Select(w => w.ItemID)); }
         var paths = new List<string>();
         foreach (var id in ids.Where(i => i != UUID.Zero).Distinct())
-        { var it = await FetchItemRO(id, c.Token); var pth = it == null ? null : RlvPathOf(it.ParentUUID); if (pth != null && !paths.Contains(pth)) paths.Add(pth); }
+        {
+            var it = await FetchItemRO(id, c.Token);
+            var prim = WornPrims().FirstOrDefault(x => AttachItemId(x) == id);
+            var why = RlvNoStripWhy(id, it?.Name ?? prim?.Properties?.Name ?? "", prim != null && IsHudAttachPoint(prim.PrimData.AttachmentPoint), OutfitProtectedIds());
+            // protected items: a path the strip menu hides ('nostrip', and N° 9's own '> Stash' folder, README Strip section)
+            var pth = why != null ? $"> Stash/nostrip {why}" : it == null ? null : RlvPathOf(it.ParentUUID);
+            if (pth != null && !paths.Contains(pth)) paths.Add(pth);
+        }
         return string.Join(",", paths);
     }
     // folder path relative to #RLV (null when not inside #RLV)
@@ -435,14 +464,14 @@ public static partial class Program
         {
             if (RlvOwnAttachmentRoot(s) != null) { rlvMissingSince.TryRemove(s, out _); continue; }
             var since = rlvMissingSince.GetOrAdd(s, DateTime.Now);
-            if ((DateTime.Now - since).TotalSeconds >= 60) { rlv.Drop(s); rlvMissingSince.TryRemove(s, out _); RlvLog($"source {s} no longer worn: its restrictions dropped"); }
+            if ((DateTime.Now - since).TotalSeconds >= 60) { rlv.Drop(s); rlvMissingSince.TryRemove(s, out _); RlvLog($"source {s} no longer worn: its restrictions dropped"); RlvSaveState(); }
         }
     }
 
     // her own actions under restrictions (null = allowed). RLV forces bypass sit/unsit; MAYDAY always passes.
     internal static string RlvBlocks(string cmd, string text, bool forcing, Func<string, bool> has) => cmd switch
     {
-        "stand" when !forcing && SelfStandBlock(has("unsit"), rlvHoldSeat != null, rlvTpe) is string sb => sb,
+        "stand" when !forcing && SelfStandBlock(has("unsit")) is string sb => sb,
         "sit" when !forcing && (has("sit") || has("unsit")) => "refused (RLV @sit/@unsit is on; say MAYDAY or use 'rlv clear' to release)",
         "say" or "shout" or "whisper" when has("sendchat") && !IsSafeword(text) => "refused (RLV @sendchat is on; MAYDAY still works)",
         _ => null
@@ -454,7 +483,7 @@ public static partial class Program
         switch (a.Length > 0 ? a[0] : "status")
         {
             case "status": return $"RLV on ({RlvVersionNew}); relay for world objects: off; restrictions: {rlv.Describe()}; log {RlvLogFile}";
-            case "clear": { RlvRelease("rlv clear"); var n = rlv.ClearAll(); RlvLog($"LOCAL OVERRIDE 'rlv clear': {n} restriction(s) cleared"); return $"cleared {n} restriction(s) locally"; }
+            case "clear": { RlvRelease("rlv clear"); var n = rlv.ClearAll(); RlvLog($"LOCAL OVERRIDE 'rlv clear': {n} restriction(s) cleared"); RlvSaveState(); return $"cleared {n} restriction(s) locally"; }
             case "log":
             {
                 int n = a.Length > 1 && int.TryParse(a[1], out var x) ? Math.Clamp(x, 1, 200) : 30;

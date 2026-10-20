@@ -9,29 +9,11 @@ namespace GalatayText;
 
 public static partial class Program
 {
-    // collar TPE checkbox, cached from any collar Access menu ('☐ TPE' / '☑ TPE'); never changed by us
-    internal static volatile bool rlvTpe;
-    static readonly string TpeFile = "/workspace/secondlife/rlv/collar-tpe.txt";
-    internal static bool? TpeFromButtons(IEnumerable<string> b)
-    {
-        var t = (b ?? Array.Empty<string>()).FirstOrDefault(x => x != null && System.Text.RegularExpressions.Regex.IsMatch(x, @"\bTPE\b"));
-        return t == null ? null : (t.Contains('☑') || t.Contains('☒'));
-    }
-    static void TpeHook()
-    {
-        try { rlvTpe = File.Exists(TpeFile) && File.ReadAllText(TpeFile).Trim() == "on"; } catch { }
-        client.Self.ScriptDialog += (s, e) =>
-        {
-            if (e.ObjectName != "Collar" || e.OwnerID != client.Self.AgentID) return;
-            var v = TpeFromButtons(e.ButtonLabels); if (v == null) return;
-            if (v.Value != rlvTpe) RlvLog($"collar TPE read from its Access menu: {(v.Value ? "ON" : "off")}");
-            rlvTpe = v.Value; try { File.WriteAllText(TpeFile, v.Value ? "on\n" : "off\n"); } catch { }
-        };
-    }
-    // pure (tested): may she stand by her own choice? @unsit=n always blocks; while held after a placement, TPE on blocks too
-    internal static string SelfStandBlock(bool unsitRestricted, bool held, bool tpe) =>
-        unsitRestricted ? "refused (RLV @unsit is on; say MAYDAY or use 'rlv clear' to release)"
-        : held && tpe ? "refused (placed by RLV and the collar's TPE is on: David stands me, or MAYDAY / rlv clear)" : null;
+    // pure (tested): may she stand by her own choice? Only explicit RLV restrictions lock standing (the collar's Force Sit
+    // "Strict" sends @unsit=n). The soft hold after a placement never blocks a deliberate stand. (TPE has nothing to do with it:
+    // N° 9 README, Force Sit section.)
+    internal static string SelfStandBlock(bool unsitRestricted) =>
+        unsitRestricted ? "refused (RLV @unsit is on, e.g. the collar's Strict force-sit; say MAYDAY or use 'rlv clear' to release)" : null;
 
     static volatile string rlvHoldSeat;   // object uuid as string, null = not held
     static string rlvHoldName;
@@ -47,7 +29,7 @@ public static partial class Program
         string where = "";
         try { where = $"{client.Network.CurrentSim?.Name} {Fmt(client.Self.SimPosition)}"; } catch { }
         bool unsitOn = rlv.Has("unsit");
-        if (how == "sit") { rlvHoldSeat = obj.ToString(); rlvHoldName = objName; try { SetPauseNow("rlv", $"RLV sat me on '{objName}'"); } catch { } afSnoozeUntil = DateTime.MaxValue; }
+        if (how == "sit") { rlvHoldSeat = obj.ToString(); rlvHoldName = objName; RlvSaveState(); try { SetPauseNow("rlv", $"RLV sat me on '{objName}'"); } catch { } afSnoozeUntil = DateTime.MaxValue; }
         var text = $"RLV {how}: {(how == "sit" ? $"sat on '{objName}'" : how == "stand" ? "stood up" : $"teleported")}; now at {where}; @unsit {(unsitOn ? "ON (can't stand)" : "off")}{(how == "sit" ? "; held here (no wander/follow/auto-stand) until David says stand or I'm released" : "")}";
         RlvLog("placement: " + text);
         try { Notify("rlv_placed", objName, obj, text, null); } catch { }
@@ -56,10 +38,9 @@ public static partial class Program
     {
         if (rlvHoldSeat == null || !RlvReleasesHold(why)) return;
         RlvLog($"hold on '{rlvHoldName}' released ({why})");
-        rlvHoldSeat = null; afSnoozeUntil = DateTime.Now;
+        rlvHoldSeat = null; afSnoozeUntil = DateTime.Now; RlvSaveState();
         try { if (wanderPause == "rlv") wanderPause = null; } catch { }
     }
-    static void RlvHoldLoop() { TpeHook(); RlvHoldLoopRun(); }
     static void RlvHoldLoopRun() => _ = Task.Run(async () =>
     {
         while (true)
@@ -74,6 +55,51 @@ public static partial class Program
             }
             catch { }
         }
+    });
+
+    // ---- persistence across a relog (prim ids change; items do not) ----
+    static readonly string RlvStateFile = "/workspace/secondlife/rlv/rlv-state.json";
+    internal static readonly System.Collections.Concurrent.ConcurrentDictionary<UUID, UUID> rlvSrcItem = new();
+    internal sealed record RlvSaved(string item, string name, List<string> keys);
+    internal sealed record RlvStateDoc(List<RlvSaved> sources, string holdSeat, string holdName, string holdRegion);
+    static readonly object rlvSaveLock = new();
+    static void RlvSaveState()
+    {
+        try
+        {
+            var doc = new RlvStateDoc(rlv.Export().Where(e => rlvSrcItem.ContainsKey(e.src))
+                                         .Select(e => new RlvSaved(rlvSrcItem[e.src].ToString(), e.name, e.keys)).ToList(),
+                                      rlvHoldSeat, rlvHoldName, client?.Network?.CurrentSim?.Name);
+            lock (rlvSaveLock) File.WriteAllText(RlvStateFile, System.Text.Json.JsonSerializer.Serialize(doc));
+        }
+        catch { }
+    }
+    static void RlvRestoreAtLogin() => _ = Task.Run(async () =>
+    {
+        RlvStateDoc doc = null;
+        try { if (File.Exists(RlvStateFile)) doc = System.Text.Json.JsonSerializer.Deserialize<RlvStateDoc>(File.ReadAllText(RlvStateFile)); } catch { }
+        if (doc == null || (doc.sources.Count == 0 && doc.holdSeat == null)) return;
+        RlvLog($"relog: restoring {doc.sources.Sum(x => x.keys.Count)} saved restriction(s) from {doc.sources.Count} item(s){(doc.holdSeat != null ? $", hold on '{doc.holdName}'" : "")}");
+        var left = doc.sources.ToList();
+        for (int i = 0; i < 60 && left.Count > 0; i++)   // up to 2 min for the attachments to show up
+        {
+            await Task.Delay(2000);
+            foreach (var sv in left.ToList())
+            {
+                var p = WornPrims().FirstOrDefault(x => AttachItemId(x).ToString() == sv.item); if (p == null) continue;
+                rlvSrcItem[p.ID] = AttachItemId(p);
+                foreach (var k in sv.keys) { var c = k.IndexOf(':'); rlv.Add(p.ID, sv.name, c < 0 ? k : k[..c], c < 0 ? "" : k[(c + 1)..]); }
+                left.Remove(sv); RlvLog($"relog: restored {string.Join(",", sv.keys)} for '{sv.name}' (now {p.ID})");
+            }
+        }
+        foreach (var sv in left) RlvLog($"relog: '{sv.name}' ({sv.item}) not worn after login: its saved restrictions dropped");
+        if (doc.holdSeat != null && doc.holdRegion == client.Network.CurrentSim?.Name)
+        {   // the collar normally re-sits her itself (@sit:..=force); the hold loop sits her back if it doesn't
+            rlvHoldName = doc.holdName; rlvHoldSeat = doc.holdSeat; afSnoozeUntil = DateTime.MaxValue;
+            try { SetPauseNow("rlv", $"relog: held on '{doc.holdName}'"); } catch { }
+            RlvLog($"relog: hold on '{doc.holdName}' restored; re-sit there if not seated");
+        }
+        RlvSaveState();
     });
 
     // @tpto:<global x>/<global y>/<z>=force

@@ -35,8 +35,10 @@ MCP `redress` puts back the outfit worn before the strip (its own alphas come ba
 **Placement (RlvPlace.cs):** RLV sit / unsit / `@tpto` send an `rlv_placed` webhook event (object, region + position, @unsit state).
 After an RLV sit she is held: wander pauses ('rlv'), autofollow snoozes, and any automatic stand-up is undone by re-sitting on the
 same seat (closes the wander auto-stand gap). Released by a deliberate stand, `@unsit=force`, MAYDAY or `rlv clear`.
-Self-stand rule (David, 4:44 PM): `@unsit=n` always blocks; while held, the collar's **TPE** checkbox ON also blocks her own stand
-(TPE OFF: a deliberate stand is allowed). TPE is read (never changed) from the collar's Access menu buttons and cached in
-`/workspace/secondlife/rlv/collar-tpe.txt`. Note: the N° 9 README ties TPE only to who can turn it off, run away and configure
-owner features; it says nothing about standing, so this stand rule is ours, not the collar's. Leash pulls (llMoveToTarget) are not
+Standing (David, 5:09 PM, per the N° 9 README Force Sit section): only explicit RLV restrictions lock standing: `@unsit=n`, which
+the collar sends when its Force Sit **Strict** option is on (the Leash menu's Strict blocks unleash/teleport via tp restrictions).
+TPE has nothing to do with standing. The soft hold never blocks a deliberate stand.
+**Relog:** restrictions are saved per worn ITEM in `/workspace/secondlife/rlv/rlv-state.json` (prim ids change on relog) and restored
+when that item is worn again after login (up to 2 min); the hold seat is restored too, so if the collar does not re-sit her itself
+(`@sit:<uuid>=force`, logged here) the hold loop sits her back on the same seat in the same region. Leash pulls (llMoveToTarget) are not
 detected.

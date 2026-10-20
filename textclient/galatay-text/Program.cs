@@ -1782,7 +1782,7 @@ public static partial class Program
             var rb = RlvGuard(cmd, rest);
             if (rb == null && cmd == "detach" && a.Length == 1 && UUID.TryParse(a[0], out var dl) && RlvLockedItems().Contains(dl)) rb = "refused (RLV @detach=n: this item is locked on)";
             if (rb != null) { RlvLog($"own command '{line}' {rb}"); return rb; }
-            if (cmd is "say" or "shout" or "whisper" && IsSafeword(rest)) { RlvRelease("safeword"); var n = rlv.ClearAll(); RlvLog($"SAFEWORD said ('{rest}'): {n} local restriction(s) cleared"); }
+            if (cmd is "say" or "shout" or "whisper" && IsSafeword(rest)) { RlvRelease("safeword"); var n = rlv.ClearAll(); RlvLog($"SAFEWORD said ('{rest}'): {n} local restriction(s) cleared"); RlvSaveState(); }
         }
         bool imRead = cmd == "im" && IsImHistoryCmd(a); // read-only, no rate guard (ImGuard.cs)
         if (cmd is "say" or "shout" or "whisper" or "chan" or "im" && !imRead) { var rg = RateGuard(); if (rg != null) return rg; WanderOwnChat(); }

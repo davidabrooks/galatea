@@ -158,3 +158,11 @@ public class NippleRingsAndRedressTests
         Assert.Null(Program.PreStripCandidate(null, "Naked")); Assert.Null(Program.PreStripCandidate(null, "Android Base"));
     }
 }
+
+public class StripWhyTests
+{
+    [Theory]
+    [InlineData("rlv detach", true)] [InlineData("rlv remoutfit", true)] [InlineData("undress (tub)", true)]
+    [InlineData("feet hud", false)] [InlineData("wear remove", false)] [InlineData("outfit swap", false)] [InlineData("alpha follow", false)]
+    public void OnlyRealStripsStartAStrip(string why, bool strip) => Assert.Equal(strip, Program.IsStripWhy(why));
+}

@@ -461,6 +461,7 @@ def build(group, bones=None, lining=True):
         if not (hold and os.environ.get("GT_HOLD_FLAT", "1") == "1"): me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
         ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs, hold))
         obs.append(ob)
+        if group.startswith("avatar"): ob["gt_avatar"] = 1   # avatar key light (photo hd under a roof) links to these
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
         # shadow drew a grey "text" mark beside her nose. The SL viewer's sun shadow map is far too coarse to resolve them.
         # ponytail: decided per texture alpha; ceiling = no hair shadow on her neck
@@ -767,6 +768,34 @@ def eep(env):
 
 INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "2"))   # 2026-10-19: 5 painted red/orange pools over the green-gray club floor vs David's reference; 2 + ambient 0.9 reads closer   # SL point/spot light energy x this when the camera is under a roof; 1 = off
 PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "1"))   # projector ambiance fill (x the direct term), 0 = off (the old behaviour)
+
+AVATAR_KEY = float(os.environ.get("GT_AVATAR_KEY", "25"))   # photo hd under a roof: avatar-only key light, W per m^2 of distance; 0 = off
+
+def avatar_key_light():
+    """2026-10-19, David's Warehouse 21 reference: in a dark club his viewer shows the dancers well lit (bright skin) against the dark
+    room, our path-traced club left them as dim as the floor. Under a roof (photo hd only) a soft, warm-neutral area light from above
+    the camera lights the AVATARS only (Cycles light linking: receivers and blockers = the avatar objects), so the room, floor and
+    walls keep their own lighting and no extra shadow falls on the world. Energy scales with the distance squared (same look at any
+    framing). Applies to every avatar in every layered pass (base: her; batches: theirs)."""
+    if not HD or AVATAR_KEY <= 0 or not sc.camera or not under_roof(): return
+    avs = [o for o in sc.objects if o.type == "MESH" and o.get("gt_avatar")]
+    if not avs: return
+    coll = bpy.data.collections.get("gt_avatar_key") or bpy.data.collections.new("gt_avatar_key")
+    for o in avs:
+        if o.name not in coll.objects: coll.objects.link(o)
+    cam = sc.camera.matrix_world.translation.copy()
+    tgt = Vector(M.get("me") or cam) + Vector((0.0, 0.0, 1.2))
+    d = max(1.0, (tgt - cam).length)
+    up = Vector((0.0, 0.0, 1.0)); fwd = (tgt - cam).normalized(); side = fwd.cross(up).normalized() if abs(fwd.z) < 0.99 else Vector((1.0, 0.0, 0.0))
+    pos = cam + up * (0.35 * d) - side * (0.25 * d)
+    L_ = bpy.data.lights.new("gt_avatar_key", "AREA"); L_.shape = "DISK"; L_.size = max(1.0, 0.5 * d)
+    L_.color = (1.0, 0.9, 0.8); L_.energy = AVATAR_KEY * d * d
+    o = bpy.data.objects.new("gt_avatar_key", L_); o.location = pos
+    o.rotation_euler = (tgt - pos).to_track_quat("-Z", "Y").to_euler(); sc.collection.objects.link(o)
+    try:
+        o.light_linking.receiver_collection = coll; o.light_linking.blocker_collection = coll
+    except AttributeError as e: log("avatar key light: no light linking", e)
+    log("avatar key light", round(L_.energy, 1), "W at", round(d, 2), "m on", len(avs), "avatar objects")
 
 def under_roof():
     """camera under geometry within 80 m straight up (a club, a house): Oct 19 2026 Warehouse 21"""
@@ -1480,6 +1509,7 @@ if kind == "scene":
             for ob in sc.objects:
                 if ob.type == "MESH" and ob not in keep and ob.visible_get() and getattr(ob, "visible_camera", True): ob.is_holdout = True
             log("layer batch", sorted(LAYER_AVS), "holdout world")
+    avatar_key_light()
     if os.environ.get("GT_DEBUG_PROJ"):   # diagnosis: where the SL lights and glowing / fullbright faces land in the frame (pixels, y down)
         bpy.context.view_layer.update()
         from bpy_extras.object_utils import world_to_camera_view

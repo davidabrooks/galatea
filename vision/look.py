@@ -228,6 +228,14 @@ def mem_available_mb(meminfo_text):
             except (IndexError, ValueError): return None
     return None
 
+def mem_pause_action(avail_mb, floor_mb, hard_mb, paused, paused_for_s, pause_max_s, margin_mb=None):
+    """Pure: None / "pause" / "resume" / "kill" for the memory guard (see run_mem_guarded)"""
+    margin_mb = int(os.environ.get("GT_MEM_RESUME_MARGIN_MB", "500")) if margin_mb is None else margin_mb
+    if avail_mb is None or floor_mb <= 0: return "resume" if paused else None
+    if avail_mb < hard_mb or (paused and paused_for_s > pause_max_s and avail_mb < floor_mb): return "kill"
+    if paused: return "resume" if avail_mb >= floor_mb + margin_mb else None
+    return "pause" if avail_mb < floor_mb else None
+
 def mem_guard_trip(avail_mb, floor_mb):
     """Pure: kill the render now? (avail unknown -> no)"""
     return avail_mb is not None and floor_mb > 0 and avail_mb < floor_mb
@@ -286,6 +294,12 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
         p = subprocess.Popen(cmd, stdout=fo, stderr=fe, text=True, env=env, preexec_fn=_child_preexec)
         _CHILDREN.add(p)
         tripped = None; peak_mb = 0; peak_anon = 0
+        # 2026-10-19: other agents' builds on the shared box dipped MemAvailable under the floor for minutes and three 50-min 4K
+        # passes were killed at a 4.8 GB peak. Now the render is first PAUSED (SIGSTOP: it stops growing) and resumed once the box
+        # has floor + GT_MEM_RESUME_MARGIN_MB again; killed only under GT_MEM_HARD_FLOOR_MB or after GT_MEM_PAUSE_MAX_S paused
+        hard_mb = int(os.environ.get("GT_MEM_HARD_FLOOR_MB", str(max(0, floor_mb // 2))))
+        pause_max = float(os.environ.get("GT_MEM_PAUSE_MAX_S", "1200")); paused_at = None; paused_s = 0.0; pauses = 0
+        hd_pause = (env or {}).get("GT_HD") == "1" and os.environ.get("GT_MEM_PAUSE", "1") != "0"
         while p.poll() is None:
             try:
                 with open("/proc/meminfo") as f: avail = mem_available_mb(f.read())
@@ -296,12 +310,25 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
                         if l_.startswith("VmRSS:"): peak_mb = max(peak_mb, int(l_.split()[1]) // 1024)
                         elif l_.startswith("RssAnon:"): peak_anon = max(peak_anon, int(l_.split()[1]) // 1024); break
             except (OSError, ValueError): pass
-            if mem_guard_trip(avail, floor_mb):
+            act = (mem_pause_action(avail, floor_mb, hard_mb, paused_at is not None, (time.time() - paused_at) if paused_at else 0, pause_max)
+                   if hd_pause else ("kill" if mem_guard_trip(avail, floor_mb) else None))   # quick looks: the old kill
+            if act == "pause":
+                try: os.killpg(p.pid, signal.SIGSTOP); paused_at = time.time(); pauses += 1
+                except OSError: pass
+                print(f"memory guard: MemAvailable {avail} MB < {floor_mb} MB: render paused until memory frees", file=sys.stderr)
+            elif act == "resume":
+                try: os.killpg(p.pid, signal.SIGCONT)
+                except OSError: pass
+                paused_s += time.time() - paused_at; paused_at = None
+                print(f"memory guard: MemAvailable {avail} MB: render resumed", file=sys.stderr)
+            elif act == "kill":
                 tripped = avail
                 try: os.killpg(p.pid, signal.SIGKILL)
                 except OSError:
                     try: p.send_signal(signal.SIGKILL)
                     except OSError: pass
+                try: os.killpg(p.pid, signal.SIGCONT)
+                except OSError: pass
                 p.wait(); break
             time.sleep(poll_s)
         _CHILDREN.discard(p)
@@ -309,7 +336,8 @@ def run_mem_guarded(cmd, env, floor_mb=None, poll_s=0.5):
     if tripped is not None:
         err += f"\nGT: memory guard: box MemAvailable {tripped} MB < {floor_mb} MB, render killed to keep the box responsive"
         print(f"memory guard: MemAvailable {tripped} MB < {floor_mb} MB: render killed", file=sys.stderr)
-    cp = subprocess.CompletedProcess(cmd, p.returncode, out, err); cp.peak_mb = peak_mb; cp.peak_anon_mb = peak_anon
+    cp = subprocess.CompletedProcess(cmd, p.returncode, out, err); cp.peak_mb = peak_mb; cp.peak_anon_mb = peak_anon; cp.paused_s = round(paused_s, 1); cp.pauses = pauses
+    if pauses: print(f"memory guard: paused {pauses}x, {cp.paused_s} s in all", file=sys.stderr)
     return cp
 
 def mesher_error(text):
@@ -338,14 +366,31 @@ def run_mesher(run, args, env):
 
 LAYER_STATS = []   # per pass: {"pass", "peak_mb", "seconds", ...} for the summary line
 
+_RESUME_VOLATILE = ("GT_TEX_BIAS", "GT_TEX_BUDGET_MB", "GT_HD_BANDS", "GT_TILE", "GT_TEX_LIMIT", "GT_BVH_COMPACT", "GT_LAYER", "GT_LOOK_", "GT_MEM_")
+
+def layer_resume_key(meta, env):
+    """Pure: key of a layered photo for resuming: the meshed scene (groups + vertex counts), environment and every GT_ render
+    setting except the memory knobs a retry changes (texture bias / budget, bands, tiles, BVH) and per-pass ones"""
+    import hashlib
+    gt = sorted((k, v) for k, v in env.items() if k.startswith("GT_") and not k.startswith(_RESUME_VOLATILE))
+    sc = [(b.get("group"), b.get("nv"), b.get("tex")) for b in meta.get("batches", [])]
+    return hashlib.sha1(json.dumps([gt, sc, meta.get("env")], sort_keys=True, default=str).encode()).hexdigest()
+
 def render_layered(out, env, meta, refetch, avail_mb):
     """photo hd for a crowd that does not fit one Blender process: see vision/layers.py. Returns (files, hdr files, [seconds], build)"""
     import numpy as np, layers, hdr_post
     from PIL import Image
-    t0 = time.time(); ldir = f"{WORK}/layers"; shutil.rmtree(ldir, ignore_errors=True); os.makedirs(ldir)
-    plan_path = f"{WORK}/layer-plan.json"
-    try: os.remove(plan_path)
-    except OSError: pass
+    t0 = time.time(); ldir = f"{WORK}/layers"; plan_path = f"{WORK}/layer-plan.json"
+    # 2026-10-19 resume: finished passes (base, each batch) stay in layers/ with a .ok marker under a key of the scene + render
+    # settings; a rerun of the same photo after a memory kill (or a cancelled/cut-off run) reuses them instead of starting over
+    key = layer_resume_key(meta, env); kpath = f"{ldir}/resume-key.txt"
+    try: same = open(kpath).read().strip() == key
+    except OSError: same = False
+    if not same or os.environ.get("GT_LAYER_RESUME", "1") == "0":
+        shutil.rmtree(ldir, ignore_errors=True); os.makedirs(ldir); open(kpath, "w").write(key)
+        try: os.remove(plan_path)
+        except OSError: pass
+    else: print("layers: resuming: finished passes from an earlier run of this photo are reused", file=sys.stderr)
     def run_pass(penv, label, retry_base=False):
         t = time.time(); r = None
         for attempt in range(3):
@@ -362,9 +407,15 @@ def render_layered(out, env, meta, refetch, avail_mb):
         print(f"layer pass {label}: peak {LAYER_STATS[-1]['peak_mb']} MB (anon {LAYER_STATS[-1]['peak_anon_mb']}), {LAYER_STATS[-1]['seconds']} s, exit {r.returncode}", file=sys.stderr)
         return r
     base_npy = f"{ldir}/base.npy"
-    r = run_pass({**env, "GT_LAYER": "base", "GT_LAYER_NPY": base_npy}, "base", retry_base=True)
-    if r.returncode or not os.path.exists(base_npy) or not os.path.exists(plan_path):
-        sys.exit("blender layer base failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
+    if os.path.exists(base_npy + ".ok") and os.path.exists(f"{ldir}/plan.json"):
+        shutil.copy(f"{ldir}/plan.json", plan_path); r = subprocess.CompletedProcess([], 0, open(base_npy + ".ok").read(), "")
+        print("layers: base pass reused", file=sys.stderr)
+    else:
+        r = run_pass({**env, "GT_LAYER": "base", "GT_LAYER_NPY": base_npy}, "base", retry_base=True)
+        if r.returncode or not os.path.exists(base_npy) or not os.path.exists(plan_path):
+            sys.exit("blender layer base failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
+        shutil.copy(plan_path, f"{ldir}/plan.json")
+        open(base_npy + ".ok", "w").write("\n".join(l for l in r.stdout.splitlines() if l.startswith("GT:")))
     for l in r.stdout.splitlines():
         if l.startswith("GT: avatar omitted") or l.startswith("GT: avatar stand-in"): print(l[4:], file=sys.stderr)
     build = next((float(l.split()[3]) for l in r.stdout.splitlines() if l.startswith("GT: build seconds")), None)
@@ -374,14 +425,16 @@ def render_layered(out, env, meta, refetch, avail_mb):
     print(f"layers: {sum(1 for p in plan if p['visible'])}/{len(plan)} avatars in view, {len(batches)} batch pass(es), budget {budget} vertices each", file=sys.stderr)
     order = []; skipped = []
     def do(groups):
-        npy = f"{ldir}/batch-{len(order) + len(skipped)}.npy"
+        import hashlib
+        npy = f"{ldir}/batch-{hashlib.sha1(','.join(groups).encode()).hexdigest()[:12]}.npy"   # stable name: a rerun finds it
+        if os.path.exists(npy + ".ok") and os.path.exists(npy): order.append(npy); print(f"layers: batch {','.join(g[7:] for g in groups)} reused", file=sys.stderr); return
         r = run_pass({**env, "GT_LAYER": "batch", "GT_LAYER_AVATARS": ",".join(groups), "GT_LAYER_NPY": npy}, f"batch {','.join(g[7:] for g in groups)}")
         if r.returncode == -9 and len(groups) > 1:
             for half in layers.split_batch(groups): do(half)
             return
         if r.returncode or not os.path.exists(npy):
             print(f"layers: batch {groups} failed (exit {r.returncode}): its avatar(s) are left out", file=sys.stderr); skipped.extend(groups); return
-        order.append(npy)
+        order.append(npy); open(npy + ".ok", "w").write("ok")
     for g in batches: do(g)
     # composite (scene-linear), glow bloom, ONE tonemap on the finished frame, then the same outputs as a single-pass photo hd
     base = np.load(base_npy); h, w = base.shape[:2]
@@ -395,7 +448,11 @@ def render_layered(out, env, meta, refetch, avail_mb):
     exr = out[:-4] + ".exr"; np.save(f"{ldir}/final.npy", rgb); del rgb
     rr = subprocess.run([BLENDER, "-b", "--factory-startup", "-noaudio", "--python", f"{HERE}/cloud-render/npy_to_exr.py", "--", f"{ldir}/final.npy", exr], capture_output=True, text=True)
     files = [out] + ([exr] if os.path.exists(exr) else []) + [hdr]
-    for f_ in ([] if os.environ.get("GT_LAYER_KEEP") else glob.glob(f"{ldir}/*.npy")): os.remove(f_)   # keep the per-pass logs (layers/pass-N.log) for diagnosis
+    for f_ in ([] if os.environ.get("GT_LAYER_KEEP") else glob.glob(f"{ldir}/*.npy")): os.remove(f_)
+    if not os.environ.get("GT_LAYER_KEEP"):
+        for f_ in glob.glob(f"{ldir}/*.ok") + [f"{ldir}/resume-key.txt"]:
+            try: os.remove(f_)
+            except OSError: pass   # keep the per-pass logs (layers/pass-N.log) for diagnosis
     print(f"layers: composited {len(order)} batch layer(s) over the base, tonemap {json.dumps(info)}" + (f"; left out {len(skipped)} avatar(s)" if skipped else ""), file=sys.stderr)
     return [out], [p for p in files[1:]], [round(time.time() - t0, 1)], build
 

@@ -35,7 +35,7 @@ SSR = os.environ.get("GT_SSR", "1") != "0"
 # razor edges and a solid weave shadow; a wider disc reproduces the blurred penumbra (fitted on the 2026-10-13 porch).
 SHADOW_ANGLE_NIGHT = float(os.environ.get("GT_SHADOW_ANGLE", "0.53")); SHADOW_ANGLE_DAY = float(os.environ.get("GT_SHADOW_ANGLE_DAY", "0.53"))
 FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
-INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.6")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "1.5")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
+INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.9")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "1.5")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
 SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)
 # 2026-10-14 David's Ultra (photo hd default): SSR + mirrors on. Cycles traces reflections in world space, so they are the
 # same in every 4K tile (no screen-edge fade, nothing off-screen missing): SSR on = every face keeps Principled's specular
@@ -765,7 +765,7 @@ def eep(env):
     if LIGHT_FX: light_fx(M.get("lights", []))
     log("eep", "night" if night else "day", "ambient", round(AMB, 4), "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
 
-INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "5"))   # SL point/spot light energy x this when the camera is under a roof; 1 = off
+INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "2"))   # 2026-10-19: 5 painted red/orange pools over the green-gray club floor vs David's reference; 2 + ambient 0.9 reads closer   # SL point/spot light energy x this when the camera is under a roof; 1 = off
 PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "1"))   # projector ambiance fill (x the direct term), 0 = off (the old behaviour)
 
 def under_roof():
@@ -985,7 +985,7 @@ def sky_hd(nt, co, sp, col, env, night):
 MIST_ERODE = int(os.environ.get("GT_MIST_ERODE", "-1"))   # px; -1 = auto (1 px per 1080 of the frame's short side, at least 1), 0 = off
 HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: its ONE per-layer fog fraction is written next to the layer
 
-INDOOR_HAZE = os.environ.get("GT_INDOOR_HAZE", "")   # fog colour scale with the camera under a roof; "" = GT_INDOOR_AMB, 1 = old
+INDOOR_HAZE = os.environ.get("GT_INDOOR_HAZE", "0.6")   # 2026-10-19: fixed at the old 0.6 so the brighter ambient adds no haze   # fog colour scale with the camera under a roof; "" = GT_INDOOR_AMB, 1 = old
 
 def indoor_haze():
     """the haze in-scatter colour is sky light; under a roof (Warehouse 21) the far walls fogged to a pale grey-blue glow

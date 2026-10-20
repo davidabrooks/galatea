@@ -195,11 +195,13 @@ public static partial class Program
             var (id, name, msg) = (e.SourceID, e.FromName, e.Message);
             _ = Task.Run(() => RlvHandle(id, name, msg));
         };
+        LeashHook();           // Leash.cs: the collar's leash/follow text
         RlvRestoreAtLogin();   // RlvPlace.cs: every login (new client), restrictions + hold from before the relog
         if (Interlocked.Exchange(ref rlvLoopsStarted, 1) == 0)
         {
             _ = Task.Run(async () => { while (true) { await Task.Delay(15000); try { RlvSweep(); } catch { } } });
             RlvHoldLoopRun();
+            LeashLoopRun();    // Leash.cs
         }
     }
 
@@ -483,7 +485,7 @@ public static partial class Program
         switch (a.Length > 0 ? a[0] : "status")
         {
             case "status": return $"RLV on ({RlvVersionNew}); relay for world objects: off; restrictions: {rlv.Describe()}; log {RlvLogFile}";
-            case "clear": { RlvRelease("rlv clear"); var n = rlv.ClearAll(); RlvLog($"LOCAL OVERRIDE 'rlv clear': {n} restriction(s) cleared"); RlvSaveState(); return $"cleared {n} restriction(s) locally"; }
+            case "clear": { RlvRelease("rlv clear"); LeashEnd("rlv clear"); var n = rlv.ClearAll(); RlvLog($"LOCAL OVERRIDE 'rlv clear': {n} restriction(s) cleared"); RlvSaveState(); return $"cleared {n} restriction(s) locally"; }
             case "log":
             {
                 int n = a.Length > 1 && int.TryParse(a[1], out var x) ? Math.Clamp(x, 1, 200) : 30;

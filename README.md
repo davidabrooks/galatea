@@ -60,7 +60,7 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 - `offers`, `accept_offer` (accept/decline one pending offer by id; saved offers reload at connector start)
 - `inv_find`, `inv_ls`, `inv_dump`, `rez_item`, `offer_allow`, `take_object` (unpack a box: rez, touch, accept its folder, take it back)
 - `wear_item` (ADD-attach; NX Remote refused); `routes/_always-wear.txt` keeps the N° 9 collar on in every outfit
-- **RLV extras for David: [docs/rlv-enhancements.md](docs/rlv-enhancements.md)**
+- **RLV extras for David: [docs/rlv-enhancements.md](docs/rlv-enhancements.md)** (now with the N° 9 leash and follow: `leash_status`, `leash_walk` (off), `leash_wander_off` (on), rlv_leashed/rlv_unleashed/rlv_follow_start/rlv_follow_stop events)
 - RLV phase 1 (`Rlv.cs`, see docs/rlv.md): answers @version* as RLVa 2.4.2, accepts @ commands only from my own worn attachments (no relay), force sit/unsit/remoutfit/detach/detachall, per-source restrictions; never removes the always-wear collar; MAYDAY always reaches chat and clears locally; `rlv_status`, `rlv_clear` (emergency override), `rlv_log`; every @ line logged to `/workspace/secondlife/rlv/rlv-log.md`
 - RLV strip support: @getpathnew/@getinvworn/@findfolder answered (unknown @get* answered empty); clothing tattoos removable, skin/makeup tattoos protected; tied alphas follow their garment off (`AlphaFollow.cs`); `rlv_layers`, `rlv_force`
 - The V auto-wear when uncovered (`VAuto.cs`), `redress` tool; RLV placement events + hold after RLV sit, TPE-aware self-stand (`RlvPlace.cs`)

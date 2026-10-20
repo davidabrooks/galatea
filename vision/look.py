@@ -368,13 +368,37 @@ LAYER_STATS = []   # per pass: {"pass", "peak_mb", "seconds", ...} for the summa
 
 _RESUME_VOLATILE = ("GT_TEX_BIAS", "GT_TEX_BUDGET_MB", "GT_HD_BANDS", "GT_TILE", "GT_TEX_LIMIT", "GT_BVH_COMPACT", "GT_LAYER", "GT_LOOK_", "GT_MEM_")
 
-def layer_resume_key(meta, env):
-    """Pure: key of a layered photo for resuming: the meshed scene (groups + vertex counts), environment and every GT_ render
-    setting except the memory knobs a retry changes (texture bias / budget, bands, tiles, BVH) and per-pass ones"""
+RESUME_CODE = [f"{HERE}/cloud-render/render_mesh.py", f"{HERE}/cloud-render/hdr_post.py", f"{HERE}/layers.py", os.path.abspath(__file__)]
+_ENV_DEFAULT = re.compile(r"""os\.environ\.get\(\s*["'](GT_[A-Z0-9_]+)["']\s*,\s*["']([^"']*)["']""")
+
+def effective_settings(env, files=None):
+    """Resolved GT_ render settings: every `os.environ.get("GT_X", "default")` in the renderer code, with env's value when set,
+    else the code default (2026-10-20: a changed code default, GT_AVATAR_KEY 25 -> 18, was invisible to an env-only key),
+    plus any other GT_ value in env. Memory knobs a retry changes are left out (_RESUME_VOLATILE)."""
+    eff = {}
+    for f in (RESUME_CODE if files is None else files):
+        try: src = open(f).read()
+        except OSError: continue
+        for k, d in _ENV_DEFAULT.findall(src): eff.setdefault(k, d)
+    eff.update({k: v for k, v in env.items() if k.startswith("GT_")})
+    return {k: v for k, v in sorted(eff.items()) if not k.startswith(_RESUME_VOLATILE)}
+
+def code_hash(files=None):
+    """sha1 over the renderer code that shapes a layered pass (render_mesh.py, hdr_post.py, layers.py, look.py)"""
     import hashlib
-    gt = sorted((k, v) for k, v in env.items() if k.startswith("GT_") and not k.startswith(_RESUME_VOLATILE))
+    h = hashlib.sha1()
+    for f in (RESUME_CODE if files is None else files):
+        try: h.update(open(f, "rb").read())
+        except OSError: h.update(b"missing:" + f.encode())
+    return h.hexdigest()
+
+def layer_resume_key(meta, env, files=None):
+    """Pure but for reading the code files: key of a layered photo for resuming = the meshed scene (groups + vertex counts + textures),
+    its environment, the EFFECTIVE render settings (code defaults resolved with env) and a hash of the renderer code; any change to
+    a default or to the code invalidates saved passes. The memory knobs a retry changes and per-pass ones are not part of it."""
+    import hashlib
     sc = [(b.get("group"), b.get("nv"), b.get("tex")) for b in meta.get("batches", [])]
-    return hashlib.sha1(json.dumps([gt, sc, meta.get("env")], sort_keys=True, default=str).encode()).hexdigest()
+    return hashlib.sha1(json.dumps([effective_settings(env, files), code_hash(files), sc, meta.get("env")], sort_keys=True, default=str).encode()).hexdigest()
 
 def render_layered(out, env, meta, refetch, avail_mb):
     """photo hd for a crowd that does not fit one Blender process: see vision/layers.py. Returns (files, hdr files, [seconds], build)"""

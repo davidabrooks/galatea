@@ -26,9 +26,10 @@ public static partial class Program
     // pure (tested): a fast-chat outfit request while stripped: a random/"get dressed" pick becomes the pre-strip outfit
     internal static (string kind, string name) FastRedressOverride(string kind, string name, bool stripped, string preStrip) =>
         stripped && preStrip != null && kind == "random" ? ("redress", preStrip) : (kind, name);
+    internal static bool IsStripWhy(string why) => why != null && (why.StartsWith("rlv") || why.StartsWith("undress") || why.StartsWith("toilet") || why == "command");
     static void NoteStripStart(string why)
     {
-        if (why.StartsWith("outfit") || why is "alpha follow" or "the v auto" or "rings auto") return;
+        if (!IsStripWhy(why)) return;   // HUD clean-ups (feet hud, wear remove) after an outfit change are not a strip
         var p = PreStripCandidate(preStripOutfit, currentOutfit ?? lastNamedOutfit);
         if (p != null && preStripOutfit == null) { preStripOutfit = p; RlvLog($"strip started ({why}): 'redress' / 'get dressed' will go back to '{p}'"); }
     } static volatile string currentOutfit;

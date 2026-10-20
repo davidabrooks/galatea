@@ -236,6 +236,15 @@ public sealed class SlTools
     [McpServerTool(Name = "collar_stealth"), Description("Make my N° 9 collar invisible: its own menu About -> Stealth, pressed only if not already on. Changes nothing else.")]
     public static Task<string> CollarStealth() => R("collar stealth");
 
+    [McpServerTool(Name = "leash_status"), Description("Am I leashed (N° 9 collar chain) or following someone on the collar's follow mode? Who holds it, strict or not, distance, walk distance.")]
+    public static Task<string> LeashStatus() => R("leash status");
+
+    [McpServerTool(Name = "leash_walk"), Description("Option (default OFF, persisted): while leashed, gently walk toward the holder when he is a few metres away. Off = the collar's pull leads me and I just chat.")]
+    public static Task<string> LeashWalk(bool on) => R("leash walk " + (on ? "on" : "off"));
+
+    [McpServerTool(Name = "leash_wander_off"), Description("Option (default ON, persisted): while leashed, every 10-20 min I 'forget' and stroll ~2 m past the leash so the collar tugs me back, then say a cute oops line.")]
+    public static Task<string> LeashWanderOff(bool on) => R("leash wanderoff " + (on ? "on" : "off"));
+
     [McpServerTool(Name = "rlv_layers"), Description("List worn tattoo/alpha layers and whether each is a removable clothing layer or protected (skin/makeup/body).")]
     public static Task<string> RlvLayers() => R("rlv layers");
 

@@ -61,7 +61,7 @@ public static partial class Program
     static readonly string RlvStateFile = "/workspace/secondlife/rlv/rlv-state.json";
     internal static readonly System.Collections.Concurrent.ConcurrentDictionary<UUID, UUID> rlvSrcItem = new();
     internal sealed record RlvSaved(string item, string name, List<string> keys);
-    internal sealed record RlvStateDoc(List<RlvSaved> sources, string holdSeat, string holdName, string holdRegion);
+    internal sealed record RlvStateDoc(List<RlvSaved> sources, string holdSeat, string holdName, string holdRegion, LeashSaved leash = null, bool leashWalk = false, bool leashWanderOff = true);
     static readonly object rlvSaveLock = new();
     static void RlvSaveState()
     {
@@ -69,7 +69,7 @@ public static partial class Program
         {
             var doc = new RlvStateDoc(rlv.Export().Where(e => rlvSrcItem.ContainsKey(e.src))
                                          .Select(e => new RlvSaved(rlvSrcItem[e.src].ToString(), e.name, e.keys)).ToList(),
-                                      rlvHoldSeat, rlvHoldName, client?.Network?.CurrentSim?.Name);
+                                      rlvHoldSeat, rlvHoldName, client?.Network?.CurrentSim?.Name, LeashExport(), leashWalk, leashWanderOff);
             lock (rlvSaveLock) File.WriteAllText(RlvStateFile, System.Text.Json.JsonSerializer.Serialize(doc));
         }
         catch { }
@@ -78,7 +78,8 @@ public static partial class Program
     {
         RlvStateDoc doc = null;
         try { if (File.Exists(RlvStateFile)) doc = System.Text.Json.JsonSerializer.Deserialize<RlvStateDoc>(File.ReadAllText(RlvStateFile)); } catch { }
-        if (doc == null || (doc.sources.Count == 0 && doc.holdSeat == null)) return;
+        if (doc != null) { leashWalk = doc.leashWalk; leashWanderOff = doc.leashWanderOff; }   // Leash.cs option
+        if (doc == null || (doc.sources.Count == 0 && doc.holdSeat == null && doc.leash == null)) return;
         RlvLog($"relog: restoring {doc.sources.Sum(x => x.keys.Count)} saved restriction(s) from {doc.sources.Count} item(s){(doc.holdSeat != null ? $", hold on '{doc.holdName}'" : "")}");
         var left = doc.sources.ToList();
         for (int i = 0; i < 60 && left.Count > 0; i++)   // up to 2 min for the attachments to show up
@@ -99,6 +100,7 @@ public static partial class Program
             try { SetPauseNow("rlv", $"relog: held on '{doc.holdName}'"); } catch { }
             RlvLog($"relog: hold on '{doc.holdName}' restored; re-sit there if not seated");
         }
+        if (doc.leash != null && (doc.leash.region == client.Network.CurrentSim?.Name || doc.leash.mode == "leash")) LeashRestore(doc.leash);   // Leash.cs
         RlvSaveState();
     });
 

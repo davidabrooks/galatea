@@ -49,6 +49,7 @@
     <Compile Include="../galatay-text/Wardrobe.cs" Link="Core/Wardrobe.cs" />
     <Compile Include="../galatay-text/Rlv.cs" Link="Core/Rlv.cs" />
     <Compile Include="../galatay-text/RlvPlace.cs" Link="Core/RlvPlace.cs" />
+    <Compile Include="../galatay-text/Leash.cs" Link="Core/Leash.cs" />
     <Compile Include="../galatay-text/VAuto.cs" Link="Core/VAuto.cs" />
     <Compile Include="../galatay-text/AlphaFollow.cs" Link="Core/AlphaFollow.cs" />
     <Compile Include="../galatay-text/CollarStealth.cs" Link="Core/CollarStealth.cs" />

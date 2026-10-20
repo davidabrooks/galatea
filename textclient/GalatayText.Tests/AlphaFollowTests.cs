@@ -166,3 +166,81 @@ public class StripWhyTests
     [InlineData("feet hud", false)] [InlineData("wear remove", false)] [InlineData("outfit swap", false)] [InlineData("alpha follow", false)]
     public void OnlyRealStripsStartAStrip(string why, bool strip) => Assert.Equal(strip, Program.IsStripWhy(why));
 }
+
+public class LeashTests
+{
+    [Fact]
+    public void WalkDistanceStaysInsideTheLeash()
+    {
+        Assert.Equal(2.1f, Program.LeashWalkDist(3f), 2);
+        Assert.Equal(1f, Program.LeashWalkDist(0.5f));
+        Assert.Equal(8f, Program.LeashWalkDist(20f));
+        Assert.False(Program.LeashShouldWalk(2.5f, 3f));   // comfortable: the collar's pull does the rest
+        Assert.True(Program.LeashShouldWalk(4f, 3f));
+    }
+
+    [Fact]
+    public void StrictComesFromRestrictionsOrAnchorAndNeverFromFollow()
+    {
+        Assert.True(Program.LeashIsStrict("leash", false, b => b == "tploc"));
+        Assert.True(Program.LeashIsStrict("leash", true, b => false));
+        Assert.False(Program.LeashIsStrict("leash", false, b => b == "sendchat"));
+        Assert.False(Program.LeashIsStrict("follow", true, b => true));   // Peanut docs: follow "cannot be strict"
+    }
+
+    [Fact]
+    public void StrictBlocksTeleportsSelfUnleashAndOtherLuresButNotChat()
+    {
+        Assert.NotNull(Program.LeashBlocks("tp", "Peronaut 1 2 3", true, "David Nightingale", null));
+        Assert.NotNull(Program.LeashBlocks("home", "", true, "David Nightingale", null));
+        Assert.NotNull(Program.LeashBlocks("leash", "release", true, "David Nightingale", null));
+        Assert.NotNull(Program.LeashBlocks("accept", "", true, "David Nightingale", "Someone Else"));
+        Assert.Null(Program.LeashBlocks("accept", "", true, "David Nightingale", "David Nightingale"));
+        Assert.Null(Program.LeashBlocks("say", "MAYDAY", true, "David Nightingale", null));
+        Assert.Null(Program.LeashBlocks("tp", "Peronaut 1 2 3", false, "David Nightingale", null));
+        Assert.Null(Program.LeashBlocks("leash", "release", false, "David Nightingale", null));
+    }
+
+    [Fact]
+    public void CollarTextHeuristics()
+    {
+        Assert.Equal(("leash", "David Nightingale"), Program.LeashFromText("David Nightingale grabbed your leash."));
+        Assert.Equal("unleash", Program.LeashFromText("You have been unleashed.")?.kind);
+        Assert.Equal(("follow", "David Nightingale"), Program.LeashFromText("David Nightingale is now following you."));
+        Assert.Equal("unfollow", Program.LeashFromText("You stopped following David.")?.kind);
+        Assert.Equal(("follow", "David Nightingale"), Program.LeashFromText("David Nightingale follows you"));
+        Assert.Null(Program.LeashFromText("@tploc=n"));
+        Assert.Null(Program.LeashFromText("Collar: RLV ready!"));
+    }
+
+    [Fact]
+    public void SavedStateRoundTripsWithAndWithoutLeash()
+    {
+        var old = System.Text.Json.JsonSerializer.Deserialize<Program.RlvStateDoc>("{\"sources\":[],\"holdSeat\":null,\"holdName\":null,\"holdRegion\":null}");
+        Assert.Null(old!.leash);
+        var doc = new Program.RlvStateDoc(new(), null, null, "Peronaut", new Program.LeashSaved("leash", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", "David Nightingale", false, 3f, "particle chain", "Peronaut"));
+        var back = System.Text.Json.JsonSerializer.Deserialize<Program.RlvStateDoc>(System.Text.Json.JsonSerializer.Serialize(doc));
+        Assert.Equal("David Nightingale", back!.leash!.holderName);
+        Assert.False(old.leashWalk);
+        Assert.True(old.leashWanderOff);   // the playful wander-off is on by default
+    }
+
+    [Fact]
+    public void ForgetAndWanderOffRules()
+    {
+        var t0 = new DateTime(2026, 10, 19, 19, 0, 0);
+        Assert.Equal(t0.AddMinutes(10), Program.LeashNextForget(t0, 0));
+        Assert.Equal(t0.AddMinutes(20), Program.LeashNextForget(t0, 1));
+        Assert.True(Program.LeashMayForget(true, false, false, false, true, t0, t0));
+        Assert.False(Program.LeashMayForget(false, false, false, false, true, t0, t0));   // option off
+        Assert.False(Program.LeashMayForget(true, true, false, false, true, t0, t0));    // sitting
+        Assert.False(Program.LeashMayForget(true, false, true, false, true, t0, t0));    // placed / held
+        Assert.False(Program.LeashMayForget(true, false, false, true, true, t0, t0));    // @unsit
+        Assert.False(Program.LeashMayForget(true, false, false, false, true, t0, t0.AddMinutes(1)));   // not due
+        var tgt = Program.LeashForgetTarget(new LibreMetaverse.Vector3(100, 100, 20), new LibreMetaverse.Vector3(101, 100, 21), null, 2.5f);
+        Assert.Equal(104f, tgt.X, 2); Assert.Equal(100f, tgt.Y, 2); Assert.Equal(21f, tgt.Z, 2);   // just 1.5 m past the leash
+        Assert.Equal(4f, Program.LeashLengthFromText("Leash length: 4 m"));
+        Assert.Null(Program.LeashLengthFromText("Leash grabbed"));
+        Assert.Equal(Program.ShoelaceM, Program.LeashLengthFromText("Length set to Shoelace"));   // walking after the holder is off by default
+    }
+}

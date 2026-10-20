@@ -769,7 +769,7 @@ def eep(env):
 INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "2"))   # 2026-10-19: 5 painted red/orange pools over the green-gray club floor vs David's reference; 2 + ambient 0.9 reads closer   # SL point/spot light energy x this when the camera is under a roof; 1 = off
 PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "1"))   # projector ambiance fill (x the direct term), 0 = off (the old behaviour)
 
-AVATAR_KEY = float(os.environ.get("GT_AVATAR_KEY", "25"))   # photo hd under a roof: avatar-only key light, W per m^2 of distance; 0 = off
+AVATAR_KEY = float(os.environ.get("GT_AVATAR_KEY", "18"))   # 2026-10-20 David: 25 -> 18 (4K Warehouse 21: her jeans/skin highlights near clipping). photo hd under a roof: avatar-only key light, W per m^2 of distance; 0 = off
 
 def avatar_key_light():
     """2026-10-19, David's Warehouse 21 reference: in a dark club his viewer shows the dancers well lit (bright skin) against the dark

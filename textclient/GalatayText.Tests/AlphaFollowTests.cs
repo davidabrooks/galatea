@@ -75,17 +75,24 @@ public class RlvPlaceTests
     }
 }
 
-public class TpeStandTests
+public class StandRuleTests
 {
+    // N° 9 README (Force Sit): Strict (@unsit=n) is what keeps her seated; TPE has nothing to do with standing
     [Fact]
-    public void TpeRules()
+    public void OnlyUnsitRestrictionBlocksDeliberateStand()
     {
-        Assert.NotNull(Program.SelfStandBlock(true, false, false));   // @unsit=n always
-        Assert.NotNull(Program.SelfStandBlock(false, true, true));    // placed + TPE on
-        Assert.Null(Program.SelfStandBlock(false, true, false));      // placed, TPE off: deliberate stand ok
-        Assert.Null(Program.SelfStandBlock(false, false, true));
-        Assert.Equal(false, Program.TpeFromButtons(new[] { "☐ Group", "☐ TPE" }));
-        Assert.Equal(true, Program.TpeFromButtons(new[] { "☑ TPE" }));
-        Assert.Null(Program.TpeFromButtons(new[] { "About" }));
+        Assert.NotNull(Program.SelfStandBlock(true));
+        Assert.Null(Program.SelfStandBlock(false));   // soft hold after a placement: a deliberate stand is fine
+        Assert.NotNull(Program.RlvBlocks("stand", "", false, b => b == "unsit"));
+        Assert.Null(Program.RlvBlocks("stand", "", true, b => b == "unsit"));   // the collar's own @unsit=force
+    }
+
+    [Fact]
+    public void StoreExportRoundTrip()
+    {
+        var s = new Program.RlvStore(); var a = LibreMetaverse.UUID.Random();
+        s.Add(a, "collar", "unsit", ""); s.Add(a, "collar", "tplure", "x");
+        var e = s.Export().Single();
+        Assert.Equal(new[] { "tplure:x", "unsit" }, e.keys.OrderBy(k => k));
     }
 }

@@ -11,7 +11,7 @@ public static partial class Program
     internal static string FaceSummary(IReadOnlyList<(int face, float r, float g, float b, float a, UUID tex)> faces)
     {
         if (faces.Count == 0) return "(no faces)";
-        return string.Join(" ", faces.Select(f => $"f{f.face}:a{f.a:0.##}{(f.r < 0.99f || f.g < 0.99f || f.b < 0.99f ? $"/rgb{f.r:0.##},{f.g:0.##},{f.b:0.##}" : "")}/t{f.tex.ToString()[..8]}"));
+        return string.Join(" ", faces.Select(f => $"f{f.face}:a{f.a:0.##}{(f.r < 0.99f || f.g < 0.99f || f.b < 0.99f ? $"/rgb{f.r:0.##},{f.g:0.##},{f.b:0.##}" : "")}/t{f.tex}"));
     }
 
     static async Task<string> AttFacesCmd(string attName, string filter)
@@ -35,7 +35,7 @@ public static partial class Program
                     faces.Add((f, fe.RGBA.R, fe.RGBA.G, fe.RGBA.B, fe.RGBA.A, fe.TextureID));
                 }
             var d = te?.DefaultTexture;
-            sb.AppendLine($"  link {i} local {p.LocalID} '{n}' default a{d?.RGBA.A:0.##} rgb{d?.RGBA.R:0.##},{d?.RGBA.G:0.##},{d?.RGBA.B:0.##} t{d?.TextureID.ToString()[..8]} | {FaceSummary(faces)}");
+            sb.AppendLine($"  link {i} local {p.LocalID} '{n}' default a{d?.RGBA.A:0.##} rgb{d?.RGBA.R:0.##},{d?.RGBA.G:0.##},{d?.RGBA.B:0.##} t{d?.TextureID} | {FaceSummary(faces)}");
         }
         return sb.ToString().TrimEnd();
     }

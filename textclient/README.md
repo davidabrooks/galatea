@@ -4,3 +4,4 @@
 - `body_reattach`: detaches the Maitreya body (not its HUD or add-ons) and re-attaches it immediately at the same point, which resets stuck alpha segments (e.g. an auto-hide item that never sent "show" on detach). COF is untouched; logged as `BODY REATTACH`.
 - `cof_unlink(name_or_uuid)`: removes one Current Outfit link (exact name or link uuid; protected items refused) and rebakes.
 - `v_pause(on|off)`: pauses The V auto re-attach (file `run/v-auto-paused`, survives relogs).
+- `force_rebake`: Firestorm "Rebake Textures" equivalent (bumps COF version, POSTs cof_version to UpdateAvatarAppearance, retries with the server's expected version, reports bake ids).

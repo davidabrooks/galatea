@@ -277,6 +277,9 @@ public sealed class SlTools
     [McpServerTool(Name = "v_pause"), Description("on = stop auto re-attaching The V (persists across relogs), off = resume, empty = show state.")]
     public static Task<string> VPause(string state = "") => R("v pause " + Clean(state));
 
+    [McpServerTool(Name = "force_rebake"), Description("Firestorm 'Rebake Textures' equivalent, forced: bump the COF version, POST cof_version to UpdateAvatarAppearance (retry with the server's expected version), return the raw response and bake texture ids.")]
+    public static Task<string> ForceRebake() => R("force rebake");
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

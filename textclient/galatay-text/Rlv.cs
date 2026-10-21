@@ -207,6 +207,7 @@ public static partial class Program
             _ = Task.Run(async () => { while (true) { await Task.Delay(15000); try { RlvSweep(); } catch { } } });
             RlvHoldLoopRun();
             LeashLoopRun();    // Leash.cs
+            LeashPullLoopRun(); // LeashPull.cs: invisible leash = the collar pulls me
         }
     }
 

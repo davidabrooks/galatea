@@ -31,6 +31,7 @@ public static partial class Program
 
     static double PinnedHover()
     {
+        if (rlvHoverOverride is double rh) return rh;   // @adjustheight (RlvAdjustHeight.cs) wins until logout
         var e = Environment.GetEnvironmentVariable("GT_HOVER");
         string s = !string.IsNullOrWhiteSpace(e) ? e : null;
         if (s == null) try { if (File.Exists(HoverFile)) s = File.ReadLines(HoverFile).FirstOrDefault()?.Trim(); } catch { }

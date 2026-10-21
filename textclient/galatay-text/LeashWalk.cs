@@ -12,8 +12,6 @@ using LibreMetaverse;
 namespace GalatayText;
 partial class Program
 {
-    // pure (tested): start walking past this distance (fallback when he is standing still)
-    internal static float LeashWalkStart(float length) => Math.Max(0.8f * length, LeashWalkStop(length) + 0.4f);
     internal const float LeashMinGap = 0.7f;   // never closer than this to him
     // pure (tested): stop distance: at the leash, never bumping into him
     internal static float LeashWalkStop(float length) => Math.Max(0.9f, 0.6f * length);
@@ -46,14 +44,29 @@ partial class Program
         var t = holder + v * 0.5f - dir * stopDist;
         return new Vector3(t.X, t.Y, me.Z);
     }
-    // pure (tested): what to do this tick: "walk", "stop" or "" (keep)
-    // never walks inside the stop distance (gap >= LeashMinGap); stops the moment the gap reaches it, moving or not
-    internal static string LeashWalkDecide(bool walking, bool holderMoving, bool holderStopped, float dist, float length, bool canMove) =>
-        !canMove || dist <= LeashWalkStop(length) ? (walking ? "stop" : "") :
-        !walking && ((holderMoving && dist > LeashWalkStop(length) + 0.1f) || dist > LeashWalkStart(length)) ? "walk" :
-        walking && holderStopped && dist <= LeashWalkStop(length) + 0.2f ? "stop" : "";
-    // pure (tested): the collar pull is moving me without my legs: show the walk
-    internal static bool PullNeedsWalkAnim(float speed, bool sitting, bool driving) => !sitting && !driving && speed > 0.2f;
+    // ---- controller (pure, tested offline against a simulated collar pull: LeashWalkSimTests) ----
+    // Rules (David 10:46): never walk while he stands; start only on HIS motion (after the 0.4-0.6 s delay) AND gap > leash;
+    // stop when he stops; forward controls only while gap >= max(1.0 m, stop + 0.5 m) (early deceleration, never forward under 1 m);
+    // collision (my velocity toward him reverses, or a sudden speed drop near him) -> stop at once.
+    internal const float LeashNoForwardUnder = 1.0f;
+    internal static float LeashForwardCutoff(float length) => Math.Max(LeashNoForwardUnder, LeashWalkStop(length) + 0.5f);
+    // speed-aware: plus my braking distance (assume a conservative 6 m/s^2 avatar deceleration)
+    internal static float LeashForwardCutoff(float length, float vToward) => LeashForwardCutoff(length) + Math.Max(0, vToward) * Math.Max(0, vToward) / 12f;
+    internal static bool LeashCollision(float gap, float vToward, float prevVToward, bool forwardWas) =>
+        gap < 1.5f && ((prevVToward > 0.3f && vToward < -0.1f) || (forwardWas && prevVToward > 1.0f && vToward < 0.3f));
+    internal readonly record struct LeashCtlOut(string act, bool forward, string why);
+    internal static LeashCtlOut LeashControl(bool walking, bool hisMotion, bool hisStopped, float gap, float length, bool canMove,
+                                             float vToward, float prevVToward, bool forwardWas)
+    {
+        if (!canMove) return new(walking ? "stop" : "", false, "can't move");
+        if (!walking)
+            return hisMotion && gap > length ? new("walk", gap >= LeashForwardCutoff(length, vToward), "he walks away") : new("", false, "");
+        if (LeashCollision(gap, vToward, prevVToward, forwardWas)) return new("stop", false, "collision");
+        if (hisStopped) return new("stop", false, "he stopped");
+        return new("", gap >= LeashForwardCutoff(length, vToward), "");
+    }
+    // pure (tested): the collar pull is moving me without my legs: show the walk (never forward-nudge under 1 m)
+    internal static bool PullNeedsWalkAnim(float speed, bool sitting, bool driving, float gap = 9f) => !sitting && !driving && speed > 0.2f && gap >= LeashNoForwardUnder;
     // pure (tested): reaction latency tracker (his motion start -> my first movement)
     internal sealed class LeashLatency
     {
@@ -74,7 +87,7 @@ partial class Program
     static readonly LeashLatency leashLat = new();
     static Vector3 holderPos, holderVel; static DateTime holderAt; static bool holderMoving; static DateTime? holderSlowSince;
     static UUID holderSeen; static DateTime? holderMotionAt; static int holderDelayMs = 500;
-    static DateTime leashArrivedAt = DateTime.Now; static Simulator leashArrivedSim;
+    internal static DateTime leashArrivedAt = DateTime.Now; static Simulator leashArrivedSim;
     // kill switch: the file exists (or GT_LEASH_WALKER=off) -> no walker, no pull legs; checked live every tick
     internal static readonly string LeashWalkerOffFile = Env("GT_LEASH_WALKER_OFF", "/home/box/viewers/textclient/run/leash-walker-off");
     static bool LeashWalkerKilled() => Env("GT_LEASH_WALKER", "on") == "off" || System.IO.File.Exists(LeashWalkerOffFile);
@@ -88,18 +101,16 @@ partial class Program
     }
     static bool LeashCanMove(LeashState l) =>
         l != null && !l.anchor && l.holder != UUID.Zero && client.Self.SittingOn == 0 && rlvHoldSeat == null && leashForgetBusy == 0 && followId != l.holder;
-    // steer toward the follow target right now and send the controls immediately
-    static void LeashDrive(LeashState l)
+    static bool leashFwdWas; static float leashPrevVToward;
+    static void LeashDrive(bool forward)
     {
         var m = client.Self.Movement; var me = client.Self.SimPosition;
         float stop = LeashWalkStop(leashLength), dist = Vector3.Distance(me, holderPos);
         var tgt = LeashFollowTarget(holderPos, holderVel, me, stop);
         var to = new Vector3(tgt.X - me.X, tgt.Y - me.Y, 0);
-        bool run = LeashShouldRun(new Vector3(holderVel.X, holderVel.Y, 0).Length(), dist, leashLength, rlv.Has("alwaysrun") || rlv.Has("temprun"));
-        bool ahead = holderMoving && to.Length() < 0.25f;   // on the spot: let him lead a step
-        if (to.Length() < 0.25f || dist <= LeashWalkStop(leashLength)) ahead = true;   // at the gap point: don't step closer
+        bool run = forward && LeashShouldRun(new Vector3(holderVel.X, holderVel.Y, 0).Length(), dist, leashLength, rlv.Has("alwaysrun") || rlv.Has("temprun"));
         try { m.TurnToward(to.Length() > 0.05f ? me + to : new Vector3(holderPos.X, holderPos.Y, me.Z)); } catch { }
-        m.AlwaysRun = run; m.AtPos = !ahead; m.NudgeAtPos = false; m.SendUpdate(true);
+        m.AlwaysRun = run; m.AtPos = forward; m.NudgeAtPos = false; m.SendUpdate(true);
     }
     static void LeashWalkStep(string why)
     {
@@ -107,20 +118,27 @@ partial class Program
         {
             var l = leash;
             bool can = LeashCanMove(l) && holderSeen == l?.holder && !LeashWalkerKilled() && !LeashInGrace(leashArrivedAt, DateTime.Now);
-            float dist = Vector3.Distance(client.Self.SimPosition, holderPos);
+            var me = client.Self.SimPosition;
+            float dist = Vector3.Distance(me, holderPos);
+            var toHim = new Vector3(holderPos.X - me.X, holderPos.Y - me.Y, 0);
+            var v = client.Self.Velocity;
+            float vToward = toHim.Length() > 0.01f ? Vector3.Dot(new Vector3(v.X, v.Y, 0), Vector3.Normalize(toHim)) : 0;
             bool moveCounts = holderMoving && (leashDriving || LeashReactionReady(holderMotionAt, holderDelayMs, DateTime.Now));
-            var act = LeashWalkDecide(leashDriving, moveCounts, LeashHolderStopped(holderSlowSince, DateTime.Now), can ? dist : 0, leashLength, can);
-            if (act == "walk")
+            var o = LeashControl(leashDriving, moveCounts, LeashHolderStopped(holderSlowSince, DateTime.Now), dist, leashLength, can, vToward, leashPrevVToward, leashFwdWas);
+            leashPrevVToward = vToward;
+            if (o.act == "walk")
             {
-                leashDriving = true; leashPullAnim = false; LeashDrive(l); leashLat.Commanded(DateTime.Now);
-                RlvLog($"leash-walk: start ({why}): {l.holderName} {(holderMoving ? $"moving {new Vector3(holderVel.X, holderVel.Y, 0).Length():F2} m/s" : "standing")} at {dist:F1} m");
+                leashDriving = true; leashPullAnim = false; LeashDrive(o.forward); leashFwdWas = o.forward; leashLat.Commanded(DateTime.Now);
+                RlvLog($"leash-walk: start ({why}): {l.holderName} moving {new Vector3(holderVel.X, holderVel.Y, 0).Length():F2} m/s at {dist:F1} m");
             }
-            else if (act == "stop") { leashDriving = false; LeashWalkStopNow(holderPos); RlvLog($"leash-walk: stopped at {dist:F1} m facing {l?.holderName}"); }
-            else if (leashDriving) LeashDrive(l);
+            else if (o.act == "stop") { leashDriving = false; leashFwdWas = false; LeashWalkStopNow(holderPos); RlvLog($"leash-walk: stopped ({o.why}) at {dist:F1} m facing {l?.holderName}"); }
+            else if (leashDriving) { if (o.forward != leashFwdWas || o.forward) LeashDrive(o.forward); leashFwdWas = o.forward; }
         }
     }
     static void LeashWalkHooks()
     {
+        client.Network.SimChanged += (s, e) => leashArrivedAt = DateTime.Now;   // login / teleport / crossing: grace
+        client.Network.LoginProgress += (s, e) => leashArrivedAt = DateTime.Now;
         void Holder(Simulator sim, Primitive p, Vector3 pos, Vector3 vel)
         {
             var l = leash; if (l == null || p == null || p.ID != l.holder || sim != client.Network.CurrentSim) return;
@@ -187,11 +205,11 @@ partial class Program
             holderPos = h.pos; holderVel = h.av.Velocity; holderAt = DateTime.Now; holderSeen = l.holder; holderMoving = false; holderSlowSince = DateTime.Now;
         }
         if ((DateTime.Now - holderAt).TotalSeconds > 0.5 && holderMoving) { holderMoving = false; holderSlowSince ??= DateTime.Now; }   // updates stop when he stops
-        LeashWalkStep("tick");
+        LeashWalkStep("tick");   // never starts on its own: only his motion starts the walker
         if (leashDriving) return;
         // the collar is dragging me: put the legs under it
         var v0 = client.Self.Velocity; var vel = new Vector3(v0.X, v0.Y, 0);
-        bool need = PullNeedsWalkAnim(vel.Length(), sitting, false) && leashForgetBusy == 0 && !LeashInGrace(leashArrivedAt, DateTime.Now);
+        bool need = PullNeedsWalkAnim(vel.Length(), sitting, false, holderSeen == l.holder ? Vector3.Distance(client.Self.SimPosition, holderPos) : 9f) && leashForgetBusy == 0 && !LeashInGrace(leashArrivedAt, DateTime.Now);
         if (need) { try { m.TurnToward(client.Self.SimPosition + vel); } catch { } m.NudgeAtPos = true; m.SendUpdate(true); leashPullAnim = true; }
         else if (leashPullAnim) { leashPullAnim = false; m.NudgeAtPos = false; m.SendUpdate(true); }
     }

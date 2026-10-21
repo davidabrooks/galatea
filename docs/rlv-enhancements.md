@@ -51,3 +51,18 @@ Safety and feel (after the 10:41 "pushing" report):
 - **Login grace:** for 5 s after login, a teleport or a region change, the walker and the pull legs are ignored.
 - **Natural reaction:** I start 400–600 ms (with random jitter) after his motion starts, so he visibly leads.
 - **Kill switch:** create `/home/box/viewers/textclient/run/leash-walker-off` (or set GT_LEASH_WALKER=off). It is checked live, and it stops the walker and the pull legs at once.
+
+### Redesign after the 10:46 bounce (controller `LeashControl`, offline-simulated)
+The walker and the collar's llMoveToTarget were fighting each other, and my momentum overshot into him. Now:
+- **Never while he stands:** I never walk while he is standing; there is no distance fallback, and the collar handles that.
+- **Starting:** only his motion away from me (after the 400–600 ms delay) AND a gap over the leash length starts me. I stop when he stops.
+- **Forward controls:** only while the gap is at least max(1.0 m, stop + 0.5 m) plus my braking distance (v²/12). Never forward under 1.0 m, and the pull-legs nudge too is only used at 1.0 m or more.
+- **Collisions:** if my velocity toward him reverses, or drops suddenly near him, I stop at once.
+- **Tests:** LeashWalkSimTests (a 1-D model of the collar pull, walk physics and body collision) cover him standing still, walk, fast walk, run, and stop-go. They check that there are no collisions, the gap never goes under 0.7 m, there is at most one start per walk, and I end at rest.
+- **Production:** it stays OFF (kill-switch file present) until David chooses to retest.
+
+## Login placement (LoginJoin.cs)
+After every login while David is in my region, the spawn distance is measured only once my own avatar update and his avatar have both arrived; otherwise it is UNKNOWN. If I spawned more than 2.5 m away, I walk over to him myself with the follow engine (on a leash, too, instead of being dragged). The galatea_login david_login wake now waits for this (max 45 s) and carries a PLACEMENT line, e.g. "I spawned 15.6 m from him and walked over… did NOT appear by his side".
+
+## @adjustheight (RlvAdjustHeight.cs)
+`@adjustheight:<distance>[;factor[;delta]]=force` follows RLVa (Firestorm/Catznip): hover = distance × factor + delta. The factor defaults to 0.01 (centimetres: the collar Animator's -2/0/2/4 = -0.02…+0.04 m) and delta to 0. The value is absolute, clamped to ±2 m, and POSTed as AgentPreferences hover_height (server-side, seen by everyone, like Firestorm's hover slider). It is not reset on a pose STOP, and it is kept until logout (the login and sit hover pins use it). Each change is logged.

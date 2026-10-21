@@ -62,6 +62,8 @@ public static partial class Program
         if (gen != loginGen || !LoggedIn) return;
         if (!On()) { Log("friendwatch", $"galatea_login: {DavidName} is offline, no wake"); return; }
         davidOnline = true; if (davidOnlineAt == DateTime.MinValue) davidOnlineAt = DateTime.UtcNow;
+        await Task.WhenAny(loginJoinDone.Task, Task.Delay(45000));   // the real placement first (LoginJoin.cs)
+        if (gen != loginGen || !LoggedIn) return;
         Log("friendwatch", $"galatea_login: {DavidName} is already online; wake now");
         Wake("galatea_login (I just logged in and he was already online)", false, true, TimeSpan.Zero);
     }
@@ -108,6 +110,7 @@ public static partial class Program
             lock (fwGate) { lastWake[kind] = DateTime.UtcNow; try { File.WriteAllText(DavidLoginState, JsonSerializer.Serialize(lastWake)); } catch { } }
             var pending = Reminders().Select((r, i) => (n: i + 1, r)).Where(x => x.r.pending).ToList();
             var text = DavidLoginText(simulated, atMyLogin, source, DateTime.Now, pending.Select(x => (x.n, x.r.text)).ToList());
+            if (atMyLogin && !simulated) text += LoginPlacementText(loginPlacement);
             if (!simulated && instantGreetAtUtc >= myLoginAt && instantGreetAtUtc >= davidOnlineAt && instantGreetAtUtc != DateTime.MinValue)
                 text += AlreadyGreetedNote(instantGreetAtUtc.ToLocalTime(), pending.Count);
             Log("friendwatch", $"{kind}: waking the chat routine ({pending.Count} pending reminder(s))");

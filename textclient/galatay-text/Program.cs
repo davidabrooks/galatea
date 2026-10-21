@@ -2155,6 +2155,7 @@ public static partial class Program
             case "force" when a.Length >= 1 && a[0] == "rebake": return await ForceRebakeCmd();   // ForceRebake.cs
             case "collar" when a.Length >= 1 && a[0] == "pause": return await CollarPauseCmd(a.Length > 1 ? a[1] : "");
             case "collar" when a.Length >= 1 && a[0] == "detach": return await CollarPauseCmd("detach");
+            case "att" when a.Length >= 2 && a[0] == "faces": { var q = rest[(rest.IndexOf("faces") + 5)..].Trim().Split('|'); return await AttFacesCmd(q[0].Trim(), q.Length > 1 ? q[1].Trim() : ""); }
             case "cof" when a.Length >= 1 && a[0] == "purge": return await CofPurgeCmd(string.Join(' ', a.Skip(1)));   // CofPurge.cs
             case "accept":
             {

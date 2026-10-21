@@ -51,6 +51,7 @@
     <Compile Include="../galatay-text/RlvPlace.cs" Link="Core/RlvPlace.cs" />
     <Compile Include="../galatay-text/Leash.cs" Link="Core/Leash.cs" />
     <Compile Include="../galatay-text/CofPurge.cs" Link="Core/CofPurge.cs" />
+    <Compile Include="../galatay-text/ForceRebake.cs" Link="Core/ForceRebake.cs" />
     <Compile Include="../galatay-text/BodyReattach.cs" Link="Core/BodyReattach.cs" />
     <Compile Include="../galatay-text/CofUnlink.cs" Link="Core/CofUnlink.cs" />
     <Compile Include="../galatay-text/VAuto.cs" Link="Core/VAuto.cs" />

@@ -2152,6 +2152,7 @@ public static partial class Program
             case "leash": return LeashCmd(rest);     // Leash.cs
             case "cof" when a.Length >= 2 && a[0] == "unlink": return await CofUnlinkCmd(string.Join(' ', a.Skip(1)));   // CofUnlink.cs
             case "v" when a.Length >= 1 && a[0] == "pause": return VPauseCmd(a.Length > 1 ? a[1] : "");
+            case "force" when a.Length >= 1 && a[0] == "rebake": return await ForceRebakeCmd();   // ForceRebake.cs
             case "cof" when a.Length >= 1 && a[0] == "purge": return await CofPurgeCmd(string.Join(' ', a.Skip(1)));   // CofPurge.cs
             case "accept":
             {

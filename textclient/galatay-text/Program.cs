@@ -2149,6 +2149,7 @@ public static partial class Program
             case "follow" when NamesDavid(rest): { var prep = await JoinDavidBeachPrep("follow"); var fr = FollowCmd(rest); return prep == null ? fr : prep + "\n" + fr; }
             case "follow": return FollowCmd(rest);   // Follow.cs
             case "leash": return LeashCmd(rest);     // Leash.cs
+            case "cof" when a.Length >= 1 && a[0] == "purge": return await CofPurgeCmd(string.Join(' ', a.Skip(1)));   // CofPurge.cs
             case "accept":
             {
                 if (pendingLure is not { } pl) return "no pending teleport offer";

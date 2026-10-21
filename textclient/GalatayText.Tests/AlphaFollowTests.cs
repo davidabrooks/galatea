@@ -296,3 +296,21 @@ public class CollarGuardRegressionTests
         Assert.False(Program.IsN9CollarName("Spiked Collar"));
     }
 }
+
+public class CofPurgeTests
+{
+    // 2026-10-21: leg alphas left linked in Current Outfit after a swap kept her thighs/knees invisible
+    [Fact]
+    public void StrayAlphaLinksNotInTheSavedOutfitArePurged()
+    {
+        var legs = LibreMetaverse.UUID.Random(); var butt = LibreMetaverse.UUID.Random(); var skin = LibreMetaverse.UUID.Random(); var keep = LibreMetaverse.UUID.Random();
+        var cof = new[] {
+            new Program.CofLinkInfo(LibreMetaverse.UUID.Random(), legs, "Bimbette /// Alpha Layer /// Upper Legs & Knees", true),
+            new Program.CofLinkInfo(LibreMetaverse.UUID.Random(), butt, "Bimbette /// Alpha Layer /// Butt 1", true),
+            new Program.CofLinkInfo(LibreMetaverse.UUID.Random(), keep, "outfit's own alpha", true),
+            new Program.CofLinkInfo(LibreMetaverse.UUID.Random(), skin, "VELOUR skin", false) };
+        var stray = Program.CofStrayAlphaLinks(cof, new HashSet<LibreMetaverse.UUID> { keep });
+        Assert.Equal(2, stray.Count);
+        Assert.DoesNotContain(stray, s => s.Target == keep || s.Target == skin);   // outfit alphas and non-alpha layers stay
+    }
+}

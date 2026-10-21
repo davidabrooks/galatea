@@ -245,6 +245,9 @@ public sealed class SlTools
     [McpServerTool(Name = "leash_wander_off"), Description("Option (default ON, persisted): while leashed, every 10-20 min I 'forget' and stroll ~2 m past the leash so the collar tugs me back, then say a cute oops line.")]
     public static Task<string> LeashWanderOff(bool on) => R("leash wanderoff " + (on ? "on" : "off"));
 
+    [McpServerTool(Name = "cof_purge"), Description("Remove Current Outfit alpha-layer links that the saved outfit (default: the current one) does not contain, then rebake. Fixes body parts invisible from stale alphas.")]
+    public static Task<string> CofPurge(string outfit = "") => R("cof purge " + Clean(outfit ?? ""));
+
     [McpServerTool(Name = "rlv_layers"), Description("List worn tattoo/alpha layers and whether each is a removable clothing layer or protected (skin/makeup/body).")]
     public static Task<string> RlvLayers() => R("rlv layers");
 

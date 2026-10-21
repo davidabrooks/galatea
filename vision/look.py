@@ -11,6 +11,7 @@ usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
   self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
   --views (self) only the full body, from each listed side / angle (degrees counter-clockwise from her front: 90 = her
           left, 180 = her back); all = front, back, left, right. One image per view: ...-self-body-<side|NNdeg>.jpg
+  --headshot (self --hd) head and shoulders from in front at a portrait lens (28 deg vertical; --fov overrides) instead of the whole body
   --far   also the backdrop (scenery 30-96 m at a screen-size LOD, region terrain, water, sky gradient; needs a 96 m
           export). Off by default (David 2026-10-04: her renders are for her own needs, speed first): near scene only.
 Prints one image path per line (then a JSON summary line). Read-only: never talks to SL; only CDN asset GETs.
@@ -583,7 +584,7 @@ def crowd_summary(others):
 
 def main(a):
     install_cancel_handlers()
-    fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
+    fast, far, headshot = "--fast" in a, "--far" in a, "--headshot" in a; a = [x for x in a if x not in ("--fast", "--far", "--headshot")]
     hd_arg = next(((x.split("=", 1)[1] if "=" in x else "") for x in a if x == "--hd" or x.startswith("--hd=")), None)
     a = [x for x in a if not (x == "--hd" or x.startswith("--hd="))]
     profile = next((x.split("=", 1)[1] for x in a if x.startswith("--profile=")), DEFAULT_PROFILE)
@@ -599,10 +600,12 @@ def main(a):
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     try: hd, hd_env = hd_settings(hd_arg, mode, profile, no)
     except ValueError as e: sys.exit(str(e))
+    if headshot and not (hd and mode == "self"): sys.exit("--headshot needs self --hd (head and shoulders photo)")
     if hd and fov:   # `photo hd ... fov <deg>`
         try: f = float(fov); assert 10 <= f <= 120
         except (ValueError, AssertionError): sys.exit(f"bad fov '{fov}' (10..120 degrees, vertical)")
         hd_env["GT_HD_FOV"] = f"{f:g}"
+        if headshot: hd_env["GT_HEADSHOT_FOV"] = f"{f:g}"
     if sky and sky.lower() != "shared" and sky.lower() not in llsky.presets():
         sys.exit(f"unknown sky preset '{sky}' (shared, {', '.join(sorted(llsky.presets()))})")
     if hd: fast = False; os.environ.update({k: v for k, v in hd_env.items() if k.startswith("GT_TEX_CAP")})
@@ -671,7 +674,7 @@ def main(a):
         except Exception as e: print(f"projector texture {u}: {e}", file=sys.stderr)
     n_scanned = write_manifest(WORK, {**info.get("tex_paths", {}), **bake_paths, **{k: v for k, v in proj_paths.items() if v}})
     times["manifest"] = round(time.time() - t, 1)
-    view = "portrait" if photo_self else VIEWS.get(mode)
+    view = ("headshot" if headshot else "portrait") if photo_self else VIEWS.get(mode)
     if mode == "at":  # an avatar's name (mesh.json "others") or an object's name (scene.json root prims), first substring match
         who = next((o["name"] for o in meta.get("others", []) if target in o["name"].lower()), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)

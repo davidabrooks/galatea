@@ -47,7 +47,7 @@ def dof_subject(view, heads):
     """David 2026-10-14: DOF only when the photo has an avatar subject (`self` portrait, David, a named avatar);
     scenery / `view` / an object target stay sharp everywhere"""
     v = view or ""
-    if v.startswith("portrait"): return True
+    if v.startswith("portrait") or v.startswith("headshot"): return True
     return v.startswith("at:") and v[3:] in (heads or {})
 
 def roughness_floor(r):
@@ -543,6 +543,9 @@ def lens_for_vfov(vfov_deg, rx, ry):
     """Blender lens (mm) for a vertical field of view; sensor_fit AUTO puts the 36 mm sensor on the long side"""
     sh = 36.0 * (ry / rx if rx >= ry else 1.0)
     return sh / (2 * math.tan(math.radians(vfov_deg) / 2))
+
+# head-and-shoulders photo hd: portrait-lens view angle; frame height and frame centre below her head, as fractions of her height
+HEADSHOT_FOV = 28.0; HEADSHOT_SPAN = 0.32; HEADSHOT_DROP = 0.05
 
 def hd_fov():
     """photo hd vertical FOV in degrees (GT_HD_FOV, default 60 = Firestorm's camera), None outside photo hd"""
@@ -1463,6 +1466,21 @@ if kind == "scene":
             # a wall in front of her: stop just before it (cast from her head: a seat or table isn't a wall)
             hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.5, u, distance=max(0.01, e.length - 0.5))
             camera(loc - u * 0.15 if hit else want, mid, lens, (rx, ry))
+        elif view.startswith("headshot"):
+            # `photo hd self headshot` (2026-10-21 David: profile photo): head and shoulders from in front, at a portrait
+            # lens (HEADSHOT_FOV deg vertical unless `fov` was given: 60 deg at ~0.7 m distorts a face); the frame spans
+            # HEADSHOT_SPAN of her height vertically (top of the hair to upper chest), centred near her chin
+            a = math.radians(yaw + (float(view[9:]) if view.startswith("headshot:") else 0)); f = Vector((math.cos(a), math.sin(a), 0))
+            rx, ry = (int(v) for v in os.environ.get("GT_RES", "2160x3840").split("x"))
+            vfov = float(os.environ.get("GT_HEADSHOT_FOV") or HEADSHOT_FOV)
+            bpy.context.view_layer.update()
+            zs = [(ob.matrix_world @ Vector(c)).z for ob in obs for c in ob.bound_box]; H = min(2.6, max(1.2, max(zs) - min(zs)))   # her height: SL scale varies
+            lens = lens_for_vfov(vfov, rx, ry); span = HEADSHOT_SPAN * H * max(1.0, rx / ry)   # landscape: same height, wider
+            tgt = h - Vector((0, 0, HEADSHOT_DROP * H)); dist = (span / 2) / math.tan(math.radians(vfov) / 2)
+            want = tgt + f * dist; want.z = h.z; e = want - h; u = e.normalized()   # at eye level: the backdrop, not the ground
+            bpy.context.view_layer.update()
+            hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.3, u, distance=max(0.01, e.length - 0.3))
+            camera(loc - u * 0.1 if hit else want, tgt, lens, (rx, ry))
         elif view.startswith("at:"):
             t = view[3:]; tgt = heads.get(t) or Vector([float(v) for v in t.split(",")])
             f = (tgt - h); f.z = 0; f = f.normalized() if f.length > 1e-3 else Vector((1, 0, 0))

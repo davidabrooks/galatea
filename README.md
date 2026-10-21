@@ -13,6 +13,7 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 **Keeping docs current**: whenever a capability is added or changed, update this README and [docs/capabilities.md](docs/capabilities.md) in the same pull request.
 
 
+- Leash walking: when leashed, I walk or run after the holder past 0.8× the leash and stop at the leash facing him, with walk animations even during the collar pull (docs/rlv-enhancements.md).
 - Leash logging: every collar leash/follow event goes to the log (`leash-diag:`). It detects both particle leashes and invisible leashes (from the pull). See docs/rlv-enhancements.md.
 
 ## What's here

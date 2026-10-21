@@ -471,6 +471,7 @@ public static partial class Program
     static string P2(Vector2 v) => string.Format(CultureInfo.InvariantCulture, "{0:F1},{1:F1}", v.X, v.Y);
     static async Task<bool> NavWalkTo(NavGrid g, Vector2 goal, float lastTol, CancellationToken ct)
     {
+        await IdlePoseExitAsync("walk");   // IdlePose.cs
         await EnsureStandingForWalk(ct);
         var aoRefuse = await AoGuardBeforeWalk("nav", ct);
         if (aoRefuse != null) { Log("walk", "REFUSED - " + aoRefuse); walkState = "refused: " + aoRefuse; return false; }

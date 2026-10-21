@@ -208,6 +208,7 @@ public static partial class Program
             RlvHoldLoopRun();
             LeashLoopRun();    // Leash.cs
             LeashPullLoopRun(); // LeashPull.cs: invisible leash = the collar pulls me
+            IdlePoseLoopRun(); // IdlePose.cs: idle collar pose / AO ground sit
             LeashWalkLoopRun(); // LeashWalk.cs: keep up on my own legs while leashed
         }
     }

@@ -14,6 +14,7 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 
 
 - Leash walking: when leashed, I start walking the moment the holder moves (motion trigger, no distance wait), match his walk/run, stop at the stop distance facing him, and keep my legs moving during the collar pull. Reaction latency is logged (docs/rlv-enhancements.md).
+- Idle pose: after 3-5 min idle, a random collar pose (collar or leash visible) or the AO ground sit (collar hidden), always cleared before moving (docs/rlv-enhancements.md).
 - Leash logging: every collar leash/follow event goes to the log (`leash-diag:`). It detects both particle leashes and invisible leashes (from the pull). See docs/rlv-enhancements.md.
 
 ## What's here

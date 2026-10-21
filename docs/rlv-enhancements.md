@@ -66,3 +66,10 @@ After every login while David is in my region, the spawn distance is measured on
 
 ## @adjustheight (RlvAdjustHeight.cs)
 `@adjustheight:<distance>[;factor[;delta]]=force` follows RLVa (Firestorm/Catznip): hover = distance × factor + delta. The factor defaults to 0.01 (centimetres: the collar Animator's -2/0/2/4 = -0.02…+0.04 m) and delta to 0. The value is absolute, clamped to ±2 m, and POSTed as AgentPreferences hover_height (server-side, seen by everyone, like Firestorm's hover slider). It is not reset on a pose STOP, and it is kept until logout (the login and sit hover pins use it). Each change is logged.
+
+## Idle pose (IdlePose.cs)
+After she has been idle for 3–5 min (base GT_IDLE_POSE_SEC=240 s, ±25% jitter) she settles into a pose. Idle means no own movement, following, sitting, walker or chat/IM activity.
+- **Collar visible (Stealth off) or a visible leash chain:** a random N° 9 collar pose from cutie/coy/kneel/nadu/pretty/shy/tower, never the same twice in a row. It goes through touch collar → Pose → ▸ pages until the label shows. Getting up is the Pose menu's **STOP**, verified by the pose animation disappearing.
+- **Collar hidden and no visible leash:** the Martha AO's 'force sitg' toggle (mapped in run/ao-groundsit.txt), never while leashed.
+- **Cleared first, before:** walking (AutoPilot/nav), the leash walker (on his motion start), follow, teleport, leash attach/unleash, a sit/force-sit, an outfit change, David walking away, and logout. A leftover pose is cleared on login. The leash wander-off never fires while posed.
+- **Controls:** the MCP tool `idle_pose` (status/on/off/now/stop/idle/aomap) and the command `idlepose`. The tool `texture_save` reads HUD textures.

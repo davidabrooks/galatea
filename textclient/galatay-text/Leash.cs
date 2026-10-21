@@ -133,7 +133,7 @@ public static partial class Program
         if (mode == "leash") { try { SetPauseNow("rlv", $"leash held by {name}"); } catch { } afSnoozeUntil = DateTime.MaxValue; }
         bool strict = LeashStrictNow();
         var text = mode == "leash"
-            ? $"leashed {(anchor ? "(anchored) to" : "by")} {name} [{how}]; strict {(strict ? "ON (no self-unleash/teleport)" : "off")}; {(leashWalk ? $"I walk toward them past {LeashWalkDist(leashLength) + 1:F1} m" : "the collar's pull leads me")}"
+            ? $"leashed {(anchor ? "(anchored) to" : "by")} {name} [{how}]; strict {(strict ? "ON (no self-unleash/teleport)" : "off")}; I walk after them past {LeashWalkStart(leashLength):F1} m, stop at {LeashWalkStop(leashLength):F1} m"
             : $"{name} is following me on the collar's follow (no chain) [{how}]; I carry on as usual at walking pace";
         RlvLog("leash: " + text);
         try { Notify(mode == "leash" ? "rlv_leashed" : "rlv_follow_start", name, holder, text, null); } catch { }
@@ -275,7 +275,7 @@ public static partial class Program
         }
         else if (l?.mode == "leash" && l.how == "particle chain" && ++leashMissScans >= 3 && LeashChainLossEnds(DateTime.Now, lastPullAt)) { LeashEnd("the chain is gone"); return; }
         l = leash; if (l == null) return;
-        if (l.mode == "follow") { try { if (client.Self.Movement.AlwaysRun) client.Self.Movement.AlwaysRun = false; } catch { } return; }   // he follows her: walking pace only
+        if (l.mode == "follow") { try { if (client.Self.Movement.AlwaysRun && !leashDriving) client.Self.Movement.AlwaysRun = false; } catch { } return; }   // he follows her: walking pace only
         // keep the soft hold and walk after the holder when out of range
         if (wanderPause != "rlv") try { SetPauseNow("rlv", $"{l.mode} held by {l.holderName}"); } catch { }
         afSnoozeUntil = DateTime.MaxValue;
@@ -287,14 +287,7 @@ public static partial class Program
         else if (h.av.ParentID != 0) note = $"{l.holderName} is sitting: I stay near";
         else note = null;
         if (note != leashLastNote) { leashLastNote = note; if (note != null) RlvLog("leash: " + note); }
-        // a nicety, not a requirement: the collar's own pull keeps her in range. Low-frequency (every ~6 s), only when he is
-        // beyond a comfortable distance, and never while seated; if the walk fails the pull handles it.
-        if (!leashWalk || ++leashWalkTick % 3 != 0) return;
-        if (h.av != null && client.Self.SittingOn == 0 && followId != l.holder && LeashShouldWalk(h.dist, leashLength))
-        {
-            followDistThis = LeashWalkDist(leashLength); followId = l.holder; followName = l.holderName;
-            RlvLog($"leash: walking after {l.holderName} (keep within {followDistThis:F1} m)");
-        }
+        // keeping up on my own legs: LeashWalk.cs (4 Hz walk/run toward him past 0.8x the leash, walk anim during the pull)
     }
 
     static string LeashCmd(string rest)

@@ -29,7 +29,11 @@ partial class Program
         return Vector3.Dot(v, Vector3.Normalize(away)) > 0.3f;
     }
     // pure (tested): natural reaction delay so he visibly starts first: 400-600 ms with jitter (total reaction stays < ~0.8 s)
-    internal static int LeashReactionDelayMs(double r01) => 400 + (int)(200 * Math.Clamp(r01, 0, 1));
+    internal static int LeashReactionDelayMs(double r01) => 250 + (int)(150 * Math.Clamp(r01, 0, 1));   // David 11:26: sooner, 0.25-0.4 s
+    // pure (tested): leashed idle pose: rise only when he walks away AND the gap passes the start gap (a real pull)
+    internal static bool LeashIdleMustRise(bool leashed, bool hisMotionAway, float gap, float length) => leashed && hisMotionAway && gap > LeashStartGap(length);
+    // pure (tested): start gap: just over the collar-pull hold distance (stop + 0.1 m), at most the old "gap > leash"
+    internal static float LeashStartGap(float length) => Math.Max(LeashWalkStop(length) + 0.1f, Math.Min(length, LeashWalkStop(length) + 0.3f));
     // pure (tested): may I start walking on his motion yet?
     internal static bool LeashReactionReady(DateTime? motionAt, int delayMs, DateTime now) => motionAt is DateTime m && (now - m).TotalMilliseconds >= delayMs;
     // pure (tested): grace after login/teleport/region change: ignore everything
@@ -45,7 +49,7 @@ partial class Program
         return new Vector3(t.X, t.Y, me.Z);
     }
     // ---- controller (pure, tested offline against a simulated collar pull: LeashWalkSimTests) ----
-    // Rules (David 10:46): never walk while he stands; start only on HIS motion (after the 0.4-0.6 s delay) AND gap > leash;
+    // Rules (David 10:46): never walk while he stands; start only on HIS motion (after the 0.25-0.4 s delay) AND gap > LeashStartGap;
     // stop when he stops; forward controls only while gap >= max(1.0 m, stop + 0.5 m) (early deceleration, never forward under 1 m);
     // collision (my velocity toward him reverses, or a sudden speed drop near him) -> stop at once.
     internal const float LeashNoForwardUnder = 1.0f;
@@ -60,7 +64,7 @@ partial class Program
     {
         if (!canMove) return new(walking ? "stop" : "", false, "can't move");
         if (!walking)
-            return hisMotion && gap > length ? new("walk", gap >= LeashForwardCutoff(length, vToward), "he walks away") : new("", false, "");
+            return hisMotion && gap > LeashStartGap(length) ? new("walk", gap >= LeashForwardCutoff(length, vToward), "he walks away") : new("", false, "");
         if (LeashCollision(gap, vToward, prevVToward, forwardWas)) return new("stop", false, "collision");
         if (hisStopped) return new("stop", false, "he stopped");
         return new("", gap >= LeashForwardCutoff(length, vToward), "");
@@ -124,6 +128,8 @@ partial class Program
             var v = client.Self.Velocity;
             float vToward = toHim.Length() > 0.01f ? Vector3.Dot(new Vector3(v.X, v.Y, 0), Vector3.Normalize(toHim)) : 0;
             bool moveCounts = holderMoving && (leashDriving || LeashReactionReady(holderMotionAt, holderDelayMs, DateTime.Now));
+            // David 11:31: get up only when he is actually about to pull me (walking away past the start gap), not when he moves nearby
+            if (idlePosed != null && LeashIdleMustRise(l != null, holderMoving, dist, leashLength)) _ = IdlePoseExitAsync("leash pull: he walks away");
             var o = LeashControl(leashDriving, moveCounts, LeashHolderStopped(holderSlowSince, DateTime.Now), dist, leashLength, can, vToward, leashPrevVToward, leashFwdWas);
             leashPrevVToward = vToward;
             if (o.act == "walk")
@@ -153,7 +159,6 @@ partial class Program
             holderPos = pos; holderVel = vel; holderAt = now; holderSeen = l.holder;
             if (holderMoving) { holderSlowSince = null; if (!was && !leashDriving)
                 {
-                    _ = IdlePoseExitAsync("he walks");   // STOP the pose within the reaction delay
                     leashLat.HolderStopped(); leashLat.HolderMoved(now);
                     holderMotionAt = now; holderDelayMs = LeashReactionDelayMs(Random.Shared.NextDouble());
                     var d = holderDelayMs;

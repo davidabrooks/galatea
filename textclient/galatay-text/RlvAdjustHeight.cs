@@ -27,7 +27,7 @@ public static partial class Program
     {
         if (RlvAdjustHeightParse(opt) is not double v) return $"adjustheight: bad option '{opt}'";
         var before = SimHover();
-        rlvHoverOverride = v;
+        rlvHoverOverride = v; hoverManualAt = DateTime.Now;
         var (ok, info) = await PostHover(v, $"rlv adjustheight:{opt}");
         RlvLog($"adjustheight:{opt} -> hover {v:+0.000;-0.000;0} m (was {(before is double b ? b.ToString("0.000", CultureInfo.InvariantCulture) : "?")}): {info}");
         return ok ? $"hover set to {v:0.000} m ({info})" : $"hover POST failed: {info}";

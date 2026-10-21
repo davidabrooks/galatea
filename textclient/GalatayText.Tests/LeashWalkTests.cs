@@ -77,10 +77,10 @@ public class LeashReactionDelayTests
 {
     [Fact] public void DelayInRange()
     {
-        Assert.Equal(400, Program.LeashReactionDelayMs(0));
-        Assert.Equal(600, Program.LeashReactionDelayMs(1));
-        for (int i = 0; i < 200; i++) { var d = Program.LeashReactionDelayMs(System.Random.Shared.NextDouble()); Assert.InRange(d, 400, 600); }
-        Assert.Equal(600, Program.LeashReactionDelayMs(5));   // clamped: never grows into the old lag
+        Assert.Equal(250, Program.LeashReactionDelayMs(0));
+        Assert.Equal(400, Program.LeashReactionDelayMs(1));
+        for (int i = 0; i < 200; i++) { var d = Program.LeashReactionDelayMs(System.Random.Shared.NextDouble()); Assert.InRange(d, 250, 400); }
+        Assert.Equal(400, Program.LeashReactionDelayMs(5));   // clamped: never grows into the old lag
     }
     [Fact] public void NoMoveBeforeTheDelay()
     {
@@ -88,5 +88,19 @@ public class LeashReactionDelayTests
         Assert.False(Program.LeashReactionReady(null, 500, t));
         Assert.False(Program.LeashReactionReady(t, 500, t.AddMilliseconds(499)));
         Assert.True(Program.LeashReactionReady(t, 500, t.AddMilliseconds(500)));
+    }
+}
+
+public class LeashStartGapTests
+{
+    [Fact] public void JustOverHoldDistance_NeverAboveLeash()
+    {
+        foreach (var L in new[] { 1f, 2f, 3f, 5f })
+        {
+            var g = Program.LeashStartGap(L);
+            Assert.True(g > Program.LeashWalkStop(L), $"L {L}: start {g} must be above the hold/stop distance");
+            Assert.True(g <= Math.Max(L, Program.LeashWalkStop(L) + 0.1f) + 1e-4, $"L {L}: start {g} sooner than before");
+        }
+        Assert.True(Program.LeashStartGap(3f) < 3f);   // sooner than the old gap > leash
     }
 }

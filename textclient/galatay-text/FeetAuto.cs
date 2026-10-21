@@ -37,6 +37,13 @@ public static partial class Program
         return new FeetRules(hud, def, fw);
     }
 
+    /// <summary>Pure: the tab bar of the page holding a button = the lowest 'tabs' prim above the button (pages stack in z), or -1.</summary>
+    internal static int FeetPageTabIndex(IReadOnlyList<(string name, float z)> prims, float buttonZ)
+    {
+        int best = -1; float bz = float.MaxValue;
+        for (int i = 0; i < prims.Count; i++) if (prims[i].name == "tabs" && prims[i].z > buttonZ && prims[i].z < bz && prims[i].z - buttonZ < 1f) { bz = prims[i].z; best = i; }
+        return best;
+    }
     internal static bool IsFeetButton(string s) => s is "f1" or "f2" or "f3" or "f4" or "f5";
 
     /// <summary>Pure: the pose the worn items call for: the first listed shoe that is worn, else the default.</summary>
@@ -93,7 +100,26 @@ public static partial class Program
                 if (!WornPrims().Any(p => AttachItemId(p) == rules.Hud)) { Log("feet", "body HUD did not attach in 30 s"); return "feet: body HUD did not attach"; }
                 await Task.Delay(5000); // HUD script + link names
             }
-            var r = await TouchAttachment($"{rules.Hud} {feet}");
+            // the LaraX HUD only reacts on the page it SHOWS (2026-10-21 11:38 bug: f3 pressed on a hidden page, feet stayed flat):
+            // open the feet page by touching that page's own tab bar first (the 'tabs' prim just above the f-buttons)
+            try
+            {
+                var hudRoot = WornPrims().FirstOrDefault(p => AttachItemId(p) == rules.Hud);
+                if (hudRoot != null)
+                {
+                    var prims = LinkPrims(hudRoot); await EnsureProperties(Sim, prims);
+                    var btn = prims.FirstOrDefault(p => p.Properties?.Name == feet);
+                    int ti = btn == null ? -1 : FeetPageTabIndex(prims.Select(p => (p.Properties?.Name ?? "", p.Position.Z)).ToList(), btn.Position.Z);
+                    if (ti >= 0)
+                    {
+                        var none = AgentManager.TOUCH_INVALID_VECTOR; var st = new Vector3(0.1f, 0.5f, 0);
+                        client.Self.Grab(prims[ti].LocalID, Vector3.Zero, st, st, 4, none, none, none); await Task.Delay(150);
+                        client.Self.DeGrab(prims[ti].LocalID, st, st, 4, none, none, none); await Task.Delay(1500);
+                    }
+                }
+            }
+            catch (Exception ex) { Log("feet", "feet page open failed: " + ex.GetBaseException().Message); }
+            var r = await TouchAttachment($"{rules.Hud} {feet} 4 st=0.5,0.5");
             await Task.Delay(2500);
             if (!wasWorn) await DetachItemAsync(rules.Hud, "feet hud");
             bool ok = r != null && !r.StartsWith("no ", StringComparison.Ordinal) && !r.Contains(" matches ");

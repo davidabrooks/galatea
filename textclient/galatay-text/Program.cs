@@ -1835,6 +1835,7 @@ public static partial class Program
                 Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}");
                 return "ok";
             }
+            case "body" when a.Length >= 1 && a[0] == "reattach": return await BodyReattachCmd();
             case "chan":
             {
                 if (a.Length < 2 || !int.TryParse(a[0], out var ch)) return "usage: chan <n> <text>";

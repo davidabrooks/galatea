@@ -117,7 +117,7 @@ partial class Program
         lock (leashWalkLock)
         {
             var l = leash;
-            bool can = LeashCanMove(l) && holderSeen == l?.holder && !LeashWalkerKilled() && !LeashInGrace(leashArrivedAt, DateTime.Now);
+            bool can = LeashCanMove(l) && holderSeen == l?.holder && !LeashWalkerKilled() && !LeashInGrace(leashArrivedAt, DateTime.Now) && idlePosed == null;
             var me = client.Self.SimPosition;
             float dist = Vector3.Distance(me, holderPos);
             var toHim = new Vector3(holderPos.X - me.X, holderPos.Y - me.Y, 0);
@@ -153,6 +153,7 @@ partial class Program
             holderPos = pos; holderVel = vel; holderAt = now; holderSeen = l.holder;
             if (holderMoving) { holderSlowSince = null; if (!was && !leashDriving)
                 {
+                    _ = IdlePoseExitAsync("he walks");   // STOP the pose within the reaction delay
                     leashLat.HolderStopped(); leashLat.HolderMoved(now);
                     holderMotionAt = now; holderDelayMs = LeashReactionDelayMs(Random.Shared.NextDouble());
                     var d = holderDelayMs;

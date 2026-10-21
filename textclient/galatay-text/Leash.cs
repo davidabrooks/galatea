@@ -55,6 +55,7 @@ public static partial class Program
     static int leashForgetBusy;
     static void LeashMaybeForget(LeashState l, Vector3 holderPos)
     {
+        if (idlePosed != null) return;   // never wander off while posed (IdlePose.cs)
         bool held = rlvHoldSeat != null;
         if (leashNextWanderOff == DateTime.MaxValue) leashNextWanderOff = LeashNextForget(DateTime.Now, Random.Shared.NextDouble());
         if (!LeashMayForget(leashWanderOff, client.Self.SittingOn != 0, held, rlv.Has("unsit"), true, DateTime.Now, leashNextWanderOff)) return;
@@ -128,6 +129,7 @@ public static partial class Program
     {
         var cur = leash;
         if (cur != null && cur.mode == mode && cur.holder == holder) return;
+        _ = IdlePoseExitAsync("leash attach");   // IdlePose.cs
         leashArrivedAt = DateTime.Now;   // a new or restored leash: LeashWalk grace (no walking straight after login/relog)
         if (cur != null) LeashEnd($"replaced by {mode} to {name}", quiet: true);
         leash = new LeashState(mode, holder, name, anchor, leashLength, how, DateTime.Now); leashMissScans = 0; leashNextWanderOff = DateTime.MaxValue;
@@ -142,6 +144,7 @@ public static partial class Program
     }
     static void LeashEnd(string why, bool quiet = false)
     {
+        _ = IdlePoseExitAsync("unleash");   // IdlePose.cs
         var l = leash; if (l == null) return;
         leash = null; leashNextWanderOff = DateTime.MaxValue;
         if (l.mode == "leash" && followId == l.holder) { followId = UUID.Zero; followDistThis = null; try { client.Self.AutoPilotCancel(); } catch { } }

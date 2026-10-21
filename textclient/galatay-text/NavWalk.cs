@@ -28,6 +28,7 @@ public static partial class Program
 
     static void AutoPilotTo(Vector3 p)
     {
+        IdlePoseExitBeforeMove("walk");   // IdlePose.cs: STOP the pose / AO ground sit first
         Utils.LongToUInts(client.Network.CurrentSim.Handle, out var rx, out var ry);
         client.Self.AutoPilot(p.X + (double)rx, p.Y + (double)ry, p.Z);
         if (xline.Active && client.Network.CurrentSim?.Name == xline.To) XMark("autopilot_reissued");   // Crossing.cs timeline

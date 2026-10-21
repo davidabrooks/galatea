@@ -375,6 +375,7 @@ public static partial class Program
         EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
         VisitorWatchStart(); // visitor_arrival wakes at home (VisitorArrival.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
+        IdlePoseLoginStart(); // clear a leftover collar pose / AO ground sit (IdlePose.cs)
         LoginJoinStart(); // walk over to David myself + measured placement for the david_login wake (LoginJoin.cs)
         _ = Task.Run(AfterQuickLogin); // quick relog: floor spot beside the furniture, never re-sit (LoginStart.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
@@ -414,6 +415,7 @@ public static partial class Program
     public static async Task Shutdown(string why)
     {
         if (shuttingDown) return; shuttingDown = true;
+        try { if (LoggedIn) await Task.WhenAny(IdlePoseExitAsync("logout"), Task.Delay(12000)); } catch { }   // IdlePose.cs: never log out posed
         bool deliberate = why == "logout command" || DeliberateStopRequested();
         // 2026-09-26: a signal without a stop request (hang monitor's TERM, a stray kill) exits 75 so the supervisor relaunches
         ExitCode = ShutdownExitCode(why, deliberate, ExitCode);
@@ -1987,6 +1989,7 @@ public static partial class Program
             { var fc = rest[5..].Trim().Replace("_SP_", " "); var c = RlvParse("@" + fc + (fc.Contains('=') ? "" : "=force"))?.FirstOrDefault(); if (c == null || c.Param != "force") return "usage: rlv force <behaviour[:option]>";
               var r = await RlvForce(c.Behav, c.Option); RlvLog($"LOCAL TEST force {c.Behav}:{c.Option} -> {r}"); return r; }
             case "rlv": return RlvCmdText(a);   // Rlv.cs
+            case "idlepose": return await IdlePoseCmd(a);   // IdlePose.cs
             case "collar" when a.Length == 1 && a[0] == "stealth": return await CollarStealthOn("command");   // CollarStealth.cs
             case "invdump": return await InvDumpCmd(a);   // InvDump.cs
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);

@@ -165,6 +165,7 @@ public static partial class Program
 
     static async Task<string> OutfitWearSafeLocked(InventoryFolder folder, CancellationToken ct)
     {
+        await IdlePoseExitAsync("outfit change");   // IdlePose.cs
         var sb = new StringBuilder();
         outfitChangeUntil = DateTime.Now.AddSeconds(60);
         try

@@ -268,3 +268,31 @@ public class LongGapLoginRegressionTests
         Assert.False(Program.RestorePlacementAfterRelog(null));
     }
 }
+
+public class CollarGuardRegressionTests
+{
+    // 2026-10-21 regression: right after the box move routes/_always-wear.txt was missing and the daily outfit swap
+    // detached the N° 9 collar. With no (or a damaged) file the collar must still be protected and kept on.
+    [Fact]
+    public void OutfitSwapWithoutAlwaysWearFileKeepsTheCollar()
+    {
+        var collar = Program.N9CollarItem;
+        foreach (var file in new string[] { null, "", "garbage line\n###" })
+        {
+            var prot = Program.AlwaysWearIdsFrom(file).ToHashSet();
+            Assert.Contains(collar, prot);
+            var worn = new[] { new Program.WornAtt(collar, ":: No 9 :: Premium Collar", false) };
+            var (detach, _, _) = Program.PlanAttachmentSwap(worn, new Program.TargetObj[0], prot);
+            Assert.DoesNotContain(collar, detach);
+            Assert.Contains(collar, Program.AlwaysWearMissing(new LibreMetaverse.UUID[0], prot));   // not worn -> goes back on
+        }
+    }
+
+    [Fact]
+    public void CollarNameMatch()
+    {
+        Assert.True(Program.IsN9CollarName(":: No 9 :: Premium Collar"));
+        Assert.False(Program.IsN9CollarName("NX Remote 2.3"));
+        Assert.False(Program.IsN9CollarName("Spiked Collar"));
+    }
+}

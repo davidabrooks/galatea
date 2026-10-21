@@ -75,7 +75,8 @@ public static partial class Program
                 else if (dr == "detach") RlvLog("Nipple rings: " + await DetachItemAsync(NippleRingsItem, "rings auto"));
                 var d = VDecision(covered, vWorn, outfit, lastOutfitHasV);
                 RlvLog($"The V ({why}): groin {(covered ? "covered" : "uncovered")}, The V {(vWorn ? "worn" : "off")}, outfit '{outfit}'{(lastOutfitHasV ? " (includes The V)" : "")} -> {d ?? "no change"}");
-                if (d == "wear") RlvLog("The V: " + await Exec("wear add " + TheVItem));
+                if (d == "wear" && VAutoPaused()) RlvLog("The V: auto-wear paused (v pause), not re-attaching");
+                else if (d == "wear") RlvLog("The V: " + await Exec("wear add " + TheVItem));
                 else if (d == "detach") RlvLog("The V: " + await DetachItemAsync(TheVItem, "the v auto"));
             }
             catch (Exception ex) { RlvLog("The V check failed: " + ex.GetBaseException().Message); }

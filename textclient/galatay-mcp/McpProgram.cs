@@ -271,6 +271,11 @@ public sealed class SlTools
 
     [McpServerTool(Name = "body_reattach"), Description("Reset the Maitreya body's alpha segments: detach the body and re-attach it immediately at the same point (HUD/add-ons untouched).")]
     public static Task<string> BodyReattach() => R("body reattach");
+    [McpServerTool(Name = "cof_unlink"), Description("Remove ONE Current Outfit link by exact name or link uuid (e.g. a stray folder link) and rebake. Protected items (collar, body, AO...) are refused.")]
+    public static Task<string> CofUnlink(string name_or_uuid) => R("cof unlink " + Clean(name_or_uuid));
+
+    [McpServerTool(Name = "v_pause"), Description("on = stop auto re-attaching The V (persists across relogs), off = resume, empty = show state.")]
+    public static Task<string> VPause(string state = "") => R("v pause " + Clean(state));
 
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)

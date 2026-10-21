@@ -254,6 +254,18 @@ public static partial class Program
             try { if (LoggedIn) LeashTick(); } catch { }
         }
     });
+    // pure (tested): chain target -> holder: an object worn by an avatar (its root's parent is the avatar) resolves to that avatar
+    internal static UUID LeashResolveHolder(UUID target, Func<UUID, (uint local, uint parent)?> prim, Func<uint, UUID?> avatarByLocal, Func<uint, uint> parentOf)
+    {
+        if (prim(target) is not { } p) return target;
+        uint parent = p.parent;
+        for (int i = 0; i < 4 && parent != 0; i++)
+        {
+            if (avatarByLocal(parent) is UUID av) return av;
+            parent = parentOf(parent);
+        }
+        return target;
+    }
     static void LeashTick()
     {
         var sim = client.Network.CurrentSim;
@@ -262,6 +274,11 @@ public static partial class Program
         if (pt is { } t)
         {
             leashMissScans = 0;
+            // the chain often targets the leash HANDLE he wears (an attachment), not his avatar: resolve it to the wearer
+            var tid = LeashResolveHolder(t.target, id => sim.ObjectsPrimitives.Values.FirstOrDefault(x => x?.ID == id) is { } pr ? (pr.LocalID, pr.ParentID) : null,
+                lid => sim.ObjectsAvatars.TryGetValue(lid, out var a) ? a.ID : (lid != 0 && sim.ObjectsPrimitives.TryGetValue(lid, out var pp) ? null : (UUID?)null),
+                lid => sim.ObjectsPrimitives.TryGetValue(lid, out var pp) ? pp.ParentID : 0u);
+            if (tid != t.target) t = (tid, t.emitter);
             if (l == null || l.mode != "leash" || l.holder != t.target)
             {
                 var av = Avatars().FirstOrDefault(a => a.av.ID == t.target);

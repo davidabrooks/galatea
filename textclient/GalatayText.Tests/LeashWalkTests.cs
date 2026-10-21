@@ -55,3 +55,16 @@ public class LeashWalkTests
         Assert.False(Program.PullNeedsWalkAnim(2f, false, true));
     }
 }
+public class LeashHolderResolveTests
+{
+    [Fact] public void HandleInHisHand_ResolvesToHim()
+    {
+        UUID david = UUID.Random(), handle = UUID.Random(), post = UUID.Random();
+        (uint, uint)? Prim(UUID id) => id == handle ? (50u, 40u) : id == post ? (60u, 0u) : null;   // handle child of a worn root 40, root parent = avatar 7
+        UUID? Av(uint lid) => lid == 7 ? david : null;
+        uint Parent(uint lid) => lid == 40 ? 7u : 0u;
+        Assert.Equal(david, Program.LeashResolveHolder(handle, Prim, Av, Parent));
+        Assert.Equal(post, Program.LeashResolveHolder(post, Prim, Av, Parent));          // a real post stays an anchor
+        Assert.Equal(david, Program.LeashResolveHolder(david, Prim, Av, Parent));        // avatar itself
+    }
+}

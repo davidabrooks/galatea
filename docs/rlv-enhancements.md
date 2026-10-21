@@ -63,3 +63,6 @@ The walker and the collar's llMoveToTarget were fighting each other, and my mome
 
 ## Login placement (LoginJoin.cs)
 After every login while David is in my region, the spawn distance is measured only once my own avatar update and his avatar have both arrived; otherwise it is UNKNOWN. If I spawned more than 2.5 m away, I walk over to him myself with the follow engine (on a leash, too, instead of being dragged). The galatea_login david_login wake now waits for this (max 45 s) and carries a PLACEMENT line, e.g. "I spawned 15.6 m from him and walked over… did NOT appear by his side".
+
+## @adjustheight (RlvAdjustHeight.cs)
+`@adjustheight:<distance>[;factor[;delta]]=force` follows RLVa (Firestorm/Catznip): hover = distance × factor + delta. The factor defaults to 0.01 (centimetres: the collar Animator's -2/0/2/4 = -0.02…+0.04 m) and delta to 0. The value is absolute, clamped to ±2 m, and POSTed as AgentPreferences hover_height (server-side, seen by everyone, like Firestorm's hover slider). It is not reset on a pose STOP, and it is kept until logout (the login and sit hover pins use it). Each change is logged.

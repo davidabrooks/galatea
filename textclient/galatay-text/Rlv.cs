@@ -332,6 +332,7 @@ public static partial class Program
                     return "detached " + string.Join(", ", plan.Select(w => "'" + w.Name + "'"));
                 }, cts.Token);
             }
+            case "adjustheight": return await RlvAdjustHeight(o);   // RlvAdjustHeight.cs
             default: return "unsupported force (not done)";
         }
     }

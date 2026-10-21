@@ -2153,6 +2153,8 @@ public static partial class Program
             case "cof" when a.Length >= 2 && a[0] == "unlink": return await CofUnlinkCmd(string.Join(' ', a.Skip(1)));   // CofUnlink.cs
             case "v" when a.Length >= 1 && a[0] == "pause": return VPauseCmd(a.Length > 1 ? a[1] : "");
             case "force" when a.Length >= 1 && a[0] == "rebake": return await ForceRebakeCmd();   // ForceRebake.cs
+            case "collar" when a.Length >= 1 && a[0] == "pause": return await CollarPauseCmd(a.Length > 1 ? a[1] : "");
+            case "collar" when a.Length >= 1 && a[0] == "detach": return await CollarPauseCmd("detach");
             case "cof" when a.Length >= 1 && a[0] == "purge": return await CofPurgeCmd(string.Join(' ', a.Skip(1)));   // CofPurge.cs
             case "accept":
             {

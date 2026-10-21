@@ -164,7 +164,7 @@ public sealed class SlTools
     [McpServerTool(Name = "stop_animations"), Description("Stop every animation playing on me and pause the wander. A worn AO in dance mode restarts dances: toggle it on the HUD with touch_attachment first.")]
     public static Task<string> StopAnimations() => R("stopanims");
 
-    [McpServerTool(Name = "touch_attachment"), Description("Touch one prim/face of a worn attachment or HUD ('ao' = the Vista AO HUD). link = link number or prim name; omit link to list the attachment's child prims (names, link numbers). Never for anything involving payment.")]
+    [McpServerTool(Name = "touch_attachment"), Description("Touch one prim/face of a worn attachment or HUD ('ao' = the Vista AO HUD). link = link number or prim name; omit link to list the attachment's child prims (names, link numbers). Note: multi-page HUDs (e.g. Maitreya) only react to buttons on the page they are showing: open the page (tab bar) first; for Maitreya alpha use maitreya_show_all. Never for anything involving payment.")]
     public static Task<string> TouchAttachment([Description("attachment name, or 'ao'")] string attachment, [Description("link number or prim name; empty = list prims")] string link = "", int face = -1, [Description("optional touch UV 'u,v'")] string st = "")
     {
         var at = Clean(attachment).Replace("\"", ""); var l = Clean(link).Replace("\"", "");
@@ -287,6 +287,9 @@ public sealed class SlTools
 
     [McpServerTool(Name = "outfit_save"), Description("Save what I wear now as a new outfit in My Outfits (links; the N° 9 collar link is always included).")]
     public static Task<string> OutfitSave(string name) => R("outfit create " + Clean(name));
+
+    [McpServerTool(Name = "maitreya_show_all"), Description("Unhide every Maitreya body segment: opens the HUD's alpha page (tab bar), presses Show all, and reports hidden 'hide:N' buttons before/after.")]
+    public static Task<string> MaitreyaShowAll() => R("maitreya show all");
 
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)

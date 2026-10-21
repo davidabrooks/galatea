@@ -239,6 +239,7 @@ public static partial class Program
                 if (leashDiagSeen.TryGetValue(p.LocalID, out var old) && old == key) return;
                 leashDiagSeen[p.LocalID] = key;
                 if (ps.CRC == 0 && ps.Target == UUID.Zero && old == 0) return;
+                if (mineEmit && ps.Target == UUID.Zero && old != 0) RlvLog($"leash-diag: particles CLEARED on MY prim {p.ID} (unleashed, or invisible leash)");
                 RlvLog($"leash-diag: particles on {(mineEmit ? "MY" : "other")} prim {p.ID} (local {p.LocalID}, parent {p.ParentID}, owner {p.OwnerID}): crc {ps.CRC} target {ps.Target} flags {ps.PartDataFlags} pattern {ps.Pattern} texture {ps.Texture}");
             }
             catch { }
@@ -272,7 +273,7 @@ public static partial class Program
             }
             else if (l.how == "relog") leash = l = l with { how = "particle chain" };
         }
-        else if (l?.mode == "leash" && l.how == "particle chain" && ++leashMissScans >= 3) { LeashEnd("the chain is gone"); return; }
+        else if (l?.mode == "leash" && l.how == "particle chain" && ++leashMissScans >= 3 && LeashChainLossEnds(DateTime.Now, lastPullAt)) { LeashEnd("the chain is gone"); return; }
         l = leash; if (l == null) return;
         if (l.mode == "follow") { try { if (client.Self.Movement.AlwaysRun) client.Self.Movement.AlwaysRun = false; } catch { } return; }   // he follows her: walking pace only
         // keep the soft hold and walk after the holder when out of range

@@ -1,0 +1,15 @@
+--- a/LibreMetaverse/ObjectManager.PacketHandlers.cs	2026-10-21 10:10:10.038268425 -0700
++++ b/LibreMetaverse/ObjectManager.PacketHandlers.cs	2026-10-21 10:10:10.038268425 -0700
+@@ -835,7 +835,11 @@
+                     // Particle system
+                     if ((flags & CompressedFlags.HasParticles) != 0)
+                     {
+-                        prim.ParticleSys = new Primitive.ParticleSystem(block.Data, i);
++                        // galatea 2026-10-21: parse exactly the 86-byte legacy block (passing the whole remaining
++                        // buffer made the size check take the "extended" path and drop every compressed particle system)
++                        var ps = new byte[86];
++                        Buffer.BlockCopy(block.Data, i, ps, 0, Math.Min(86, block.Data.Length - i));
++                        prim.ParticleSys = new Primitive.ParticleSystem(ps, 0);
+                         i += 86;
+                     }
+ 

@@ -13,6 +13,8 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 **Keeping docs current**: whenever a capability is added or changed, update this README and [docs/capabilities.md](docs/capabilities.md) in the same pull request.
 
 
+- Leash logging: every collar leash/follow event goes to the log (`leash-diag:`). It detects both particle leashes and invisible leashes (from the pull). See docs/rlv-enhancements.md.
+
 ## What's here
 - `textclient/galatay-text/` – headless C# text client (LibreMetaverse, .NET 10). It handles chat/IM, wandering, routes, AO guard, sit guard, mute list, profile, inventory read-only, webhook wake-up.
   - Added Oct 2, 2026 (`NewCmds.cs`), so Firestorm is rarely needed: `offers` (pending inventory/friendship offers, `offers accept|decline <n>`, never auto-accepted; anyone off the allow-list needs `confirm` = owner's OK), `friend list|accept|decline|add`, `landmark create|list|tp` (`list`/`tp` wait up to 15 s for the new region's inventory capability after a teleport instead of reporting an empty folder), `sethome` (set home to the current spot; prints the server's reply, e.g. a refusal off your own or group land), `worn links <attachment>` + `touch-attachment <attachment> <link|prim name> [face]` (press HUD buttons, e.g. the Martha AO power: `touch-attachment ao 1`), `shape get|set <slider> <0-100>` (only on the worn shape 'Galatea Petite shape - Jani short neck'; backup of the old asset in `shape-backups/`, upload, COF link refresh, server rebake).

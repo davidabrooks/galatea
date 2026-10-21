@@ -42,6 +42,9 @@ public static partial class Program
     // 2026-10-12 16:05 David: after a quick relog that was seated, do NOT re-sit or re-pick a pose: log in, step to the
     // clear floor spot beside that furniture (stand_spot / approach / change_spot) and stand; wander carries on from there.
     static bool quickLogin;
+    internal static TimeSpan? loginGap;   // time offline before this login (null = unknown)
+    // pure (tested): re-seat / re-place / re-leash after a relog only when it was quick; collar restrictions are always kept
+    internal static bool RestorePlacementAfterRelog(TimeSpan? gap) => gap != null && gap.Value >= TimeSpan.Zero && gap.Value < ShortAbsence;
     internal static HomeSeatInfo QuickReloginSeatNear(Vector3 me, IEnumerable<HomeSeatInfo> seats, float within = 2.5f)
         => (seats ?? Enumerable.Empty<HomeSeatInfo>())
             .Where(x => (x.StandSpot ?? x.Approach ?? x.ChangeSpot) != null && HDist(me, x.Pos) <= within)

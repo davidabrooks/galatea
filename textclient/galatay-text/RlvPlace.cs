@@ -94,6 +94,12 @@ public static partial class Program
             }
         }
         foreach (var sv in left) RlvLog($"relog: '{sv.name}' ({sv.item}) not worn after login: its saved restrictions dropped");
+        bool quick = RestorePlacementAfterRelog(loginGap);
+        if (!quick && (doc.holdSeat != null || doc.leash != null))
+        {
+            RlvLog($"relog after {(loginGap == null ? "an unknown gap" : $"{loginGap.Value.TotalMinutes:F0} min")} (>= {ShortAbsence.TotalMinutes:F0} min): saved placement/hold{(doc.leash != null ? " and leash" : "")} dropped; normal entry point; collar restrictions kept");
+            doc = doc with { holdSeat = null, holdName = null, leash = null };
+        }
         if (doc.holdSeat != null && doc.holdRegion == client.Network.CurrentSim?.Name)
         {   // the collar normally re-sits her itself (@sit:..=force); the hold loop sits her back if it doesn't
             rlvHoldName = doc.holdName; rlvHoldSeat = doc.holdSeat; afSnoozeUntil = DateTime.MaxValue;

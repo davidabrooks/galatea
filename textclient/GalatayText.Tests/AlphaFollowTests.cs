@@ -244,3 +244,27 @@ public class LeashTests
         Assert.Equal(Program.ShoelaceM, Program.LeashLengthFromText("Length set to Shoelace"));   // walking after the holder is off by default
     }
 }
+
+public class LongGapLoginRegressionTests
+{
+    // 2026-10-21 regression: after ~38 h offline she logged in back on the bed. The MCP connector launcher never set
+    // GT_START, and the built-in default was "last", so the long-gap rule (LoginStart.cs) chose "last" anyway.
+    [Fact]
+    public void LongGapLogsInAtTheNormalEntryPointByDefault()
+    {
+        var now = new DateTime(2026, 10, 21, 15, 9, 0, DateTimeKind.Utc);
+        if (Environment.GetEnvironmentVariable("GT_START") == null) Assert.Equal("home", Program.Start);
+        Assert.Equal("home", Program.ChooseLoginStart("home", now.AddHours(-38), now));
+        Assert.Equal("last", Program.ChooseLoginStart("home", now.AddMinutes(-5), now));
+        Assert.Equal("home", Program.ChooseLoginStart("home", null, now));
+    }
+
+    [Fact]
+    public void PlacementIsRestoredOnlyAfterAQuickRelog()
+    {
+        Assert.True(Program.RestorePlacementAfterRelog(TimeSpan.FromMinutes(5)));
+        Assert.False(Program.RestorePlacementAfterRelog(TimeSpan.FromHours(38)));
+        Assert.False(Program.RestorePlacementAfterRelog(TimeSpan.FromMinutes(30)));
+        Assert.False(Program.RestorePlacementAfterRelog(null));
+    }
+}

@@ -128,12 +128,13 @@ public static partial class Program
     {
         var cur = leash;
         if (cur != null && cur.mode == mode && cur.holder == holder) return;
+        leashArrivedAt = DateTime.Now;   // a new or restored leash: LeashWalk grace (no walking straight after login/relog)
         if (cur != null) LeashEnd($"replaced by {mode} to {name}", quiet: true);
         leash = new LeashState(mode, holder, name, anchor, leashLength, how, DateTime.Now); leashMissScans = 0; leashNextWanderOff = DateTime.MaxValue;
         if (mode == "leash") { try { SetPauseNow("rlv", $"leash held by {name}"); } catch { } afSnoozeUntil = DateTime.MaxValue; }
         bool strict = LeashStrictNow();
         var text = mode == "leash"
-            ? $"leashed {(anchor ? "(anchored) to" : "by")} {name} [{how}]; strict {(strict ? "ON (no self-unleash/teleport)" : "off")}; I walk after them past {LeashWalkStart(leashLength):F1} m, stop at {LeashWalkStop(leashLength):F1} m"
+            ? $"leashed {(anchor ? "(anchored) to" : "by")} {name} [{how}]; strict {(strict ? "ON (no self-unleash/teleport)" : "off")}; I walk with them when they walk off (never while they stand), forward only past {LeashForwardCutoff(leashLength):F1} m"
             : $"{name} is following me on the collar's follow (no chain) [{how}]; I carry on as usual at walking pace";
         RlvLog("leash: " + text);
         try { Notify(mode == "leash" ? "rlv_leashed" : "rlv_follow_start", name, holder, text, null); } catch { }

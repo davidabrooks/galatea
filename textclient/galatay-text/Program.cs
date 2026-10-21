@@ -375,6 +375,7 @@ public static partial class Program
         EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
         VisitorWatchStart(); // visitor_arrival wakes at home (VisitorArrival.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
+        LoginJoinStart(); // walk over to David myself + measured placement for the david_login wake (LoginJoin.cs)
         _ = Task.Run(AfterQuickLogin); // quick relog: floor spot beside the furniture, never re-sit (LoginStart.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);

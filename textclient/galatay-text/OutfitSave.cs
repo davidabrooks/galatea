@@ -220,6 +220,12 @@ public static partial class Program
         if (name.Length == 0) return "usage: outfit plan|create <name> [extra ids]";
         using var cts = new CancellationTokenSource(180000); var ct = cts.Token;
         var (plan, problems, myOutfits, moKids) = await PlanOutfit(extra, ct);
+        if (PlanNeedsCollar(plan.Select(p => p.Target)))   // 2026-10-21 David: every saved outfit links the N° 9 collar
+        {
+            var c = await FetchItemRO(N9CollarItem, ct);
+            if (c != null) plan.Add(new PlannedLink(c.UUID, c.Name, c.InventoryType, c.AssetType, "", "N° 9 collar: in every outfit"));
+            else problems.Add("N° 9 collar item not found; outfit saved without it");
+        }
         var sb = new StringBuilder();
         sb.AppendLine($"My Outfits: {(myOutfits == null ? "NOT FOUND" : $"'{myOutfits.Name}' {myOutfits.UUID} type {myOutfits.PreferredType}")}; now holds {moKids?.Count ?? 0}: {string.Join(", ", (moKids ?? new()).Select(k => $"'{k.Name}'"))}");
         sb.AppendLine($"planned links for outfit '{name}' ({plan.Count}):");

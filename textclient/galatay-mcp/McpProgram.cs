@@ -279,11 +279,14 @@ public sealed class SlTools
 
     [McpServerTool(Name = "force_rebake"), Description("Firestorm 'Rebake Textures' equivalent, forced: bump the COF version, POST cof_version to UpdateAvatarAppearance (retry with the server's expected version), return the raw response and bake texture ids.")]
     public static Task<string> ForceRebake() => R("force rebake");
-    [McpServerTool(Name = "collar_pause"), Description("David's diagnostic switch: on = collar guard paused (collar not always-wear/protected, persists), off = resume and re-attach, detach = take the collar off (only while paused, refused if RLV-locked), empty = state.")]
-    public static Task<string> CollarPause(string state = "") => R(Clean(state) == "detach" ? "collar detach" : "collar pause " + Clean(state));
-
     [McpServerTool(Name = "attachment_faces"), Description("READ-ONLY: per-face TextureEntry (color alpha, rgb, texture) of every prim in a worn attachment; filter = prim name substring.")]
     public static Task<string> AttachmentFaces(string attachment, string filter = "") => R($"att faces {Clean(attachment).Replace("|", "")}|{Clean(filter).Replace("|", "")}");
+
+    [McpServerTool(Name = "outfits_collar"), Description("Make sure EVERY saved outfit in My Outfits has a link to the N° 9 collar (adds missing ones); check=true only reports. Returns each outfit: yes/added/NO.")]
+    public static Task<string> OutfitsCollar(bool check = false) => R("outfits collar" + (check ? " check" : ""));
+
+    [McpServerTool(Name = "outfit_save"), Description("Save what I wear now as a new outfit in My Outfits (links; the N° 9 collar link is always included).")]
+    public static Task<string> OutfitSave(string name) => R("outfit create " + Clean(name));
 
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)

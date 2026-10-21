@@ -36,7 +36,7 @@ def test_hd_scene_samples_default():
 
 def test_hd_self_renders_the_scene_not_the_studio():
     src = open(os.path.join(ROOT, "look.py")).read()
-    assert 'photo_self = bool(hd) and mode == "self"' in src and 'view = "portrait" if photo_self' in src
+    assert 'photo_self = bool(hd) and mode == "self"' in src and '"portrait") if photo_self' in src
     assert 'if mode == "self" and not hd else ["scene"]' in src
     rm = open(os.path.join(ROOT, "cloud-render", "render_mesh.py")).read()
     assert 'if view.startswith("portrait"):' in rm

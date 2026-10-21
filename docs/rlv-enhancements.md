@@ -19,7 +19,7 @@ Plain-language list for David. Technical details: [rlv.md](rlv.md). "Tested" = t
 | Placement awareness | When RLV sits, stands or teleports me, my chat side gets an event with the object, where I am and whether @unsit is on | @sit/@unsit/@tpto force | Leash: see the Leash section | Not yet with a real collar sit |
 | Soft hold after a placement | After an RLV sit: no wander, no autofollow, and if something automatic stands me up I sit right back down. I can still stand deliberately | RLV sit | Ends when I stand deliberately, the collar unsits me, MAYDAY or rlv_clear | Unit tests only |
 | Strict / @unsit | Only the collar's Strict force-sit (@unsit=n) and tp/leash restrictions stop me standing. TPE has nothing to do with it (N° 9 README) | Collar Strict | — | Unit tests only |
-| Survives a relog | Restrictions and the hold are saved per item and restored after login; I'm sat back on the same seat if the collar doesn't do it | Relog | Same region only | Not yet |
+| Survives a relog | Restrictions are saved per item and restored after login. The seat hold/placement and the leash come back only after a **quick relog (under 30 min offline)**; after a longer gap they're dropped and I log in at the normal entry point (GT_START, default `home`). Collar restrictions are always kept | Relog | Same region only | Not yet |
 
 ## Leash
 
@@ -27,7 +27,7 @@ What the N° 9 notecards say: the leash is a particle chain from the collar to t
 
 | Feature | What it does | Trigger | Limits | Tested in-world |
 |---|---|---|---|---|
-| Leash detection | `rlv_leashed` / `rlv_unleashed` events with the holder (avatar or anchor object) | My collar's particles aimed at someone; or the collar's own leash text | Chain gone for ~6 s = unleashed. An invisible Magic Leash with no particles is only caught by its text | Not yet |
+| Leash detection | `rlv_leashed` / `rlv_unleashed` events with the holder (avatar or anchor object) | My collar's particles aimed at someone, or particles from his side (e.g. his remote/HUD) aimed at me or my attachments; or the collar's own leash text. Every particle system involving me is logged as `leash-diag` | Chain gone for ~6 s = unleashed. An invisible Magic Leash with no particles is only caught by its text | Not yet |
 | Soft hold while leashed | No wander, autofollow snoozed, no following anyone else. By default I **don't walk to the holder**: the collar's pull leads me and I stay free to chat | Leashed | — | Not yet |
 | Option `leash_walk` (`leash walk on\|off`, **off** by default, persisted) | When on, a nicety: about every 6 s I walk toward the holder if he's more than ~3 m away (leash × 0.7 + 1 m). I never fight the pull; if the walk fails, the pull handles it | David turns it on | Not when he's out of the region, I'm seated, or anchored | Not yet |
 | Strict leash | Blocks my own tp/home, `leash release`, and lures from anyone but the holder (no auto-accept) | Leashed + the collar's @tploc/@tplm/@tplure/@fly/@sittp, or anchored | MAYDAY and rlv_clear always end it | Unit tests only |

@@ -192,10 +192,57 @@ public static partial class Program
             if (ps.CRC == 0 && ps.Target == UUID.Zero) continue;
             if (ps.Target == UUID.Zero || ps.Target == me || ps.Target == p.ID) continue;
             var root = RlvOwnAttachmentRoot(p.ID); if (root == null) continue;
-            var rn = root.Properties?.Name; if (rn != null && rn.IndexOf("collar", StringComparison.OrdinalIgnoreCase) < 0) continue;   // only the collar's chain
+            var rn = root.Properties?.Name; if (rn != null && rn.IndexOf("collar", StringComparison.OrdinalIgnoreCase) < 0 && rn.IndexOf("No 9", StringComparison.OrdinalIgnoreCase) < 0) continue;   // only the collar's chain
             return (ps.Target, p);
         }
         return null;
+    }
+
+    // 2026-10-21 live test: the click produced no collar text and no own-chain hit. The chain may come from HIS side (his
+    // NX Remote / HUD / attachment) aimed at me or at one of my attachments. Holder = the avatar that emitter is worn by.
+    static (UUID target, Primitive emitter)? LeashForeignTarget()
+    {
+        var sim = client?.Network?.CurrentSim; if (sim == null) return null;
+        var me = client.Self.AgentID; var myLocal = client.Self.LocalID;
+        var mine = WornPrims().Select(p => p.ID).ToHashSet();
+        foreach (var p in sim.ObjectsPrimitives.Values)
+        {
+            if (p == null || p.ParticleSys.Target == UUID.Zero) continue;
+            var t = p.ParticleSys.Target;
+            if (t != me && !mine.Contains(t) && !(sim.ObjectsPrimitives.Values.FirstOrDefault(x => x?.ID == t) is { } tp && RlvOwnAttachmentRoot(tp.ID) != null)) continue;
+            if (RlvOwnAttachmentRoot(p.ID) != null) continue;   // mine: handled by the own-chain scan
+            // walk up to the avatar wearing it
+            Primitive q = p; uint parent = p.ParentID;
+            for (int k = 0; k < 4 && parent != 0; k++)
+            {
+                if (sim.ObjectsAvatars.Values.FirstOrDefault(a => a?.LocalID == parent) is { } av) return (av.ID, p);
+                q = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x?.LocalID == parent); parent = q?.ParentID ?? 0;
+            }
+            return (p.OwnerID != UUID.Zero ? p.OwnerID : p.ID, p);   // rezzed object (post) or unknown wearer
+        }
+        return null;
+    }
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, uint> leashDiagSeen = new();
+    // diagnostics: every particle system that involves me (emitted by my attachments, or aimed at me / my attachments)
+    static void LeashDiagHook()
+    {
+        client.Objects.ObjectUpdate += (s, e) =>
+        {
+            try
+            {
+                var p = e.Prim; if (p == null) return;
+                var ps = p.ParticleSys; var me = client.Self.AgentID;
+                bool mineEmit = p.ParentID == client.Self.LocalID || RlvOwnAttachmentRoot(p.ID) != null;
+                bool atMe = ps.Target != UUID.Zero && (ps.Target == me || RlvOwnAttachmentRoot(ps.Target) != null);
+                if (!mineEmit && !atMe) return;
+                var key = ps.CRC ^ (uint)ps.Target.GetHashCode();
+                if (leashDiagSeen.TryGetValue(p.LocalID, out var old) && old == key) return;
+                leashDiagSeen[p.LocalID] = key;
+                if (ps.CRC == 0 && ps.Target == UUID.Zero && old == 0) return;
+                RlvLog($"leash-diag: particles on {(mineEmit ? "MY" : "other")} prim {p.ID} (local {p.LocalID}, parent {p.ParentID}, owner {p.OwnerID}): crc {ps.CRC} target {ps.Target} flags {ps.PartDataFlags} pattern {ps.Pattern} texture {ps.Texture}");
+            }
+            catch { }
+        };
     }
 
     static void LeashLoopRun() => _ = Task.Run(async () =>
@@ -209,7 +256,7 @@ public static partial class Program
     static void LeashTick()
     {
         var sim = client.Network.CurrentSim;
-        var pt = LeashParticleTarget();
+        var pt = LeashParticleTarget() ?? LeashForeignTarget();
         var l = leash;
         if (pt is { } t)
         {

@@ -196,6 +196,7 @@ public static partial class Program
             _ = Task.Run(() => RlvHandle(id, name, msg));
         };
         LeashHook();           // Leash.cs: the collar's leash/follow text
+        LeashDiagHook();       // Leash.cs: log every particle system that involves me
         RlvRestoreAtLogin();   // RlvPlace.cs: every login (new client), restrictions + hold from before the relog
         if (Interlocked.Exchange(ref rlvLoopsStarted, 1) == 0)
         {

@@ -22,7 +22,7 @@ public static partial class Program
 
     static readonly string First = Env("GT_FIRST", "Galatay");
     static readonly string Last = Env("GT_LAST", "Resident");
-    static readonly string Start = Env("GT_START", "last");
+    internal static readonly string Start = Env("GT_START", "home");   // 2026-10-21: default "home" (was "last"): the MCP connector launcher never set GT_START, so long gaps logged in at the last spot (the bed)
     static readonly string LoginUri = Env("GT_LOGIN_URI", Settings.AgniLoginServer);
     static readonly string LogPath = Env("GT_LOG", "/workspace/secondlife/textclient.log");
     static readonly string SockPath = Env("GT_SOCK", "/home/box/viewers/textclient/run/galatay.sock");
@@ -350,6 +350,7 @@ public static partial class Program
         var lp = client.Network.DefaultLoginParams(First, Last, password, Channel, Version);
         password = null;
         var lastOn = ReadLastOnline();
+        loginGap = lastOn == null ? null : DateTime.UtcNow - lastOn.Value;   // RlvPlace.cs: seat/placement restore only after a quick relog
         var chosen = startOverride ?? ChooseLoginStart(Start, lastOn, DateTime.UtcNow);
         if (startOverride == null && chosen != Start) Log("login", $"offline only {(DateTime.UtcNow - lastOn.Value).TotalMinutes:F0} min (< {ShortAbsence.TotalMinutes:F0}): starting at the last location, not '{Start}'");
         quickLogin = startOverride == null && chosen == "last" && Start != "last";

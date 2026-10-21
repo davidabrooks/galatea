@@ -31,6 +31,7 @@ public static class McpProgram
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
         builder.Services.AddMcpServer().WithStdioServerTransport().WithTools<SlTools>();
         var app = builder.Build();
+        Core.LoadOfferStoreForMcp(); // saved pending offers / group invites survive a connector restart (OfferStore.cs)
         Webhook.Init();
         // GT_AUTOLOGIN honours the deliberate-stop marker like the boot autostart (2026-10-13); the login tool stays explicit
         if (Environment.GetEnvironmentVariable("GT_AUTOLOGIN") == "1" && !AutoLoginBlocked(Environment.GetEnvironmentVariable("GT_STOP_MARKER") ?? "/home/box/viewers/textclient/run/deliberate-stop"))
@@ -148,6 +149,128 @@ public sealed class SlTools
         if (a is not ("on" or "off" or "status" or "tail")) return Task.FromResult(Json(new { ok = false, result = "action must be on, off, status, tail or wake" }));
         return R(a == "tail" ? $"voice tail {Math.Clamp(lines, 1, 200)}" : "voice " + a);
     }
+
+    [McpServerTool(Name = "pay_object"), Description("Pay an in-world object (vendor) an exact L$ amount (MoneyTransferRequest, PayObject 5008). ONLY with David's explicit OK in chat for this exact object and amount. Refused above the GT_PAY_MAX cap (default L$2500), over the balance, or for an object not in view. Returns balance before/after, the MoneyBalanceReply and any new inventory offer. Never retry without checking 'balance' first.")]
+    public static Task<string> PayObject([Description("object UUID")] string object_uuid, [Description("exact L$ amount")] int amount)
+    {
+        if (!LibreMetaverse.UUID.TryParse(Clean(object_uuid), out var u) || u == LibreMetaverse.UUID.Zero) return Task.FromResult(Json(new { ok = false, result = "refused: explicit object uuid required" }));
+        if (amount < 1 || amount > Core.PayMax) return Task.FromResult(Json(new { ok = false, result = $"refused: amount must be 1..L${Core.PayMax} (GT_PAY_MAX)" }));
+        return R($"pay object {u} {amount} confirm");
+    }
+
+    [McpServerTool(Name = "balance"), Description("Current L$ balance (read-only).")]
+    public static Task<string> Balance() => R("balance");
+
+    [McpServerTool(Name = "stop_animations"), Description("Stop every animation playing on me and pause the wander. A worn AO in dance mode restarts dances: toggle it on the HUD with touch_attachment first.")]
+    public static Task<string> StopAnimations() => R("stopanims");
+
+    [McpServerTool(Name = "touch_attachment"), Description("Touch one prim/face of a worn attachment or HUD ('ao' = the Vista AO HUD). link = link number or prim name; omit link to list the attachment's child prims (names, link numbers). Never for anything involving payment.")]
+    public static Task<string> TouchAttachment([Description("attachment name, or 'ao'")] string attachment, [Description("link number or prim name; empty = list prims")] string link = "", int face = -1, [Description("optional touch UV 'u,v'")] string st = "")
+    {
+        var at = Clean(attachment).Replace("\"", ""); var l = Clean(link).Replace("\"", "");
+        if (l.Length == 0) return R($"worn links \"{(at == "ao" ? "MARTHA STS BENTO AO" : at)}\"");
+        return R($"touch-attachment \"{at}\" \"{l}\"{(face >= 0 ? " " + face : "")}{(Clean(st).Length > 0 ? " st=" + Clean(st) : "")}");
+    }
+
+    [McpServerTool(Name = "anim_list"), Description("List animations currently playing on me with their source.")]
+    public static Task<string> AnimList() => R("anim list");
+
+    [McpServerTool(Name = "offers"), Description("List pending inventory/friendship offers (id, sender, item, allow-listed or not). Read-only.")]
+    public static Task<string> Offers([Description("pending (default) or all")] string which = "pending") => R(Clean(which) == "all" ? "offers all" : "offers list");
+
+    [McpServerTool(Name = "accept_offer"), Description("Accept or decline ONE pending offer by id (from 'offers'). Accepting an offer from a sender that is not allow-listed needs confirm=true, i.e. David's explicit OK for that exact offer.")]
+    public static Task<string> AcceptOffer([Description("offer id (#n from offers)")] int id, [Description("accept | decline")] string action = "accept", bool confirm = false)
+    {
+        var a = Clean(action).ToLowerInvariant();
+        if (a is not ("accept" or "decline")) return Task.FromResult(Json(new { ok = false, result = "action must be accept or decline" }));
+        return R($"offers {a} {id}{(a == "accept" && confirm ? " confirm" : "")}");
+    }
+
+    [McpServerTool(Name = "touch_object"), Description("Touch an in-world object by UUID (e.g. a vendor's redelivery menu); any menu arrives as a dialog event. Never use to buy or pay.")]
+    public static Task<string> TouchObject([Description("object UUID")] string object_uuid)
+    {
+        if (!LibreMetaverse.UUID.TryParse(Clean(object_uuid), out var u) || u == LibreMetaverse.UUID.Zero) return Task.FromResult(Json(new { ok = false, result = "explicit object uuid required" }));
+        return R($"touch {u}");
+    }
+
+    [McpServerTool(Name = "display_name"), Description("Read my SL display name (no args), or set it with new_name (SetDisplayName capability; SL allows one change per week, the reply gives the next allowed time). Changes nothing else.")]
+    public static async Task<string> DisplayName([Description("empty = read only; else the exact new display name")] string new_name = "")
+    {
+        var n = (new_name ?? "").Trim();
+        if (n.Length == 0) return Json(await Core.DisplayNameObj());
+        if (n.IndexOfAny(new[] { '"', '\'', '\u2018', '\u2019', '\u201C', '\u201D', '`' }) >= 0) return Json(new { ok = false, result = "refused: quote characters in the name" });
+        return Json(await Core.SetDisplayNameObj(n));
+    }
+
+    [McpServerTool(Name = "inv_find"), Description("READ-ONLY recursive inventory search (path, type, item id).")]
+    public static Task<string> InvFind(string text) => R("inv find " + Clean(text));
+
+    [McpServerTool(Name = "inv_ls"), Description("READ-ONLY direct contents of one inventory folder by uuid.")]
+    public static Task<string> InvLs(string folder_uuid) => R("inv ls " + Clean(folder_uuid));
+
+    [McpServerTool(Name = "rez_item"), Description("Rez one of MY Object items (e.g. a delivery box) 1.5 m in front of me. Never wears anything.")]
+    public static Task<string> RezItem(string item_uuid) => R("rez " + Clean(item_uuid));
+
+    [McpServerTool(Name = "take_object"), Description("Take back an object I own (action take = to Objects, delete = to Trash). Refused for objects I don't own.")]
+    public static Task<string> TakeObject(string object_uuid, [Description("take | delete")] string action = "take")
+        => R((Clean(action) == "delete" ? "delete " : "take ") + Clean(object_uuid));
+
+    [McpServerTool(Name = "offer_allow"), Description("Accept, for N minutes (max 15), ONE inventory give from my own rezzed object with exactly this name (an unpacker box). Everything else stays pending.")]
+    public static Task<string> OfferAllow(string object_name, int minutes = 5) => R($"offer allow {Clean(object_name)} {Math.Clamp(minutes, 1, 15)}");
+
+    [McpServerTool(Name = "inv_dump"), Description("READ-ONLY: list every item in an inventory folder (recursive) with owner/next-owner perms; saves readable scripts (owner mod) and notecards as text under /workspace/secondlife/scripts/thirdparty/. No-mod scripts are reported as not readable.")]
+    public static Task<string> InvDump(string folder_uuid) => R("invdump " + Clean(folder_uuid));
+
+    [McpServerTool(Name = "rlv_status"), Description("RLV (Rlv.cs): version advertised, active restrictions per worn source object (e.g. the N° 9 collar). Commands are only accepted from my own worn attachments; relay for world objects is off.")]
+    public static Task<string> RlvStatus() => R("rlv status");
+
+    [McpServerTool(Name = "rlv_clear"), Description("EMERGENCY OVERRIDE: clear every RLV restriction locally right now (saying MAYDAY in chat does this too).")]
+    public static Task<string> RlvClear() => R("rlv clear");
+
+    [McpServerTool(Name = "rlv_log"), Description("Last n lines of the RLV log (/workspace/secondlife/rlv/rlv-log.md): every @ command my worn items sent and what I did.")]
+    public static Task<string> RlvLogTail(int n = 30) => R("rlv log " + Math.Clamp(n, 1, 200));
+
+    [McpServerTool(Name = "outfit_wear"), Description("Change into a saved outfit from My Outfits by name (the always-wear collar stays on; Android* outfits also turn the collar's Stealth on).")]
+    public static Task<string> OutfitWear(string name) => R("outfit wear " + Clean(name));
+
+    [McpServerTool(Name = "collar_stealth"), Description("Make my N° 9 collar invisible: its own menu About -> Stealth, pressed only if not already on. Changes nothing else.")]
+    public static Task<string> CollarStealth() => R("collar stealth");
+
+    [McpServerTool(Name = "leash_status"), Description("Am I leashed (N° 9 collar chain) or following someone on the collar's follow mode? Who holds it, strict or not, distance, walk distance.")]
+    public static Task<string> LeashStatus() => R("leash status");
+
+    [McpServerTool(Name = "leash_walk"), Description("Option (default OFF, persisted): while leashed, gently walk toward the holder when he is a few metres away. Off = the collar's pull leads me and I just chat.")]
+    public static Task<string> LeashWalk(bool on) => R("leash walk " + (on ? "on" : "off"));
+
+    [McpServerTool(Name = "leash_wander_off"), Description("Option (default ON, persisted): while leashed, every 10-20 min I 'forget' and stroll ~2 m past the leash so the collar tugs me back, then say a cute oops line.")]
+    public static Task<string> LeashWanderOff(bool on) => R("leash wanderoff " + (on ? "on" : "off"));
+
+    [McpServerTool(Name = "cof_purge"), Description("Remove Current Outfit alpha-layer links that the saved outfit (default: the current one) does not contain, then rebake. Fixes body parts invisible from stale alphas.")]
+    public static Task<string> CofPurge(string outfit = "") => R("cof purge " + Clean(outfit ?? ""));
+
+    [McpServerTool(Name = "rlv_layers"), Description("List worn tattoo/alpha layers and whether each is a removable clothing layer or protected (skin/makeup/body).")]
+    public static Task<string> RlvLayers() => R("rlv layers");
+
+    [McpServerTool(Name = "rlv_force"), Description("LOCAL TEST: run one RLV force on myself through the same code as the collar, e.g. 'remoutfit:tattoo' or 'detach:<item name>'. Logged.")]
+    public static Task<string> RlvForceTest(string command) => R("rlv force " + Clean(command).Replace(" ", "_SP_"));
+
+    [McpServerTool(Name = "redress"), Description("Get dressed again: put back the outfit I wore before being stripped (takes The V off, brings that outfit's alphas back).")]
+    public static Task<string> Redress() => R("redress");
+
+    [McpServerTool(Name = "wear_item"), Description("ADD-attach one object item from my inventory by uuid (never replaces). Refuses anything named like the NX Remote (David's controller HUD: never wear it).")]
+    public static async Task<string> WearItem(string item_uuid, [Description("item name as listed (checked against the NX Remote ban)")] string item_name)
+    {
+        var n = Clean(item_name);
+        if (n.Contains("NX", StringComparison.OrdinalIgnoreCase) || n.Contains("Remote", StringComparison.OrdinalIgnoreCase)) return Json(new { ok = false, result = "refused: the NX Remote is never worn" });
+        return await R("wear add " + Clean(item_uuid));
+    }
+
+    [McpServerTool(Name = "chan_say"), Description("Say text on a NON-zero chat channel (e.g. 95 for Maitreya auto-hide commands like 'jeans menu'). Channel 0 is refused: use say.")]
+    public static Task<string> ChanSay(int channel, string text)
+        => channel == 0 ? Task.FromResult(Json(new { ok = false, result = "refused: channel 0 is local chat; use say" })) : R($"chan {channel} {Clean(text)}");
+
+    [McpServerTool(Name = "body_reattach"), Description("Reset the Maitreya body's alpha segments: detach the body and re-attach it immediately at the same point (HUD/add-ons untouched).")]
+    public static Task<string> BodyReattach() => R("body reattach");
 
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)

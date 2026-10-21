@@ -55,8 +55,9 @@ public static partial class Program
         g.Places.ContainsKey("bedroom") ? "bedroom" : g.Places.ContainsKey("living") ? "living" : "home";
 
     // pure: on the way back up (a non-beach target while in beach mode) she changes back in the bedroom
-    internal static string ReturnChangePlan(bool targetBeachBound, bool beachMode) =>
-        !targetBeachBound && beachMode ? "bedroom-restore" : "none";
+    // 2026-10-16: nothing was changed when the swap is skipped (android body worn): no walk back to the bedroom to change back
+    internal static string ReturnChangePlan(bool targetBeachBound, bool beachMode, bool swapSkipped = false) =>
+        !targetBeachBound && beachMode && !swapSkipped ? "bedroom-restore" : "none";
 
     // pure: already standing at the change spot (no walk needed)
     internal static bool AtBikiniSpot(Vector3 me, Vector3 spot) => HDist(me, spot) <= 1.0f && Math.Abs(me.Z - spot.Z) <= 1.5f;
@@ -124,7 +125,7 @@ public static partial class Program
     static async Task BeachOutfitForTarget(Graph g, Vector3 target, string seatLevel, string what, CancellationToken ct)
     {
         if (BeachBound(target, seatLevel)) { await BikiniIndoorsIfBeachBound(g, target, seatLevel, what, ct); return; }
-        if (ReturnChangePlan(false, beachMode) == "none") return;
+        if (ReturnChangePlan(false, beachMode, BikiniSwapSkippedNow()) == "none") return;
         WLog($"back from the beach ({what}): walking to the bedroom to change back first");
         if (!await WalkToChangeSpot(g, "to change back", ct)) return;
         if (!IndoorsAtHome(client.Self.SimPosition)) { WLog("change back: not inside the house after the walk; trying again before the next move"); return; }
@@ -172,6 +173,13 @@ public static partial class Program
     {
         var restore = beachRememberedOutfit;
         beachMode = false; PersistBeachState();
+        // 2026-10-15 David: an android body is never swapped to human automatically (the 17:29 restore did exactly that)
+        if (await AndroidWornSettled())
+        {
+            Log("outfit-zone", $"back from the beach, {where}: android body worn, keeping it (no restore of '{restore ?? "-"}')");
+            beachRememberedOutfit = null; PersistBeachState();
+            return;
+        }
         if (string.IsNullOrWhiteSpace(restore) || BikiniNameRx.IsMatch(restore))
         {
             Log("outfit-zone", $"back from the beach, {where}: no remembered outfit → bikini off (strapless+jeans)");

@@ -4,16 +4,27 @@ blender -b --factory-startup --python render_mesh.py -- <jobdir> {scene|face|bod
 jobdir holds mesh.json, mesh.bin, terrain.json and tex/<uuid>.png, tex/bake-<name>.png.
 Galatea's rigged attachments are in bind pose (= SL's default T-pose), in avatar space (+X forward, feet near z=0).
 """
-import bpy, json, math, os, re, sys, time
+import bpy, json, math, os, re, sys, time, warnings
 import numpy as np
 from mathutils import Vector
 
 jobdir, kind, engine, out = sys.argv[sys.argv.index("--") + 1:][:4]
-M = json.load(open(f"{jobdir}/mesh.json")); BIN = open(f"{jobdir}/mesh.bin", "rb").read()
+import mmap
+M = json.load(open(f"{jobdir}/mesh.json"))
+_binf = open(f"{jobdir}/mesh.bin", "rb"); BIN = mmap.mmap(_binf.fileno(), 0, access=mmap.ACCESS_READ)   # paged in per batch, not read whole (~0.7 GB for a crowd)
 T0 = time.time()
 bpy.ops.wm.read_factory_settings(use_empty=True)
 sc = bpy.context.scene
 def log(*a): print("GT:", *a, flush=True)
+def memlog(tag):   # GT_MEM_TRACE=1: this process's resident/anonymous memory at a milestone
+    if os.environ.get("GT_MEM_TRACE"):
+        d = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith(("VmRSS", "RssAnon", "RssFile")))
+        log("mem", tag, {k: int(v.split()[0]) // 1024 for k, v in d.items()}, "MB", "images", len(bpy.data.images), "Mpx", round(sum(i.size[0] * i.size[1] for i in bpy.data.images) / 1e6, 1))
+# photo hd layered crowd (vision/layers.py): "base" = world + her + shadow-only proxies of everyone else; "batch" = a few avatars
+# (GT_LAYER_AVATARS = their mesh.json groups) with the world and her as holdouts on a transparent film, same camera/lighting.
+# Both save scene-linear RGBA as GT_LAYER_NPY (.npy) and skip the tonemap: look.py composites back-to-front, then tonemaps once.
+LAYER = os.environ.get("GT_LAYER", "") if os.environ.get("GT_HD") == "1" else ""
+LAYER_AVS = {g for g in os.environ.get("GT_LAYER_AVATARS", "").split(",") if g}
 HD = os.environ.get("GT_HD") == "1"   # `photo hd`: David's 4K stills (the only renders that use the region environment fully)
 def lin(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4   # sRGB -> linear
 
@@ -24,6 +35,7 @@ SSR = os.environ.get("GT_SSR", "1") != "0"
 # razor edges and a solid weave shadow; a wider disc reproduces the blurred penumbra (fitted on the 2026-10-13 porch).
 SHADOW_ANGLE_NIGHT = float(os.environ.get("GT_SHADOW_ANGLE", "0.53")); SHADOW_ANGLE_DAY = float(os.environ.get("GT_SHADOW_ANGLE_DAY", "0.53"))
 FULLBRIGHT = float(os.environ.get("GT_FULLBRIGHT", "0.8"))   # HD profiles 1.0: SL fullbright = the texture at full display value
+INDOOR_AMB = float(os.environ.get("GT_INDOOR_AMB", "0.9")); AVATAR_AMB = float(os.environ.get("GT_AVATAR_AMB", "1.5")); INDOOR_DIST = float(os.environ.get("GT_INDOOR_DIST", "15"))   # sky ambient left under a closed roof; AO reach (m)
 SSAO = float(os.environ.get("GT_SSAO", "0")); SSAO_DIST = float(os.environ.get("GT_SSAO_DIST", "0.8"))   # profiles: 0.8 (RenderSSAOEffect)
 # 2026-10-14 David's Ultra (photo hd default): SSR + mirrors on. Cycles traces reflections in world space, so they are the
 # same in every 4K tile (no screen-edge fade, nothing off-screen missing): SSR on = every face keeps Principled's specular
@@ -151,21 +163,31 @@ def tex_path(uuid):
         _PATHS[uuid] = next((p for p in (base + ".png", *(f"{base}.{c}.png" for c in (1024, 512, 256, 128))) if os.path.exists(p)), None)
     return _PATHS[uuid]
 _IMAGES = {}
-def load_image(path, data=False):
+HOLD_PX = int(os.environ.get("GT_LAYER_HOLD_PX", "64"))   # batch passes: the holdout world's textures are shrunk to this
+def load_image(path, data=False, small=False):
     # images.load(check_existing=True) compares against every loaded image: O(n^2) over a crowd's ~3500 textures
-    if path not in _IMAGES: _IMAGES[path] = bpy.data.images.load(path, check_existing=False)
-    if data: _IMAGES[path].colorspace_settings.name = "Non-Color"
-    return _IMAGES[path]
+    k = (path, small)
+    if k not in _IMAGES:
+        im = _IMAGES[k] = bpy.data.images.load(path, check_existing=False)
+        if small:   # a holdout is never seen: it only needs its silhouette (cut-out alpha) and its average colour for bounce light
+            _alpha_stats(im); w, h = im.size
+            if max(w, h) > HOLD_PX: s = HOLD_PX / max(w, h); im.scale(max(1, round(w * s)), max(1, round(h * s)))
+    if data: _IMAGES[k].colorspace_settings.name = "Non-Color"
+    return _IMAGES[k]
 
-def mat_images(b):
-    """slot -> Blender image for one SL face (diffuse, normal, mr, emissive_tex, spec), as _material reads them"""
+def mat_images(b, small=False):
+    """slot -> Blender image for one SL face (diffuse, normal, mr, emissive_tex, spec), as _material reads them.
+    small (a batch pass's holdout world): the diffuse (and emissive) maps only, shrunk to HOLD_PX"""
     mat = b.get("mat") or {"alpha": "auto"}; out = {}
     def put(slot, uuid, data=False):
         p_ = tex_path(uuid)
-        if p_: out[slot] = load_image(p_, data)
-    put("diffuse", b["tex"]); put("normal", mat.get("normal"), True)
-    if mat.get("pbr"): put("mr", mat.get("mr"), True); put("emissive_tex", mat.get("emissive_tex"))
-    elif "gloss" in mat: put("spec", mat.get("spec"))
+        if p_: out[slot] = load_image(p_, data, small)
+    put("diffuse", b["tex"])
+    if not small: put("normal", mat.get("normal"), True)
+    if mat.get("pbr"):
+        if not small: put("mr", mat.get("mr"), True)
+        put("emissive_tex", mat.get("emissive_tex"))
+    elif "gloss" in mat and not small: put("spec", mat.get("spec"))
     return out
 
 # Materials: one template per structure (alpha mode, which maps exist, numeric material params, fullbright, cut-out),
@@ -174,13 +196,21 @@ def mat_images(b):
 # Warehouse 21: ~17 s of node building -> ~1 s. Also faces that differed only in colour now share a material.
 TEMPLATES = {}; MAT_CACHE = {}
 # glow/bloom (Firestorm "Glow", High+ strength 2 = RenderGlowIterations): only photo hd scenes with a glowing face
-GLOW_ON = HD and os.environ.get("GT_GLOW", "1") != "0" and any((b.get("glow") or 0) > 0 for b in M.get("batches", []))
-def material(b, imgs=None):
+GLOW_ON = HD and LAYER != "batch" and os.environ.get("GT_GLOW", "1") != "0" and any((b.get("glow") or 0) > 0 for b in M.get("batches", []))
+# Batch passes: a holdout's see-through (blended / hashed) alpha made it a PARTIAL holdout, so an avatar behind her hair showed through every
+# hashed gap in the batch layer, and alpha-over onto the base (which already has her hair over the world) darkened the hair there: fine
+# dark dots over her hair (Oct 19 2026). A holdout is never seen, only its silhouette: its blended alpha is cut at GT_HOLD_ALPHA_CUT
+# (default 0.5, the usual mask cutoff; 0 = the old partial holdout), so the layer is either fully held out or not, never dithered.
+HOLD_ALPHA_CUT = float(os.environ.get("GT_HOLD_ALPHA_CUT", "0.5"))
+
+def material(b, imgs=None, hold=False):
     imgs = mat_images(b) if imgs is None else imgs
     mat = b.get("mat") or {"alpha": "auto"}
+    if hold and HOLD_ALPHA_CUT > 0 and mat.get("alpha", "auto") in ("auto", "blend"):
+        mat = {**mat, "alpha": "mask", "cutoff": HOLD_ALPHA_CUT}; b = {**b, "mat": mat}
     cut = has_alpha(imgs["diffuse"]) if "diffuse" in imgs else None
     sig = json.dumps([{k: v for k, v in mat.items() if k not in ("normal", "spec", "mr", "emissive_tex")}, sorted(imgs),
-                      b["rgba"][3] < 0.999, bool(b["fullbright"]), cut], sort_keys=True)
+                      b["rgba"][3] < 0.999, bool(b["fullbright"]), cut, str(b.get("group", "")).startswith("avatar")], sort_keys=True)
     k = (sig, tuple(sorted((s_, im.name) for s_, im in imgs.items())))
     if k not in MAT_CACHE:
         if sig not in TEMPLATES: TEMPLATES[sig] = _material(b, set(imgs), cut)
@@ -287,6 +317,16 @@ def _material(b, slots, cut):
             ao = nt.nodes.new("ShaderNodeAmbientOcclusion"); ao.inputs["Distance"].default_value = SSAO_DIST; ao.samples = 8
             k = nt.nodes.new("ShaderNodeMapRange"); L(ao.outputs["AO"], k.inputs["Value"]); k.inputs[3].default_value = 1 - SSAO
             L(mul(k.outputs["Result"], float(p.inputs["Emission Strength"].default_value)), p.inputs["Emission Strength"])
+        amb_floor = AVATAR_AMB if str(b.get("group", "")).startswith("avatar") else INDOOR_AMB   # avatars keep their own indoor fill (readable dancers)
+        if HD and amb_floor != 1:
+            # indoors (Oct 19 2026, David at Warehouse 21: "darker in-world, the light comes from the spotlights"): the sky ambient was emission
+            # on every face, so a roofed club got the full open-sky fill. Its sky share now follows how much open sky the point sees (AO
+            # over GT_INDOOR_DIST m: roof and walls block it), down to GT_INDOOR_AMB of it under a closed roof (1 = the old unoccluded fill).
+            # The sun / moon and the world light are real Cycles lights and already blocked by the roof; the SL point / spot lights are untouched.
+            ia = nt.nodes.new("ShaderNodeAmbientOcclusion"); ia.inputs["Distance"].default_value = INDOOR_DIST; ia.samples = 4; ia.only_local = False
+            kk = nt.nodes.new("ShaderNodeMapRange"); L(ia.outputs["AO"], kk.inputs["Value"]); kk.inputs[3].default_value = amb_floor
+            src = p.inputs["Emission Strength"].links[0].from_socket if p.inputs["Emission Strength"].links else float(p.inputs["Emission Strength"].default_value)
+            L(mul(kk.outputs["Result"], src), p.inputs["Emission Strength"])
     # Opaque clothes must depth-test solid: always-HASHED let body BOM show through jeans/tops (Scentual90).
     if mode in ("none", "emissive"):
         m.blend_method = "OPAQUE"
@@ -298,6 +338,20 @@ def _material(b, slots, cut):
         m.blend_method = "HASHED"
     if GLOW_ON: glow_aov(nt, p, tint)
     return m
+
+# Hair bases: some hair meshes carry a scalp-cap piece whose texture region is a flat fill with a blob-shaped alpha (hair 8d5ad85f: UV
+# strip u > 0.83, flat brown). Drawn with its alpha-MASK material (cutoff 0.94) it is an opaque flat patch with a hard scalloped edge lying
+# on the forehead, between the skin and the strands. Her own avatar's mask-mode triangles whose UVs all lie inside that strip are dropped
+# (keyed by texture id, never by prim id): the strands and the blended soft layer are untouched. GT_HAIR_SCALP_HIDE=0 keeps the cap.
+SCALP_HIDE = os.environ.get("GT_HAIR_SCALP_HIDE", "1") != "0"
+SCALP_CAPS = {"8d5ad85f-453b-ed86-31b3-c7356150164f": 0.83}   # texture id -> u0 of the cap strip
+
+def scalp_cap_filter(b, T, I):
+    """triangle index array without the scalp-cap triangles of a mask-mode batch of a known hair texture (else I unchanged)"""
+    u0 = SCALP_CAPS.get(b.get("tex"))
+    if not SCALP_HIDE or u0 is None or (b.get("mat") or {}).get("alpha") != "mask": return I
+    tri = np.asarray(I).reshape(-1, 3); cap = T.reshape(-1, 2)[tri][:, :, 0].min(1) > u0
+    return tri[~cap].ravel() if cap.any() else I
 
 def arrays(b):
     nv, ni, o = b["nv"], b["ni"], b["offset"]
@@ -378,11 +432,15 @@ def build(group, bones=None, lining=True):
         if str(bi) in HIDE_BATCH: continue   # diagnosis: GT_DEBUG_HIDE_BATCH=45,60
         nv, ni = b["nv"], b["ni"]
         P, N, T, I = arrays(b)
+        if b["group"] == "avatar" and SCALP_HIDE:   # her own avatar only (others in a crowd keep their hair as authored)
+            I = scalp_cap_filter(b, T, I); ni = len(I)
+            if not ni: continue
         if min_tris and ni // 3 < min_tris and not b["group"].startswith("avatar"):
             # dust = few triangles AND small: a 2-triangle floor face (Warehouse 21 courtyard, a skybox) is not dust
             ext = P.reshape(-1, 3).max(0) - P.reshape(-1, 3).min(0) if nv else np.zeros(3)
             if float(ext.max()) < 1.0: continue
-        imgs = mat_images(b)
+        hold = LAYER == "batch" and group not in LAYER_AVS   # a batch pass's holdout world: seen as a silhouette only
+        imgs = mat_images(b, small=hold)
         tn = imgs.get("diffuse") or next(iter(imgs.values()), None)
         # blank SL textures (32x32 all-alpha-0, e.g. Scentual f54a0c32 "clothing" layer): skip so they don't
         # sit as hashed ghosts over BOM skin (decided before any mesh is made: removing objects is slow in a big scene)
@@ -399,9 +457,11 @@ def build(group, bones=None, lining=True):
         tint.data.foreach_set("color", np.tile(np.asarray(b["rgba"], np.float32), nv))
         if GLOW_ON:   # SL face glow (photo hd): per-point attribute so the templates stay shared
             gl = me.attributes.new("sl_glow", "FLOAT", "POINT"); gl.data.foreach_set("value", np.full(nv, float(b.get("glow") or 0.0), np.float32))
-        me.update(); me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
-        ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs))
+        me.update()
+        if not (hold and os.environ.get("GT_HOLD_FLAT", "1") == "1"): me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
+        ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs, hold))
         obs.append(ob)
+        if group.startswith("avatar"): ob["gt_avatar"] = 1   # avatar key light (photo hd under a roof) links to these
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
         # shadow drew a grey "text" mark beside her nose. The SL viewer's sun shadow map is far too coarse to resolve them.
         # ponytail: decided per texture alpha; ceiling = no hair shadow on her neck
@@ -437,12 +497,16 @@ def gpu_setup():
             sc.cycles.denoising_prefilter = os.environ.get("GT_DENOISE_PREFILTER", "ACCURATE")
             if hasattr(sc.cycles, "denoising_quality"): sc.cycles.denoising_quality = os.environ.get("GT_DENOISE_QUALITY", "HIGH")
             sc.cycles.max_bounces = 6; sc.cycles.diffuse_bounces = 3; sc.cycles.glossy_bounces = 3
-            sc.cycles.transparent_max_bounces = 24; sc.cycles.filter_width = 1.5 if os.environ.get("GT_SMAA", "1") != "0" else 0.01   # pixel filter = anti-aliasing (SMAA Ultra; `nosmaa` = aliased)
+            sc.cycles.transparent_max_bounces = int(os.environ.get("GT_TRANSPARENT_BOUNCES", "24")); sc.cycles.filter_width = 1.5 if os.environ.get("GT_SMAA", "1") != "0" else 0.01   # pixel filter = anti-aliasing (SMAA Ultra; `nosmaa` = aliased)
             # 2026-10-13 20:05 photo hd self landscape: Blender OOM-killed at 7.2 GB RSS (15 GB box, client running) after
             # 8 min. Tiles bound the film/denoise buffers; look.py's retry after a kill also sets GT_TEX_LIMIT
             sc.cycles.use_auto_tile = True; sc.cycles.tile_size = int(os.environ.get("GT_TILE", "1024"))
         if os.environ.get("GT_TEX_LIMIT"): sc.cycles.texture_limit_render = os.environ["GT_TEX_LIMIT"]
         log("cycles device", sc.cycles.device)
+        if os.environ.get("GT_BVH_COMPACT") == "1":   # Embree compact BVH: less memory for the ~3 M-triangle holdout world
+            for k_, v_ in (("debug_use_compact_bvh", True), ("debug_bvh_type", "STATIC_BVH")):
+                try: setattr(sc.cycles, k_, v_)
+                except Exception as e: log("bvh option", k_, e)
     elif engine == "WORKBENCH":  # flat preview: textures, no lighting model (cheapest; CPU/llvmpipe friendly)
         sc.render.engine = "BLENDER_WORKBENCH"; sc.display.shading.color_type = "TEXTURE"; sc.display.shading.light = "STUDIO"
     else:
@@ -502,6 +566,10 @@ def setup_dof():
         if cam: cam.data.dof.use_dof = False
         return
     bpy.context.view_layer.update()
+    # Oct 19 2026 Warehouse 21: under a roof the background dancers, walls and signs were blurred soft vs David's crisp viewer photo;
+    # indoors depth of field is off unless GT_INDOOR_DOF=1
+    if os.environ.get("GT_INDOOR_DOF", "0") != "1" and under_roof():
+        cam.data.dof.use_dof = False; log("dof off: under a roof (GT_INDOOR_DOF=1 keeps it)"); return
     o = cam.matrix_world.translation; t = Vector(cam.get("focus_target", (0, 0, 0))); d = t - o
     hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), o + d.normalized() * 0.05, d.normalized(), distance=d.length + 2)
     S = max(0.1, (loc - o).length if hit else d.length)
@@ -548,6 +616,103 @@ def retint_sun(vy):
     L.data.energy = (1.2 * lum(c) * pk / max(lum(ca), 1e-3) if os.environ.get("GT_SUN_LUMKEEP", "1") == "1" else 1.2 * pk) * GT_SUN_MUL   # keep the sun's luminance (hue only) unless LUMKEEP=0
     log("sun tint", [round(x, 3) for x in ca], "energy", round(L.data.energy, 3), "vy", round(vy, 3))
 
+# the viewer (pipeline.cpp renderDeferredLighting) draws every in-world light with size = prim light radius x 1.5 and falloff =
+# prim falloff x DEFERRED_LIGHT_FALLOFF (0.5); mesh.json carries the raw prim values. Without these a radius-10 stage spot reached 10 m, not 15 m,
+# i.e. not the floor 10-12 m below it, and every light's falloff was twice too steep (Oct 18 2026: the club's 33 spotlights lit nothing).
+LIGHT_RADIUS_SCALE = float(os.environ.get("GT_LIGHT_RADIUS_SCALE", "1.5")); LIGHT_FALLOFF_FUDGE = float(os.environ.get("GT_LIGHT_FALLOFF_FUDGE", "0.5"))
+
+SPOT_SHADOWS = 2   # LL: RenderShadowDetail 2 gives shadows to at most two projectors (mShadowSpotLight[2]); point lights never cast any
+
+def light_shadow_ids(lights, me, n=None, mode=None):
+    """ids of the lights that cast shadows, the way the viewer does: none of the point lights and only the n nearest projectors
+    (the rest shine through their own fixture housings, walls and trusses; Cycles shadowing them blacked out ~every stage spot).
+    GT_LIGHT_SHADOW=all restores the old every-light-shadows behaviour"""
+    mode = mode or os.environ.get("GT_LIGHT_SHADOW", "sl")
+    if mode == "all": return {id(l) for l in lights}
+    n = SPOT_SHADOWS if n is None else n
+    near = sorted((l for l in lights if l.get("proj")), key=lambda l: sum((a - b) ** 2 for a, b in zip(l["pos"], me)))
+    return {id(l) for l in near[:n]}
+
+# Light effects (Oct 18 2026, David: "as good as possible"): SL draws no beam for a spot light and only the fixture's own tiny glow for a
+# lamp, so stage lights were small dots. Camera-only emissive geometry (invisible to every light / shadow / reflection ray, so it lights
+# nothing): a soft cone for each projector / spot (apex at the light, half angle = fov/2 capped, fading along the throw and toward the cone's
+# silhouette) and a soft halo ball at each lamp. Cycles surface shaders only (no volume: no memory, ~free render time); base / single pass
+# only, never an avatar batch layer. GT_LIGHT_FX=0 off, GT_LIGHT_BEAM / GT_LIGHT_HALO strengths (0 = that part off).
+LIGHT_FX = os.environ.get("GT_LIGHT_FX", "1") != "0" and LAYER != "batch"
+LIGHT_BEAM = float(os.environ.get("GT_LIGHT_BEAM", "0.05")); LIGHT_HALO = float(os.environ.get("GT_LIGHT_HALO", "3.0"))
+BEAM_MAX_HALF = math.radians(float(os.environ.get("GT_LIGHT_BEAM_MAX_DEG", "28")))
+
+def beam_params(l):
+    """(half angle rad, length m, radiance) of a projector's visible cone, or None: wide fill projectors (fov > 120 deg, the ambiance ones) and dim ones get none"""
+    pj = l.get("proj")
+    if not pj or LIGHT_BEAM <= 0: return None
+    fov = float(pj.get("fov") or 0)
+    if fov > 2.1 or l.get("intensity", 0) < 0.15: return None
+    half = min(max(fov / 2, 0.05), BEAM_MAX_HALF)
+    length = min(max(l.get("radius", 10) * 1.5, 1.0), 18.0)
+    return half, length, LIGHT_BEAM * min(l["intensity"], 1.5) * (0.35 / max(math.tan(half), 0.2))
+
+def halo_params(l):
+    """(radius m, radiance) of a lamp's glow ball, or None"""
+    if LIGHT_HALO <= 0 or l.get("intensity", 0) < 0.15 or max(l["color"]) < 0.05: return None
+    return 0.18 + 0.02 * min(l.get("radius", 2), 10), LIGHT_HALO * min(l["intensity"], 1.5)
+
+def fx_material(name, col, k, beam_len=None, power=2.0):
+    """Add(Transparent, Emission(col, k x profile)): profile = |N.V|^2 (thick middle, soft silhouette) x, for a beam, apex fade-in x throw fade-out"""
+    m = bpy.data.materials.new(name); m.use_nodes = True; nt = m.node_tree; nt.nodes.clear()
+    def n(t): return nt.nodes.new(t)
+    def mm(kind, a, b, clamp=False):
+        x = n("ShaderNodeMath"); x.operation = kind; x.use_clamp = clamp
+        for i, v in enumerate((a, b)):
+            if isinstance(v, (int, float)): x.inputs[i].default_value = v
+            else: nt.links.new(v, x.inputs[i])
+        return x.outputs[0]
+    g = n("ShaderNodeNewGeometry"); dt = n("ShaderNodeVectorMath"); dt.operation = "DOT_PRODUCT"
+    nt.links.new(g.outputs["Normal"], dt.inputs[0]); nt.links.new(g.outputs["Incoming"], dt.inputs[1])
+    prof = mm("POWER", mm("ABSOLUTE", dt.outputs["Value"], 0.0), power)
+    if beam_len:
+        tc = n("ShaderNodeTexCoord"); sp = n("ShaderNodeSeparateXYZ"); nt.links.new(tc.outputs["Object"], sp.inputs[0])
+        s = mm("MULTIPLY", sp.outputs["Z"], -1.0 / beam_len, True)
+        fin = mm("MINIMUM", mm("MULTIPLY", s, 12.5), 1.0)                  # apex fade-in over the first 8% (no bright point at the lamp)
+        fout = mm("POWER", mm("SUBTRACT", 1.0, s, True), 1.5)
+        prof = mm("MULTIPLY", prof, mm("MULTIPLY", fin, fout))
+    cd = n("ShaderNodeCameraData")   # nothing glows in the camera's face: fade in over 1.5 .. 5 m (a cone whose apex is beside the lens would tint the whole frame)
+    prof = mm("MULTIPLY", prof, mm("DIVIDE", mm("SUBTRACT", cd.outputs["View Distance"], 1.5, False), 3.5, True))
+    em = n("ShaderNodeEmission"); em.inputs["Color"].default_value = (*col, 1.0); nt.links.new(mm("MULTIPLY", prof, k), em.inputs["Strength"])
+    tr = n("ShaderNodeBsdfTransparent"); ad = n("ShaderNodeAddShader"); out = n("ShaderNodeOutputMaterial")
+    nt.links.new(tr.outputs[0], ad.inputs[0]); nt.links.new(em.outputs[0], ad.inputs[1]); nt.links.new(ad.outputs[0], out.inputs["Surface"])
+    return m
+
+def fx_object(name, me, mat, loc, rot=None):
+    me.materials.append(mat); o = bpy.data.objects.new(name, me); o.location = loc
+    if rot is not None: o.rotation_euler = rot
+    for a in ("visible_diffuse", "visible_glossy", "visible_transmission", "visible_volume_scatter", "visible_shadow"): setattr(o, a, False)
+    bpy.context.scene.collection.objects.link(o); return o
+
+INDOOR_BEAM = os.environ.get("GT_INDOOR_BEAM", "0")   # beam strength under a roof ("" = GT_LIGHT_BEAM): Oct 19 2026 Warehouse 21
+
+def light_fx(lights):
+    """beams: in a roofed club 30+ stage spots drew 18 m emissive cones across the whole room; summed and blurred by depth of
+    field they laid a pale grey veil over the walls and signs (David: "washed out, blurry grey-white" vs his crisp dark brick).
+    The viewer draws no light volumes; under a roof the beams use GT_INDOOR_BEAM (default 0 = none); halos stay"""
+    global LIGHT_BEAM
+    if INDOOR_BEAM != "" and LIGHT_BEAM > 0 and under_roof(): LIGHT_BEAM = float(INDOOR_BEAM)
+    from mathutils import Vector
+    import bmesh; nb = nh = 0; seg = 24
+    for l in lights:
+        col = light_linear(l["color"]); bp = beam_params(l)
+        if bp:
+            half, length, k = bp; r = length * math.tan(half)
+            me = bpy.data.meshes.new("beam")
+            vs = [(0, 0, 0)] + [(r * math.cos(2 * math.pi * i / seg), r * math.sin(2 * math.pi * i / seg), -length) for i in range(seg)]
+            me.from_pydata(vs, [], [(0, 1 + i, 1 + (i + 1) % seg) for i in range(seg)]); me.update()
+            fx_object("beam", me, fx_material("beam", col, k, length), l["pos"], Vector(l["proj"]["dir"]).to_track_quat("-Z", "Y").to_euler()); nb += 1
+        hp = halo_params(l)
+        if hp:
+            rad, k = hp; me = bpy.data.meshes.new("halo"); bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=rad); bm.to_mesh(me); bm.free()
+            fx_object("halo", me, fx_material("halo", col, k, None, 3.5), l["pos"]); nh += 1
+    log("light fx", "beams", nb, "halos", nh, "beam", LIGHT_BEAM, "halo", LIGHT_HALO)
+
 def eep(env):
     """Region EEP sky at export time (make_job.py): sun or, below the horizon, moon; sky colour as ambient; SL point lights."""
     sun = Vector(env["sun_dir"]).normalized(); night = sun.z < 0
@@ -571,27 +736,88 @@ def eep(env):
         # light on top filled the shadows twice. Keep a quarter for bounce / reflections
         bg.inputs["Strength"].default_value *= float(os.environ.get("GT_CLASSIC_WORLD", "0.1"))
     sky_backdrop(w, env, night)
+    shadow_ids = light_shadow_ids(M.get("lights", []), M.get("me") or [0, 0, 0])
+    boost = indoor_light_boost()
+    lights_ = []
     for l in M.get("lights", []):
+        lights_.append((l, 1.0, id(l) in shadow_ids))
+        a_ = float((l.get("proj") or {}).get("ambiance") or 0)
+        if PROJ_AMBIANCE > 0 and a_ > 0: lights_.append((l, PROJ_AMBIANCE * min(a_, 1.0), False))   # the projector's ambiance fill: unshadowed
+    for l, ek, shad in lights_:
         # SL point light, reimplemented from the LL viewer's deferred light shader: radiance = albedo x linear colour x
         # intensity x atten x N.L x 3.25/pi, atten = 2 (1 - clamp((d/radius + falloff) / (1 + falloff)))^2, zero past the
         # radius. Cycles: constant falloff (no inverse square), the curve on Light Path ray length (= distance);
         # 4 pi^2 cancels Cycles' point-light normalisation (calibrated: 1 W constant -> 1/(4 pi^2) on a white plane).
         pj = l.get("proj")
-        d = bpy.data.lights.new("sl", "SPOT" if pj else "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05
-        d.energy = 4 * math.pi ** 2 * 3.25 / math.pi; d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75)
+        d = bpy.data.lights.new("sl", "SPOT" if pj else "POINT"); d.color = light_linear(l["color"]); d.shadow_soft_size = 0.05; d.use_shadow = shad
+        d.energy = 4 * math.pi ** 2 * 3.25 / math.pi * float(os.environ.get("GT_PROJ_SCALE", "1") if pj else os.environ.get("GT_POINT_SCALE", "1")) * boost * ek; d.use_nodes = True; nt = d.node_tree; f = l.get("falloff", 0.75) * LIGHT_FALLOFF_FUDGE; radius = l["radius"] * LIGHT_RADIUS_SCALE
         def op(kind, a, b, clamp=False):
             n = nt.nodes.new("ShaderNodeMath"); n.operation = kind; n.use_clamp = clamp
             for i, v in enumerate((a, b)):
                 if isinstance(v, (int, float)): n.inputs[i].default_value = v
                 else: nt.links.new(v, n.inputs[i])
             return n.outputs[0]
-        x = op("DIVIDE", nt.nodes.new("ShaderNodeLightPath").outputs["Ray Length"], max(l["radius"], 0.01))
+        x = op("DIVIDE", nt.nodes.new("ShaderNodeLightPath").outputs["Ray Length"], max(radius, 0.01))
         k = op("SUBTRACT", 1.0, op("DIVIDE", op("ADD", x, f), 1 + f, clamp=True))
         fo = nt.nodes.new("ShaderNodeLightFalloff"); nt.links.new(op("MULTIPLY", op("POWER", k, 2.0), 2 * l["intensity"]), fo.inputs["Strength"])
         nt.links.new(fo.outputs["Constant"], nt.nodes["Emission"].inputs["Strength"])
         o = bpy.data.objects.new("sl", d); o.location = l["pos"]; sc.collection.objects.link(o)
         if pj: projector(d, o, pj, op)
+    if LIGHT_FX: light_fx(M.get("lights", []))
     log("eep", "night" if night else "day", "ambient", round(AMB, 4), "sun", [round(x, 2) for x in sun], "lights", len(M.get("lights", [])))
+
+INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "2"))   # 2026-10-19: 5 painted red/orange pools over the green-gray club floor vs David's reference; 2 + ambient 0.9 reads closer   # SL point/spot light energy x this when the camera is under a roof; 1 = off
+PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "1"))   # projector ambiance fill (x the direct term), 0 = off (the old behaviour)
+
+AVATAR_KEY = float(os.environ.get("GT_AVATAR_KEY", "18"))   # 2026-10-20 David: 25 -> 18 (4K Warehouse 21: her jeans/skin highlights near clipping). photo hd under a roof: avatar-only key light, W per m^2 of distance; 0 = off
+
+def avatar_key_light():
+    """2026-10-19, David's Warehouse 21 reference: in a dark club his viewer shows the dancers well lit (bright skin) against the dark
+    room, our path-traced club left them as dim as the floor. Under a roof (photo hd only) a soft, warm-neutral area light from above
+    the camera lights the AVATARS only (Cycles light linking: receivers and blockers = the avatar objects), so the room, floor and
+    walls keep their own lighting and no extra shadow falls on the world. Energy scales with the distance squared (same look at any
+    framing). Applies to every avatar in every layered pass (base: her; batches: theirs)."""
+    if not HD or AVATAR_KEY <= 0 or not sc.camera or not under_roof(): return
+    avs = [o for o in sc.objects if o.type == "MESH" and o.get("gt_avatar")]
+    if not avs: return
+    coll = bpy.data.collections.get("gt_avatar_key") or bpy.data.collections.new("gt_avatar_key")
+    for o in avs:
+        if o.name not in coll.objects: coll.objects.link(o)
+    cam = sc.camera.matrix_world.translation.copy()
+    tgt = Vector(M.get("me") or cam) + Vector((0.0, 0.0, 1.2))
+    d = max(1.0, (tgt - cam).length)
+    up = Vector((0.0, 0.0, 1.0)); fwd = (tgt - cam).normalized(); side = fwd.cross(up).normalized() if abs(fwd.z) < 0.99 else Vector((1.0, 0.0, 0.0))
+    pos = cam + up * (0.35 * d) - side * (0.25 * d)
+    L_ = bpy.data.lights.new("gt_avatar_key", "AREA"); L_.shape = "DISK"; L_.size = max(1.0, 0.5 * d)
+    L_.color = (1.0, 0.9, 0.8); L_.energy = AVATAR_KEY * d * d
+    o = bpy.data.objects.new("gt_avatar_key", L_); o.location = pos
+    o.rotation_euler = (tgt - pos).to_track_quat("-Z", "Y").to_euler(); sc.collection.objects.link(o)
+    try:
+        o.light_linking.receiver_collection = coll; o.light_linking.blocker_collection = coll
+    except AttributeError as e: log("avatar key light: no light linking", e)
+    log("avatar key light", round(L_.energy, 1), "W at", round(d, 2), "m on", len(avs), "avatar objects")
+
+def under_roof():
+    """camera under geometry within 80 m straight up (a club, a house): Oct 19 2026 Warehouse 21"""
+    # from her head (the light setup can run before the camera is placed: a camera ray from the origin found no roof)
+    at = Vector(M.get("me") or (sc.camera.location if sc.camera else (0, 0, 0))) + Vector((0.0, 0.0, 1.8))
+    hit = bool(sc.ray_cast(bpy.context.evaluated_depsgraph_get(), at, Vector((0.0, 0.0, 1.0)), distance=80.0)[0])
+    log("roof check at", [round(v, 1) for v in at], "roof" if hit else "open sky"); return hit
+
+def indoor_light_boost():
+    """Oct 19 2026, David at Warehouse 21: with the room's sky light cut to GT_INDOOR_AMB the SL lights (stage spots, neon, lamps)
+    must carry the scene as in his viewer photo (coloured pools on the floor and the dancers): x GT_INDOOR_LIGHT under a roof only,
+    so outdoor and daylight scenes are unchanged"""
+    if not HD or INDOOR_LIGHT == 1 or not under_roof(): return 1.0
+    log("indoor light boost", INDOOR_LIGHT); return INDOOR_LIGHT
+
+INDOOR_SAMPLES = int(os.environ.get("GT_INDOOR_SAMPLES", "96"))   # Cycles samples at least this under a roof (photo hd); 0 = off
+
+def indoor_samples():
+    """Oct 19 2026 Warehouse 21 floor: a dark room lit by dozens of coloured SL lights is noisy at the HD default 24 samples, and the
+    denoiser turned that noise into smooth red/green blotches that hid the concrete. Under a roof: at least GT_INDOOR_SAMPLES"""
+    if HD and INDOOR_SAMPLES > 0 and sc.render.engine == "CYCLES" and sc.cycles.samples < INDOOR_SAMPLES and under_roof():
+        log("indoor samples", sc.cycles.samples, "->", INDOOR_SAMPLES); sc.cycles.samples = INDOOR_SAMPLES
 
 def proj_spot(fov):
     """SL projector field of view (LightImage params.x, radians, full cone) -> (Blender spot_size, tan(half angle)) """
@@ -605,7 +831,7 @@ def projector(d, o, pj, op):
     from mathutils import Vector
     size, t = proj_spot(pj.get("fov")); d.spot_size = size; d.spot_blend = 0.1
     o.rotation_euler = Vector(pj["dir"]).to_track_quat("-Z", "Y").to_euler()
-    tp = tex_path(pj.get("tex"))
+    tp = tex_path(pj.get("tex")) if os.environ.get("GT_PROJ_NOTEX") != "1" else None   # GT_PROJ_NOTEX=1: diagnosis, plain coloured spot
     if not tp: return
     nt = d.node_tree; tc = nt.nodes.new("ShaderNodeTexCoord"); sp = nt.nodes.new("ShaderNodeSeparateXYZ"); nt.links.new(tc.outputs["Normal"], sp.inputs[0])
     z = op("MAXIMUM", op("MULTIPLY", sp.outputs["Z"], -1.0), 1e-4)
@@ -785,6 +1011,22 @@ def sky_hd(nt, co, sp, col, env, night):
         col = mixc(md, col, mc.outputs["Color"])
     return col
 
+MIST_ERODE = int(os.environ.get("GT_MIST_ERODE", "-1"))   # px; -1 = auto (1 px per 1080 of the frame's short side, at least 1), 0 = off
+HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: its ONE per-layer fog fraction is written next to the layer
+
+INDOOR_HAZE = os.environ.get("GT_INDOOR_HAZE", "0.6")   # 2026-10-19: fixed at the old 0.6 so the brighter ambient adds no haze   # fog colour scale with the camera under a roof; "" = GT_INDOOR_AMB, 1 = old
+
+def indoor_haze():
+    """the haze in-scatter colour is sky light; under a roof (Warehouse 21) the far walls fogged to a pale grey-blue glow
+    (Oct 19 2026). Camera under geometry within 80 m straight up -> scale the fog colour (base and batch layers alike)"""
+    f = float(INDOOR_HAZE) if INDOOR_HAZE else INDOOR_AMB
+    if f >= 1: return 1.0
+    cam = sc.camera
+    if cam is None: return 1.0
+    hit = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(cam.location), Vector((0.0, 0.0, 1.0)), distance=80.0)[0]
+    log("indoor haze", "roof" if hit else "open sky", round(f, 3) if hit else 1.0)
+    return f if hit else 1.0
+
 def env_post(env):
     """photo hd: EEP scene gamma and distance haze (the viewer's atmospheric fog on far geometry).
     gamma: LL scaleSoftClip 1 - (1 - c)^gamma ~ Blender view gamma (1 = unchanged). Haze: transmittance
@@ -807,9 +1049,29 @@ def env_post(env):
             if isinstance(v, (int, float)): n.inputs[i].default_value = v
             else: L(v, n.inputs[i])
         return n.outputs[0]
-    ex = m("EXPONENT", m("MULTIPLY", rl.outputs["Mist"], -k * D), 0)
-    fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", rl.outputs["Mist"], 0.9999))
+    mist = rl.outputs["Mist"]; er_px = MIST_ERODE if MIST_ERODE >= 0 else max(1, round(min(sc.render.resolution_x, sc.render.resolution_y) / 1080))
+    if LAYER != "batch" and er_px > 0:
+        # the per-pixel mist of a pixel that is half hashed-alpha hair / anti-aliased edge and half far sky (or backdrop) is the MEAN of 0.0008 and 1.0,
+        # i.e. ~0.5 = 2000 m of haze on a surface 3 m away, and it is not denoised like the colour: every such pixel was fogged to the sky's pale
+        # lavender (the speckled hair, the fringe round the hair and the stage truss, Oct 18 2026). The nearest surface in a few pixels decides the
+        # fog instead (a minimum filter = erode): the blend of near + far is then fogged like the near one, the far one's own 1-2 px edge a hair less
+        er = nt.nodes.new("CompositorNodeDilateErode"); er.mode = "DISTANCE"; er.distance = -er_px; L(mist, er.inputs[0]); mist = er.outputs[0]
+    ex = m("EXPONENT", m("MULTIPLY", mist, -k * D), 0)
+    fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", mist, 0.9999))
     h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
+    s *= indoor_haze()
+    if LAYER == "batch":
+        # premultiplied RGBA of a holdout pass = avatars only, NO haze or sky colour in any pixel: the per-pixel mist at an anti-aliased or
+        # depth-of-field-blurred silhouette is a blend with the sky / the holdout in front (20-40x the avatar's own), and fogging with it painted a
+        # pale sky-blue fringe round every background avatar (Oct 18 2026). The Mist pass goes to a file; hd_render_hdr turns the SOLID
+        # pixels' mist into one fog fraction per layer (-haze.json) and look.py adds that haze when it composites (layers.alpha_over).
+        global HAZE
+        HAZE = (k, D, [c * s for c in h])
+        mdir = os.environ["GT_LAYER_NPY"][:-4] + "-mist"
+        fo = nt.nodes.new("CompositorNodeOutputFile"); fo.base_path = mdir; fo.format.file_format = "OPEN_EXR"; fo.format.color_depth = "32"
+        fo.file_slots[0].path = "mist"; L(rl.outputs["Mist"], fo.inputs[0])
+        L(rl.outputs["Image"], cp.inputs["Image"])
+        return
     mx = nt.nodes.new("CompositorNodeMixRGB"); L(fog, mx.inputs[0]); L(rl.outputs["Image"], mx.inputs[1]); mx.inputs[2].default_value = (*[c * s for c in h], 1)
     L(mx.outputs[0], cp.inputs["Image"])
 
@@ -1077,8 +1339,35 @@ def stand_in(o):
     log("stand-in", o.get("name"), o.get("dressed") or "no attachments")
     return lo, hi, [body, head]
 
+def layer_plan():
+    """base pass: which avatars the camera can see (their boxes projected with a margin) and how far from it; look.py batches them.
+    Written to <jobdir>/layer-plan.json"""
+    from bpy_extras.object_utils import world_to_camera_view
+    # the camera's matrix_world is only refreshed by a depsgraph update: without depth of field (which ray-casts first) it was still the
+    # origin and the plan put 0/85 avatars in view, a "nodof" crowd photo had nobody but her (Oct 19 2026)
+    bpy.context.view_layer.update()
+    cam = sc.camera; margin = float(os.environ.get("GT_LAYER_MARGIN", "0.2")); plan = []
+    verts = {}
+    for b in M["batches"]: verts[b["group"]] = verts.get(b["group"], 0) + b["nv"]
+    for o, fp in placed:
+        if not any(b["group"] == o["group"] and b["ni"] > 0 for b in M["batches"]) or o.get("placeholder"): continue
+        fl, ll, st = fp; zs = [fl] + ([ll] if ll is not None else [])
+        lo_z, hi_z = min(zs) - 0.6, max(zs) + 2.6
+        cs = [Vector((o["pos"][0] + dx, o["pos"][1] + dy, z)) for dx in (-0.7, 0.7) for dy in (-0.7, 0.7) for z in (lo_z, hi_z)]
+        pr = [world_to_camera_view(sc, cam, c) for c in cs]
+        front = [p for p in pr if p.z > 0.05]
+        vis = bool(front) and (len(front) < len(pr) or (min(p.x for p in front) <= 1 + margin and max(p.x for p in front) >= -margin
+                                                         and min(p.y for p in front) <= 1 + margin and max(p.y for p in front) >= -margin))
+        d = (Vector(o["pos"]) - cam.matrix_world.translation).length
+        plan.append({"group": o["group"], "name": o.get("name"), "cam_dist": round(d, 2), "visible": vis, "verts": verts.get(o["group"], 0)})
+    json.dump(plan, open(f"{jobdir}/layer-plan.json", "w"))
+    log("layer plan", len(plan), "avatars,", sum(1 for p in plan if p["visible"]), "in view")
+
 if kind == "scene":
-    build("scene"); build("far"); terrain(); water(); particle_systems()
+    build("scene"); memlog("scene built")
+    if LAYER != "batch": build("far")   # a batch pass only needs what can occlude / light its avatars: the backdrop is > 30 m out
+    terrain()
+    if LAYER != "batch": water(); particle_systems()
     g = M["me"]; av = os.environ.get("GT_AV")  # "x,y,yaw_deg": stand/sit her there, on the first surface below
     x, y, yaw = [float(v) for v in av.split(",")] if av else (g[0], g[1], M.get("me_yaw", -90.0))
     bpy.context.view_layer.update(); dg = bpy.context.evaluated_depsgraph_get()
@@ -1108,20 +1397,28 @@ if kind == "scene":
         c, s_ = math.cos(math.radians(yw)), math.sin(math.radians(yw))
         return Vector((at[0] + c * local[0] - s_ * local[1], at[1] + s_ * local[0] + c * local[1], at[2] + local[2]))
     heads = {"me": to_world(M["head"], (x, y, z0), yaw) + Vector((0, 0, 0.07))}
-    for o, fp in placed:
-        # attachments missing from the export -> bake-textured stand-in (not a nude mesh body)
-        if o.get("placeholder") or not any(b["group"] == o["group"] and b["ni"] > 0 for b in M["batches"]):
-            # 2026-10-13: never a silent grey block. HD photos omit an avatar whose attachments didn't arrive; looks keep the stand-in
-            if omit_stand_in(os.environ):
-                print(f"GT: avatar omitted {o.get('name', '?')} (attachments not loaded, dressed={o.get('dressed')})", flush=True); continue
-            print(f"GT: avatar stand-in {o.get('name', '?')} (attachments not loaded, dressed={o.get('dressed')})", flush=True)
-            olo, _, oobs = stand_in(o)
-        else:
-            near = math.dist(o["pos"][:2], (x, y)) < float(os.environ.get("GT_LINING_M", "8"))
-            olo, _, oobs = build(o["group"], o.get("bones"), lining=near)
-        at = (o["pos"][0], o["pos"][1], z0_of(fp[0], fp[1], olo[2], fp[2]))
-        for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
-        heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])
+    layer_real = []   # a batch pass: the objects of the avatars it draws (everything else becomes a holdout)
+    def add_others():
+        for o, fp in placed:
+            # attachments missing from the export -> bake-textured stand-in (not a nude mesh body)
+            if o.get("placeholder") or not any(b["group"] == o["group"] and b["ni"] > 0 for b in M["batches"]):
+                # 2026-10-13: never a silent grey block. HD photos omit an avatar whose attachments didn't arrive; looks keep the stand-in
+                if omit_stand_in(os.environ):
+                    print(f"GT: avatar omitted {o.get('name', '?')} (attachments not loaded, dressed={o.get('dressed')})", flush=True); continue
+                print(f"GT: avatar stand-in {o.get('name', '?')} (attachments not loaded, dressed={o.get('dressed')})", flush=True)
+                olo, _, oobs = stand_in(o)
+            elif LAYER and o["group"] not in LAYER_AVS:
+                # layered photo: this avatar is drawn in another pass; here a clay stand-in only casts its shadow (invisible to camera rays)
+                olo, _, oobs = stand_in(o)
+                for ob in oobs: ob.visible_camera = False
+            else:
+                near = math.dist(o["pos"][:2], (x, y)) < float(os.environ.get("GT_LINING_M", "8"))
+                olo, _, oobs = build(o["group"], o.get("bones"), lining=near)
+                if LAYER: layer_real.extend(oobs)
+            at = (o["pos"][0], o["pos"][1], z0_of(fp[0], fp[1], olo[2], fp[2]))
+            for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
+            heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])
+    if not LAYER: add_others()   # layered: after the camera is placed (the wall / DOF ray casts must not see avatars, same in every pass)
     if os.environ.get("GT_NOSKY") == "1":
         # lean look-around: flat horizon, one sun; no sky gradient / water reflections work
         bpy.ops.object.light_add(type="SUN", rotation=(math.radians(50), 0, math.radians(200))); bpy.context.object.data.energy = 2.5
@@ -1179,6 +1476,53 @@ if kind == "scene":
         c = [float(v) for v in cam.split(",")]; camera(c[0:3], c[3:6], c[6] if len(c) > 6 else 24, (960, 540))
     else:
         camera((g[0] - 1.5, g[1] - 7.5, g[2] + 2.2), (g[0] + 0.5, g[1] + 3.5, g[2] + 0.3), 24, (960, 540))
+    if LAYER:
+        # same sun tint + DOF focus in every pass, both measured before any avatar exists in the scene
+        if sc.camera and sc.camera.get("focus_target") is not None:
+            _d = Vector(sc.camera["focus_target"]) - sc.camera.matrix_world.translation; retint_sun((_d.normalized().z if _d.length > 1e-6 else 0.0) - 0.25)
+        memlog("before others"); setup_dof(); add_others(); memlog("others added")
+        if LAYER == "base":
+            layer_plan()
+            # same light-tree memory cost as the batch passes (5.6 GB at the 3 M-triangle world): emissive faces farther than
+            # GT_BASE_MIS_RADIUS metres from the camera (default 25) are not importance-sampled; nearer ones, and any material
+            # shared with a near object, keep full sampling so her own lighting stays as clean as before
+            R = float(os.environ.get("GT_BASE_MIS_RADIUS", "25")); cam = sc.camera.matrix_world.translation if sc.camera else None
+            if cam is not None and R > 0:
+                near_m = set(); far_m = set()
+                for ob in sc.objects:
+                    if ob.type != "MESH": continue
+                    bb = np.array([tuple(c) for c in ob.bound_box], np.float64); c_ = (bb.min(0) + bb.max(0)) / 2
+                    (near_m if float(np.linalg.norm(c_ - np.array(cam))) - float(np.linalg.norm(bb.max(0) - bb.min(0))) / 2 < R else far_m).update(ob.data.materials)
+                n_ = 0
+                for m_ in far_m - near_m:
+                    if hasattr(m_.cycles, "emission_sampling"): m_.cycles.emission_sampling = "NONE"; n_ += 1
+                log("layer base: emission sampling off on", n_, "far materials of", len(far_m | near_m))
+        else:
+            sc.render.film_transparent = True
+            keep = set(layer_real)
+            # Cycles "Updating Lights" builds a light-tree entry per emissive triangle (fullbright faces): +3.5 GB of the ~5 GB peak with
+            # the 3 M-triangle world. A holdout's emission still lights the avatars (BSDF sampling), it just isn't importance-sampled.
+            if os.environ.get("GT_HOLD_EMIT_MIS", "0") != "1":
+                real_mats = {m for ob in keep for m in ob.data.materials}
+                for m_ in bpy.data.materials:
+                    if m_ not in real_mats and hasattr(m_.cycles, "emission_sampling"): m_.cycles.emission_sampling = "NONE"
+            for ob in sc.objects:
+                if ob.type == "MESH" and ob not in keep and ob.visible_get() and getattr(ob, "visible_camera", True): ob.is_holdout = True
+            log("layer batch", sorted(LAYER_AVS), "holdout world")
+    avatar_key_light()
+    if os.environ.get("GT_DEBUG_PROJ"):   # diagnosis: where the SL lights and glowing / fullbright faces land in the frame (pixels, y down)
+        bpy.context.view_layer.update()
+        from bpy_extras.object_utils import world_to_camera_view
+        W_, H_ = sc.render.resolution_x, sc.render.resolution_y; out = {"lights": [], "glow": []}
+        def px(p):
+            v = world_to_camera_view(sc, sc.camera, Vector(p)); return [round(v.x * W_), round((1 - v.y) * H_), round(v.z, 1)]
+        for o_ in sc.objects:
+            if o_.type == "LIGHT": out["lights"].append({"type": o_.data.type, "px": px(o_.location), "color": [round(c, 2) for c in o_.data.color], "spot": round(math.degrees(o_.data.spot_size), 1) if o_.data.type == "SPOT" else None})
+        for b_ in M["batches"]:
+            if b_["group"] in ("scene", "far") and ((b_.get("glow") or 0) > 0 or b_.get("fullbright")) and b_["nv"]:
+                P_ = arrays(b_)[0].reshape(-1, 3); c_ = (P_.min(0) + P_.max(0)) / 2
+                out["glow"].append({"px": px(c_), "nv": b_["nv"], "glow": b_.get("glow"), "fb": bool(b_.get("fullbright")), "ext": [round(float(e), 2) for e in P_.max(0) - P_.min(0)], "rgba": [round(c, 2) for c in b_["rgba"]], "tex": b_["tex"][:8]})
+        json.dump(out, open(os.environ["GT_DEBUG_PROJ"], "w"))
 else:
     lo, hi, _ = build("avatar", M.get("bones"))
     # face: the mHead joint (base of the skull) + ~7 cm up to the eyes; older mesh.json: from the avatar's top
@@ -1224,7 +1568,7 @@ def hd_render_hdr(png):
     PNG = Firestorm's tonemap/exposure/sRGB pass on it (hdr_post.firestorm_ldr)"""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import hdr_post
     exr = png[:-4] + ".exr"; im = sc.render.image_settings
-    im.file_format = "OPEN_EXR"; im.color_mode = "RGB"; im.color_depth = "32"; im.exr_codec = "ZIP"
+    im.file_format = "OPEN_EXR"; im.color_mode = "RGBA" if LAYER == "batch" else "RGB"; im.color_depth = "32"; im.exr_codec = "ZIP"
     sc.render.filepath = exr
     gexr = None
     if GLOW_ON:
@@ -1244,18 +1588,18 @@ def hd_render_hdr(png):
     # outside the kept rows) and stitches them: that end-of-render spike drops to ~1/n. look.py picks n from free memory.
     bands = max(1, int(os.environ.get("GT_HD_BANDS", "1") or 1))
     W_, H_ = sc.render.resolution_x, sc.render.resolution_y
-    rgb = glow = None; t = time.time()
+    rgb = glow = mist = None; t = time.time()
     for y0, y1 in band_rows(H_, bands):
         if bands > 1:
             lo, hi = max(0, y0 - BAND_OVERLAP), min(H_, y1 + BAND_OVERLAP)
             sc.render.use_border = True; sc.render.use_crop_to_border = False
             sc.render.border_min_x, sc.render.border_max_x = 0.0, 1.0
             sc.render.border_min_y, sc.render.border_max_y = lo / H_, hi / H_
-        bpy.ops.render.render(write_still=True)
+        indoor_samples(); memlog("render start"); bpy.ops.render.render(write_still=True); memlog("render done")
         img = bpy.data.images.load(exr); w, h = img.size; px = np.empty(w * h * 4, np.float32); img.pixels.foreach_get(px)
         bpy.data.images.remove(img)
-        if rgb is None: rgb = np.zeros((h, w, 3), np.float32)
-        rgb[y0:y1] = px.reshape(h, w, 4)[y0:y1, :, :3]; del px     # Blender rows bottom-up, like border_min_y
+        if rgb is None: rgb = np.zeros((h, w, 4 if LAYER else 3), np.float32)
+        rgb[y0:y1] = px.reshape(h, w, 4)[y0:y1, :, :(4 if LAYER else 3)]; del px     # Blender rows bottom-up, like border_min_y
         if gexr:
             import glob, shutil
             gf = sorted(glob.glob(gexr + "/glow*.exr"))
@@ -1265,7 +1609,27 @@ def hd_render_hdr(png):
                 if glow is None: glow = np.zeros((h, w, 3), np.float32)
                 glow[y0:y1] = gp.reshape(h, w, 4)[y0:y1, :, :3]; del gp
             shutil.rmtree(gexr, ignore_errors=True)
+        if LAYER == "batch" and HAZE:
+            import glob
+            mf = sorted(glob.glob(os.environ["GT_LAYER_NPY"][:-4] + "-mist/mist*.exr"))
+            if mf:
+                mi = bpy.data.images.load(mf[0]); mp = np.empty(w * h * 4, np.float32); mi.pixels.foreach_get(mp); bpy.data.images.remove(mi)
+                if mist is None: mist = np.zeros((h, w), np.float32)
+                mist[y0:y1] = mp.reshape(h, w, 4)[y0:y1, :, 0]; del mp
     secs = round(time.time() - t, 1)
+    if LAYER:   # layered photo: scene-linear RGBA (premultiplied; base alpha 1) + glow for look.py to composite, tonemap there
+        npy = os.environ["GT_LAYER_NPY"]; rgba = rgb.reshape(h, w, 4)
+        if LAYER == "base": rgba[..., 3] = 1.0
+        elif HAZE and mist is not None:
+            if os.environ.get("GT_LAYER_DEBUG_RAW"): np.save(npy[:-4] + "-pre.npy", rgba); np.save(npy[:-4] + "-mist.npy", mist)   # diagnosis
+            sel = rgba[..., 3] >= 0.9; k_, D_, col_ = HAZE; m_ = float(np.median(mist[sel])) if sel.any() else 1.0   # == layers.layer_fog
+            fog_ = 0.0 if m_ >= 0.9999 else float(1.0 - np.exp(-k_ * D_ * m_))
+            json.dump({"fog": fog_, "col": [float(c) for c in col_]}, open(npy[:-4] + "-haze.json", "w")); log("layer haze fog", round(fog_, 4), "solid mist", round(m_, 4))
+        import shutil; shutil.rmtree(npy[:-4] + "-mist", ignore_errors=True)
+        np.save(npy, rgba)
+        if glow is not None: np.save(npy[:-4] + "-glow.npy", glow)
+        log("layer raw", LAYER, npy, "alpha mean", round(float(rgba[..., 3].mean()), 4), "render seconds", secs)
+        log("render seconds", secs, png); return
     if bands > 1:   # the stitched scene-linear master replaces the last band's EXR
         sc.render.use_border = False; log("hd bands", bands)
         ex = bpy.data.images.new("exr-master", W_, H_, alpha=True, float_buffer=True); ex.colorspace_settings.name = "Linear Rec.709"
@@ -1312,9 +1676,9 @@ for i, v in enumerate(views):
     else:
         if i: set_view(v)
         sc.render.filepath = out if len(views) == 1 else re.sub(r"\.(jpg|png)$", rf"-{i}.\1", out)
-    if sc.camera and sc.camera.get("focus_target") is not None:
+    if sc.camera and sc.camera.get("focus_target") is not None and not LAYER:
         _d = Vector(sc.camera["focus_target"]) - sc.camera.matrix_world.translation; retint_sun((_d.normalized().z if _d.length > 1e-6 else 0.0) - 0.25)   # the centre of the frame's lower half (the deck / ground she is on), not the subject itself
-    setup_dof()
+    if not LAYER: setup_dof()
     if HD and sc.render.filepath.lower().endswith(".png"):
         hd_render_hdr(sc.render.filepath); continue
-    t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)
+    indoor_samples(); t = time.time(); bpy.ops.render.render(write_still=True); log("render seconds", round(time.time() - t, 1), sc.render.filepath)

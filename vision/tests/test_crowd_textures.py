@@ -53,3 +53,13 @@ def test_crowd_drop_order_farthest_first_never_hers_or_scene():
     assert order[2] == T % 3             # shared texture ranks by its nearest wearer (5 m)
     assert T % 1 not in order and T % 2 not in order  # hers, scene
     assert T % 6 not in order            # wearer without a position: kept
+
+
+def test_crowd_bias_cap_halves_per_bias_step_never_under_64():
+    """photo hd memory bias also shrinks other avatars' outfits (2026-10-18: 15 avatars within 6 m x 2048 px was 24 GB the
+    scene-only bias could not touch); below bias 1 nothing changes (quick looks never use the bias)"""
+    f = handler.crowd_bias_cap
+    assert f(2048, 0) == 2048 and f(2048, 0.5) == 2048
+    assert f(2048, 1.5) == 1024 and f(2048, 2) == 1024 and f(2048, 2.5) == 512 and f(2048, 5) == 128
+    assert f(256, 5) == 64 and f(128, 7) == 64 and f(64, 5) == 64   # floor 64
+    assert f(100, 1.5) <= 100

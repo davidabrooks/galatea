@@ -47,6 +47,14 @@
     <Compile Include="../galatay-text/AttachTrack.cs" Link="Core/AttachTrack.cs" />
     <Compile Include="../galatay-text/WearOps.cs" Link="Core/WearOps.cs" />
     <Compile Include="../galatay-text/Wardrobe.cs" Link="Core/Wardrobe.cs" />
+    <Compile Include="../galatay-text/Rlv.cs" Link="Core/Rlv.cs" />
+    <Compile Include="../galatay-text/RlvPlace.cs" Link="Core/RlvPlace.cs" />
+    <Compile Include="../galatay-text/Leash.cs" Link="Core/Leash.cs" />
+    <Compile Include="../galatay-text/CofPurge.cs" Link="Core/CofPurge.cs" />
+    <Compile Include="../galatay-text/BodyReattach.cs" Link="Core/BodyReattach.cs" />
+    <Compile Include="../galatay-text/VAuto.cs" Link="Core/VAuto.cs" />
+    <Compile Include="../galatay-text/AlphaFollow.cs" Link="Core/AlphaFollow.cs" />
+    <Compile Include="../galatay-text/CollarStealth.cs" Link="Core/CollarStealth.cs" />
     <Compile Include="../galatay-text/AutoFollow.cs" Link="Core/AutoFollow.cs" />
     <Compile Include="../galatay-text/OfferStore.cs" Link="Core/OfferStore.cs" />
     <Compile Include="../galatay-text/ImGuard.cs" Link="Core/ImGuard.cs" />
@@ -56,6 +64,7 @@
     <Compile Include="../galatay-text/ImTarget.cs" Link="Core/ImTarget.cs" />
     <Compile Include="../galatay-text/ChatGuard.cs" Link="Core/ChatGuard.cs" />
     <Compile Include="../galatay-text/FastChat.cs" Link="Core/FastChat.cs" />
+    <Compile Include="../galatay-text/FastGuard.cs" Link="Core/FastGuard.cs" />
     <Compile Include="../galatay-text/FastOutfit.cs" Link="Core/FastOutfit.cs" />
     <Compile Include="../galatay-text/SlDns.cs" Link="Core/SlDns.cs" />
     <Compile Include="../galatay-text/InstantReplies.cs" Link="Core/InstantReplies.cs" />
@@ -84,7 +93,12 @@
     <Compile Include="../galatay-text/AndroidWet.cs" Link="Core/AndroidWet.cs" />
     <Compile Include="../galatay-text/FriendWatch.cs" Link="Core/FriendWatch.cs" />
     <Compile Include="../galatay-text/VisitorArrival.cs" Link="Core/VisitorArrival.cs" />
+    <Compile Include="../galatay-text/ParcelWatch.cs" Link="Core/ParcelWatch.cs" />
+    <Compile Include="../galatay-text/AdultRedress.cs" Link="Core/AdultRedress.cs" />
+    <Compile Include="../galatay-text/PoseRules.cs" Link="Core/PoseRules.cs" />
     <Compile Include="../galatay-text/Pay.cs" Link="Core/Pay.cs" />
+    <Compile Include="../galatay-text/StopAnims.cs" Link="Core/StopAnims.cs" />
+    <Compile Include="../galatay-text/InvDump.cs" Link="Core/InvDump.cs" />
     <Compile Include="../galatay-text/SceneExport.cs" Link="Core/SceneExport.cs" />
     <Compile Include="../galatay-text/Look.cs" Link="Core/Look.cs" />
     <Compile Include="../galatay-text/TheV.cs" Link="Core/TheV.cs" />
@@ -102,6 +116,9 @@
     <Compile Include="../galatay-text/FastLayers.cs" Link="Core/FastLayers.cs" />
     <Compile Include="../galatay-text/RedressFast.cs" Link="Core/RedressFast.cs" />
     <Compile Include="../galatay-text/SeatStandOut.cs" Link="Core/SeatStandOut.cs" />
+    <Compile Include="../galatay-text/ClearFloor.cs" Link="Core/ClearFloor.cs" />
+    <Compile Include="../galatay-text/MaturityPref.cs" Link="Core/MaturityPref.cs" />
+    <Compile Include="../galatay-text/TeleportDetail.cs" Link="Core/TeleportDetail.cs" />
     <Compile Include="../galatay-text/WanderRest.cs" Link="Core/WanderRest.cs" />
     <Compile Include="../galatay-text/LookAt.cs" Link="Core/LookAt.cs" />
     <Compile Include="../galatay-text/TextureCmds.cs" Link="Core/TextureCmds.cs" />

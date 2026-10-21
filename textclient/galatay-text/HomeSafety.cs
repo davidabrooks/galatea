@@ -81,8 +81,9 @@ public static partial class Program
         || OutfitZoneFor("Peronaut", target, false) == "beach";
     // pure: "none" | "change-here" (inside: change in the living room) | "detour-indoors" (outside: walk back into the living
     // room first, change there, then on to the beach). Already in the beach zone: "none" (the zone safety net changes her).
-    internal static string IndoorBikiniPlan(bool beachBound, bool bikiniWorn, bool indoorsNow, bool inBeachZoneNow) =>
-        !beachBound || bikiniWorn ? "none" : indoorsNow ? "change-here" : "detour-indoors";   // 2026-10-13: on the beach too: up to the bedroom, never in place
+    // 2026-10-16: swapSkipped (BikiniSwapSkipped, e.g. android body worn) = "none": no detour for a change that will not happen
+    internal static string IndoorBikiniPlan(bool beachBound, bool bikiniWorn, bool indoorsNow, bool inBeachZoneNow, bool swapSkipped = false) =>
+        !beachBound || bikiniWorn || swapSkipped ? "none" : indoorsNow ? "change-here" : "detour-indoors";   // 2026-10-13: on the beach too: up to the bedroom, never in place
     // pure: the clothed outfit to come back to (never the bikini itself)
     internal static string BeachRememberChoice(string lastNamed, string beachRemembered)
     {
@@ -115,10 +116,11 @@ public static partial class Program
     static async Task BikiniIndoorsIfBeachBound(Graph g, Vector3 target, string seatLevel, string what, CancellationToken ct, bool manual = false)
     {
         var me = client.Self.SimPosition;
-        var plan = IndoorBikiniPlan(BeachBound(target, seatLevel), BikiniWorn(), IndoorsAtHome(me), OutfitZoneFor("Peronaut", me, false) == "beach");
+        var plan = IndoorBikiniPlan(BeachBound(target, seatLevel), BikiniWorn(), IndoorsAtHome(me), OutfitZoneFor("Peronaut", me, false) == "beach", BikiniSwapSkippedNow());
         if (plan == "none")
         {
-                        return;
+            if (BeachBound(target, seatLevel) && !BikiniWorn() && BikiniSwapSkippedNow()) WLog($"beach-bound ({what}): no bikini change planned (android body worn): straight to the target, no bedroom detour");
+            return;
         }
         WLog($"beach-bound ({what}) from {(plan == "detour-indoors" ? "outside the house" : "inside")} (at {P3(me)}): to the {BikiniChangePlace(g)} to change first");
         if (!await WalkToChangeSpot(g, "to put the bikini on", ct, manual)) return;

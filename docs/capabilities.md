@@ -1,0 +1,253 @@
+# What Galatea can do, and how to drive it
+
+A guide to the Second Life text client (`textclient/galatay-text/`, LibreMetaverse) and its MCP connector (`textclient/galatay-mcp/`). It says what each area does, the command syntax, and where the settings live. It is not a full command reference: **`text-galatay.sh cmd help`** prints every command, and the code is the authority. The README has the architecture, standing rules and per-feature history; [TESTING.md](../TESTING.md) covers tests.
+
+Conventions:
+- **CLI**: `text-galatay.sh cmd "<command>"` (the wrapper sends one line over a Unix socket to the running client). Exit codes: 0 ok, 1 client not running, 3 socket unreachable, 10 a normal "skipped:" reply (the IM duplicate guard), 2 usage. The wrapper gives up after 100 s (`GT_CMD_TIMEOUT_S`); the client itself answers after at most 85 s (`GT_CMD_REPLY_CAP_S`), and a late result is logged as `[cmd-late]`.
+- **MCP tools**: the same core, exposed as tools (`login`, `say`, `walk_to`, ...). Each tool returns JSON `{"ok": bool, "result": "..."}`. Only the tools listed under [MCP connector](#mcp-connector-tools) exist as MCP tools; everything else is CLI only.
+- Paths: the client is deployed under `/home/box/viewers/` (`text-galatay.sh`, `textclient/app/`, `textclient/run/`, `textclient/routes/`); logs and images go under `/workspace/secondlife/`. Nothing here needs a password on the command line: the client reads the account password itself from the box secret store.
+
+## Contents
+[Starting, stopping, supervisor](#starting-stopping-supervisor-autostart) · [MCP connector](#mcp-connector-tools) · [Chat and IMs](#chat-and-ims) · [Seeing the surroundings](#seeing-the-surroundings) · [Moving](#moving) · [Sitting, poses](#sitting-and-poses) · [Following](#following) · [Outfits and attachments](#outfits-and-attachments) · [Touch and dialogs](#touch-and-dialogs) · [Inventory](#inventory-and-profile) · [Photos and renders](#photos-and-renders) · [Textures](#texture-vision) · [Voice](#voice) · [Teleports](#teleports-and-offers) · [Webhook and events](#webhook-and-events) · [Keeping awake](#keeping-the-computer-awake) · [Logs](#logs-and-log-pruning) · [Impacted tests](#running-only-the-impacted-tests-development)
+
+## Starting, stopping, supervisor, autostart
+```
+text-galatay.sh start | stop | status | cmd "<command>" | log [n] | check
+```
+- `start` runs the client under a **relaunch supervisor**. If the client exits with a non-zero code (for example 75 from the in-client watchdog or a network timeout) or is killed, it is relaunched after a backoff of 15, 30, 60, 120, then 300 s; it gives up after more than 12 relaunches in an hour (`GT_MAX_RELAUNCH_HOUR`). A hang monitor kills the client if `run/heartbeat` is stale for more than 120 s on two checks. A clean exit (code 0, from `logout`) ends the loop. If another login of the same account kicks her, the supervisor waits 5 minutes before relaunching.
+- `start` refuses if a `galatay-text` process already exists outside its supervisor/pid file, and is idempotent otherwise (one start at a time, under a lock).
+- **Deliberate stop**: `text-galatay.sh stop`, and the client's own `logout` command, write the marker `textclient/run/deliberate-stop`. While it exists, nothing restarts her. Only a manual `text-galatay.sh start` clears it. It survives a box reboot because it lives under `/home/box`.
+- **Autostart at boot**: `galatay-autostart.sh` (launched detached by `galatay-mcp.sh` when the box brings the MCP connector up) runs `start` once per boot unless the marker exists, the client is already up, or Firestorm is running; it waits for the network first. Log: `/workspace/secondlife/textclient.autostart.log`.
+- `status` shows the supervisor, the marker, and the client's `status` line.
+- Login location defaults to home (`GT_START=home`, set in `text-galatay.sh`).
+- Deploying a new C# build means copying the built dlls from `textclient/app-staging/` into `app/` and restarting (see README, `build-all.sh`); Python-only changes (`vision/`) take effect on the next render with no restart.
+
+## MCP connector tools
+The connector (`galatay-mcp.sh`) is the same client core as a stdio MCP server. Tools:
+
+| Area | Tools |
+|---|---|
+| Session | `login`, `logout`, `status` (state, region, position, seat, follow target, pending teleport, memory), `poll_events`, `webhook_test`, `webhook_status` |
+| Talking | `say`, `im` (`to`, `text`, optional `headsup`, `re`) |
+| Looking | `nearby` (`radius`, `filter`, `max`), `object_info` (`uuid`) |
+| Moving | `walk_to` (x, y, z), `walk` (metres), `turn` (degrees), `stop`, `teleport` (region, x, y, z), `follow` (`name` or `off`, optional `distance_m`) |
+| Sitting | `sit` (object uuid), `stand` |
+| Teleport offers | `accept_teleport`, `decline_teleport`, `auto_accept_teleports` (`on`) |
+| Profile | `get_profile`, `set_profile` (About text only, backs up the old profile first) |
+| Voice | `voice` (`action` = on, off, status, tail, wake) |
+| Dialogs | `touch_object` (`object_uuid`; opens an object's menu, e.g. vendor redelivery); `dialog_reply` (`button`; refuses anything that looks like payment) |
+| Display name | `display_name` (no args = read; `new_name` = set via the SetDisplayName cap, once a week; quote characters refused) |
+| Inventory / unpacking | `inv_find`, `inv_ls`, `inv_dump` (read-only; perms + readable script/notecard text saved to scripts/thirdparty/); `rez_item` (my Object item, 1.5 m ahead); `offer_allow` (accept one give from my own named box); `take_object` (take/delete my own object) |
+| Outfits | `routes/_always-wear.txt` (same format as `_keep-attached.txt`): listed items (the N° 9 collar) are re-attached by EVERY outfit wear, Naked included, and never taken off; `wear_item` (ADD-attach one object; the NX Remote is refused) |
+| RLV | Phase 1 (docs/rlv.md): RLVa-compatible version replies; commands only from my own worn attachments; `=force` sit, unsit, remoutfit[:layer], detach[:point/name/#RLV folder], detachall:<#RLV folder>; y/n restrictions per source with @clear and drop-on-detach (60 s grace); @getstatus/@getstatusall/@getoutfit/@getattach/@getinv/@getsitid; enforces unsit, sit, sendchat (MAYDAY exempt) and @detach=n locks on my own commands; `rlv_status` / `rlv_clear` / `rlv_log` |
+| Outfits | Every saved-outfit wear goes through `OutfitWearSafe`, so the always-wear collar goes on with all of them; `DetachItem` refuses always-wear items outright. Outfits named `Android*` (Android, Android Base, ...) make the collar invisible: collar menu → About → `☐ Stealth` pressed only when not `☑` (`CollarStealth.cs`; the N° 9 Premium HUD only opens this same menu). MCP `outfit_wear`, `collar_stealth` |
+| Offers | `offers` (`which`: pending/all, read-only; saved offers in run/pending-offers.json are reloaded when the connector starts, in MCP mode too); `accept_offer` (`id`, `action` accept/decline, `confirm` = David's OK for a sender not on the allow-list) |
+| Money | `balance` (read-only); `pay_object` (`object_uuid`, `amount`; PayObject 5008, only with David's explicit OK for that object and amount; hard cap `GT_PAY_MAX`, default L$2500; reports balance before/after, the MoneyBalanceReply and new inventory offers) |
+| Animations / HUDs | `anim_list`; `stop_animations` (stops every animation on me, pauses the wander; text `stopanims`); `touch_attachment` (`attachment` or `ao`, `link`, `face`, `st`; empty `link` lists the HUD's prims). The Vista AO in dance mode restarts dances: touch its **AO** button to return to the normal AO |
+
+Everything else (outfits, photos, `touch`, `goto_place`, `wander`, `inv`, ...) is a CLI command. Adding a connector build needs `build-all.sh --stage-mcp`; the MCP server namespace has to be restarted by its owner to pick it up.
+
+## Chat and IMs
+```
+say [--re <msg id>[,<id>]] [--force] <text>      shout <text> | whisper <text> | chan <n> <text>
+im [--headsup|--force] <First Last|username|uuid> <text>
+im --re <msg id>[,<id>] <to> <text>
+chatlog [name] [n=20]        imlog <name> [n=20]        (read-only history with message ids and answered state)
+```
+- `say` is 20 m local chat, rate-limited (8 per minute). `say --re` / `im --re` are **claim-and-send**: they answer exactly those incoming message ids and are refused if one was already answered, so two routine runs cannot double-reply.
+- **Duplicate-IM guard**: `im` is refused (reply `skipped: ...`, CLI exit 10, MCP `ok: true, skipped: true`) if she IMed that avatar under 5 s ago, or already answered their latest IM within 6 h (the owner: only the 5 s rule). `--headsup` allows one short "give me a bit" note per recipient; `--force` bypasses the guard and is for manual sends. Details in the README (ImGuard).
+- `chatlog` and `imlog` read the tail of `textclient.log`; they never say anything. A muted avatar's chat/IM/offers are dropped (`mute <uuid|name>`, `unmute`, `mutelist`).
+- Greetings are throttled in code (once per avatar per 24 h, `GT_GREET_REPEAT_HOURS`).
+- Settings: `GT_IM_GUARD_WINDOW_S`, `GT_IM_GUARD_FRESH_H`; fast replies `routes/_fast-chat.json` and `routes/_instant-replies.json` (`fastchat status`, `instant status`).
+
+## Seeing the surroundings
+```
+nearby [radius=20]            avatars + objects (uuid, distance, owner, who is sitting)
+objects [radius=20] [name filter]      find <name filter>   (64 m)      objinfo <uuid>
+avatars                       avatars in view with heading
+map [radius] [x y]            objects with size and rotation (planning data)       terrain <x> <y>   ground height
+scene export [radius]         read-only dump of prims, attachments, bakes, terrain and environment -> /workspace/secondlife/vision/export-<time>/
+crowd [radius]                who is complete / partial / bare among nearby avatars
+```
+`nearby`/`objects` read what the simulator has streamed to her (`far [metres]` and `interest [status|360|default]` change how far and how complete that is). Pictures of the scene: see [Photos and renders](#photos-and-renders).
+
+## Moving
+```
+moveto <x> <y> <z>        (MCP walk_to)      walk <metres>      turn <degrees>      face <x y z | avatar>      stop
+walk_path x,y,z;x,y,z;...        walk_status        walk_stop        goto_avatar <name>        front <avatar> [m=1.5]
+goto_place <place> [nosit]       nav [status|places|doors|plan|to ...]       route list|show|walk <name>
+wander start|stop|pause|hold|resume|status|seats
+```
+- Walking is the server autopilot and **never teleports**. A stuck walk recovers with sidesteps; the last-resort fly hop is off by default (`nofly on`); `--fly` on `walk_path`, `goto_avatar`, `sit_near` or `nav to` allows it for that one walk.
+- Where a **nav grid** (`routes/_nav-<name>.json`) covers both ends and the straight line is blocked, `moveto`, `goto_avatar` and `follow` plan a route around walls and through doors (touching them). `goto_place` uses the path graph of the region (`routes/_graph-<region>.json`); `nav places` lists named places for a grid.
+- `wander` is the idle loop (route legs, seats, greetings); `wander status` reports what she is doing, `wander hold|pause|resume` interrupt it, and it resumes after a restart or reboot (see its help line for the staleness rule after a deliberate stop). Tunable rules live in `routes/_wander-rules.json`.
+- `door [name filter|uuid]` touches the nearest door within 10 m; `door try` runs the full sequence.
+- Route walks (`goto_place`, `route walk`, wander legs) touch each mapped door pair early (about 5 m ahead at walking speed), also on the last stretch before the grid's edge (front double doors). The touch leads by swing + latency + tick + 0.5 s margin the measured 2.4 s read-open lag and never by less than 10 m of path at her walking speed (about 11.8 m at 3.2 m/s; also from a standing start and on stairs and turns, where the measured speed dips), so a door is first touched at least about 9 m ahead; at the start of a walk she waits (up to 3 s, less her walking time to the door) until a leaf reads open for any door within 10 m; a second door within 8 m is touched in the same batch; each touch logs how long the door took to read open. A door within 6 m of where a walk starts is opened first, while she is still standing, and she waits up to 1.2 s for a leaf to swing before the first step (Oct 16, 2026). A door guard stops her 1.5-2 m before a mapped door that is still closed; it never re-touches a door touched less than 3 s ago (touch toggles; the door state lags 2.1-2.4 s), waits for a leaf that is moving, and touches again at most once, only if the leaf has not moved at all. Leaving the bedroom for the front door or outside, she walks straight from the bedroom door to the front-door node (no detour across the living room), stops for a moment just past the bedroom door at the path-graph node `west-door`, turns to the front double doors, opens both leaves from there and then walks on; the stop comes from the `holds` list in `_graph-<Region>.json`, is logged as `DOOR HOLD` and is not counted as a pause or stuck recovery (Oct 16, 2026).
+- Settings: `run/nofly.txt` (nofly), `routes/` (everything above), see `route status`.
+
+## Sitting and poses
+```
+sit <object uuid>        sit_near <avatar>        stand        pose [change|couples|path A>B>C]        hover [get|set <m>|repin]
+```
+- `sit` sits on an object by UUID (find one with `nearby`). A sit guard re-checks pose and hover height a few seconds after sitting (`sitguard on|off`).
+- `pose` is a solo random pose by default and never starts a couples pose by itself (`pose couples` only when the owner asks; `pose path A>B>C` restores an exact menu path). The AO stays attached; `textclient/attach-block.txt` lists items taken off while seated and re-worn on standing.
+- Adult poses are recognised by name, in one data-driven place (`PoseRules.cs`; Oct 16, 2026, until a visual pose catalog exists; an optional `_pose-rules.json` / `GT_POSE_RULES` replaces the word lists and can name adult / plain poses exactly). A pose is adult when its own name or any menu above it is (`Solo* > Masturbate* > Jiller`; harmless-looking `Quietly` / `Read` inside `Masturbate*` too). A seat is adult when its name looks adult (`Xplicit Makeup Table`) or any menu seen on it had an adult name, and its unclear submenu names then count as adult; plain PG seats (net chairs, rocking chair) are unaffected. A seat with "ADULT" in its name is no longer skipped: she opens its menu and picks a pose rated non-adult by name; if none is clearly non-adult she stands and skips the seat for now. An adult pose is only taken in a human outfit, alone on our parcel, after standing, wearing Naked and sitting again (path restores need Naked on too). When it is over (she stands, or the seat shows a non-adult pose) she puts the outfit she wore before back, with its HUD colours (the Bikini on the beach level), and logs `REDRESS` / `REDRESSED`.
+- She knows who is on our parcel (Oct 16, 2026, `alone` / `nearby` / `avatars`): the parcel she stands on comes from the sim's parcel data (local id, name, a bitmap of 4 m cells), cached per region and refreshed on a region change, a teleport or after 10 minutes. Every avatar in the region is tested against it (streamed avatars by exact position, map-only avatars by the region map's whole-metre position, strictly at the edge; an unknown position counts as on the parcel). `alone` shows the verdict, the parcel and each avatar with its cell; `nearby` and `avatars` show a `PARCEL:` line; the MCP `nearby` avatars have `on_our_parcel`. Without usable parcel data she uses the strict region-wide count and logs why, never "alone".
+- She is told when someone enters or leaves our parcel (Oct 16, 2026): `[parcel] PARCEL ENTER: <name> on our parcel` / `PARCEL LEAVE: <name> left our parcel` in the log and as `poll_events` events of kind `parcel` (the first look after a login, region change or new parcel only records who is already there). When someone enters while she is in a sexual pose and David is not on the seat, she switches to a non-sexual solo pose at once (and stands up if the switch fails); outfits are not changed.
+- The sexual-pose rule holds for every way a pose button is pressed, including `pose couples` and `pose path` (Oct 16, 2026): never in an android outfit; in a human outfit only in Naked and only when David is the only other avatar on our own parcel (Oct 16, 2026: avatars elsewhere in the Peronaut region and in neighbour regions do not count; with no parcel data she falls back to counting the whole region). A menu or leaf is treated as sexual by name (`fist`, `balls`, `job`, `MF*`, `Adult*` and the rest of the word list), and nothing is picked inside a sexual menu, even an entry that looks harmless. If every couples option is sexual, `pose couples` keeps the current pose and says so in the log (`refused sexual pick`).
+- When David stands up from a couples pose and stays close (Oct 16, 2026), she switches to a solo pose searched from the seat's root menu (all solo submenus, not only the couples submenu the seat reopens in). If none qualifies she uses the seat's default pose, the one it gave when she first sat down alone (recorded per seat; else the first non-sexual single pose on the menu, logged), and never leaves the couples pose running alone. The android / alone sexual rule still applies.
+- Her menu back-navigation works on any furniture, at any number of menu levels (already at the top, 1, 2, 3, 4+; cap 8, logged): she presses only the real `[BACK]` (never the `[<<]`/`[>>]` page buttons) and re-reads the menu until it has no `[BACK]` (the top-level menu). The solo search and default-pose fallback only run there; if the top level cannot be reached she keeps her current pose and logs why. The seat's sit-alone default pose is recorded from the header of the first menu after sitting (no name matching). This works for every way of sitting (wander sit, `sit`, relog beside the seat) even when the menu arrives before the sit is confirmed (kept and retried); it records only when she sits alone and has pressed nothing yet, never a couples / male / sexual pose, logs the reason whenever it declines, and keeps the per-seat default in `seat-default-poses.json` so it survives relogs and restarts.
+- Hover height is pinned in `textclient/hover.txt` (`hover set` writes it).
+
+## Following
+```
+follow <First Last> [metres]      follow off      follow dist [m]      follow status       autofollow on|off|status
+```
+She keeps about 2.5 m behind (stops at 2-3 m, resumes beyond 3.5 m, routes around furniture, opens doors). `autofollow` follows the owner automatically when they are in the region within 20 m; `follow off` snoozes it for 10 minutes. State in `run/autofollow.txt`.
+
+## Outfits and attachments
+```
+worn [scripts]        worn all        worn links <attachment|ao>
+outfit wear <name> [replace|add]       outfit plan|create <name>       outfit check       outfit daily status
+wear add|remove <item> [attach point]      attach <item> [point]      detach <item>
+touch-attachment <attachment|ao> <link no.|prim name> [face]       bikini on|off
+```
+- `outfit wear` swaps in a My Outfits folder without stacking (one hair, one head, body replaced, AO untouched) and randomises the outfit's colour HUDs. The client also picks a random outfit once per day (`outfit daily status`) and swaps outfits on a beach/house zone boundary (`outfit zone status`); undressing and outfit changes share one wardrobe lock so they cannot overlap (`Wardrobe.cs`).
+- `wear add|remove` and `attach|detach` are reversible and logged; body parts need `wear bodypart`/`shape wear`. `outfit coffix` repairs missing COF links so a relog keeps the look.
+- An android body is never swapped to human automatically: not at login (the daily change waits for a human login) and not when walking back from the beach to the house. Only David's command or an explicit request changes it.
+- With an android body worn she does not plan any bedroom detour for the bikini (Oct 16, 2026): a beach-bound wander leg, a seat on the beach level or the pier goes straight to its target, and going back up does not walk to the bedroom to "change back" (nothing was changed). The same single check (`BikiniSwapSkipped`) decides the `bikini skipped: android body worn` log line and the planning. Human bodies behave as before (bikini in the bedroom first); `bikini on` typed by hand still wears it; the 30 min level dwell is unchanged.
+- Patio walks keep clear of the two Reiley net chairs (Oct 16, 2026): both chairs are mapped furniture footprints, and wander/`goto_place` routes from the south patio to the house or the east patio go west through patio-1 instead of through the 0.75 m gap east of the right-hand chair (she used to get STUCK there). `patio-se` stays reachable along the south edge. Data only (`routes/_graph-Peronaut.json`).
+- Outfit changes for adult poses happen while seated (Oct 16, 2026): when an adult pose is picked on a seat (human outfit, alone with David on our parcel) she wears the Naked outfit right where she sits, with no standing up, no step to clear floor and no sitting again, and then picks the pose in the seat menu. If Naked does not go on, she stops being seated, or someone arrives, the adult pose is not taken. The outfit is put back (also seated) when the seat shows a non-sexual pose (someone entered our parcel, David left, wander changed it) and just before wander stands up when the stay ends; a failed re-dress retries every 30 s. The toilet and tub flows still undress and dress standing on the floor at their change spot (an earlier rule; `STEP CLEAR` is only logged there).
+- Furniture that needs The V's face (Oct 16, 2026): the seat data (`routes/_seats-peronaut-home.json`) marks the couch (Lalou - Ultra Sofa v1.1) with `"needs_v_face": true`: its poses do not animate the face, so The V Play HUD's Face panel (e.g. PURE PLEASURE, STOP for the normal face) is used on it when David asks. This is a note only; she never presses the HUD faces automatically.
+- Conversation poses (Talk, Chat, Conversation; e.g. Reiley Net Chair PG `SINGLE*` > `Talk`) are never picked by the solo pose picker (Oct 16, 2026) unless David is seated next to her (on her seat, or sitting within 3.5 m, e.g. on the paired chair). The names are data: `conversation_pose` / `extra_conversation_names` in `routes/_pose-rules.json`.
+- The README's "Standing rules" apply (never nude, save outfits only with the owner's OK).
+
+## Touch and dialogs
+```
+touch <object uuid>          dialog <button label>
+```
+`touch` presses an object that is in the region's object list; a menu it opens arrives as a `[dialog]` log line and `poll_events` item with its button labels. `dialog <label>` presses a button on the **most recent** dialog (labels are matched case-insensitively and trimmed; a wrong one lists the real buttons). The MCP `dialog_reply` refuses buttons containing L$, pay or buy: she never spends L$ except with the owner's explicit OK (`pay object <uuid> <L$> confirm`).
+
+### `[teleport] detail:` why a teleport was refused
+A failed teleport used to log only the reason text ("You are not allowed into the destination."). Since Oct 16, 2026 the client also logs what the grid sends with it, as extra `[teleport]` lines in `textclient.log` (and the console / `poll_events`):
+```
+2026-10-16 19:00:00 [teleport] detail: reason=<text>, alert_msg=<AlertInfo key>, extra=<ExtraParams>, via=udp
+2026-10-16 19:00:01 [teleport] detail: alert=AlertMessage, text=<text>, alert_msg=<id>, extra=<params>, dt=+1.5s
+```
+`alert_msg` is the AlertInfo message key (the grid's own name for the rule that refused, when it sends one) and `extra` its ExtraParams (LLSD as compact JSON, or the raw text); both are empty when the grid sends none. `via=udp` is the UDP `TeleportFailed` packet (one line per AlertInfo block), `via=eq` the EventQueue message (`MessageKey`, `ExtraParams`). `AlertMessage` / `AgentAlertMessage` packets within 5 s before or after a failure are logged as the second form (`dt` is the alert's time minus the failure's). Values are one line, capped at 600 characters. This is logging only: no retry, no maturity or other change, nothing is sent, and alerts far from a failure are not logged here.
+
+### `[loadurl]`: scripts that open a web page
+Objects call `llLoadURL` to send a link (for example a control panel of a rental box or security orb). The client logs every one to `textclient.log` as
+```
+2026-10-15 12:00:00 [loadurl] object '<name>' <object uuid> owner <owner uuid> message '<text>' url <url>
+```
+and writes only the **latest** to `last-loadurl.txt` (mode 600; next to `textclient.log` unless `GT_LAST_LOADURL` sets another path). The URL may carry a login token, so it deliberately bypasses `Log()`: no console echo, no `poll_events`, no webhook, and `last-loadurl.txt` is excluded from the box's Drive backup. The client never opens or fetches the link; reading it is a manual step (treat the URL as a secret, do not paste it into chats or tickets).
+
+## Inventory and profile
+```
+inv find <text>[|text2]        inv ls <folder uuid>        inv read <notecard item>        invitem <item uuid>
+inv mkdir|move ...             rez <item> | take <object>   (her own objects only)
+profile get      (MCP get_profile)       set_profile "<About text>"      balance | prices | caps
+```
+`inv find/ls/read` are read-only (`inv find` stops after 30 s and resumes on the next call; partial results say PARTIAL). `inv mkdir|move` are logged and reversible. Spending needs the owner's OK (`pay ... confirm`); `balance`, `prices`, `caps` are read-only.
+
+## Photos and renders
+Two modes; setup and memory needs are in the [README](../README.md#photos-and-renders).
+```
+look [self [front|back|left|right|<degrees>|all]|around|at <avatar or object>] [fast] [far]
+photo hd [self|view|<avatar or object>] [landscape|portrait] [<sky preset>] [ultra|highplus] [fov <deg>] [nossr nomirrors nodof nosmaa nosharpen noaces noimpostors]
+```
+- **Quick `look`** (her own vision, not a photo for the owner): a small JPG of the near scene in a fixed neutral light, ignoring the in-world time of day. `look self` gives face + full body (`look self back,left,45` only the body from those angles, degrees counter-clockwise from her front); `around` = four views; `at X` turns her head toward X first; `fast` uses fewer samples; `far` adds the 96 m backdrop. JPGs: `/workspace/secondlife/vision/look/` (`GT_LOOK_OUT`). It waits up to 75 s for the result, then keeps going and logs the path as `[look]`.
+- **`photo hd`** (for the owner): 3840x2160 (`landscape`, default) or 2160x3840 (`portrait`, default for `self`) in the real surroundings. Output in `/workspace/secondlife/photos/` (`GT_PHOTO_OUT`): `photo-<stamp>-<mode>.png` (the photo; 16-bit RGB, about 30 MB at 4K), `.jpg` (quality 95) and the **HDR masters** `.exr` and `.hdr`. Takes minutes on the CPU; the command returns after a few seconds and logs the paths as `[look]`.
+- **Environment**: HD photos follow the shared environment (parcel, else region) like Firestorm's "Use shared environment". Name a preset to override the sky: `shared` (default), `default`, `midday`, `midday-legacy`, `sunrise`, `sunset`, `midnight`, `night`, `foggy` (as a bare last word or `preset=<name>`), e.g. `photo hd self landscape sunset`. See [docs/photo-hd-environment.md](photo-hd-environment.md).
+- **Look of the render**: the default profile `ultra` mirrors the owner's Firestorm Ultra settings; `highplus` is the other. The opt-outs turn individual effects off (`nodof`, ...). Depth of field is only applied when there is an **avatar subject** (`self`, or a named avatar); scenery, `view` and object targets stay sharp. Comparison with the viewer: [docs/firestorm-graphics-audit.md](firestorm-graphics-audit.md).
+- **Framing**: `fov` is the vertical field of view, 10 to 120 degrees (default 60, Firestorm's default camera angle). `self` is framed on her whole body from the front in the real scene (no studio backdrop); `view` is over her shoulder; `photo hd <avatar>` looks from beside her head toward that avatar or object (name match is a substring). Lenses (audit doc): `self` framing 50 mm, scene views about 18 mm (60 degrees vertical).
+- Caveats: one render at a time (`look: another look is still rendering`); a 4K render needs several GB free (the memory guard may kill and retry it); rendering never logs in anywhere and only reads asset CDNs (textures are cached: raw JPEG2000 per UUID in `tex-raw/`, decoded sizes in `tex/`, 2 GB cap each, oldest-used evicted; a texture the CDN never answers is skipped for 6 h; see the README's [Texture cache](../README.md#texture-cache), which also lists the caps on the bake and scene-mesher caches); in-world avatars that are still loading appear as grey stand-ins (the output says so).
+- **Crowded scenes** (Oct 18, 2026): quick `look` now works in a packed venue (Warehouse 21: ~90 avatars, 10 k+ attachment prims; it used to fail with an out-of-memory error in the mesher). The mesher handles the nearest avatars first, a few at a time, and releases each avatar's meshes once it is posed; if memory still runs short the farther avatars are drawn at the lowest detail or as plain stand-ins (the look result lists a `mesh_warnings` line), and a single avatar or prim that can't be meshed is skipped instead of failing the render. `photo hd` shares the mesher fix and shrinks other avatars' textures under its memory bias, but a 4K render of a 90-avatar club cannot fit one Blender process.
+- **Crowded `photo hd`** (Oct 18, 2026): when the world plus every avatar would not fit the free memory, `photo hd` renders in layers and combines them into the normal 3840x2160 photo, with the same PNG/JPG/EXR/HDR outputs: a base pass of the room and Galatay, then batches of a few other avatars each (one Blender process per pass, so memory is released between passes), composited back to front so nearer avatars cover farther ones and the room and Galatay hide the avatars standing behind them. It is automatic (override with `GT_HD_LAYERS=on|off`), takes longer than a single pass (about one extra pass per few avatars in frame; avatars outside the frame are skipped), the avatar layers carry no background or haze colour at their edges (distance haze is added once per layer when they are combined), and the only approximation is two avatars from different batches that interleave in depth. If a pass is killed for memory it is split and retried; an avatar that still cannot be rendered is left out and the look log says so. Peak memory and time per pass are in the look summary.
+
+## Texture vision
+```
+texture save <uuid>        faces <object name|uuid> [face=<n>] [r=<m>]        vendor look <name filter> [radius]
+```
+Downloads textures and decodes them to PNG under `/workspace/secondlife/textures/` (a vendor scan adds an `index.json` with names, hover text, faces). Read-only: it never touches or pays. Library and CLI: `textclient/SlTextureVision/` (README there).
+
+## Voice
+```
+voice on | off | status | tail [n] | wake off|name|all|test
+```
+**Listen-only** WebRTC voice with local speech-to-text: transcripts go to `/workspace/secondlife/voice/transcript-<date>.md` with speaker names; her microphone is never sent. Off by default and after every login; joined only when the owner asks. `wake` decides whether finished lines wake the chat routine through the webhook (default `name`: only lines that mention her). Setup and tests: [textclient/galatay-voice/README.md](../textclient/galatay-voice/README.md) (needs the voice venv from its `install.sh`).
+
+## Teleports and offers
+```
+accept | decline          autolure on|off          teleport [force] <region> <x> <y> <z>        home [force]
+offers [all]      offers accept|decline <n> [confirm]      friend list|accept|decline|add <name>      group invites | group accept|decline <n>
+restart status
+maturity          maturity set <general|moderate|adult> --david-ok
+```
+- Teleport offers are only ever held (or auto-accepted, `autolure`) from the allow-list `GT_LURE_ALLOW` (comma-separated names or UUIDs; set in `text-galatay.sh`). An offer from anyone else is logged as `[lure] ... IGNORED (not allow-listed)`; the standing rule is to ask the owner.
+- Inventory offers, friend requests and group invites are never auto-accepted from strangers: `offers` lists them and anything off the allow-list needs `confirm` (the owner's OK). Pending ones survive a restart (`run/pending-offers.json`).
+- A region-restart warning makes her stand, go home (or log out if there is no safe fallback) and come back at least 3 minutes after the restart (`restart status`).
+- `teleport` and `landmark tp` go through the parcel's landing-point routing; `parcel [x y]` shows how a parcel will treat a teleport.
+- `maturity` (Oct 16, 2026) is READ-ONLY: the account's maximum maturity at login (`agent_access_max`), the preferred maturity at login (`agent_region_access`), the preferred maturity the grid reports now (AgentPreferences `access_prefs.max`, or "not reported") and the current region's rating. `maturity set <general|moderate|adult> --david-ok` changes the account's preferred maturity (PG / M / A) through the `UpdateAgentInformation` capability, the call the viewer's Preferences > General > Rating makes, then reads it back. **It needs David's OK** (the `--david-ok` flag; without it nothing is sent), runs only as a command on the operator socket (`text-galatay.sh cmd`), is refused from every automated path (login, chat, IM, webhook, wander, the MCP connector), makes ONE attempt and never retries. Result words: `VERIFIED` (grid reply and read-back agree), `UNVERIFIED` (grid reply only), `NOT APPLIED` (grid answered a different level, e.g. clamped to Moderate), `REFUSED` (HTTP error, exact status and body shown), `FAILED` (no capability / transport error). A teleport to an Adult region such as Astra is refused ("not allowed in that Region due to your maturity Rating") until the preference is Adult, and the grid only accepts Adult for an account that is age-verified.
+
+## Webhook and events
+- **Events** (`poll_events` in MCP): a queue of local chat, IMs, teleport and friendship offers, dialogs, alerts, sit and teleport results, `{time, kind, text}` per item, oldest first. Noisy internal kinds (`cmd`, `anim`, `mute`, ...) are not queued, and neither is `[loadurl]`.
+- **Chat webhook**: the client wakes an external chat routine by POSTing batches of IMs and chat. The URL is read from `textclient/webhook-url.txt` (`GT_WEBHOOK_URL_FILE`) and the key `GALATAY_WEBHOOK_KEY` from the box secret store; neither is in this repo. Per conversation, a single line is sent after a 4 s window and a burst after 20 s of quiet (max 60 s); there is a daily cap of 600 POSTs (`GT_WEBHOOK_DAILY_CAP`); urgent kinds (teleport/friend offers, group invites, region restarts) and the owner's messages are exempt. Check with `webhook status` / MCP `webhook_status`; probe with `webhook_test`; tune with `webhook debounce`, `webhook cap`. Full behaviour is described in the README.
+- **Fast chat** (`fastchat`, `FastChat.cs`) answers conversational nearby chat and IMs (David's and visitors') in a few seconds, without waiting for the chat routine to start (which took about 60 s). It uses an outside AI service: the **xAI chat completions API** (`https://api.x.ai/v1/chat/completions`, model `grok-4.20-0309-non-reasoning` by default, set in `routes/_fast-chat.json`).
+  - **What is sent**: the persona and rules from `routes/_fast-chat.json` plus current state, then only the last N lines (default 20) of that one conversation (nearby chat or a single IM session, never mixed) and the new line. So the text of recent chat with that person goes to xAI.
+  - **What comes back**: JSON `{reply, action, pace}`. `pace` (quick, normal, slow, thoughtful) sets a human-like typing delay. If `action` is true (a request to do something), the client never acts on the model's word: for David it sends a short acknowledgement and passes the line on to the chat routine, which does the work; for a visitor nothing is sent and the routine handles it. David saying "look into" always goes to the routine. An empty reply, an API error or a timeout (default 8 s) also passes the line to the routine unchanged.
+  - **Visitor guards** (`FastGuard.cs`, since Oct 18, 2026; only matter while `"visitors"` is true in `routes/_fast-chat.json`, which is off until David turns it on): enforced in code, not only in the persona, and never applied to David's lines.
+    - She answers a visitor only when the line is clearly for her: her name (Galatay, Galatea, Gala), an IM, a reply within 60 s to something she said to that person, or a question with "you" when at most 3 other avatars are in range.
+    - Never answered: crowd greetings ("hi everyone", "happy Sunday"), lists of names, emotes and emoji-only lines, lines addressed to someone else.
+    - Never sent: the same or a near-identical line twice in a row, or to the same person within 10 min; more than 6 nearby fast replies a minute (3 a minute when more than 15 avatars are within 20 m); a second apology line within 30 min in nearby chat.
+    - Stop or spam complaint (from anyone, in nearby chat or IM): one short reply at most (once per person for IMs), then no nearby fast replies for 15 min; IMs are still answered.
+    - A line a guard refuses is handled like an empty reply: it goes to the chat routine (the routine's own rules are separate). The numbers are the `guards` block of the config; `fastchat status` shows how many lines were refused and any silence.
+  - **Key**: `XAI_API_KEY` from the environment, else the box secret store card; never logged. Without a key fast chat does nothing and every line goes to the routine.
+  - **Cost and checks**: token use per call is appended to `fastchat-usage.jsonl` next to the client log. `fastchat status` shows settings; `fastchat test [--im|--voice] [--from <name>] <line>` makes a real call; the offline `--fastchat-test [--im] <line>` is a dry run that sends nothing. `fastchat` settings include enabled, visitors on/off, the visitor `guards`, max tokens, timeout and history lines.
+
+## Keeping the computer awake
+The box (the computer the client runs on) sleeps when idle and is paused by its host, and in-machine activity alone does not stop that. Two silent Grok Bot routines wake it every few minutes so chat, IMs and kisses are not missed. They are not part of this repo; they are saved in the assistant's routine list.
+- **Routines**: `Keep-awake ping A` (`*/5 * * * *`, folder `pause-test-ping`) and `Keep-awake ping B` (`2-57/5 * * * *`, folder `pause-test-ping-b`, offset 2 minutes because routines cannot run more often than every 5 minutes). Times are Pacific.
+- **What a ping does**: it reads `text-galatay.sh cmd status`. Only when it shows `connected=True` does it log `pingA`/`pingB <time> forks=<n>` to `/workspace/rtest/pause-ping.log` (truncated to its last 500 lines past 200 KB). When logged out it stops at once.
+- **Rule (David, Oct 15-16, 2026)**: they run around the clock (David removed the 8 AM to midnight limit on Oct 16). the pings may run whenever Galatea needs them so her work is never interrupted, including while she is logged out (long renders, builds, background jobs). Resume both routines before a long job and pause them when idle; keep them running while she is logged in. A ping still logs only when `connected=True`.
+- **`SL keep-awake check`** (:24 and :54): an hourly check that logs into `/workspace/secondlife/keepalive-log.md` and relogs her only if she is logged out by accident. A deliberate `text-galatay.sh stop` (marker set) is respected.
+
+## Kiss detection (Pretty Liars Real Kisser)
+The Real Kisser announces each kiss in nearby chat in math-bold letters ("David Nightingale 𝐤𝐢𝐬𝐬𝐞𝐬 Galatea Nightingale's 𝐥𝐢𝐩𝐬."). A kiss from David on her raises the `kissed` event and the automatic response (kiss back and/or a sweet IM, at most one per 30 seconds; the kiss-back itself still has its own 10 min cooldown, within it she answers with the sweet IM/say instead. The line is folded to plain text by hand (`FoldFancyText`): the live client runs with InvariantGlobalization, where `string.Normalize(FormKC)` does nothing, which silently disabled detection until 2026-10-16. Every ignored chat line that mentions "kisses" now logs one `[kiss] kiss line ignored: <reason>; line '...'` line (wrong source type, OwnerSay, not parsable, not about her, not David, within 20 s of the last event).
+
+## Running only the impacted tests (development)
+
+`python3 scripts/impact_tests.py` (repo root) runs just the tests a change can affect, instead of all of them. Default input is the diff against `origin/main` plus uncommitted and untracked files. `--dry-run` prints the selection and the reason chain (`test uses X <- changed member`), `--full` runs everything CI runs, `--commit SHA` / `--range A..B` (with `--dry-run`) analyse past commits. C# is mapped member by member (changed lines -> changed members -> everything that uses them -> `[Fact]`/`[Theory]` methods, run with `dotnet test --filter`); selftest flags narrow `SelftestCliTests`; data/script files map to the code and tests that name them; Python changes run the pytest files that mention them; docs-only runs nothing. A changed client source is always compiled (`dotnet test`, or `build-all.sh` when a selected test uses the built binary or no test covers it). It runs the **full suite** when it is unsure (project/build/CI files, unparsable C#, a changed file nothing references, selection above 60%). `IMPACT_PYTHON` names the interpreter that has pytest. Limits: it cannot see reflection or names built at runtime, so CI keeps running everything on every PR and `main`. Mapper tests: `textclient/tests/test_impact_tests.py`.
+
+## Logs and log pruning
+| File (under `/workspace/secondlife/`) | What |
+|---|---|
+| `textclient.log` | the client's main log, one line per event, `YYYY-MM-DD HH:MM:SS [kind] text` in Pacific time; also the chat and IM history that `chatlog` / `imlog` read |
+| `textclient.console.log` (+ `.prev` from the last relaunch) | the client's stdout/stderr |
+| `textclient.supervisor.log`, `textclient.autostart.log` | supervisor and boot-hook decisions |
+| `anim-events.log` | compact `[anim]` start/stop lines for her avatar (they replay the pose in renders); `GT_ANIM_LOG=1` puts them back into `textclient.log` |
+| `last-loadurl.txt` | the latest `llLoadURL` (secret, mode 600) |
+| `vision/`, `photos/`, `textures/`, `voice/` | renders and exports, HD photos, texture PNGs, voice transcripts |
+
+`text-galatay.sh log [n]` tails `textclient.log`. **Pruning**: `/home/box/tools/bin/log-prune.sh [--dry-run] [-v]` is a box tool (not in this repo) meant to run hourly or daily while the client is live. It caps live logs by keeping their tails (`textclient.log` is cut back to its last 10 MB once over 16 MB, the cut-off head gzipped into `/home/box/log-archive/`; the console log is copytruncated at 10 MB; others at 5 MB), deletes old Firestorm logs and old build backups (`app-backup-*`, `mcp-app-backups`), never touches `app/`, photos, vision exports or the repo, and records every action in `cleanup-log.md`. Run it with `--dry-run` first.
+- Spotlights in HD photos (Oct 18, 2026): stage spotlights look like small points because Second Life (and so our renders) never draws a visible beam or cone for a spot light: you see the glowing fixture and the pool of light on whatever it hits. Spot and point lights now use the viewer's own light size (radius x 1.5), falloff (x 0.5) and shadow rule (no shadows from point lights, only the 2 nearest projectors cast shadows), so the fixtures' light is no longer blocked by their own housings. A visible beam or glow would be an addition beyond what the viewer shows; not done.
+- Stage light beams and glow in HD photos (Oct 18, 2026, David's request): spotlights and projectors now show a soft, subtle light cone in their colour, and every lamp has a soft glow ball, so stage lights no longer shrink to small points when blurred by depth of field. These are visual effects added on top of what Second Life itself shows; they light nothing, cost no extra memory, appear only in the main (background) pass of a layered crowd photo and never in the avatar layers, and can be turned off (`GT_LIGHT_FX=0`) or scaled (`GT_LIGHT_BEAM`, `GT_LIGHT_HALO`).
+- Speckled hair fixed (Oct 18, 2026): the pale speckles over Galatea's hair (and the pale fringe round the stage truss) in HD photos came from the distance haze being computed per pixel from a blend of near hair and far sky. The haze now follows the nearest surface, so hair and thin structures keep their own colour; more render samples would not have fixed it.
+- Hair scalp band hidden (Oct 18, 2026, David's request): the flat grey-brown band with a hard edge between Galatea's forehead and her blond hair in HD photos is the hair's scalp-cap piece (a flat fill in the hair texture, drawn opaque by the hair's alpha-mask material). It is now left out of her own avatar's render (only that known hair texture; strands unchanged); other avatars in a crowd are not touched. Switch: `GT_HAIR_SCALP_HIDE=0` brings it back.
+- No more dark dots in her hair in crowd photos (Oct 19, 2026): when other avatars are rendered in separate layers, her hair "cut-out" in those layers was fuzzy, so bits of the dark avatars behind her leaked through and were pasted over her blond hair. The cut-out is now crisp. Switch: `GT_HOLD_ALPHA_CUT=0` brings back the old behaviour.
+- Indoor venues are dark like in the viewer (Oct 19, 2026): photos now use the sky setting the viewer uses at the avatar's height (Warehouse 21, high in the sky, has a dark night setting), and sky light no longer leaks through roofs and walls: only a low indoor ambient is left, so the spotlights, neon and lamps light the scene. Tuning: `GT_INDOOR_AMB` (indoor sky light left, default 0.2, 1 = old), `GT_INDOOR_HAZE` (indoor haze colour), `GT_SKY_TRACK` (force a sky level, `ground` = old).
+- Indoor brightness re-fit to David's own viewer photo of Warehouse 21 (Oct 19, 2026): the floor now matches his photo; the room keeps a low indoor ambient. Tuning: `GT_INDOOR_AMB` (default 0.25), `GT_SKY_TRACK=auto` to pick the sky level by height.
+- Club look v4 (Oct 19, 2026): indoor rooms darker (low sky light under a roof), dancers stay lit (`GT_AVATAR_AMB`, avatars' own fill), night sky by height again. Brighter coloured spots for a club: `GT_PROJ_SCALE=3 GT_POINT_SCALE=2 GT_LIGHT_RADIUS_SCALE=2`.
+- Club look v5 (Oct 19, 2026): under a roof the club's own lights are brighter automatically (`GT_INDOOR_LIGHT`, default 3, 1 = off), and projectors' soft fill light is drawn (`GT_PROJ_AMBIANCE`), so coloured light pools appear on the dance floor without hand-set variables.
+- Club walls v6 (Oct 19, 2026): no more grey veil over the walls indoors (the spotlight beam cones are left out under a roof; `GT_INDOOR_BEAM` brings them back). Crowd photos with depth of field off (`nodof`) show all avatars again; `nodof` also gives the crispest walls and signs.
+- Indoor dancers are brighter (Oct 19, 2026): avatars under a roof get extra fill light (`GT_AVATAR_AMB`, default 4; 1 = old), so they stand out against the dark room.
+- Club v7 (Oct 19, 2026): indoors, every dancer gets the brighter avatar fill (it only reached Galatea before), depth of field is off so the room and crowd are crisp, and the room is a little brighter. All automatic under a roof.
+- Club floor (Oct 19, 2026): indoor floors are a bit brighter, with the stage lights' soft coloured fill (automatic under a roof).
+- Club floor 2 (Oct 19, 2026): indoor floors brighter again, lit by the club's own coloured lights (automatic under a roof).
+- Spotlights show on dancers indoors (Oct 19, 2026): less flat fill on avatars under a roof, so the club's coloured spots visibly light the people standing in them.
+- Indoor floors render clean (Oct 19, 2026): more render samples automatically under a roof, so dark, many-light rooms no longer get coloured denoiser blotches over the floor texture; the room is a little brighter.
+
+## Reminders on David's login
+
+The `david_login` wake text names reminders only when one is pending (`inworld-reminders.md`). With none, neither the event text nor the already-greeted note says anything about reminders, so the greeting must not mention them either (tests: `NoReminderMentionTests`, `friendwatch selftest`).

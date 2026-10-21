@@ -22,7 +22,7 @@ public static partial class Program
 
     static readonly string First = Env("GT_FIRST", "Galatay");
     static readonly string Last = Env("GT_LAST", "Resident");
-    static readonly string Start = Env("GT_START", "last");
+    internal static readonly string Start = Env("GT_START", "home");   // 2026-10-21: default "home" (was "last"): the MCP connector launcher never set GT_START, so long gaps logged in at the last spot (the bed)
     static readonly string LoginUri = Env("GT_LOGIN_URI", Settings.AgniLoginServer);
     static readonly string LogPath = Env("GT_LOG", "/workspace/secondlife/textclient.log");
     static readonly string SockPath = Env("GT_SOCK", "/home/box/viewers/textclient/run/galatay.sock");
@@ -339,6 +339,7 @@ public static partial class Program
         HookKissDetect(); // David kisses her via the Real Kisser -> "kissed" webhook event (KissDetect.cs)
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
         HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
+        HookParcelWatch(); // our parcel + who is on it, entry/leave events (ParcelWatch.cs)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
         HookQuiet(); // other avatars' ground-sit animations for the session detector (Quiet.cs)
         HookAnimClock(); // every avatar's playing animations + since when, for scene export / look (SceneExport.cs)
@@ -349,6 +350,7 @@ public static partial class Program
         var lp = client.Network.DefaultLoginParams(First, Last, password, Channel, Version);
         password = null;
         var lastOn = ReadLastOnline();
+        loginGap = lastOn == null ? null : DateTime.UtcNow - lastOn.Value;   // RlvPlace.cs: seat/placement restore only after a quick relog
         var chosen = startOverride ?? ChooseLoginStart(Start, lastOn, DateTime.UtcNow);
         if (startOverride == null && chosen != Start) Log("login", $"offline only {(DateTime.UtcNow - lastOn.Value).TotalMinutes:F0} min (< {ShortAbsence.TotalMinutes:F0}): starting at the last location, not '{Start}'");
         quickLogin = startOverride == null && chosen == "last" && Start != "last";
@@ -503,6 +505,7 @@ public static partial class Program
         };
         client.Self.IM += (s, e) => HandleIm(e.IM);
         client.Self.AlertMessage += (s, e) => { NoteAlertForSit(e.Message); Log("alert", e.Message); };
+        RlvHook();   // Rlv.cs
         HookRest();
     }
 
@@ -560,6 +563,8 @@ public static partial class Program
                         pendingLure = (im.FromAgentID, im.FromAgentName, im.IMSessionID, im.Message);
                         if (autoLure && RobeMaybeWorn(out var robeHowL))
                             Log("lure", $"WARNING teleport offer from {im.FromAgentName} ('{im.Message}'): NOT auto-accepted because the VIOLETTE robe is worn ({robeHowL}) and the robe stays at the Buddha Center; held as pending - change to the 'Original' outfit, then 'accept' (or 'decline')");
+                        else if (autoLure && leash != null && LeashStrictNow() && !im.FromAgentName.Equals(leash.holderName, StringComparison.OrdinalIgnoreCase))
+                            RlvLog($"leash: teleport offer from {im.FromAgentName} NOT auto-accepted: strict leash held by {leash.holderName} (pending; MAYDAY ends the leash)");
                         else if (autoLure)
                         {
                             Log("lure", $"teleport offer from {im.FromAgentName} ('{im.Message}'): ACCEPTING (allow-listed)");
@@ -587,6 +592,7 @@ public static partial class Program
 
     static void HookRest()
     {
+        HookTeleportDetail(); // teleport failure details (AlertInfo, alerts) -> [teleport] detail: lines (TeleportDetail.cs)
         HookLoadUrl(); // llLoadURL -> [loadurl] log line + last-loadurl.txt (LoadUrlLog.cs)
         client.Self.ScriptDialog += (s, e) => { lastDialog = e; WanderDialogIn(e); Log("dialog", $"'{e.ObjectName}' ({e.FirstName} {e.LastName}) ch {e.Channel}: {e.Message} [buttons: {string.Join(" | ", e.ButtonLabels ?? new())}] (answer with: dialog <button>)"); };
         client.Self.TeleportProgress += (s, e) =>
@@ -594,7 +600,9 @@ public static partial class Program
             if (e.Status is TeleportStatus.Finished or TeleportStatus.Failed or TeleportStatus.Cancelled or TeleportStatus.Start)
                 Log("teleport", $"{e.Status}: {e.Message}");
         };
-        client.Self.AvatarSitResponse += (s, e) => { Log("sit", $"sit response for object {e.ObjectID} (autopilot={e.Autopilot})"); NoteSitForWash(e.ObjectID); };
+        client.Self.AvatarSitResponse += (s, e) => { Log("sit", $"sit response for object {e.ObjectID} (autopilot={e.Autopilot})"); NoteSitForWash(e.ObjectID); NotePoseSitResponse(e.ObjectID); };
+        client.Objects.AvatarSitChanged += (s, e) => { try { if (e.Avatar != null && e.Avatar.ID == client.Self.AgentID) NotePoseSitChanged(e.SittingOn); } catch { } };
+        PoseSitDefaultLoad();
         client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = RecoverAfterRegionChange(); _ = Ensure360ForCurrentRegion("region change"); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); } };
         client.Network.Disconnected += (s, e) =>
         {
@@ -645,6 +653,7 @@ public static partial class Program
             try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
             try { CameraAnchorTick(); } catch { }
             try { LastOnlineHeartbeat(); } catch { }
+            try { ParcelWatchTick(); } catch (Exception ex) { Log("parcel", "tick error: " + ex.GetBaseException().Message); } // ParcelWatch.cs
             try { NeighborTick(); } catch (Exception ex) { Log("regions", "tick error: " + ex.GetBaseException().Message); } // Neighbors.cs crossing watch + neighbor cap
             try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } // OutfitZones.cs beach/house
             try { await Task.Delay(1000, cts.Token); } catch { }
@@ -680,7 +689,7 @@ public static partial class Program
                         // 2026-10-03: never keep a caller waiting forever (inv find hung for an hour): after CmdReplyCap the caller
                         // gets a "still running" reply; the command continues and its late result is logged as [cmd-late].
                         var cmdLine = line.Trim();
-                        var exec = Task.Run(() => Exec(cmdLine));
+                        var exec = Task.Run(() => { ExplicitCmd.Value = true; return Exec(cmdLine); }); // operator socket = explicit (MaturityPref.cs)
                         if (await Task.WhenAny(exec, Task.Delay(CmdReplyCap)) == exec)
                         {
                             try { resp = await exec; }
@@ -726,7 +735,8 @@ public static partial class Program
         {
             name = t.av.Name, uuid = t.av.ID.ToString(), distance = t.dist < 0 ? (float?)null : MathF.Round(t.dist, 1),
             pos = t.dist < 0 ? null : new[] { MathF.Round(t.pos.X, 1), MathF.Round(t.pos.Y, 1), MathF.Round(t.pos.Z, 1) },
-            seated_on = t.av.ParentID != 0 ? SeatName(t.av.ParentID) : null
+            seated_on = t.av.ParentID != 0 ? SeatName(t.av.ParentID) : null,
+            on_our_parcel = AvatarOnOurParcel(t.av.ID)
         }).ToList();
         foreach (var t in Avatars()) Remember(t.av.Name, t.av.ID);
         // neighbor regions (Neighbors.cs): avatars and objects across the border, pos in this region's frame + their region
@@ -734,7 +744,7 @@ public static partial class Program
         {
             Remember(a.Name, a.ID);
             avs.Add(new { name = a.Name, uuid = a.ID.ToString(), distance = (float?)MathF.Round(d, 1), pos = new[] { MathF.Round(p.X, 1), MathF.Round(p.Y, 1), MathF.Round(p.Z, 1) },
-                          seated_on = a.ParentID != 0 ? "(object in " + nsim.Name + ")" : null });
+                          seated_on = a.ParentID != 0 ? "(object in " + nsim.Name + ")" : null, on_our_parcel = (bool?)false });
         }
         var roots = ViewSims().SelectMany(v => v.sim.ObjectsPrimitives.Values
             .Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim)
@@ -1722,6 +1732,7 @@ public static partial class Program
   wear bodypart <item uuid>   wear a skin/shape/eyes/hair base, replacing the same type (old COF link removed)
   inv copy <item uuid> <new name>   copy a wearable next to the original; a copied shape becomes editable by 'shape set'
   scene export [radius]       READ-ONLY: prims (shapes, sculpt/mesh ids, faces) within radius + my attachments + my bakes -> /workspace/secondlife/vision/export-*/ (SceneExport.cs)
+  alone                      who is on OUR parcel (the sexual-pose check) and each avatar of the region on / off it; entry / leave events are logged as [parcel] PARCEL ENTER / LEAVE (ParcelWatch.cs)
   crowd [radius]             READ-ONLY: per nearby avatar, attachments received vs the sim's list (complete/partial/bare), map-only avatars, interest mode (Crowd.cs)
   far [metres]               show / set the draw distance the sim streams within (AgentUpdate Far; default 128)
   throttle [task <kbps>]      show / set the UDP object-update throttle (AgentThrottle; max 1338 kbps task)
@@ -1754,6 +1765,8 @@ public static partial class Program
   bikini on|off                  on: wear Bikini outfit, attach Spicy Bikini HUD, random [TEXTURE] (D/W/T color or pattern), detach HUD; off: bikini off, strapless+jeans on. Auto on Peronaut beach zone; restore remembered outfit upstairs.
   invitem <item uuid>         check that an inventory item exists (FetchItem; never attaches)
   voice on|off|status|tail [n] | voice wake off|name|all|test|selftest   LISTEN-ONLY SL voice + webhook wake (default wake=name: only when a line mentions me); transcript /workspace/secondlife/voice/transcript-<date>.md; mic never sent; off after every login (Voice.cs)
+  maturity                    READ-ONLY: account maturity ceiling + preferred (General/Moderate/Adult) as the grid reports them, and the current region rating
+  maturity set <general|moderate|adult> --david-ok   CHANGES the account maturity preference (UpdateAgentInformation, then read back; one try, no retry). Needs DAVID'S OK (the flag); operator socket only, refused from any automated path; the grid may refuse (age verification)
   logout                      log out cleanly and exit";
 
     static async Task<string> Exec(string line)
@@ -1768,6 +1781,12 @@ public static partial class Program
         if (cmd == "remind") return RemindCmd(a); // works logged out (FriendWatch.cs)
         if (!LoggedIn && cmd != "help" && cmd != "restart") return "not logged in" + (cmd is "status" or "where" ? "" : " (use login)");
         if (cmd is "say" or "shout" or "whisper" || (cmd == "chan" && a.Length > 0 && a[0] == "0")) { var qg = QuietChatGuard(); if (qg != null) { Log("quiet", $"manual {cmd} {qg}"); return qg; } }
+        {   // Rlv.cs: restrictions from her worn RLV items (collar); MAYDAY always passes and clears them locally
+            var rb = RlvGuard(cmd, rest) ?? LeashGuard(cmd, rest);   // Leash.cs: strict leash
+            if (rb == null && cmd == "detach" && a.Length == 1 && UUID.TryParse(a[0], out var dl) && RlvLockedItems().Contains(dl)) rb = "refused (RLV @detach=n: this item is locked on)";
+            if (rb != null) { RlvLog($"own command '{line}' {rb}"); return rb; }
+            if (cmd is "say" or "shout" or "whisper" && IsSafeword(rest)) { RlvRelease("safeword"); LeashEnd("safeword MAYDAY"); var n = rlv.ClearAll(); RlvLog($"SAFEWORD said ('{rest}'): {n} local restriction(s) cleared"); RlvSaveState(); }
+        }
         bool imRead = cmd == "im" && IsImHistoryCmd(a); // read-only, no rate guard (ImGuard.cs)
         if (cmd is "say" or "shout" or "whisper" or "chan" or "im" && !imRead) { var rg = RateGuard(); if (rg != null) return rg; WanderOwnChat(); }
         switch (cmd)
@@ -1816,6 +1835,7 @@ public static partial class Program
                 Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}");
                 return "ok";
             }
+            case "body" when a.Length >= 1 && a[0] == "reattach": return await BodyReattachCmd();
             case "chan":
             {
                 if (a.Length < 2 || !int.TryParse(a[0], out var ch)) return "usage: chan <n> <text>";
@@ -1868,9 +1888,10 @@ public static partial class Program
             case "nearby":
             {
                 float r = 20; if (a.Length > 0 && !F(a[0], out r)) return "usage: nearby [radius]";
-                return "AVATARS\n" + AvatarList() + $"OBJECTS within {r} m\n" + await Objects(r, "");
+                return "AVATARS\n" + ParcelSummaryLine() + AvatarList() + $"OBJECTS within {r} m\n" + await Objects(r, "");
             }
-            case "avatars": return AvatarList();
+            case "avatars": return ParcelSummaryLine() + AvatarList();
+            case "alone": return AloneCmd();
             case "crowd": return CrowdCmd(a);
             case "throttle": return ThrottleCmd(a);
             case "far": return FarCmd(a);
@@ -1958,6 +1979,15 @@ public static partial class Program
             case "lookat": return LookAtCmd(a);
             case "payprice": return await PayPriceCmd(a);
             case "pay": return await PayCmd(a);
+            case "stopanims": return await StopAnimsCmd();   // StopAnims.cs
+            case "redress": return await RedressCmd();   // VAuto.cs
+            case "rlv" when a.Length > 0 && a[0] == "layers": return await RlvLayersReport();
+            case "rlv" when a.Length >= 2 && a[0] == "force":   // local test of an RLV force (same code path, logged)
+            { var fc = rest[5..].Trim().Replace("_SP_", " "); var c = RlvParse("@" + fc + (fc.Contains('=') ? "" : "=force"))?.FirstOrDefault(); if (c == null || c.Param != "force") return "usage: rlv force <behaviour[:option]>";
+              var r = await RlvForce(c.Behav, c.Option); RlvLog($"LOCAL TEST force {c.Behav}:{c.Option} -> {r}"); return r; }
+            case "rlv": return RlvCmdText(a);   // Rlv.cs
+            case "collar" when a.Length == 1 && a[0] == "stealth": return await CollarStealthOn("command");   // CollarStealth.cs
+            case "invdump": return await InvDumpCmd(a);   // InvDump.cs
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
             case "sethome": return await SetHomeCmd();
             case "autofollow": return AutoFollowCmd(a);
@@ -1978,6 +2008,7 @@ public static partial class Program
             case "color": case "colour": return await ColorCmd(rest);
             case "texture" when a.Length > 0 && (a[0] == "set" || a[0] == "get"): return await TextureCmd(rest);
             case "shape": return await ShapeCmd(a);
+            case "maturity": return await MaturityCmd(a);
             case "worn": case "detach": case "attach": case "animwatch": case "posekeeper": return await AttachCmds(cmd, a, rest);
             case "inv" when a.Length >= 1 && a[0] == "trash": return await InvTrashCmd(rest.Substring(rest.IndexOf("trash", StringComparison.Ordinal) + 5));
             case "inv" when a.Length >= 2 && a[0] == "ls": return await WearOpsCmd("invls", a[1..]);
@@ -2030,6 +2061,8 @@ public static partial class Program
                 if (a.Length == 1 && (a[0] == "on" || a[0] == "off")) sitGuard = a[0] == "on";
                 return $"sit guard {(sitGuard ? "on" : "off")}; last check: {lastHeightCheck}";
             case "stand":
+                if (!rlvForcing.Value) RlvRelease("stand command");   // RlvPlace.cs: David asked her to stand
+                rlvReleasing = true; _ = Task.Run(async () => { await Task.Delay(3000); rlvReleasing = false; });
                 Interlocked.Increment(ref sitGen);
                 client.Self.Stand();
                 await Task.Delay(800);
@@ -2116,6 +2149,8 @@ public static partial class Program
             }
             case "follow" when NamesDavid(rest): { var prep = await JoinDavidBeachPrep("follow"); var fr = FollowCmd(rest); return prep == null ? fr : prep + "\n" + fr; }
             case "follow": return FollowCmd(rest);   // Follow.cs
+            case "leash": return LeashCmd(rest);     // Leash.cs
+            case "cof" when a.Length >= 1 && a[0] == "purge": return await CofPurgeCmd(string.Join(' ', a.Skip(1)));   // CofPurge.cs
             case "accept":
             {
                 if (pendingLure is not { } pl) return "no pending teleport offer";

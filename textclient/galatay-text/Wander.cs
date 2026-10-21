@@ -795,11 +795,13 @@ public static partial class Program
             pendingDressOutfit = lastNamedOutfit ?? (beachMode ? "Bikini" : null) ?? DailyOutfitAllow().FirstOrDefault();
             pendingDressSpot = info.ChangeSpot;
             if (!await GoToChangeSpot(info.ChangeSpot, "undressing", ct)) { pendingDressOutfit = null; MarkSeatFailed(c, "could not reach the change spot"); return false; }
+            await ClearFloorForOutfitChange("tub undress", info, ct);   // ClearFloor.cs
             await UndressForSeat(ct);
         }
         if (info?.Special == "toilet")
         {
             if (!await GoToChangeSpot(info.ChangeSpot, "toilet", ct)) { MarkSeatFailed(c, "could not reach the toilet spot"); return false; }
+            await ClearFloorForOutfitChange("toilet undress", info, ct);   // ClearFloor.cs
             await ToiletUndress(ct);
         }
         var sitReq = DateTime.Now;
@@ -829,7 +831,12 @@ public static partial class Program
         }
         else
         {
-            try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
+            try
+            {
+                var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose ");
+                if (pr.Contains(SkipSeatMarker)) { WLog($"'{c.name}': no clearly non-adult pose by name; standing up and skipping this seat for now"); client.Self.Stand(); await Task.Delay(1500, ct); MarkSeatFailed(c, "no clearly non-adult pose by name"); await DressAfterSeatIfPending(); return false; }
+            }
+            catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
         }
         if (info?.Special == "shower" && info.TouchChild != UUID.Zero && client.Self.SittingOn != 0)
         { await Task.Delay(1500, ct); waterOn = TouchChildPrim(info.TouchChild, "shower water ON (valve)"); }
@@ -858,6 +865,7 @@ public static partial class Program
         if (boat) await BoatLeave("sit over");   // teleport while seated, never stand on the boat first
         else
         {
+        await NakedRedressBeforeStand("sit over");   // AdultRedress.cs: the outfit goes back on while she is still seated
         await EnsureStandingForWalk(ct);
         await StandOutAfterSeat(info, ct);   // 2026-10-08 18:38: clear floor first (stood inside the sink cabinet)
         }
@@ -1247,7 +1255,12 @@ public static partial class Program
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
         bool menu = false;
-        try { var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose "); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
+        try
+        {
+            var pr = await SeatPose(c.p, c.name, sitReq, false, ct, preferPgSolo: true); menu = pr.Contains(" chose ");
+            if (pr.Contains(SkipSeatMarker)) { WLog($"'{c.name}': no clearly non-adult pose by name; standing up and skipping this seat for now"); client.Self.Stand(); await Task.Delay(1500, ct); MarkSeatFailed(c, "no clearly non-adult pose by name"); return false; }
+        }
+        catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
         double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
         while ((DateTime.Now - t0).TotalSeconds < stay && wanderPause == null && client.Self.SittingOn != 0)
         {

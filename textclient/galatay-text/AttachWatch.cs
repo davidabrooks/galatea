@@ -102,7 +102,9 @@ public static partial class Program
     // shorter source text, no console echo, no events-queue entry; anims_at.py reads it next to the log it is given) and textclient.log
     // keeps only errors. GT_ANIM_LOG=1 = the old behaviour: full lines in textclient.log (and console/events), no separate file.
     static readonly bool AnimLogFull = Env("GT_ANIM_LOG", "0") == "1";
-    static readonly string AnimEventsFile = Env("GT_ANIM_EVENTS", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "anim-events.log"));
+    // a property, not a static field: static fields of a partial class initialise in no fixed order across files, and this one read LogPath
+    // before it was set (the file landed in the process cwd instead of next to textclient.log, 2026-10-15)
+    internal static string AnimEventsFile => Env("GT_ANIM_EVENTS", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "anim-events.log"));
     static readonly object animEventsLock = new();
 
     // pure (test): the message after "[anim] ". compact = shorter source text (no item/object uuids, no long names), same leading "verb uuid".
@@ -378,6 +380,7 @@ public static partial class Program
 
     static string DetachItem(UUID item, string why)
     {
+        if (AlwaysWearIds().Contains(item)) { Log("height", $"detach of always-wear item {item} REFUSED ({why})"); return $"REFUSED: item {item} is on the always-wear list (routes/_always-wear.txt)"; }
         var p = WornPrims().FirstOrDefault(x => AttachItemId(x) == item);
         var desc = p == null ? "(not currently worn)" : $"'{p.Properties?.Name ?? "?"}' @{p.PrimData.AttachmentPoint} obj {p.ID}";
         // Stop the object's own playing anims so they cannot linger after detach. Seat-off (AO) items are also remembered.
@@ -400,6 +403,7 @@ public static partial class Program
         detachIntent[item] = (DateTime.Now, keepCof, why);
         try { File.AppendAllText(DetachLog, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} detach item {item} {desc} point={(p == null ? "?" : ((int)p.PrimData.AttachmentPoint).ToString())} ({why}){(keepCof ? " [COF kept]" : " [COF remove]")}; re-attach: text-galatay.sh cmd \"attach {item}\"\n"); } catch { }
         client.Appearance.Detach(item);
+        if (why != "outfit swap" && why != "alpha follow") AlphaFollowAfterRemove(new[] { item }, why);   // AlphaFollow.cs
         lastDetachSent[item] = DateTime.Now; // worn all: a chat before this no longer proves the item is attached
         Log("height", $"detached item {item} {desc} ({why}){(keepCof ? "; COF link kept" : "; COF link will be removed")}");
         return $"detach sent for item {item} {desc}" + (keepCof ? " (COF link kept)" : "");

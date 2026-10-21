@@ -17,13 +17,51 @@ public static partial class Program
     static DateTime kissedLastEvent = DateTime.MinValue;
 
     // pure: (who, whom, part) from a Kisser chat line, or null
-    internal static (string who, string whom, string part)? ParseKissLine(string msg)
+    internal static (string who, string whom, string part)? ParseKissLine(string msg, bool normalize = true)
     {
         if (string.IsNullOrWhiteSpace(msg)) return null;
-        var t = msg.Normalize(NormalizationForm.FormKC);
+        var t = FoldFancyText(msg, normalize);
         var m = KissLine.Match(t); if (!m.Success) return null;
         var who = m.Groups["who"].Value.Trim(); int star = who.LastIndexOf('★'); if (star >= 0) who = who[(star + 1)..].Trim();
         return (who, m.Groups["whom"].Value.Trim(), m.Groups["part"].Value.ToLowerInvariant());
+    }
+
+    // pure: fold "fancy" chat text (math-bold/italic/script... letters and digits, fullwidth forms, ligatures) to plain text.
+    // 2026-10-16: string.Normalize(FormKC) is a silent NO-OP under InvariantGlobalization (the live client runs invariant, no ICU),
+    // so the Real Kisser's bold letters never folded and no kiss was ever detected live (unit tests ran with ICU and passed).
+    // The Mathematical Alphanumeric Symbols block is folded by hand; Normalize still runs after it for whatever ICU can do.
+    internal static string FoldFancyText(string msg, bool normalize = true)
+    {
+        if (string.IsNullOrEmpty(msg)) return msg ?? "";
+        var sb = new StringBuilder(msg.Length);
+        for (int i = 0; i < msg.Length; i++)
+        {
+            int cp = char.ConvertToUtf32(msg, i); if (char.IsHighSurrogate(msg[i]) && i + 1 < msg.Length) i++;
+            if (cp >= 0x1D400 && cp <= 0x1D6A3) { int o = (cp - 0x1D400) % 52; sb.Append((char)(o < 26 ? 'A' + o : 'a' + o - 26)); }       // 13 styles x (A-Z a-z)
+            else if (cp >= 0x1D7CE && cp <= 0x1D7FF) sb.Append((char)('0' + (cp - 0x1D7CE) % 10));                                           // 5 styles x 0-9
+            else if (cp >= 0xFF01 && cp <= 0xFF5E) sb.Append((char)(cp - 0xFEE0));                                                          // fullwidth ASCII
+            else if (cp == 0x3000) sb.Append(' ');
+            else if (cp == 0x210E) sb.Append('h');                                                                                          // italic h lives in Letterlike Symbols
+            else if (cp == 0xFB01) sb.Append("fi"); else if (cp == 0xFB02) sb.Append("fl");
+            else sb.Append(char.ConvertFromUtf32(cp));
+        }
+        var t = sb.ToString();
+        if (!normalize) return t;   // tests: simulate the live no-ICU runtime
+        try { return t.Normalize(NormalizationForm.FormKC); } catch { return t; }
+    }
+
+    // pure: why the live handler ignores a chat line (null = go on). Only called for lines that mention "kisses".
+    internal static string KissSkipReason(ChatSourceType src, ChatType type, string msg, string myName, string davidName, DateTime now, DateTime lastEvent, bool normalize = true)
+    {
+        if (src != ChatSourceType.Object) return $"source type {src} is not Object";
+        if (type == ChatType.OwnerSay) return "chat type OwnerSay";
+        var k = ParseKissLine(msg, normalize); if (k == null) return "line did not parse as '<who> kisses <whom>'s <part>'";
+        if (davidName == null) return "David's name unknown";
+        if (!NameIsMe(k.Value.whom, myName)) return $"kissed '{k.Value.whom}' is not me ('{myName}')";
+        if (!(k.Value.who.Equals(davidName, StringComparison.OrdinalIgnoreCase) || k.Value.who.Equals("David Nightingale", StringComparison.OrdinalIgnoreCase)))
+            return $"kisser '{k.Value.who}' is not David ('{davidName}')";
+        if (!IsKissOnMe(k, myName, davidName, now, lastEvent)) return $"within 20 s of the last kiss event ({(now - lastEvent).TotalSeconds:F0} s ago)";
+        return null;
     }
 
     // pure: an event only for David kissing her (not her own kiss, not other couples), at most once per 20 s
@@ -41,7 +79,7 @@ public static partial class Program
 
     // ---- automatic response (2026-10-13 David): randomly kiss back, a sweet IM, or both (~1/3 each), 2-5 s later;
     // one response per KissAutoCooldown however often he kisses; kiss back only within range and outside the kiss cooldown
-    internal static readonly TimeSpan KissAutoCooldown = TimeSpan.FromMinutes(2);
+    internal static readonly TimeSpan KissAutoCooldown = TimeSpan.FromSeconds(30);   // was 2 min until 2026-10-16 (David)
     static DateTime kissAutoLast = DateTime.MinValue;
     internal static readonly string[] KissSweetLines = { "Mmm, I love your kisses 💕", "You taste like sunshine, babe 😘", "More of those, please 💋",
         "That made me melt a little 🥰", "Kiss me like that again and I'm never letting go 💕", "Mmm... hi, handsome 😘" };
@@ -63,10 +101,14 @@ public static partial class Program
         {
             try
             {
-                if (e.SourceType != ChatSourceType.Object || e.Type == ChatType.OwnerSay) return;
-                var k = ParseKissLine(e.Message); if (k == null) return;
                 var me = client.Self.Name; var david = NameOf(DavidId); var now = DateTime.Now;
-                if (!IsKissOnMe(k, me, david, now, kissedLastEvent)) return;
+                if (FoldFancyText(e.Message ?? "").Contains("kisses", StringComparison.OrdinalIgnoreCase))   // rare lines only: one diagnostic line per ignored kiss line
+                {
+                    var why = KissSkipReason(e.SourceType, e.Type, e.Message, me, david, now, kissedLastEvent);
+                    if (why != null) { Log("kiss", $"kiss line ignored: {why}; line '{e.Message}'"); return; }
+                }
+                else return;
+                var k = ParseKissLine(e.Message);
                 kissedLastEvent = now;
                 bool back = CanKissBack(now, kissLastAt);
                 double? dist = null; var av = Avatars().FirstOrDefault(t => t.av.ID == DavidId); if (av.av != null) dist = Math.Round(av.dist, 1);
@@ -75,7 +117,7 @@ public static partial class Program
                     : $"You kissed him {(int)(now - kissLastAt).TotalMinutes} min ago (kiss-back cooldown {KissBackCooldown.TotalMinutes:F0} min): answer with something sweet by IM instead.");
                 var resp = KissResponse(Random.Shared.NextDouble(), now, kissAutoLast, back, dist);
                 Log("kiss", $"kissed: {k.Value.who} -> me ({k.Value.part}); kiss back allowed={back}; auto response {resp}; line '{e.Message}'");
-                if (resp.StartsWith("none")) return;   // already answered a kiss in the last 2 min: no spam, no webhook
+                if (resp.StartsWith("none")) return;   // already answered a kiss in the last 30 s: no spam, no webhook
                 kissAutoLast = now;
                 string line = KissSweetLines[Random.Shared.Next(KissSweetLines.Length)];
                 long mid = -(DateTime.UtcNow.Ticks / 10000);

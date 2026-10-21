@@ -10,6 +10,7 @@
 //     WITHOUT claiming the line, and the line goes on to the chat routine with fast_ack=<ack> (the routine acts, and only
 //     reports the result / problems). For a visitor nothing is sent; the routine handles it as before.
 //   - empty reply, API error, or timeout (timeout_s, default 8 s): the line goes to the routine unchanged.
+//   - visitors (only when "visitors" is true): the code guards in FastGuard.cs decide first (addressed to her? crowd line? repeat? cap?).
 // While a call is in flight the webhook holds that conversation (Webhook.FastHold), at most timeout_s + 2 s.
 // Key: env XAI_API_KEY, else the box secret store card.XAI_API_KEY; never logged. Token usage per call is appended to
 // fastchat-usage.jsonl next to the client log. 'fastchat [status|test [--im|--voice] [--from <name>] <line>]' and the offline CLI
@@ -38,6 +39,9 @@ public static partial class Program
         public Dictionary<string, double> PaceMult = new() { ["quick"] = 0.6, ["normal"] = 1.0, ["slow"] = 1.4, ["thoughtful"] = 1.8 };
         public Dictionary<string, double> PaceMaxS = new() { ["thoughtful"] = 10 };
         public double MaxDelayS => PaceMaxS.Values.Append(TypingMaxS).Max();
+        // 2026-10-18 visitor guards (FastGuard.cs), config key "guards": reply window, per-recipient dedupe, nearby caps, apology window, silence after a stop request
+        public double GuardReplyWindowS = 60, GuardDedupeWindowS = 600, GuardChatRangeM = 20;
+        public int GuardBusyAvatars = 15, GuardBusyMaxPerMin = 3, GuardMaxPerMin = 6, GuardQuietAvatars = 3, GuardApologyWindowMin = 30, GuardStopSilenceMin = 15;
     }
     internal sealed record FastLine(string Scope, string Speaker, string Text, bool Mine);
     internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error, string Pace = "normal", string Outfit = null, bool Helper = false, bool Kiss = false);
@@ -73,6 +77,14 @@ public static partial class Program
             c.PriceIn = D("price_in_per_m", 1.25, 0, 100); c.PriceCachedIn = D("price_cached_in_per_m", 0.2, 0, 100); c.PriceOut = D("price_out_per_m", 2.5, 0, 100);
             c.TypingBaseS = D("typing_base_s", 1.5, 0, 10); c.TypingPerWordS = D("typing_per_word_s", 0.25, 0, 2);
             c.TypingMaxS = D("typing_max_s", 6, 0, 20); c.TypingJitterS = D("typing_jitter_s", 0.4, 0, 3);
+            if (r.TryGetProperty("guards", out var g) && g.ValueKind == JsonValueKind.Object)
+            {
+                int GI(string k, int def, int lo, int hi) => g.TryGetProperty(k, out var x) && x.TryGetInt32(out var n) ? Math.Clamp(n, lo, hi) : def;
+                double GD(string k, double def, double lo, double hi) => g.TryGetProperty(k, out var x) && x.TryGetDouble(out var n) ? Math.Clamp(n, lo, hi) : def;
+                c.GuardReplyWindowS = GD("reply_window_s", 60, 5, 600); c.GuardDedupeWindowS = GD("dedupe_window_s", 600, 30, 7200); c.GuardChatRangeM = GD("chat_range_m", 20, 5, 100);
+                c.GuardBusyAvatars = GI("busy_avatars", 15, 1, 200); c.GuardBusyMaxPerMin = GI("busy_max_per_min", 3, 0, 30); c.GuardMaxPerMin = GI("max_per_min", 6, 0, 30);
+                c.GuardQuietAvatars = GI("quiet_avatars", 3, 0, 20); c.GuardApologyWindowMin = GI("apology_window_min", 30, 1, 240); c.GuardStopSilenceMin = GI("stop_silence_min", 15, 1, 240);
+            }
             if (r.TryGetProperty("pace_multipliers", out var pm) && pm.ValueKind == JsonValueKind.Object)
                 foreach (var kv in pm.EnumerateObject()) if (kv.Value.TryGetDouble(out var mv)) c.PaceMult[kv.Name.ToLowerInvariant()] = Math.Clamp(mv, 0, 5);
             if (r.TryGetProperty("pace_max_s", out var px) && px.ValueKind == JsonValueKind.Object)
@@ -140,7 +152,7 @@ public static partial class Program
     }
 
     // pure: the request body. History is only the given scope; the new line is the last history entry (already logged).
-    internal static string BuildFastRequest(FastCfg cfg, string state, IReadOnlyList<FastLine> hist, string scope, string from, string text, bool im)
+    internal static string BuildFastRequest(FastCfg cfg, string state, IReadOnlyList<FastLine> hist, string scope, string from, string text, bool im, string note = null)
     {
         var mine = hist.Where(h => h.Scope == scope).ToList();
         if (mine.Count > 0 && !mine[^1].Mine && mine[^1].Text == text) mine.RemoveAt(mine.Count - 1);   // the new line goes last, once
@@ -153,6 +165,7 @@ public static partial class Program
         if (mine.Count == 0) sb.AppendLine("(none)");
         foreach (var h in mine) sb.AppendLine($"{(h.Mine ? "Galatea (you)" : h.Speaker)}: {h.Text}");
         sb.AppendLine().Append($"New {(im ? "IM" : voice ? "spoken line" : "nearby chat line")} from {from}: {text}");
+        if (note != null) sb.AppendLine().Append("Note: ").Append(note);
         var body = new JsonObject
         {
             ["model"] = cfg.Model, ["max_tokens"] = cfg.MaxTokens, ["temperature"] = cfg.Temperature, ["stream"] = false,
@@ -332,9 +345,24 @@ public static partial class Program
             if (david && FastLookIntoTrigger(text)) { FastLookIntoAck(cfg, from, name, text, msgId, im, imSession); return; }
             var key = FastKey();
             if (string.IsNullOrEmpty(key) && FastPostOverride == null) { fastLast = "no API key"; return; }
+            bool complaint = false; int near = 0;
+            if (!david)
+            {
+                // 2026-10-18 David: stricter visitor guards (FastGuard.cs); a refused line goes to the routine like an empty reply
+                near = im ? 0 : FastNearbyAvatars(cfg.GuardChatRangeM);
+                var now = DateTimeOffset.Now;
+                if (FastGuardPre(cfg, fastGuard, from.ToString(), text, im, near, FastRoutineRepliedTo(from.ToString(), now), lastOwnNearbyChatAt, now, out complaint) is string why)
+                {
+                    Interlocked.Increment(ref fastGuarded);
+                    fastLast = $"{DateTime.Now:HH:mm:ss} {name} {(im ? "IM" : "nearby")} '{Short(text, 40)}' -> routine (guard: {why})";
+                    Log("fastchat", fastLast);
+                    return;
+                }
+            }
             fastPending[msgId] = DateTime.UtcNow.AddSeconds(cfg.TimeoutS + cfg.MaxDelayS + 2);   // API call + typing delay
             var scope = im ? "im:" + from : "nearby";
-            var body = BuildFastRequest(cfg, FastState(), FastHistSnapshot(), scope, name, text, im);
+            var body = BuildFastRequest(cfg, FastState(), FastHistSnapshot(), scope, name, text, im,
+                complaint ? "this person asks you to stop chatting. Reply ONCE with a very short, polite acknowledgement (under 10 words); after that you stay silent in nearby chat for a while." : null);
             _ = Task.Run(async () =>
             {
                 string outcome = "routine", typed = "";
@@ -345,6 +373,9 @@ public static partial class Program
                     Interlocked.Increment(ref fastCalls);
                     (r, ms) = await FastCall(cfg, body, key);
                     var dec = FastDecide(r, david);
+                    string guardWhy = null;
+                    if (dec == FastOutcome.Send && !david && FastGuardFinal(cfg, fastGuard, from.ToString(), r.Reply, im, near, FastLastOwnNearbyLine(), DateTimeOffset.Now) is string fgw)
+                    { guardWhy = fgw; Interlocked.Increment(ref fastGuarded); dec = FastOutcome.Routine; }
                     if (dec != FastOutcome.Routine && RateGuard() is string rg) { outcome = "routine (" + rg + ")"; dec = FastOutcome.Routine; }
                     // 2026-10-09 David: an outfit change he asks for starts here, ~1 s after his line (not ~60 s later in the routine)
                     if (dec == FastOutcome.Ack && david && r.Outfit != null) outfitTask = FastOutfitStart(r.Outfit, text, msgId);
@@ -373,6 +404,7 @@ public static partial class Program
                         if (FastSend(from, name, r.Reply, msgId, im, imSession, claim: false)) { fastAcks[msgId] = r.Reply; outcome = "ack, action left to the routine"; }
                         else outcome = "routine (ack not sent)";
                     }
+                    else if (guardWhy != null) outcome = "routine (guard: " + guardWhy + ")";
                     else if (r.Error != null) outcome = "routine (" + r.Error + ")";
                     else if (r.Action) outcome = "routine (visitor action request)";
                     else outcome = "routine (no reply needed)";
@@ -407,6 +439,13 @@ public static partial class Program
             if (QuietChatGuard() != null) return false;
             var key = FastKey();
             if (string.IsNullOrEmpty(key) && FastPostOverride == null) return false;
+            int near = 0;
+            if (!david)
+            {
+                near = FastNearbyAvatars(cfg.GuardChatRangeM); var now = DateTimeOffset.Now;   // 2026-10-18 same visitor guards as nearby text (FastGuard.cs)
+                if (FastGuardPre(cfg, fastGuard, from.ToString(), text, false, near, FastRoutineRepliedTo(from.ToString(), now), lastOwnNearbyChatAt, now, out _) is string why)
+                { Interlocked.Increment(ref fastGuarded); Log("fastchat", $"{name} voice '{Short(text, 40)}' -> routine (guard: {why})"); return false; }
+            }
             var hist = FastHistSnapshot().Where(h => h.Scope == "voice" && h.Mine).ToList();
             hist.AddRange(transcript.Select(t => new FastLine("voice", t.speaker, t.text, false)));
             var body = BuildFastRequest(cfg, FastState(), hist, "voice", name, text, false);
@@ -418,6 +457,8 @@ public static partial class Program
                     Interlocked.Increment(ref fastCalls);
                     (r, ms) = await FastCall(cfg, body, key);
                     var dec = FastDecide(r, david);
+                    if (dec == FastOutcome.Send && !david && FastGuardFinal(cfg, fastGuard, from.ToString(), r.Reply, false, near, FastLastOwnNearbyLine(), DateTimeOffset.Now) is string fgw)
+                    { outcome = "routine (guard: " + fgw + ")"; Interlocked.Increment(ref fastGuarded); dec = FastOutcome.Routine; }
                     if (dec != FastOutcome.Routine && RateGuard() is string rg) { outcome = "routine (" + rg + ")"; dec = FastOutcome.Routine; }
                     if (dec != FastOutcome.Routine && LoggedIn)
                     {
@@ -519,7 +560,7 @@ public static partial class Program
         if (a.Length > 0 && a[0] == "test") return await FastTest(cfg, a.Skip(1).ToArray(), LoggedIn ? FastState() : null);
         if (cfg == null) return $"fast chat: {FastFile} missing or invalid (no persona?); all lines go to the routine";
         return $"fast chat {(cfg.Enabled ? "ON" : "OFF")} (model {cfg.Model}, max_tokens {cfg.MaxTokens}, timeout {cfg.TimeoutS:0.#} s, history {cfg.HistoryLines}, visitors {(cfg.Visitors ? "on" : "off")}, key {(string.IsNullOrEmpty(FastKey()) ? "MISSING" : "ok")}); " +
-               $"this process: {fastCalls} call(s), {fastSent} sent, {fastAcked} ack(s), {fastFallbacks} to the routine; in flight {fastPending.Count}; {FastUsageSummary(cfg)}; last: {fastLast}; last outfit: {fastOutfitLast}";
+               $"this process: {fastCalls} call(s), {fastSent} sent, {fastAcked} ack(s), {fastFallbacks} to the routine ({fastGuarded} refused by the visitor guards; nearby silent {(DateTimeOffset.Now < fastGuard.SilentUntil ? "until " + fastGuard.SilentUntil.ToString("h:mm tt") : "no")}); in flight {fastPending.Count}; {FastUsageSummary(cfg)}; last: {fastLast}; last outfit: {fastOutfitLast}";
     }
 
     static string FastUsageSummary(FastCfg cfg)

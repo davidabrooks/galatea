@@ -5,6 +5,7 @@
 # (or set GT_AUTOLOGIN=1). The password is read in-process from the box secret store.
 export DOTNET_ROOT="${DOTNET_ROOT:-/home/box/.dotnet}" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_gcServer=0
 export GT_SOCK="${GT_SOCK:-/home/box/viewers/textclient/run/galatay.sock}"
+export TZ="${TZ:-America/Los_Angeles}"   # 2026-10-21: logs and schedules in David's time even if the box zone is lost (box move)
 mkdir -p /home/box/viewers/textclient/run && chmod 700 /home/box/viewers/textclient/run
 # Boot autostart hook (2026-09-26): the agent host launches this connector after every box boot, so it also triggers
 # galatay-autostart.sh (text-client daemon start, once per boot, skipped after a deliberate stop). Fully detached: own

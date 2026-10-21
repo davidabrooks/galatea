@@ -150,7 +150,7 @@ Logged out (deliberate stop) until the token reset, about Oct 5. When restarting
 - `v_pause(on|off)`: pauses The V auto re-attach (file `run/v-auto-paused`, survives relogs).
 - `force_rebake`: Firestorm "Rebake Textures" equivalent (bumps COF version, POSTs cof_version to UpdateAvatarAppearance, retries with the server's expected version, reports bake ids).
 - (`collar_pause` was a short-lived diagnostic switch, removed in #272.)
-- `attachment_faces(attachment, filter)`: read-only per-face TextureEntry dump (alpha/rgb/texture) for a worn attachment.
+- `attachment_faces(attachment, filter)`: read-only per-face TextureEntry dump (alpha/rgb/full texture UUID) for a worn attachment; feed a texture id to `texture_save` to read a HUD face.
 - `outfits_collar(check)`: every saved outfit in My Outfits links the N° 9 collar (adds missing links). `outfit_save(name)` (= `outfit create`) always includes the collar link. The #265 hard-coded collar guard and `collar_pause` were removed (the collar link in every outfit replaces them; `_always-wear.txt` unchanged; NX Remote refusal kept).
 - `redress` never goes back into Naked/Android; it falls back to the last clothed outfit (`run/last-clothed-outfit.txt`).
 - RLV `@detach/@remattach` match the inventory item name as well as the in-world name, and a COF link id resolves to its target item.

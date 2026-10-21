@@ -155,3 +155,13 @@ Logged out (deliberate stop) until the token reset, about Oct 5. When restarting
 - `redress` never goes back into Naked/Android; it falls back to the last clothed outfit (`run/last-clothed-outfit.txt`).
 - RLV `@detach/@remattach` match the inventory item name as well as the in-world name, and a COF link id resolves to its target item.
 - `maitreya_show_all`: opens the Maitreya HUD alpha page (tab bar) and presses Show all; reports hidden `hide:N` buttons before/after. Multi-page HUDs only react to buttons on the page they show.
+
+### Idle pose / auto-hover / feet (2026-10-21 PR)
+- Idle wait is random 90-300 s each time; a held collar pose changes to a different one every random 3-10 min (no STOP between).
+- Dancing is never idle. Leash on/off, collar visibility, chat or David moving nearby never stand her up: only real movement
+  (walk, follow, a leash pull past the start gap, teleport, outfit walk) does. Visibility change swaps kneel <-> AO ground sit.
+- AO ground sit = Martha AO 'force sitg' (side list link 2 face 4 uv 0.88,0.50, run/ao-groundsit.txt "link face u,v") + SitOnGround.
+- Leash walker starts sooner: reaction 0.25-0.4 s, start gap just over the hold distance (LeashStartGap); anti-bounce rules unchanged.
+- Auto-hover (AutoHover.cs): capsule-bottom vs floor (terrain + box tops); standing/kneel/ground sit only; seated = restore normal
+  hover; a collar @adjustheight in the last 10 min wins. Default GT_AUTO_HOVER=observe (logs only): feet are not measurable.
+- FeetAuto opens the LaraX HUD feet page before pressing f1-f5 (the HUD ignores buttons on hidden pages).

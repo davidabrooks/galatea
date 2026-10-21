@@ -28,13 +28,14 @@ public static partial class Program
     // pure (tested): which idle pose: collar pose when the collar or the leash chain can be seen, else the AO ground sit
     internal static string IdlePoseKind(bool collarVisible, bool leashVisible) => collarVisible || leashVisible ? "collar" : "groundsit";
     // pure (tested): idle threshold with jitter: base * 0.75..1.25 (default base 240 s -> 3-5 min)
-    internal static double IdleThresholdSec(double baseSec, double r01) => baseSec * (0.75 + 0.5 * Math.Clamp(r01, 0, 1));
+    internal static double IdleThresholdSec(double baseSec, double r01) => IdleWaitMin + (IdleWaitMax - IdleWaitMin) * Math.Clamp(r01, 0, 1);   // David 11:26: real variance, fresh each time (base kept for API)
+    internal const double IdleWaitMin = 90, IdleWaitMax = 300;
     internal readonly record struct IdleIn(bool enabled, bool leashed, bool walkerDriving, bool following, bool sittingOnObject, bool moving,
-        bool forceSat, bool sitLocked, bool busy, double idleSec, double thresholdSec, bool collarVisible, bool leashVisible, bool groundSitMapped);
+        bool forceSat, bool sitLocked, bool busy, bool dancing, double idleSec, double thresholdSec, bool collarVisible, bool leashVisible, bool groundSitMapped);
     // pure (tested): enter which pose now (null = not now)
     internal static string IdleEnter(IdleIn s)
     {
-        if (!s.enabled || s.walkerDriving || s.following || s.sittingOnObject || s.moving || s.forceSat || s.sitLocked || s.busy) return null;
+        if (!s.enabled || s.walkerDriving || s.following || s.sittingOnObject || s.moving || s.forceSat || s.sitLocked || s.busy || s.dancing) return null;   // dancing is never idle
         if (s.idleSec < s.thresholdSec) return null;
         var k = IdlePoseKind(s.collarVisible, s.leashVisible);
         if (k == "groundsit" && (s.leashed || !s.groundSitMapped)) return null;   // never the AO ground sit on a leash
@@ -43,8 +44,8 @@ public static partial class Program
     // pure (tested): must the pose be cleared now?
     internal static string IdleMustExit(string kind, bool following, bool sittingOnObject, bool moving, bool forceSat, bool leashed, bool davidWalkingAway, bool walkerWants)
         => kind == null ? null
-         : following ? "follow" : sittingOnObject || forceSat ? "sit" : moving ? "moving" : davidWalkingAway ? "David walks away"
-         : walkerWants ? "walker" : kind == "groundsit" && leashed ? "leashed" : null;
+         : following ? "follow" : sittingOnObject || forceSat ? "sit" : moving ? "moving"
+         : walkerWants ? "walker" : null;   // leash on/off alone never ends it (David 11:31)
     // pure (tested): the collar Pose menu's "Playing: <pose>" header -> pose, or null for (none)/unknown
     internal static string CollarPlaying(string menuText)
     {
@@ -56,12 +57,55 @@ public static partial class Program
     internal static string CollarPoseButton(IEnumerable<string> buttons, string pose) =>
         (buttons ?? Enumerable.Empty<string>()).FirstOrDefault(b => string.Equals(b?.Trim(), pose, StringComparison.OrdinalIgnoreCase));
     // pure (tested): "<face> <u>,<v>" for the AO's 'force sitg' button
-    internal static (int face, string st)? AoGroundSitSpot(string text)
+    // pure (tested): "[<link>] <face> <u>,<v>" for the AO's 'force sitg' button (link defaults to 1).
+    // Found 2026-10-21: link 2 'HUD2016 V03' face 4 uv 0.88,0.50 (the side list runs along u, reversed).
+    internal static (int link, int face, string st)? AoGroundSitSpot(string text)
     {
-        var m = System.Text.RegularExpressions.Regex.Match(text ?? "", @"^\s*(?<f>\d+)\s+(?<u>[01]?\.\d+|[01]),(?<v>[01]?\.\d+|[01])\s*$", System.Text.RegularExpressions.RegexOptions.Multiline);
-        return m.Success ? (int.Parse(m.Groups["f"].Value), $"{m.Groups["u"].Value},{m.Groups["v"].Value}") : null;
+        var m = System.Text.RegularExpressions.Regex.Match(text ?? "", @"^\s*(?:(?<l>\d+)\s+)?(?<f>\d+)\s+(?<u>[01]?\.\d+|[01]),(?<v>[01]?\.\d+|[01])\s*$", System.Text.RegularExpressions.RegexOptions.Multiline);
+        return m.Success ? (m.Groups["l"].Success ? int.Parse(m.Groups["l"].Value) : 1, int.Parse(m.Groups["f"].Value), $"{m.Groups["u"].Value},{m.Groups["v"].Value}") : null;
     }
+    // pure (tested): is a dance playing? (dance ball / dance HUD / AO DANCES mode / any anim named like a dance)
+    internal static bool IdleDancing(bool aoDanceMode, IEnumerable<string> animNamesOrSources) =>
+        aoDanceMode || (animNamesOrSources ?? Enumerable.Empty<string>()).Any(n => n != null &&
+            System.Text.RegularExpressions.Regex.IsMatch(n, @"danc|disco|dj\b|club|salsa|tango|waltz|twerk|ballroom", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
 
+    // live: any playing anim whose name or source object/attachment looks like a dance (dance ball, dance HUD, AO DANCES)
+    static bool IdleDancingNow()
+    {
+        try { Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = new(ownAnims);
+              return IdleDancing(false, cur.SelectMany(kv => new[] { AnimName(kv.Key), SrcDesc(kv.Value.src) })); }
+        catch { return false; }
+    }
+    // pure (tested): how long to hold one pose before changing to another (David 11:29: random 3-10 min)
+    internal static double IdleRotateSec(double r01) => 180 + 420 * Math.Clamp(r01, 0, 1);
+    // pure (tested): change pose now? collar poses only (the Vista AO has no "next ground sit" button we can rely on); never while dancing
+    internal static bool IdleShouldRotate(string kind, double heldSec, double rotateSec, bool dancing) => kind == "collar" && !dancing && heldSec >= rotateSec;
+    static double idleRotate = IdleRotateSec(Random.Shared.NextDouble());
+    static async Task<string> IdlePoseRotate()
+    {
+        if (!await idleLock.WaitAsync(0)) return "busy";
+        try
+        {
+            var cur = idlePosed; if (cur == null || cur.kind != "collar") return "not in a collar pose";
+            var pose = PickIdlePose(cur.pose, Random.Shared.NextDouble());   // never the current one
+            var (ok, info, anims) = await CollarPosePlay(pose);              // picked straight from the Pose menu, no STOP
+            idleRotate = IdleRotateSec(Random.Shared.NextDouble());
+            if (!ok) return info;
+            idleLastPose = pose; idlePosed = new("collar", pose, anims ?? new(), DateTime.Now); IdleSave();
+            try { AutoHoverKick("pose change"); } catch { }
+            return $"{cur.pose} -> {pose}: {info}";
+        }
+        finally { idleLock.Release(); }
+    }
+    // pure (tested): switch pose family when visibility changes: collar hidden + no chain -> AO ground sit (if allowed),
+    // collar or chain visible while ground sitting -> collar pose. null = keep.
+    internal static string IdleSwitch(string kind, bool collarVisible, bool leashVisible, bool leashed, bool groundSitMapped)
+    {
+        var want = IdlePoseKind(collarVisible, leashVisible);
+        if (kind == null || want == kind) return null;
+        if (want == "groundsit" && (leashed || !groundSitMapped)) return null;   // keep kneeling rather than stand
+        return want;
+    }
     internal sealed record IdlePoseState(string kind, string pose, List<string> anims, DateTime since);
     static volatile IdlePoseState idlePosed;
     static string idleLastPose;
@@ -72,7 +116,7 @@ public static partial class Program
     static readonly string IdlePoseFile = Env("GT_IDLE_POSE_FILE", "/home/box/viewers/textclient/run/idle-pose.json");
     static readonly string AoGroundSitFile = Env("GT_AO_GROUNDSIT_FILE", "/home/box/viewers/textclient/run/ao-groundsit.txt");
     static double IdleBaseSec() => double.TryParse(Env("GT_IDLE_POSE_SEC", "240"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 30 ? v : 240;
-    static (int face, string st)? AoGroundSitNow() { try { return File.Exists(AoGroundSitFile) ? AoGroundSitSpot(File.ReadAllText(AoGroundSitFile)) : null; } catch { return null; } }
+    static (int link, int face, string st)? AoGroundSitNow() { try { return File.Exists(AoGroundSitFile) ? AoGroundSitSpot(File.ReadAllText(AoGroundSitFile)) : null; } catch { return null; } }
     static void IdleNoteActivity() { idleActivityAt = DateTime.Now; }
     static void IdleSave() { try { var s = idlePosed; if (s == null) File.Delete(IdlePoseFile); else File.WriteAllText(IdlePoseFile, JsonSerializer.Serialize(s)); } catch { } }
     static IdlePoseState IdleLoad() { try { return File.Exists(IdlePoseFile) ? JsonSerializer.Deserialize<IdlePoseState>(File.ReadAllText(IdlePoseFile)) : null; } catch { return null; } }
@@ -144,7 +188,7 @@ public static partial class Program
     static async Task<string> AoGroundSitToggle(string why)
     {
         if (AoGroundSitNow() is not { } spot) return "AO 'force sitg' button not mapped (run/ao-groundsit.txt)";
-        var r = await Exec($"touch-attachment \"ao\" \"1\" {spot.face} st={spot.st}");
+        var r = await Exec($"touch-attachment \"ao\" \"{spot.link}\" {spot.face} st={spot.st}");
         Log("idlepose", $"AO force sitg toggled ({why}): {r}");
         return r;
     }
@@ -161,15 +205,17 @@ public static partial class Program
                 var (ok, info, anims) = await CollarPosePlay(pose);
                 Log("idlepose", $"collar pose {pose} ({why}): {info}");
                 if (!ok) return info;
-                idleLastPose = pose; idlePosed = new("collar", pose, anims ?? new(), DateTime.Now); IdleSave();
+                idleLastPose = pose; idlePosed = new("collar", pose, anims ?? new(), DateTime.Now); IdleSave(); AutoHoverKick("kneel");
                 return $"collar pose '{pose}': {info}";
             }
             var before = SelfAnims().ToHashSet();
             var r = await AoGroundSitToggle("enter: " + why);
             if (r.StartsWith("AO 'force sitg' button not mapped")) return r;
+            await Task.Delay(800);
+            try { client.Self.SitOnGround(); } catch { }   // force sitg only changes which sit plays: actually sit down
             await Task.Delay(2500);
             var added = SelfAnims().Where(a => !before.Contains(a)).Select(a => a.ToString()).ToList();
-            idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave();
+            idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave(); AutoHoverKick("ground sit");
             return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")})";
         }
         finally { idleLock.Release(); }
@@ -185,12 +231,14 @@ public static partial class Program
             if (s.kind == "collar") { var (ok, i) = await CollarPoseStop(s.anims); info = i; if (!ok) foreach (var a in s.anims) try { client.Self.AnimationStop(new UUID(a), true); } catch { } }
             else
             {
+                try { client.Self.Stand(); } catch { }
+                await Task.Delay(800);
                 info = await AoGroundSitToggle("exit: " + why);
                 await Task.Delay(1500);
                 var still = s.anims.Where(a => SelfAnims().Any(x => x.ToString() == a)).ToList();
                 if (still.Count > 0) { try { client.Self.Stand(); } catch { } info += "; stood up"; }
             }
-            idlePosed = null; IdleSave(); IdleNoteActivity();
+            idlePosed = null; IdleSave(); IdleNoteActivity(); AutoHoverKick("pose cleared");
             idleThreshold = IdleThresholdSec(IdleBaseSec(), Random.Shared.NextDouble());
             Log("idlepose", $"cleared {s.kind} {s.pose} before {why}: {info}");
             return $"cleared {s.kind} {s.pose}: {info}";
@@ -258,17 +306,22 @@ public static partial class Program
         bool moving = speed > 0.3f;
         var dav = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId);
         bool davidAway = dav.av != null && dav.dist < 15 && LeashMovingAway(dav.pos, dav.av.Velocity, client.Self.SimPosition);
-        if (moving || following || sitObj || leashDriving) IdleNoteActivity();
+        bool dancing = IdleDancingNow();
+        if (Env("GT_AUTO_HOVER", "observe") != "off") _ = AutoHoverCheck("idle tick");
+        if (moving || following || sitObj || leashDriving || dancing) IdleNoteActivity();   // the timer restarts after a dance
         var posed = idlePosed;
         if (posed != null)
         {
             var why = IdleMustExit(posed.kind, following, sitObj, moving, forceSat, l != null, davidAway, false);
             if (why != null) await IdlePoseExit(why);
+            else if (IdleSwitch(posed.kind, CollarVisibleNow(), LeashParticleTarget() != null, l != null, AoGroundSitNow() != null) is string sw)
+            { await IdlePoseExit("switch to " + sw); Log("idlepose", "switch: " + await IdlePoseEnter(sw, "visibility changed")); }
+            else if (IdleShouldRotate(posed.kind, (DateTime.Now - posed.since).TotalSeconds, idleRotate, dancing)) Log("idlepose", "rotate: " + await IdlePoseRotate());
             return;
         }
         if (davidAway) IdleNoteActivity();
         var kind = IdleEnter(new IdleIn(idlePoseOn, l != null, leashDriving, following, sitObj, moving, forceSat,
-            rlv.Has("sit") || rlv.Has("unsit") && sitObj, leashForgetBusy != 0 || shuttingDown,
+            rlv.Has("sit") || rlv.Has("unsit") && sitObj, leashForgetBusy != 0 || shuttingDown, dancing,
             (DateTime.Now - idleActivityAt).TotalSeconds, idleThreshold, CollarVisibleNow(), LeashParticleTarget() != null, AoGroundSitNow() != null));
         if (kind != null) Log("idlepose", "enter: " + await IdlePoseEnter(kind, $"idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0} s"));
     }
@@ -284,12 +337,12 @@ public static partial class Program
             case "stop": case "stand": return await IdlePoseExit("manual");
             case "idle" when a.Length > 1 && double.TryParse(a[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sec) && sec >= 30:
                 idleThreshold = sec; return $"idle threshold {sec:F0} s (this round; base GT_IDLE_POSE_SEC={IdleBaseSec():F0})";
-            case "aomap" when a.Length == 3: File.WriteAllText(AoGroundSitFile, $"{a[1]} {a[2]}\n"); return $"AO 'force sitg' mapped: face {a[1]} st {a[2]}";
+            case "aomap" when a.Length is 3 or 4: { var t = string.Join(" ", a.Skip(1)); if (AoGroundSitSpot(t) is not { } sp) return "usage: idlepose aomap [link] <face> <u,v>"; File.WriteAllText(AoGroundSitFile, t + "\n"); return $"AO 'force sitg' mapped: link {sp.link} face {sp.face} st {sp.st}"; }
             default:
             {
                 var p = idlePosed;
                 return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; {(p == null ? "standing" : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; " +
-                       $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; AO force sitg {(AoGroundSitNow() is { } s ? $"face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
+                       $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
             }
         }
     }

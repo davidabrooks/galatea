@@ -5,8 +5,53 @@ using Xunit;
 public class IdlePoseTests
 {
     static Program.IdleIn S(double idle = 400, bool collar = true, bool chain = false, bool leashed = false, bool mapped = true,
-        bool following = false, bool sitObj = false, bool moving = false, bool forceSat = false, bool sitLocked = false, bool driving = false, bool busy = false, bool on = true)
-        => new(on, leashed, driving, following, sitObj, moving, forceSat, sitLocked, busy, idle, 300, collar, chain, mapped);
+        bool following = false, bool sitObj = false, bool moving = false, bool forceSat = false, bool sitLocked = false, bool driving = false, bool busy = false, bool on = true, bool dancing = false)
+        => new(on, leashed, driving, following, sitObj, moving, forceSat, sitLocked, busy, dancing, idle, 300, collar, chain, mapped);
+    [Fact] public void RotationRandom3to10MinCollarOnlyNotWhileDancing()
+    {
+        Assert.Equal(180, Program.IdleRotateSec(0)); Assert.Equal(600, Program.IdleRotateSec(1));
+        Assert.True(Program.IdleShouldRotate("collar", 400, 300, false));
+        Assert.False(Program.IdleShouldRotate("collar", 200, 300, false));
+        Assert.False(Program.IdleShouldRotate("collar", 400, 300, true));
+        Assert.False(Program.IdleShouldRotate("groundsit", 900, 300, false));
+        for (int i = 0; i < 50; i++) Assert.NotEqual("nadu", Program.PickIdlePose("nadu", System.Random.Shared.NextDouble()));
+    }
+    [Fact] public void UnleashWhileKneelingWithCollarVisibleStaysKneeling()
+    {
+        Assert.Null(Program.IdleMustExit("collar", false, false, false, false, false, false, false));   // just unleashed
+        Assert.Null(Program.IdleMustExit("collar", false, false, false, false, true, false, false));    // just leashed
+        Assert.Null(Program.IdleSwitch("collar", true, false, false, true));
+        Assert.Equal("groundsit", Program.IdleSwitch("collar", false, false, false, true));  // collar hidden, no leash
+        Assert.Null(Program.IdleSwitch("collar", false, false, true, true));                 // invisible leash: keep kneeling
+        Assert.Equal("collar", Program.IdleSwitch("groundsit", false, true, true, true));    // chain appears
+        Assert.Equal("walker", Program.IdleMustExit("collar", false, false, false, false, true, false, true));
+        Assert.Null(Program.IdleMustExit("collar", false, false, false, false, false, true, false));   // David walking away alone: stay
+        Assert.Equal("follow", Program.IdleMustExit("collar", true, false, false, false, false, true, false));
+        Assert.Equal("moving", Program.IdleMustExit("groundsit", false, false, true, false, false, false, false));
+        Assert.False(Program.LeashIdleMustRise(true, false, 3f, 1f));    // he stands still
+        Assert.False(Program.LeashIdleMustRise(true, true, 0.8f, 1f));   // he moves nearby without pulling
+        Assert.False(Program.LeashIdleMustRise(false, true, 5f, 1f));    // not leashed
+        Assert.True(Program.LeashIdleMustRise(true, true, 1.3f, 1f));    // he walks off: real pull
+    }
+    [Fact] public void DancingIsNeverIdle()
+    {
+        Assert.Null(Program.IdleEnter(S(dancing: true, idle: 9999)));
+        Assert.Null(Program.IdleEnter(S(dancing: true, collar: false, idle: 9999)));
+        Assert.True(Program.IdleDancing(false, new[] { "STAND", "Dance Ball 2.0" }));
+        Assert.True(Program.IdleDancing(false, new[] { "attachment 'VISTA ... DANCES'" }));
+        Assert.True(Program.IdleDancing(true, new string[0]));
+        Assert.False(Program.IdleDancing(false, new[] { "STAND", "attachment 'VISTA ANIMATIONS *HUD 6.3*MARTHA STS BENTO AO-V1.7'", "The V - Bento" }));
+    }
+    [Fact] public void NeverGroundSitWhenCollarOrLeashVisible()
+    {
+        foreach (var leashed in new[] { false, true }) foreach (var mapped in new[] { false, true })
+        {
+            Assert.Equal("collar", Program.IdleEnter(S(collar: true, chain: false, leashed: leashed, mapped: mapped)));
+            Assert.Equal("collar", Program.IdleEnter(S(collar: false, chain: true, leashed: leashed, mapped: mapped)));
+            Assert.Equal("collar", Program.IdleEnter(S(collar: true, chain: true, leashed: leashed, mapped: mapped)));
+        }
+        Assert.Equal("collar", Program.IdlePoseKind(true, false)); Assert.Equal("collar", Program.IdlePoseKind(false, true));
+    }
     [Fact] public void ChoiceAlwaysFromTheListNoRepeat()
     {
         var allowed = new[] { "cutie", "coy", "kneel", "nadu", "pretty", "shy", "tower" };
@@ -37,7 +82,10 @@ public class IdlePoseTests
         Assert.Equal("collar", Program.IdleEnter(S(idle: 301)));
         foreach (var s in new[] { S(following: true), S(sitObj: true), S(moving: true), S(forceSat: true), S(sitLocked: true), S(driving: true), S(busy: true), S(on: false) })
             Assert.Null(Program.IdleEnter(s));
-        for (int i = 0; i <= 10; i++) Assert.InRange(Program.IdleThresholdSec(240, i / 10.0), 180, 300);
+        for (int i = 0; i <= 10; i++) Assert.InRange(Program.IdleThresholdSec(240, i / 10.0), 90, 300);
+        Assert.Equal(90, Program.IdleThresholdSec(240, 0)); Assert.Equal(300, Program.IdleThresholdSec(240, 1));
+        var xs = Enumerable.Range(0, 400).Select(_ => Program.IdleThresholdSec(240, System.Random.Shared.NextDouble())).ToList();
+        Assert.True(xs.Max() - xs.Min() > 150, "real variance, not small jitter");
     }
     [Fact] public void ExitBeforeEveryMovement()
     {
@@ -46,9 +94,9 @@ public class IdlePoseTests
         Assert.Equal("sit", Program.IdleMustExit("collar", false, true, false, false, false, false, false));
         Assert.Equal("sit", Program.IdleMustExit("groundsit", false, false, false, true, false, false, false));
         Assert.Equal("moving", Program.IdleMustExit("collar", false, false, true, false, false, false, false));
-        Assert.Equal("David walks away", Program.IdleMustExit("collar", false, false, false, false, true, true, false));
+        Assert.Null(Program.IdleMustExit("collar", false, false, false, false, true, true, false));
         Assert.Equal("walker", Program.IdleMustExit("collar", false, false, false, false, true, false, true));
-        Assert.Equal("leashed", Program.IdleMustExit("groundsit", false, false, false, false, true, false, false));
+        Assert.Null(Program.IdleMustExit("groundsit", false, false, false, false, true, false, false));
         Assert.Null(Program.IdleMustExit(null, true, true, true, true, true, true, true));
     }
     [Fact] public void CollarMenuParsing()
@@ -59,7 +107,8 @@ public class IdlePoseTests
         var p2 = new[] { "◂", "▸", "▴", "↑", "↓", "☐ Crawl", "doormat", "kneel", "STOP", "discuss", "display", "doggy" };
         Assert.Equal("kneel", Program.CollarPoseButton(p2, "KNEEL"));
         Assert.Null(Program.CollarPoseButton(p2, "nadu"));
-        Assert.Equal((4, "0.3,0.7"), Program.AoGroundSitSpot("4 0.3,0.7\n"));
+        Assert.Equal((1, 4, "0.3,0.7"), Program.AoGroundSitSpot("4 0.3,0.7\n"));
+        Assert.Equal((2, 4, "0.88,0.50"), Program.AoGroundSitSpot("2 4 0.88,0.50\n"));
         Assert.Null(Program.AoGroundSitSpot(""));
     }
 }

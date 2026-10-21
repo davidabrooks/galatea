@@ -104,7 +104,7 @@ public static partial class Program
         foreach (var p in WornPrims())
         {
             var n = p.Properties?.Name ?? "";
-            if (IsN9CollarName(n) || n.Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase) || n.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase))
+            if ((IsN9CollarName(n) && !CollarGuardPaused()) || n.Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase) || n.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase))
             { var it = AttachItemId(p); if (it != UUID.Zero) s.Add(it); }
         }
         return s;
@@ -128,16 +128,32 @@ public static partial class Program
     {
         string txt = null;
         try { var f = Path.Combine(RouteDir, "_always-wear.txt"); if (File.Exists(f)) txt = File.ReadAllText(f); } catch { }
-        return AlwaysWearIdsFrom(txt);
+        return AlwaysWearIdsFrom(txt, CollarGuardPaused());
+    }
+    // 2026-10-21 (David, diagnostic): run/collar-guard-paused = the collar is NOT always-wear/protected and the guard is off
+    static string CollarPauseFile => "/home/box/viewers/textclient/run/collar-guard-paused";
+    internal static bool CollarGuardPaused() { try { return File.Exists(CollarPauseFile); } catch { return false; } }
+    static async Task<string> CollarPauseCmd(string arg)
+    {
+        if (arg == "on") { File.WriteAllText(CollarPauseFile, DateTime.Now.ToString("s")); Log("outfit", "COLLAR GUARD paused (David diagnostic)"); return "collar guard PAUSED (until 'collar pause off')"; }
+        if (arg == "off") { try { File.Delete(CollarPauseFile); } catch { } Log("outfit", "COLLAR GUARD resumed"); CollarEnsureSoon("collar pause off"); return "collar guard resumed (collar re-attached within ~8 s if off)"; }
+        if (arg == "detach")
+        {
+            if (!CollarGuardPaused()) return "refused: pause the collar guard first (collar pause on)";
+            if (RlvLockedItems().Contains(N9CollarItem)) return "refused: the collar is RLV-locked (@detach=n)";
+            return await DetachItemAsync(N9CollarItem, "collar diagnostic (David)");
+        }
+        return $"collar guard is {(CollarGuardPaused() ? "PAUSED" : "on")}";
     }
     // 2026-10-21 (David): after the box move _always-wear.txt was briefly missing and an outfit swap took the collar off.
     // The N° 9 Premium collar is hard-coded as a fallback: always-wear even with no/damaged file.
     internal static readonly UUID N9CollarItem = new("3ef84661-1c82-37e3-97e2-8d1b4271dde8");
     internal static bool IsN9CollarName(string n) => n != null && n.Contains("Premium Collar", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(n, @"No\.? ?9|N° ?9", RegexOptions.IgnoreCase);
     // pure (tested): the always-wear list from the file text (null = missing), never without the collar
-    internal static List<UUID> AlwaysWearIdsFrom(string fileText)
+    internal static List<UUID> AlwaysWearIdsFrom(string fileText, bool collarPaused = false)
     {
         List<UUID> l; try { l = fileText == null ? new() : ParseKeepAttached(fileText); } catch { l = new(); }
+        if (collarPaused) { l.RemoveAll(u => u == N9CollarItem); return l; }
         if (!l.Contains(N9CollarItem)) l.Add(N9CollarItem);
         return l;
     }
@@ -147,7 +163,7 @@ public static partial class Program
         try
         {
             await Task.Delay(8000);
-            if (!LoggedIn) return;
+            if (!LoggedIn || CollarGuardPaused()) return;
             var worn = WornPrims();
             if (worn.Any(p => AttachItemId(p) == N9CollarItem || IsN9CollarName(p.Properties?.Name))) return;
             Log("outfit", $"COLLAR GUARD: the N° 9 collar is not worn after '{why}': re-attaching it");

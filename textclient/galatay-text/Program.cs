@@ -1275,6 +1275,9 @@ public static partial class Program
         try
         {
             var (cost, info) = await TextureCostFor(w, h);
+            // 2026-10-21: customer_type 'Monthly' (not in the schedule) -> the caller's approved max is sent as the expected fee
+            bool costFromMax = false;
+            if (cost < 0 && w * h > 1024 * 1024) { cost = maxL; costFromMax = true; }
             if (cost < 0) return new { ok = false, result = "could not determine upload price", price_info = info };
             if (cost > maxL) return new { ok = false, result = $"STOPPED: price L${cost} exceeds max L${maxL}; nothing uploaded", price_info = info };
             var folder = await TexturesFolder();
@@ -1317,12 +1320,15 @@ public static partial class Program
             await Task.Delay(2000);
             var balAfter = await BalanceAsync();
             File.AppendAllText(PaidMarker, $"result: HTTP {s2} state {state} asset {newAsset} item {newItem} upload_price {price} balance {balBefore} -> {balAfter}\n");
+            // fee mismatch = server refused before charging: re-arm the guard (marker kept as a record under another name)
+            if (state == "failure" && (r2?["message"].AsString() ?? "").Contains("different upload fee") && balAfter == balBefore)
+                try { File.Move(PaidMarker, PaidMarker + $".feemismatch-L{cost}-{DateTime.Now:yyyyMMdd-HHmmss}"); } catch { }
             if (newItem != UUID.Zero) try { client.Inventory.RequestFetchInventory(newItem, client.Self.AgentID); } catch { }
             return new
             {
                 ok = s2 >= 200 && s2 < 300 && state == "complete" && newAsset != UUID.Zero,
                 http_status = s2, state, new_asset = newAsset.ToString(), new_inventory_item = newItem.ToString(), upload_price = price,
-                expected_cost = cost, price_info = info, textures_folder = folder.ToString(), name, width = w, height = h, bytes = bytes.Length,
+                expected_cost = cost, cost_from_max = costFromMax, price_info = info, textures_folder = folder.ToString(), name, width = w, height = h, bytes = bytes.Length,
                 stage1_reply = stage1Reply, reply = SafeKeys(r2), raw = raw2, balance_before = balBefore, balance_after = balAfter
             };
         }

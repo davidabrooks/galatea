@@ -473,6 +473,12 @@ def build(group, bones=None, lining=True):
         # ponytail: decided per texture alpha; ceiling = no hair shadow on her neck
         if see_through:
             ob.visible_shadow = False
+        # 2026-10-21 ocean portrait: a near-black patch at the front of her part = the hair's blended scalp layer (texture brown 114)
+        # lying 1-3 mm under the alpha-MASK strand copy, shadowed by it. Cut-out avatar parts (alpha-masked, textured, not a bake: hair,
+        # lashes) cast no shadow either, like the blended ones (the viewer's shadow map can't resolve them). GT_MASK_HAIR_SHADOW=1 = old.
+        elif (HD and group.startswith("avatar") and (b.get("mat") or {}).get("alpha") == "mask" and not b["tex"].startswith("bake:")
+              and tn and has_alpha(tn) and os.environ.get("GT_MASK_HAIR_SHADOW", "0") != "1"):
+            ob.visible_shadow = False
         # the backdrop is seen and casts sun shadow, but takes no part in the near scene's bounce light or reflections:
         # the near scene lights exactly as before the backdrop (ponytail: no bounce light off far walls; ceiling = a sunlit
         # building across the water doesn't brighten her side of the deck)
@@ -1038,6 +1044,7 @@ def sky_hd(nt, co, sp, col, env, night):
         col = mixc(md, col, mc.outputs["Color"])
     return col
 
+FOG_COVERAGE = os.environ.get("GT_FOG_COVERAGE", "1") == "1"
 MIST_ERODE = int(os.environ.get("GT_MIST_ERODE", "-1"))   # px; -1 = auto (1 px per 1080 of the frame's short side, at least 1), 0 = off
 HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: its ONE per-layer fog fraction is written next to the layer
 
@@ -1085,6 +1092,17 @@ def env_post(env):
         er = nt.nodes.new("CompositorNodeDilateErode"); er.mode = "DISTANCE"; er.distance = -er_px; L(mist, er.inputs[0]); mist = er.outputs[0]
     ex = m("EXPONENT", m("MULTIPLY", mist, -k * D), 0)
     fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", mist, 0.9999))
+    if LAYER != "batch" and FOG_COVERAGE:
+        # 2026-10-21 ocean portrait: a grey ghost outline round her hair against the dusk sky. A pixel where a nearly clear blended
+        # hair fringe covers the sky has mist just under 1 (the mean of 0.001 near and 1.0 sky), so the step above gave it the FULL
+        # fog of a surface ~4 km away, while the open sky beside it gets none: the fog colour drew the soft hair layer's outline.
+        # The near surface's share of the pixel is (1 - mist) / (1 - mist of the nearest solid surface around it); fog only that
+        # share, at that surface's own depth. A solid far surface (mist = its neighbours') keeps full fog. GT_FOG_COVERAGE=0 = old.
+        er2 = nt.nodes.new("CompositorNodeDilateErode"); er2.mode = "DISTANCE"
+        er2.distance = -max(er_px, round(min(sc.render.resolution_x, sc.render.resolution_y) / 64)); L(rl.outputs["Mist"], er2.inputs[0])
+        solid = er2.outputs[0]
+        cov = m("MINIMUM", 1.0, m("DIVIDE", m("SUBTRACT", 1.0, rl.outputs["Mist"]), m("MAXIMUM", m("SUBTRACT", 1.0, solid), 1e-4)))
+        fog = m("MULTIPLY", m("SUBTRACT", 1.0, m("EXPONENT", m("MULTIPLY", solid, -k * D), 0)), cov)
     h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
     s *= indoor_haze()
     if LAYER == "batch":

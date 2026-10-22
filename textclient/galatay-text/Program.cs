@@ -1163,6 +1163,15 @@ public static partial class Program
         return (xs - xo, ys - yo);
     }
 
+    // pure (tests): LL's published 2K upload fee by AgentProfile customer_type; -1 = unknown.
+    // 2026-10-21: "Monthly" (Premium, monthly billing) was charged L$40; the login/stage-1 price of 10 is wrong for 2K.
+    internal static int TwoKFeeFor(string customerType) => customerType switch
+    { "Base" or "Plus" => 50, "Premium" or "Monthly" => 40, "Premium_Plus" or "Premium Plus" or "PremiumPlus" => 0, _ => -1 };
+
+    // pure (tests): stage 2 refused the fee before charging -> the paid-upload guard may be re-armed
+    internal static bool FeeRefusedNoCharge(string state, string message, int? balBefore, int? balAfter) =>
+        state == "failure" && (message ?? "").Contains("different upload fee") && balBefore != null && balAfter == balBefore;
+
     static async Task<(int cost, object info)> TextureCostFor(int w, int h)
     {
         LibreMetaverse.Messages.Linden.ViewerBenefitsMessage vbm = null;
@@ -1182,7 +1191,7 @@ public static partial class Program
             // "The server expects a different upload fee"). Use LL's published 2K schedule keyed by the profile's customer_type.
             var (pm, _) = await CapGetProfile();
             customerType = pm?["customer_type"].AsString();
-            cost = customerType switch { "Base" or "Plus" => 50, "Premium" => 40, "Premium_Plus" or "Premium Plus" or "PremiumPlus" => 0, _ => -1 };
+            cost = TwoKFeeFor(customerType);
             source = $"LL 2K schedule for customer_type '{customerType}'";
         }
         return (cost, new
@@ -1321,7 +1330,7 @@ public static partial class Program
             var balAfter = await BalanceAsync();
             File.AppendAllText(PaidMarker, $"result: HTTP {s2} state {state} asset {newAsset} item {newItem} upload_price {price} balance {balBefore} -> {balAfter}\n");
             // fee mismatch = server refused before charging: re-arm the guard (marker kept as a record under another name)
-            if (state == "failure" && (r2?["message"].AsString() ?? "").Contains("different upload fee") && balAfter == balBefore)
+            if (FeeRefusedNoCharge(state, r2?["message"].AsString(), balBefore, balAfter))
                 try { File.Move(PaidMarker, PaidMarker + $".feemismatch-L{cost}-{DateTime.Now:yyyyMMdd-HHmmss}"); } catch { }
             if (newItem != UUID.Zero) try { client.Inventory.RequestFetchInventory(newItem, client.Self.AgentID); } catch { }
             return new

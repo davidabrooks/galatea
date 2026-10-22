@@ -215,6 +215,38 @@ def mesher_args(d, mode, me, far, radius=96):
     """far: everything to the export radius (photo hd: the profile's draw distance, 96-256 m), full LOD inside 30 m"""
     return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + ([str(int(max(96, radius or 96))), "--far=30"] if far else ["30", "--roots=32"])
 
+def mesh_under_roof(meta, binpath, height=80.0):
+    """render_mesh.under_roof on the mesher output, before Blender: any non-avatar triangle straight above her head (agent
+    position + 1.8 m) within `height` m"""
+    import numpy as np
+    x, y, z = meta["me"][0], meta["me"][1], meta["me"][2] + 1.8
+    buf = open(binpath, "rb").read()
+    for b in meta["batches"]:
+        if str(b.get("group", "")).startswith("avatar") or not b.get("ni"): continue
+        nv, ni, o = b["nv"], b["ni"], b["offset"]
+        P = np.frombuffer(buf, np.float32, nv * 3, o).reshape(-1, 3); I = np.frombuffer(buf, np.uint32, ni, o + nv * 32).reshape(-1, 3)
+        if P[:, 2].max() < z or P[:, 0].min() > x or P[:, 0].max() < x or P[:, 1].min() > y or P[:, 1].max() < y: continue
+        A, B, C = P[I[:, 0]], P[I[:, 1]], P[I[:, 2]]
+        d = (B[:, 0] - A[:, 0]) * (C[:, 1] - A[:, 1]) - (C[:, 0] - A[:, 0]) * (B[:, 1] - A[:, 1]); ok = np.abs(d) > 1e-12
+        u = ((x - A[:, 0]) * (C[:, 1] - A[:, 1]) - (C[:, 0] - A[:, 0]) * (y - A[:, 1])) / np.where(ok, d, 1)
+        v = ((B[:, 0] - A[:, 0]) * (y - A[:, 1]) - (x - A[:, 0]) * (B[:, 1] - A[:, 1])) / np.where(ok, d, 1)
+        hz = A[:, 2] + u * (B[:, 2] - A[:, 2]) + v * (C[:, 2] - A[:, 2])
+        if np.any(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (hz > z) & (hz < z + height)): return True
+    return False
+
+def golden_hour_env(doc, env, portrait, sky):
+    """2026-10-21 David's beach portrait exported after sunset: an outdoor photo hd portrait (self) with the sun below the horizon and
+    no named sky gets golden hour instead of night: the `sunset` preset, its sun turned to the export's sun azimuth. None when it
+    doesn't apply (the caller also checks she is not under a roof: mesh_under_roof)"""
+    if not (portrait and env and not sky and env.get("sun_dir") and env["sun_dir"][2] < 0): return None
+    import math
+    g = llsky.preset_env("sunset", doc); sd = g["sun_dir"]; alt = math.asin(max(-1.0, min(1.0, sd[2])))
+    az = math.atan2(env["sun_dir"][1], env["sun_dir"][0])
+    g["sun_dir"] = [math.cos(az) * math.cos(alt), math.sin(az) * math.cos(alt), math.sin(alt)]
+    if g.get("moon_dir"): g["moon_dir"] = [-v for v in g["sun_dir"]]
+    g["source"] = "golden-hour:" + str(env.get("source") or "shared")
+    return g
+
 def mesher_env(base):
     """The text client runs under a 512 MB .NET heap cap (DOTNET_GCHeapHardLimit) and look.py inherits it; a crowd mesh
     needs ~2 GB (Warehouse 21, ~50 avatars: out of memory at 512 MB and 1.5 GB, ok at 2 GB). Give the mesher its own 3 GB cap."""
@@ -637,7 +669,9 @@ def main(a):
     meta = json.load(open(f"{d}/mesh.json")); meta["backdrop"] = far or bool(hd)   # photo hd: the sky gradient too
     # environment (David 2026-10-13): photo hd follows the shared (parcel/region) EEP environment, or the named preset
     # (--sky=sunset); her own quick looks ignore it entirely: fixed neutral sun + sky, whatever the time of day
-    meta["env"] = env_for(doc, hd, sky)
+    meta["env"] = env_for(doc, hd, sky); gold = golden_hour_env(doc, meta["env"], photo_self, sky)
+    if gold and not mesh_under_roof(meta, f"{d}/mesh.bin"):
+        meta["env"] = gold; print("photo hd portrait: sun below the horizon outdoors -> golden hour (sunset sky, sun azimuth kept)", file=sys.stderr)
     if far or terrain_hd: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
     tj = (far or terrain_hd) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}  # region heightmap (exports 2026-10-04+)

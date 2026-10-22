@@ -1152,8 +1152,8 @@ public static partial class Program
     // (2K tier) before stage 1 and against any price field in the stage-1 reply before the image is sent.
     // Never calls PayUploadFee / any L$ transfer; the server itself charges on stage-2 completion.
     const int MaxPaidUploadL = 50;
-    // one marker per approved upload: paid-upload.done = 16:02 Burne-Jones profile 2K (used); this build = First Life 2K (2026-09-25 evening)
-    static readonly string PaidMarker = "/workspace/secondlife/paid-upload-firstlife.done";
+    // one marker per approved upload: paid-upload.done = 2026-09-25 Burne-Jones profile 2K; paid-upload-firstlife.done = First Life 2K; this build = 2026-10-21 profile 2K (David approved in chat 22:56 PT)
+    static readonly string PaidMarker = "/workspace/secondlife/paid-upload-profile-20261021.done";
 
     static (int w, int h)? J2cDims(byte[] b)
     {

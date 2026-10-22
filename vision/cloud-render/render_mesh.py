@@ -551,7 +551,7 @@ def lens_for_vfov(vfov_deg, rx, ry):
     return sh / (2 * math.tan(math.radians(vfov_deg) / 2))
 
 # head-and-shoulders photo hd: portrait-lens view angle; frame height and frame centre below her head, as fractions of her height
-HEADSHOT_FOV = 28.0; HEADSHOT_SPAN = 0.32; HEADSHOT_DROP = 0.05
+HEADSHOT_FOV = 28.0; HEADSHOT_SPAN = 0.20; HEADSHOT_DROP = 0.012
 
 def hd_fov():
     """photo hd vertical FOV in degrees (GT_HD_FOV, default 60 = Firestorm's camera), None outside photo hd"""
@@ -1493,7 +1493,7 @@ if kind == "scene":
         elif view.startswith("headshot"):
             # `photo hd self headshot` (2026-10-21 David: profile photo): head and shoulders from in front, at a portrait
             # lens (HEADSHOT_FOV deg vertical unless `fov` was given: 60 deg at ~0.7 m distorts a face); the frame spans
-            # HEADSHOT_SPAN of her height vertically (top of the hair to upper chest), centred near her chin
+            # HEADSHOT_SPAN of her height vertically (2026-10-21 David: face dominant, top of the hair to the upper neck), centred HEADSHOT_DROP below her head
             a = math.radians(yaw + (float(view[9:]) if view.startswith("headshot:") else 0)); f = Vector((math.cos(a), math.sin(a), 0))
             rx, ry = (int(v) for v in os.environ.get("GT_RES", "2160x3840").split("x"))
             vfov = float(os.environ.get("GT_HEADSHOT_FOV") or HEADSHOT_FOV)

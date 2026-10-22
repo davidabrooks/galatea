@@ -55,6 +55,7 @@ public static partial class Program
     static int leashForgetBusy;
     static void LeashMaybeForget(LeashState l, Vector3 holderPos)
     {
+        if (idlePosed != null) return;   // never wander off while posed (IdlePose.cs)
         bool held = rlvHoldSeat != null;
         if (leashNextWanderOff == DateTime.MaxValue) leashNextWanderOff = LeashNextForget(DateTime.Now, Random.Shared.NextDouble());
         if (!LeashMayForget(leashWanderOff, client.Self.SittingOn != 0, held, rlv.Has("unsit"), true, DateTime.Now, leashNextWanderOff)) return;
@@ -128,12 +129,14 @@ public static partial class Program
     {
         var cur = leash;
         if (cur != null && cur.mode == mode && cur.holder == holder) return;
+        // David 11:31: a leash attach/detach by itself never ends an idle kneel/sit (IdlePose.cs)
+        leashArrivedAt = DateTime.Now;   // a new or restored leash: LeashWalk grace (no walking straight after login/relog)
         if (cur != null) LeashEnd($"replaced by {mode} to {name}", quiet: true);
         leash = new LeashState(mode, holder, name, anchor, leashLength, how, DateTime.Now); leashMissScans = 0; leashNextWanderOff = DateTime.MaxValue;
         if (mode == "leash") { try { SetPauseNow("rlv", $"leash held by {name}"); } catch { } afSnoozeUntil = DateTime.MaxValue; }
         bool strict = LeashStrictNow();
         var text = mode == "leash"
-            ? $"leashed {(anchor ? "(anchored) to" : "by")} {name} [{how}]; strict {(strict ? "ON (no self-unleash/teleport)" : "off")}; {(leashWalk ? $"I walk toward them past {LeashWalkDist(leashLength) + 1:F1} m" : "the collar's pull leads me")}"
+            ? $"leashed {(anchor ? "(anchored) to" : "by")} {name} [{how}]; strict {(strict ? "ON (no self-unleash/teleport)" : "off")}; I walk with them when they walk off (never while they stand), forward only past {LeashForwardCutoff(leashLength):F1} m"
             : $"{name} is following me on the collar's follow (no chain) [{how}]; I carry on as usual at walking pace";
         RlvLog("leash: " + text);
         try { Notify(mode == "leash" ? "rlv_leashed" : "rlv_follow_start", name, holder, text, null); } catch { }
@@ -239,6 +242,7 @@ public static partial class Program
                 if (leashDiagSeen.TryGetValue(p.LocalID, out var old) && old == key) return;
                 leashDiagSeen[p.LocalID] = key;
                 if (ps.CRC == 0 && ps.Target == UUID.Zero && old == 0) return;
+                if (mineEmit && ps.Target == UUID.Zero && old != 0) RlvLog($"leash-diag: particles CLEARED on MY prim {p.ID} (unleashed, or invisible leash)");
                 RlvLog($"leash-diag: particles on {(mineEmit ? "MY" : "other")} prim {p.ID} (local {p.LocalID}, parent {p.ParentID}, owner {p.OwnerID}): crc {ps.CRC} target {ps.Target} flags {ps.PartDataFlags} pattern {ps.Pattern} texture {ps.Texture}");
             }
             catch { }
@@ -253,6 +257,18 @@ public static partial class Program
             try { if (LoggedIn) LeashTick(); } catch { }
         }
     });
+    // pure (tested): chain target -> holder: an object worn by an avatar (its root's parent is the avatar) resolves to that avatar
+    internal static UUID LeashResolveHolder(UUID target, Func<UUID, (uint local, uint parent)?> prim, Func<uint, UUID?> avatarByLocal, Func<uint, uint> parentOf)
+    {
+        if (prim(target) is not { } p) return target;
+        uint parent = p.parent;
+        for (int i = 0; i < 4 && parent != 0; i++)
+        {
+            if (avatarByLocal(parent) is UUID av) return av;
+            parent = parentOf(parent);
+        }
+        return target;
+    }
     static void LeashTick()
     {
         var sim = client.Network.CurrentSim;
@@ -261,6 +277,11 @@ public static partial class Program
         if (pt is { } t)
         {
             leashMissScans = 0;
+            // the chain often targets the leash HANDLE he wears (an attachment), not his avatar: resolve it to the wearer
+            var tid = LeashResolveHolder(t.target, id => sim.ObjectsPrimitives.Values.FirstOrDefault(x => x?.ID == id) is { } pr ? (pr.LocalID, pr.ParentID) : null,
+                lid => sim.ObjectsAvatars.TryGetValue(lid, out var a) ? a.ID : (lid != 0 && sim.ObjectsPrimitives.TryGetValue(lid, out var pp) ? null : (UUID?)null),
+                lid => sim.ObjectsPrimitives.TryGetValue(lid, out var pp) ? pp.ParentID : 0u);
+            if (tid != t.target) t = (tid, t.emitter);
             if (l == null || l.mode != "leash" || l.holder != t.target)
             {
                 var av = Avatars().FirstOrDefault(a => a.av.ID == t.target);
@@ -272,9 +293,9 @@ public static partial class Program
             }
             else if (l.how == "relog") leash = l = l with { how = "particle chain" };
         }
-        else if (l?.mode == "leash" && l.how == "particle chain" && ++leashMissScans >= 3) { LeashEnd("the chain is gone"); return; }
+        else if (l?.mode == "leash" && l.how == "particle chain" && ++leashMissScans >= 3 && LeashChainLossEnds(DateTime.Now, lastPullAt)) { LeashEnd("the chain is gone"); return; }
         l = leash; if (l == null) return;
-        if (l.mode == "follow") { try { if (client.Self.Movement.AlwaysRun) client.Self.Movement.AlwaysRun = false; } catch { } return; }   // he follows her: walking pace only
+        if (l.mode == "follow") { try { if (client.Self.Movement.AlwaysRun && !leashDriving) client.Self.Movement.AlwaysRun = false; } catch { } return; }   // he follows her: walking pace only
         // keep the soft hold and walk after the holder when out of range
         if (wanderPause != "rlv") try { SetPauseNow("rlv", $"{l.mode} held by {l.holderName}"); } catch { }
         afSnoozeUntil = DateTime.MaxValue;
@@ -286,14 +307,7 @@ public static partial class Program
         else if (h.av.ParentID != 0) note = $"{l.holderName} is sitting: I stay near";
         else note = null;
         if (note != leashLastNote) { leashLastNote = note; if (note != null) RlvLog("leash: " + note); }
-        // a nicety, not a requirement: the collar's own pull keeps her in range. Low-frequency (every ~6 s), only when he is
-        // beyond a comfortable distance, and never while seated; if the walk fails the pull handles it.
-        if (!leashWalk || ++leashWalkTick % 3 != 0) return;
-        if (h.av != null && client.Self.SittingOn == 0 && followId != l.holder && LeashShouldWalk(h.dist, leashLength))
-        {
-            followDistThis = LeashWalkDist(leashLength); followId = l.holder; followName = l.holderName;
-            RlvLog($"leash: walking after {l.holderName} (keep within {followDistThis:F1} m)");
-        }
+        // keeping up on my own legs: LeashWalk.cs (4 Hz walk/run toward him past 0.8x the leash, walk anim during the pull)
     }
 
     static string LeashCmd(string rest)

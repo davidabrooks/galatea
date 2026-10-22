@@ -47,7 +47,7 @@ def dof_subject(view, heads):
     """David 2026-10-14: DOF only when the photo has an avatar subject (`self` portrait, David, a named avatar);
     scenery / `view` / an object target stay sharp everywhere"""
     v = view or ""
-    if v.startswith("portrait"): return True
+    if v.startswith("portrait") or v.startswith("headshot"): return True
     return v.startswith("at:") and v[3:] in (heads or {})
 
 def roughness_floor(r):
@@ -462,10 +462,22 @@ def build(group, bones=None, lining=True):
         ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs, hold))
         obs.append(ob)
         if group.startswith("avatar"): ob["gt_avatar"] = 1   # avatar key light (photo hd under a roof) links to these
+        if HD and group.startswith("avatar"):
+            # 2026-10-21 profile headshot: a crisp grey "squiggle" beside her mouth (and nowhere in the bake, normal or spec map, or in
+            # an emission-only render) = Cycles' shadow terminator: SL avatar meshes are low-poly with smoothed normals, so shadow rays
+            # from the flat triangles self-intersect on a smile crease. Offsetting the shadow ray origin (Blender's terminator fix) removes
+            # it; the viewer has no such artifact. photo hd only (quick looks unchanged)
+            ob.cycles.shadow_terminator_geometry_offset = 1.0; ob.cycles.shadow_terminator_offset = 0.2
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
         # shadow drew a grey "text" mark beside her nose. The SL viewer's sun shadow map is far too coarse to resolve them.
         # ponytail: decided per texture alpha; ceiling = no hair shadow on her neck
         if see_through:
+            ob.visible_shadow = False
+        # 2026-10-21 ocean portrait: a near-black patch at the front of her part = the hair's blended scalp layer (texture brown 114)
+        # lying 1-3 mm under the alpha-MASK strand copy, shadowed by it. Cut-out avatar parts (alpha-masked, textured, not a bake: hair,
+        # lashes) cast no shadow either, like the blended ones (the viewer's shadow map can't resolve them). GT_MASK_HAIR_SHADOW=1 = old.
+        elif (HD and group.startswith("avatar") and (b.get("mat") or {}).get("alpha") == "mask" and not b["tex"].startswith("bake:")
+              and tn and has_alpha(tn) and os.environ.get("GT_MASK_HAIR_SHADOW", "0") != "1"):
             ob.visible_shadow = False
         # the backdrop is seen and casts sun shadow, but takes no part in the near scene's bounce light or reflections:
         # the near scene lights exactly as before the backdrop (ponytail: no bounce light off far walls; ceiling = a sunlit
@@ -543,6 +555,9 @@ def lens_for_vfov(vfov_deg, rx, ry):
     """Blender lens (mm) for a vertical field of view; sensor_fit AUTO puts the 36 mm sensor on the long side"""
     sh = 36.0 * (ry / rx if rx >= ry else 1.0)
     return sh / (2 * math.tan(math.radians(vfov_deg) / 2))
+
+# head-and-shoulders photo hd: portrait-lens view angle; frame height and frame centre below her head, as fractions of her height
+HEADSHOT_FOV = 28.0; HEADSHOT_SPAN = 0.20; HEADSHOT_DROP = 0.012
 
 def hd_fov():
     """photo hd vertical FOV in degrees (GT_HD_FOV, default 60 = Firestorm's camera), None outside photo hd"""
@@ -769,6 +784,9 @@ def eep(env):
 INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "2"))   # 2026-10-19: 5 painted red/orange pools over the green-gray club floor vs David's reference; 2 + ambient 0.9 reads closer   # SL point/spot light energy x this when the camera is under a roof; 1 = off
 PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "1"))   # projector ambiance fill (x the direct term), 0 = off (the old behaviour)
 
+# 2026-10-21 David (profile headshot "needs to be quite a bit brighter"): a headshot portrait gets the same avatar-only key light outdoors
+# too, full strength when her face is in shade, HEADSHOT_KEY_SUNLIT of it in direct sun (a portrait fill); under a roof AVATAR_KEY as before
+HEADSHOT_KEY = float(os.environ.get("GT_HEADSHOT_KEY", "12")); HEADSHOT_KEY_SUNLIT = 0.4
 AVATAR_KEY = float(os.environ.get("GT_AVATAR_KEY", "18"))   # 2026-10-20 David: 25 -> 18 (4K Warehouse 21: her jeans/skin highlights near clipping). photo hd under a roof: avatar-only key light, W per m^2 of distance; 0 = off
 
 def avatar_key_light():
@@ -777,25 +795,40 @@ def avatar_key_light():
     the camera lights the AVATARS only (Cycles light linking: receivers and blockers = the avatar objects), so the room, floor and
     walls keep their own lighting and no extra shadow falls on the world. Energy scales with the distance squared (same look at any
     framing). Applies to every avatar in every layered pass (base: her; batches: theirs)."""
-    if not HD or AVATAR_KEY <= 0 or not sc.camera or not under_roof(): return
+    headshot = os.environ.get("GT_VIEW", "").startswith("headshot")
+    if not HD or not sc.camera: return
+    roof = under_roof()
+    if roof: k = AVATAR_KEY
+    elif headshot: k = HEADSHOT_KEY * (1.0 if face_in_shade() else HEADSHOT_KEY_SUNLIT)
+    else: return
+    if k <= 0: return
     avs = [o for o in sc.objects if o.type == "MESH" and o.get("gt_avatar")]
     if not avs: return
     coll = bpy.data.collections.get("gt_avatar_key") or bpy.data.collections.new("gt_avatar_key")
     for o in avs:
         if o.name not in coll.objects: coll.objects.link(o)
     cam = sc.camera.matrix_world.translation.copy()
-    tgt = Vector(M.get("me") or cam) + Vector((0.0, 0.0, 1.2))
+    tgt = Vector(sc.camera["focus_target"]) if headshot and sc.camera.get("focus_target") is not None else Vector(M.get("me") or cam) + Vector((0.0, 0.0, 1.2))
     d = max(1.0, (tgt - cam).length)
     up = Vector((0.0, 0.0, 1.0)); fwd = (tgt - cam).normalized(); side = fwd.cross(up).normalized() if abs(fwd.z) < 0.99 else Vector((1.0, 0.0, 0.0))
     pos = cam + up * (0.35 * d) - side * (0.25 * d)
     L_ = bpy.data.lights.new("gt_avatar_key", "AREA"); L_.shape = "DISK"; L_.size = max(1.0, 0.5 * d)
-    L_.color = (1.0, 0.9, 0.8); L_.energy = AVATAR_KEY * d * d
+    L_.color = (1.0, 0.9, 0.8); L_.energy = k * d * d
     o = bpy.data.objects.new("gt_avatar_key", L_); o.location = pos
     o.rotation_euler = (tgt - pos).to_track_quat("-Z", "Y").to_euler(); sc.collection.objects.link(o)
     try:
         o.light_linking.receiver_collection = coll; o.light_linking.blocker_collection = coll
     except AttributeError as e: log("avatar key light: no light linking", e)
     log("avatar key light", round(L_.energy, 1), "W at", round(d, 2), "m on", len(avs), "avatar objects")
+
+def face_in_shade():
+    """headshot: the sun (Cycles SUN lights) can't reach the framing target (her face): a tree, a porch roof or a wall in the way"""
+    t = Vector(sc.camera.get("focus_target", (0, 0, 0))); dg = bpy.context.evaluated_depsgraph_get(); suns = [o for o in sc.objects if o.type == "LIGHT" and o.data.type == "SUN" and o.data.energy > 0]
+    if not suns: return True
+    for lo in suns:
+        dv = lo.matrix_world.to_quaternion() @ Vector((0, 0, 1))
+        if dv.z > 0 and not sc.ray_cast(dg, t + dv * 0.5, dv, distance=500.0)[0]: return False   # 0.5 m out: past her own head and hair
+    return True
 
 def under_roof():
     """camera under geometry within 80 m straight up (a club, a house): Oct 19 2026 Warehouse 21"""
@@ -1011,6 +1044,7 @@ def sky_hd(nt, co, sp, col, env, night):
         col = mixc(md, col, mc.outputs["Color"])
     return col
 
+FOG_COVERAGE = os.environ.get("GT_FOG_COVERAGE", "1") == "1"
 MIST_ERODE = int(os.environ.get("GT_MIST_ERODE", "-1"))   # px; -1 = auto (1 px per 1080 of the frame's short side, at least 1), 0 = off
 HAZE = None   # (k per metre, mist depth m, fog colour) of a batch pass: its ONE per-layer fog fraction is written next to the layer
 
@@ -1058,6 +1092,17 @@ def env_post(env):
         er = nt.nodes.new("CompositorNodeDilateErode"); er.mode = "DISTANCE"; er.distance = -er_px; L(mist, er.inputs[0]); mist = er.outputs[0]
     ex = m("EXPONENT", m("MULTIPLY", mist, -k * D), 0)
     fog = m("MULTIPLY", m("SUBTRACT", 1.0, ex), m("LESS_THAN", mist, 0.9999))
+    if LAYER != "batch" and FOG_COVERAGE:
+        # 2026-10-21 ocean portrait: a grey ghost outline round her hair against the dusk sky. A pixel where a nearly clear blended
+        # hair fringe covers the sky has mist just under 1 (the mean of 0.001 near and 1.0 sky), so the step above gave it the FULL
+        # fog of a surface ~4 km away, while the open sky beside it gets none: the fog colour drew the soft hair layer's outline.
+        # The near surface's share of the pixel is (1 - mist) / (1 - mist of the nearest solid surface around it); fog only that
+        # share, at that surface's own depth. A solid far surface (mist = its neighbours') keeps full fog. GT_FOG_COVERAGE=0 = old.
+        er2 = nt.nodes.new("CompositorNodeDilateErode"); er2.mode = "DISTANCE"
+        er2.distance = -max(er_px, round(min(sc.render.resolution_x, sc.render.resolution_y) / 64)); L(rl.outputs["Mist"], er2.inputs[0])
+        solid = er2.outputs[0]
+        cov = m("MINIMUM", 1.0, m("DIVIDE", m("SUBTRACT", 1.0, rl.outputs["Mist"]), m("MAXIMUM", m("SUBTRACT", 1.0, solid), 1e-4)))
+        fog = m("MULTIPLY", m("SUBTRACT", 1.0, m("EXPONENT", m("MULTIPLY", solid, -k * D), 0)), cov)
     h, _, s = sky_seen(env, (env.get("sun_dir") or [0, 0, 1])[2] < 0)
     s *= indoor_haze()
     if LAYER == "batch":
@@ -1463,6 +1508,21 @@ if kind == "scene":
             # a wall in front of her: stop just before it (cast from her head: a seat or table isn't a wall)
             hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.5, u, distance=max(0.01, e.length - 0.5))
             camera(loc - u * 0.15 if hit else want, mid, lens, (rx, ry))
+        elif view.startswith("headshot"):
+            # `photo hd self headshot` (2026-10-21 David: profile photo): head and shoulders from in front, at a portrait
+            # lens (HEADSHOT_FOV deg vertical unless `fov` was given: 60 deg at ~0.7 m distorts a face); the frame spans
+            # HEADSHOT_SPAN of her height vertically (2026-10-21 David: face dominant, top of the hair to the upper neck), centred HEADSHOT_DROP below her head
+            a = math.radians(yaw + (float(view[9:]) if view.startswith("headshot:") else 0)); f = Vector((math.cos(a), math.sin(a), 0))
+            rx, ry = (int(v) for v in os.environ.get("GT_RES", "2160x3840").split("x"))
+            vfov = float(os.environ.get("GT_HEADSHOT_FOV") or HEADSHOT_FOV)
+            bpy.context.view_layer.update()
+            zs = [(ob.matrix_world @ Vector(c)).z for ob in obs for c in ob.bound_box]; H = min(2.6, max(1.2, max(zs) - min(zs)))   # her height: SL scale varies
+            lens = lens_for_vfov(vfov, rx, ry); span = HEADSHOT_SPAN * H * max(1.0, rx / ry)   # landscape: same height, wider
+            tgt = h - Vector((0, 0, HEADSHOT_DROP * H)); dist = (span / 2) / math.tan(math.radians(vfov) / 2)
+            want = tgt + f * dist; want.z = h.z; e = want - h; u = e.normalized()   # at eye level: the backdrop, not the ground
+            bpy.context.view_layer.update()
+            hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.3, u, distance=max(0.01, e.length - 0.3))
+            camera(loc - u * 0.1 if hit else want, tgt, lens, (rx, ry))
         elif view.startswith("at:"):
             t = view[3:]; tgt = heads.get(t) or Vector([float(v) for v in t.split(",")])
             f = (tgt - h); f.z = 0; f = f.normalized() if f.length > 1e-3 else Vector((1, 0, 0))

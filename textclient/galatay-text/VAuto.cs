@@ -21,6 +21,13 @@ public static partial class Program
         || layers.Any(l => l.t is WearableType.Shirt or WearableType.Undershirt or WearableType.Jacket
                            || (l.t == WearableType.Tattoo && IsClothingLayer(l.name, "") && ChestCoverRx.IsMatch(l.name ?? "")));
     // pure (tested): the outfit a strip started from (null = keep the one already noted, or not a real outfit)
+    // 2026-10-21 (David): redress must NEVER go back into Naked (or an Android outfit); fall back to the last clothed outfit
+    internal static bool IsClothedOutfitName(string n) => !string.IsNullOrWhiteSpace(n) && !IsAndroidOutfit(n) && !Regex.IsMatch(n, @"^\s*naked\b", RegexOptions.IgnoreCase);
+    internal static string RedressTarget(string preStrip, string current, string lastNamed, string lastClothed) =>
+        new[] { preStrip, current, lastNamed, lastClothed }.FirstOrDefault(IsClothedOutfitName)?.Trim();
+    static string LastClothedFile => "/home/box/viewers/textclient/run/last-clothed-outfit.txt";
+    static string LastClothedOutfit() { try { return File.Exists(LastClothedFile) ? File.ReadAllText(LastClothedFile).Trim() : null; } catch { return null; } }
+    static void NoteClothedOutfit(string n) { if (IsClothedOutfitName(n)) try { File.WriteAllText(LastClothedFile, n.Trim()); } catch { } }
     internal static string PreStripCandidate(string already, string current) =>
         already ?? (string.IsNullOrWhiteSpace(current) || IsAndroidOutfit(current) || Regex.IsMatch(current, @"^\s*naked\b", RegexOptions.IgnoreCase) ? null : current.Trim());
     // pure (tested): a fast-chat outfit request while stripped: a random/"get dressed" pick becomes the pre-strip outfit
@@ -75,7 +82,8 @@ public static partial class Program
                 else if (dr == "detach") RlvLog("Nipple rings: " + await DetachItemAsync(NippleRingsItem, "rings auto"));
                 var d = VDecision(covered, vWorn, outfit, lastOutfitHasV);
                 RlvLog($"The V ({why}): groin {(covered ? "covered" : "uncovered")}, The V {(vWorn ? "worn" : "off")}, outfit '{outfit}'{(lastOutfitHasV ? " (includes The V)" : "")} -> {d ?? "no change"}");
-                if (d == "wear") RlvLog("The V: " + await Exec("wear add " + TheVItem));
+                if (d == "wear" && VAutoPaused()) RlvLog("The V: auto-wear paused (v pause), not re-attaching");
+                else if (d == "wear") RlvLog("The V: " + await Exec("wear add " + TheVItem));
                 else if (d == "detach") RlvLog("The V: " + await DetachItemAsync(TheVItem, "the v auto"));
             }
             catch (Exception ex) { RlvLog("The V check failed: " + ex.GetBaseException().Message); }
@@ -84,7 +92,7 @@ public static partial class Program
 
     static async Task<string> RedressCmd()
     {
-        var name = preStripOutfit ?? lastNamedOutfit; if (preStripOutfit == null && IsAndroidOutfit(currentOutfit) is false && !string.IsNullOrWhiteSpace(currentOutfit) && !Regex.IsMatch(currentOutfit, @"^\s*naked\b", RegexOptions.IgnoreCase)) name = currentOutfit;
+        var name = RedressTarget(preStripOutfit, currentOutfit, lastNamedOutfit, LastClothedOutfit());
         if (string.IsNullOrWhiteSpace(name)) return "no outfit to go back to (none worn by name yet)";
         RlvLog($"redress: back into '{name}'");
         return await WearOutfitWithHuds(name, keepColor: true);

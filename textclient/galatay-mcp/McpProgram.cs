@@ -164,7 +164,7 @@ public sealed class SlTools
     [McpServerTool(Name = "stop_animations"), Description("Stop every animation playing on me and pause the wander. A worn AO in dance mode restarts dances: toggle it on the HUD with touch_attachment first.")]
     public static Task<string> StopAnimations() => R("stopanims");
 
-    [McpServerTool(Name = "touch_attachment"), Description("Touch one prim/face of a worn attachment or HUD ('ao' = the Vista AO HUD). link = link number or prim name; omit link to list the attachment's child prims (names, link numbers). Never for anything involving payment.")]
+    [McpServerTool(Name = "touch_attachment"), Description("Touch one prim/face of a worn attachment or HUD ('ao' = the Vista AO HUD). link = link number or prim name; omit link to list the attachment's child prims (names, link numbers). Note: multi-page HUDs (e.g. Maitreya) only react to buttons on the page they are showing: open the page (tab bar) first; for Maitreya alpha use maitreya_show_all. Never for anything involving payment.")]
     public static Task<string> TouchAttachment([Description("attachment name, or 'ao'")] string attachment, [Description("link number or prim name; empty = list prims")] string link = "", int face = -1, [Description("optional touch UV 'u,v'")] string st = "")
     {
         var at = Clean(attachment).Replace("\"", ""); var l = Clean(link).Replace("\"", "");
@@ -233,6 +233,10 @@ public sealed class SlTools
     [McpServerTool(Name = "outfit_wear"), Description("Change into a saved outfit from My Outfits by name (the always-wear collar stays on; Android* outfits also turn the collar's Stealth on).")]
     public static Task<string> OutfitWear(string name) => R("outfit wear " + Clean(name));
 
+    [McpServerTool(Name = "idle_pose"), Description("Idle pose (IdlePose.cs): action status | on | off | now [collar|groundsit] | stop | idle <seconds> | aomap <face> <u,v> (map the Martha AO 'force sitg' button). Collar visible or a visible leash -> a random collar pose (cutie/coy/kneel/nadu/pretty/shy/tower), cleared with the Pose menu's STOP before any movement; collar hidden and no visible leash -> AO ground sit.")]
+    public static Task<string> IdlePose([Description("status | on | off | now [collar|groundsit] | stop | idle <s> | aomap <face> <u,v>")] string action = "status") => R("idlepose " + Clean(action));
+    [McpServerTool(Name = "texture_save"), Description("READ-ONLY: download one texture by uuid and save it as a PNG under /workspace/secondlife/textures/ (e.g. to read a HUD's button labels).")]
+    public static Task<string> TextureSave(string uuid) => R("texture save " + Clean(uuid));
     [McpServerTool(Name = "collar_stealth"), Description("Make my N° 9 collar invisible: its own menu About -> Stealth, pressed only if not already on. Changes nothing else.")]
     public static Task<string> CollarStealth() => R("collar stealth");
 
@@ -264,6 +268,32 @@ public sealed class SlTools
         if (n.Contains("NX", StringComparison.OrdinalIgnoreCase) || n.Contains("Remote", StringComparison.OrdinalIgnoreCase)) return Json(new { ok = false, result = "refused: the NX Remote is never worn" });
         return await R("wear add " + Clean(item_uuid));
     }
+
+    [McpServerTool(Name = "chan_say"), Description("Say text on a NON-zero chat channel (e.g. 95 for Maitreya auto-hide commands like 'jeans menu'). Channel 0 is refused: use say.")]
+    public static Task<string> ChanSay(int channel, string text)
+        => channel == 0 ? Task.FromResult(Json(new { ok = false, result = "refused: channel 0 is local chat; use say" })) : R($"chan {channel} {Clean(text)}");
+
+    [McpServerTool(Name = "body_reattach"), Description("Reset the Maitreya body's alpha segments: detach the body and re-attach it immediately at the same point (HUD/add-ons untouched).")]
+    public static Task<string> BodyReattach() => R("body reattach");
+    [McpServerTool(Name = "cof_unlink"), Description("Remove ONE Current Outfit link by exact name or link uuid (e.g. a stray folder link) and rebake. Protected items (collar, body, AO...) are refused.")]
+    public static Task<string> CofUnlink(string name_or_uuid) => R("cof unlink " + Clean(name_or_uuid));
+
+    [McpServerTool(Name = "v_pause"), Description("on = stop auto re-attaching The V (persists across relogs), off = resume, empty = show state.")]
+    public static Task<string> VPause(string state = "") => R("v pause " + Clean(state));
+
+    [McpServerTool(Name = "force_rebake"), Description("Firestorm 'Rebake Textures' equivalent, forced: bump the COF version, POST cof_version to UpdateAvatarAppearance (retry with the server's expected version), return the raw response and bake texture ids.")]
+    public static Task<string> ForceRebake() => R("force rebake");
+    [McpServerTool(Name = "attachment_faces"), Description("READ-ONLY: per-face TextureEntry (color alpha, rgb, texture) of every prim in a worn attachment; filter = prim name substring.")]
+    public static Task<string> AttachmentFaces(string attachment, string filter = "") => R($"att faces {Clean(attachment).Replace("|", "")}|{Clean(filter).Replace("|", "")}");
+
+    [McpServerTool(Name = "outfits_collar"), Description("Make sure EVERY saved outfit in My Outfits has a link to the N° 9 collar (adds missing ones); check=true only reports. Returns each outfit: yes/added/NO.")]
+    public static Task<string> OutfitsCollar(bool check = false) => R("outfits collar" + (check ? " check" : ""));
+
+    [McpServerTool(Name = "outfit_save"), Description("Save what I wear now as a new outfit in My Outfits (links; the N° 9 collar link is always included).")]
+    public static Task<string> OutfitSave(string name) => R("outfit create " + Clean(name));
+
+    [McpServerTool(Name = "maitreya_show_all"), Description("Unhide every Maitreya body segment: opens the HUD's alpha page (tab bar), presses Show all, and reports hidden 'hide:N' buttons before/after.")]
+    public static Task<string> MaitreyaShowAll() => R("maitreya show all");
 
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)

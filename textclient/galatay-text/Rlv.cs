@@ -146,7 +146,11 @@ public static partial class Program
         return null;
     }
 
-    internal sealed record RlvWorn(UUID Item, UUID Prim, string Name, int Point);
+    internal sealed record RlvWorn(UUID Item, UUID Prim, string Name, int Point, string InvName = null);
+    internal static bool RlvNameIs(RlvWorn w, string n) => string.Equals(w.Name, n, StringComparison.OrdinalIgnoreCase) || string.Equals(w.InvName, n, StringComparison.OrdinalIgnoreCase);
+    // pure (tested): a COF/inventory LINK id given to @detach/@remattach means its target item
+    internal static string RlvResolveOpt(string opt, IReadOnlyDictionary<UUID, UUID> linkTargets)
+        => UUID.TryParse(opt, out var u) && linkTargets != null && linkTargets.TryGetValue(u, out var t) ? t.ToString() : opt;
     // pure (tested): which worn attachments a @detach[:opt]=force takes off. Never: protected items (always-wear collar,
     // keep-attached, AO), detach-locked sources, body/head/hair, HUDs. opt = point name or exact object name ("" = all).
     internal static List<RlvWorn> RlvDetachPlan(IEnumerable<RlvWorn> worn, string opt, ISet<UUID> protectedItems, ISet<UUID> lockedPrims)
@@ -155,7 +159,7 @@ public static partial class Program
         bool byId = UUID.TryParse(opt, out var oid);   // RLVa: @detach/@remattach:<object uuid> = that worn attachment
         return worn.Where(w => w.Item != UUID.Zero && !protectedItems.Contains(w.Item) && !lockedPrims.Contains(w.Prim)
                                && OutfitGroup(w.Name) == null && !(w.Point >= 31 && w.Point <= 38)
-                               && (opt.Length == 0 || (byId ? w.Prim == oid || w.Item == oid : pt >= 0 ? w.Point == pt : string.Equals(w.Name, opt, StringComparison.OrdinalIgnoreCase))))
+                               && (opt.Length == 0 || (byId ? w.Prim == oid || w.Item == oid : pt >= 0 ? w.Point == pt : RlvNameIs(w, opt))))
                    .ToList();
     }
 
@@ -203,6 +207,9 @@ public static partial class Program
             _ = Task.Run(async () => { while (true) { await Task.Delay(15000); try { RlvSweep(); } catch { } } });
             RlvHoldLoopRun();
             LeashLoopRun();    // Leash.cs
+            LeashPullLoopRun(); // LeashPull.cs: invisible leash = the collar pulls me
+            IdlePoseLoopRun(); // IdlePose.cs: idle collar pose / AO ground sit
+            LeashWalkLoopRun(); // LeashWalk.cs: keep up on my own legs while leashed
         }
     }
 
@@ -304,10 +311,11 @@ public static partial class Program
             case "detach": case "remattach": case "detachall":
             {
                 var worn = await RlvWornList();
+                o = RlvResolveOpt(o, RlvLinkTargets(o));
                 List<RlvWorn> plan;
-                if (b == "detach" && o.Length > 0 && RlvPointIndex(o) < 0 && !worn.Any(w => string.Equals(w.Name, o, StringComparison.OrdinalIgnoreCase)) && await RlvWornLayerNamed(o))
+                if (b == "detach" && o.Length > 0 && RlvPointIndex(o) < 0 && !worn.Any(w => RlvNameIs(w, o)) && await RlvWornLayerNamed(o))
                     return await RlvForce("remoutfit", o);
-                bool folder = b == "detachall" || (o.Length > 0 && !UUID.TryParse(o, out _) && RlvPointIndex(o) < 0 && !worn.Any(w => string.Equals(w.Name, o, StringComparison.OrdinalIgnoreCase)));
+                bool folder = b == "detachall" || (o.Length > 0 && !UUID.TryParse(o, out _) && RlvPointIndex(o) < 0 && !worn.Any(w => RlvNameIs(w, o)));
                 if (folder)
                 {
                     if (o.Length == 0) return "detachall needs a folder";
@@ -325,6 +333,7 @@ public static partial class Program
                     return "detached " + string.Join(", ", plan.Select(w => "'" + w.Name + "'"));
                 }, cts.Token);
             }
+            case "adjustheight": return await RlvAdjustHeight(o);   // RlvAdjustHeight.cs
             default: return "unsupported force (not done)";
         }
     }
@@ -420,7 +429,14 @@ public static partial class Program
     static async Task<List<RlvWorn>> RlvWornList()
     {
         var roots = WornPrims(); try { await EnsureProperties(Sim, roots); } catch { }
-        return roots.Select(r => new RlvWorn(AttachItemId(r), r.ID, r.Properties?.Name ?? "", (int)r.PrimData.AttachmentPoint)).ToList();
+        return roots.Select(r => { var it = AttachItemId(r); return new RlvWorn(it, r.ID, r.Properties?.Name ?? "", (int)r.PrimData.AttachmentPoint, RlvInvName(it)); }).ToList();
+    }
+    static string RlvInvName(UUID item) { try { return item != UUID.Zero && client.Inventory.Store.Contains(item) ? client.Inventory.Store[item]?.Name : null; } catch { return null; } }
+    static Dictionary<UUID, UUID> RlvLinkTargets(string opt)
+    {
+        var d = new Dictionary<UUID, UUID>();
+        try { if (UUID.TryParse(opt, out var u) && client.Inventory.Store.Contains(u) && client.Inventory.Store[u] is InventoryItem i && i.IsLink()) d[u] = i.AssetUUID; } catch { }
+        return d;
     }
 
     // prims that hold @detach=n on themselves (locked), and their items for outfit protection

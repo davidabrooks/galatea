@@ -23,7 +23,7 @@ def test_self_defaults_portrait_scene_landscape():
 
 def test_explicit_and_bad_orientation():
     assert look.hd_settings("landscape", "self")[0] == "landscape"
-    with pytest.raises(ValueError): look.hd_settings("square", "self")
+    with pytest.raises(ValueError): look.hd_settings("squarish", "self")
 
 def test_cached_fallback_picks_largest(tmp_path):
     u = "8c08ee8c-a5a0-0424-7708-688d5aaf351e"
@@ -36,7 +36,7 @@ def test_hd_scene_samples_default():
 
 def test_hd_self_renders_the_scene_not_the_studio():
     src = open(os.path.join(ROOT, "look.py")).read()
-    assert 'photo_self = bool(hd) and mode == "self"' in src and 'view = "portrait" if photo_self' in src
+    assert 'photo_self = bool(hd) and mode == "self"' in src and '"portrait") if photo_self' in src
     assert 'if mode == "self" and not hd else ["scene"]' in src
     rm = open(os.path.join(ROOT, "cloud-render", "render_mesh.py")).read()
     assert 'if view.startswith("portrait"):' in rm

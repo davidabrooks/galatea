@@ -104,7 +104,7 @@ public static partial class Program
         foreach (var p in WornPrims())
         {
             var n = p.Properties?.Name ?? "";
-            if (IsN9CollarName(n) || n.Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase) || n.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase))
+            if (n.Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase) || n.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase))
             { var it = AttachItemId(p); if (it != UUID.Zero) s.Add(it); }
         }
         return s;
@@ -130,32 +130,13 @@ public static partial class Program
         try { var f = Path.Combine(RouteDir, "_always-wear.txt"); if (File.Exists(f)) txt = File.ReadAllText(f); } catch { }
         return AlwaysWearIdsFrom(txt);
     }
-    // 2026-10-21 (David): after the box move _always-wear.txt was briefly missing and an outfit swap took the collar off.
-    // The N° 9 Premium collar is hard-coded as a fallback: always-wear even with no/damaged file.
+    // The N° 9 Premium collar item (2026-10-21 David: a link to it lives in EVERY saved outfit folder; see OutfitCollarLinks.cs)
     internal static readonly UUID N9CollarItem = new("3ef84661-1c82-37e3-97e2-8d1b4271dde8");
-    internal static bool IsN9CollarName(string n) => n != null && n.Contains("Premium Collar", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(n, @"No\.? ?9|N° ?9", RegexOptions.IgnoreCase);
-    // pure (tested): the always-wear list from the file text (null = missing), never without the collar
+    // pure (tested): the always-wear list from routes/_always-wear.txt (null = missing)
     internal static List<UUID> AlwaysWearIdsFrom(string fileText)
     {
-        List<UUID> l; try { l = fileText == null ? new() : ParseKeepAttached(fileText); } catch { l = new(); }
-        if (!l.Contains(N9CollarItem)) l.Add(N9CollarItem);
-        return l;
+        try { return fileText == null ? new() : ParseKeepAttached(fileText); } catch { return new(); }
     }
-    // after every outfit change: the collar must be on; re-attach (ADD) if not, and log it
-    static void CollarEnsureSoon(string why) => _ = Task.Run(async () =>
-    {
-        try
-        {
-            await Task.Delay(8000);
-            if (!LoggedIn) return;
-            var worn = WornPrims();
-            if (worn.Any(p => AttachItemId(p) == N9CollarItem || IsN9CollarName(p.Properties?.Name))) return;
-            Log("outfit", $"COLLAR GUARD: the N° 9 collar is not worn after '{why}': re-attaching it");
-            var r = await Exec($"wear add {N9CollarItem}");
-            Log("outfit", $"COLLAR GUARD: re-attach -> {r?.Replace('\n', ' ')}");
-        }
-        catch (Exception ex) { Log("outfit", "COLLAR GUARD error: " + ex.GetBaseException().Message); }
-    });
     // pure (tested): always-wear items to attach for this outfit = listed and not worn now (outfit-independent)
     internal static List<UUID> AlwaysWearMissing(IEnumerable<UUID> wornItems, IEnumerable<UUID> alwaysWear)
     { var w = wornItems.ToHashSet(); return alwaysWear.Where(a => a != UUID.Zero && !w.Contains(a)).Distinct().ToList(); }
@@ -180,10 +161,11 @@ public static partial class Program
 
     // Wear a My Outfits folder without stacking (see header). Returns a report.
     static async Task<string> OutfitWearSafe(InventoryFolder folder, CancellationToken ct)
-        => await WithWardrobe($"outfit wear '{folder.Name}'", async () => { var r = await OutfitWearSafeLocked(folder, ct); WardrobeDressed(folder.Name); CollarStealthAfterOutfit(folder.Name); CollarEnsureSoon("outfit " + folder.Name); currentOutfit = folder.Name; preStripOutfit = null; VAutoCheckSoon("outfit " + folder.Name); return r; }, ct);
+        => await WithWardrobe($"outfit wear '{folder.Name}'", async () => { var r = await OutfitWearSafeLocked(folder, ct); WardrobeDressed(folder.Name); CollarStealthAfterOutfit(folder.Name); currentOutfit = folder.Name; NoteClothedOutfit(folder.Name); preStripOutfit = null; VAutoCheckSoon("outfit " + folder.Name); return r; }, ct);
 
     static async Task<string> OutfitWearSafeLocked(InventoryFolder folder, CancellationToken ct)
     {
+        await IdlePoseExitAsync("outfit change");   // IdlePose.cs
         var sb = new StringBuilder();
         outfitChangeUntil = DateTime.Now.AddSeconds(60);
         try

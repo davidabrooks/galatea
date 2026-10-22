@@ -51,6 +51,18 @@
     <Compile Include="../galatay-text/RlvPlace.cs" Link="Core/RlvPlace.cs" />
     <Compile Include="../galatay-text/Leash.cs" Link="Core/Leash.cs" />
     <Compile Include="../galatay-text/CofPurge.cs" Link="Core/CofPurge.cs" />
+    <Compile Include="../galatay-text/MaitreyaShowAll.cs" Link="Core/MaitreyaShowAll.cs" />
+    <Compile Include="../galatay-text/LeashPull.cs" Link="Core/LeashPull.cs" />
+    <Compile Include="../galatay-text/LeashWalk.cs" Link="Core/LeashWalk.cs" />
+    <Compile Include="../galatay-text/LoginJoin.cs" Link="Core/LoginJoin.cs" />
+    <Compile Include="../galatay-text/RlvAdjustHeight.cs" Link="Core/RlvAdjustHeight.cs" />
+    <Compile Include="../galatay-text/IdlePose.cs" Link="Core/IdlePose.cs" />
+    <Compile Include="../galatay-text/AutoHover.cs" Link="Core/AutoHover.cs" />
+    <Compile Include="../galatay-text/OutfitCollarLinks.cs" Link="Core/OutfitCollarLinks.cs" />
+    <Compile Include="../galatay-text/AttFaces.cs" Link="Core/AttFaces.cs" />
+    <Compile Include="../galatay-text/ForceRebake.cs" Link="Core/ForceRebake.cs" />
+    <Compile Include="../galatay-text/BodyReattach.cs" Link="Core/BodyReattach.cs" />
+    <Compile Include="../galatay-text/CofUnlink.cs" Link="Core/CofUnlink.cs" />
     <Compile Include="../galatay-text/VAuto.cs" Link="Core/VAuto.cs" />
     <Compile Include="../galatay-text/AlphaFollow.cs" Link="Core/AlphaFollow.cs" />
     <Compile Include="../galatay-text/CollarStealth.cs" Link="Core/CollarStealth.cs" />

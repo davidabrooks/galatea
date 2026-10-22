@@ -11,6 +11,8 @@ usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
   self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
   --views (self) only the full body, from each listed side / angle (degrees counter-clockwise from her front: 90 = her
           left, 180 = her back); all = front, back, left, right. One image per view: ...-self-body-<side|NNdeg>.jpg
+  --headshot (self --hd) head and shoulders from in front at a portrait lens (28 deg vertical; --fov overrides) instead of the whole body;
+          2048x2048 square by default (--hd=landscape keeps 16:9), brighter avatar-only key light (render_mesh HEADSHOT_KEY)
   --far   also the backdrop (scenery 30-96 m at a screen-size LOD, region terrain, water, sky gradient; needs a 96 m
           export). Off by default (David 2026-10-04: her renders are for her own needs, speed first): near scene only.
 Prints one image path per line (then a JSON summary line). Read-only: never talks to SL; only CDN asset GETs.
@@ -31,9 +33,10 @@ OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
 VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
 PHOTO_OUT = os.environ.get("GT_PHOTO_OUT", "/workspace/secondlife/photos")
-HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
-if os.environ.get("GT_HD_RES"):   # test hook: a smaller "HD" frame (WxH, landscape; portrait is transposed)
-    _w, _h = os.environ["GT_HD_RES"].split("x"); HD_RES = {"landscape": f"{_w}x{_h}", "portrait": f"{_h}x{_w}"}
+# square: the headshot portrait (2026-10-21 David: profile pictures, 2048x2048 = Second Life's largest texture)
+HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840", "square": "2048x2048"}
+if os.environ.get("GT_HD_RES"):   # test hook: a smaller "HD" frame (WxH, landscape; portrait is transposed; square = HxH)
+    _w, _h = os.environ["GT_HD_RES"].split("x"); HD_RES = {"landscape": f"{_w}x{_h}", "portrait": f"{_h}x{_w}", "square": f"{_h}x{_h}"}
 
 # render profiles = David's Firestorm graphics presets (2026-10-13). highplus = his photo preset "High+" (screenshots):
 # textures max 2048, tonemap ACES mix 0.0, CAS sharpening 0.4, exposure 1.0, draw distance 128, LOD volume 2.0 / avatar 1.0 /
@@ -211,6 +214,38 @@ def lod_args(env):
 def mesher_args(d, mode, me, far, radius=96):
     """far: everything to the export radius (photo hd: the profile's draw distance, 96-256 m), full LOD inside 30 m"""
     return [d, "12", "avatar"] if mode == "self" else [d, "12", "all", ",".join(str(v) for v in me)] + ([str(int(max(96, radius or 96))), "--far=30"] if far else ["30", "--roots=32"])
+
+def mesh_under_roof(meta, binpath, height=80.0):
+    """render_mesh.under_roof on the mesher output, before Blender: any non-avatar triangle straight above her head (agent
+    position + 1.8 m) within `height` m"""
+    import numpy as np
+    x, y, z = meta["me"][0], meta["me"][1], meta["me"][2] + 1.8
+    buf = open(binpath, "rb").read()
+    for b in meta["batches"]:
+        if str(b.get("group", "")).startswith("avatar") or not b.get("ni"): continue
+        nv, ni, o = b["nv"], b["ni"], b["offset"]
+        P = np.frombuffer(buf, np.float32, nv * 3, o).reshape(-1, 3); I = np.frombuffer(buf, np.uint32, ni, o + nv * 32).reshape(-1, 3)
+        if P[:, 2].max() < z or P[:, 0].min() > x or P[:, 0].max() < x or P[:, 1].min() > y or P[:, 1].max() < y: continue
+        A, B, C = P[I[:, 0]], P[I[:, 1]], P[I[:, 2]]
+        d = (B[:, 0] - A[:, 0]) * (C[:, 1] - A[:, 1]) - (C[:, 0] - A[:, 0]) * (B[:, 1] - A[:, 1]); ok = np.abs(d) > 1e-12
+        u = ((x - A[:, 0]) * (C[:, 1] - A[:, 1]) - (C[:, 0] - A[:, 0]) * (y - A[:, 1])) / np.where(ok, d, 1)
+        v = ((B[:, 0] - A[:, 0]) * (y - A[:, 1]) - (x - A[:, 0]) * (B[:, 1] - A[:, 1])) / np.where(ok, d, 1)
+        hz = A[:, 2] + u * (B[:, 2] - A[:, 2]) + v * (C[:, 2] - A[:, 2])
+        if np.any(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (hz > z) & (hz < z + height)): return True
+    return False
+
+def golden_hour_env(doc, env, portrait, sky):
+    """2026-10-21 David's beach portrait exported after sunset: an outdoor photo hd portrait (self) with the sun below the horizon and
+    no named sky gets golden hour instead of night: the `sunset` preset, its sun turned to the export's sun azimuth. None when it
+    doesn't apply (the caller also checks she is not under a roof: mesh_under_roof)"""
+    if not (portrait and env and not sky and env.get("sun_dir") and env["sun_dir"][2] < 0): return None
+    import math
+    g = llsky.preset_env("sunset", doc); sd = g["sun_dir"]; alt = math.asin(max(-1.0, min(1.0, sd[2])))
+    az = math.atan2(env["sun_dir"][1], env["sun_dir"][0])
+    g["sun_dir"] = [math.cos(az) * math.cos(alt), math.sin(az) * math.cos(alt), math.sin(alt)]
+    if g.get("moon_dir"): g["moon_dir"] = [-v for v in g["sun_dir"]]
+    g["source"] = "golden-hour:" + str(env.get("source") or "shared")
+    return g
 
 def mesher_env(base):
     """The text client runs under a 512 MB .NET heap cap (DOTNET_GCHeapHardLimit) and look.py inherits it; a crowd mesh
@@ -583,7 +618,7 @@ def crowd_summary(others):
 
 def main(a):
     install_cancel_handlers()
-    fast, far = "--fast" in a, "--far" in a; a = [x for x in a if x not in ("--fast", "--far")]
+    fast, far, headshot = "--fast" in a, "--far" in a, "--headshot" in a; a = [x for x in a if x not in ("--fast", "--far", "--headshot")]
     hd_arg = next(((x.split("=", 1)[1] if "=" in x else "") for x in a if x == "--hd" or x.startswith("--hd=")), None)
     a = [x for x in a if not (x == "--hd" or x.startswith("--hd="))]
     profile = next((x.split("=", 1)[1] for x in a if x.startswith("--profile=")), DEFAULT_PROFILE)
@@ -597,12 +632,15 @@ def main(a):
     except ValueError as e: sys.exit(str(e))
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
+    if headshot and hd_arg == "": hd_arg = "square"   # headshot default frame (--hd=landscape|portrait still wins)
     try: hd, hd_env = hd_settings(hd_arg, mode, profile, no)
     except ValueError as e: sys.exit(str(e))
+    if headshot and not (hd and mode == "self"): sys.exit("--headshot needs self --hd (head and shoulders photo)")
     if hd and fov:   # `photo hd ... fov <deg>`
         try: f = float(fov); assert 10 <= f <= 120
         except (ValueError, AssertionError): sys.exit(f"bad fov '{fov}' (10..120 degrees, vertical)")
         hd_env["GT_HD_FOV"] = f"{f:g}"
+        if headshot: hd_env["GT_HEADSHOT_FOV"] = f"{f:g}"
     if sky and sky.lower() != "shared" and sky.lower() not in llsky.presets():
         sys.exit(f"unknown sky preset '{sky}' (shared, {', '.join(sorted(llsky.presets()))})")
     if hd: fast = False; os.environ.update({k: v for k, v in hd_env.items() if k.startswith("GT_TEX_CAP")})
@@ -631,7 +669,9 @@ def main(a):
     meta = json.load(open(f"{d}/mesh.json")); meta["backdrop"] = far or bool(hd)   # photo hd: the sky gradient too
     # environment (David 2026-10-13): photo hd follows the shared (parcel/region) EEP environment, or the named preset
     # (--sky=sunset); her own quick looks ignore it entirely: fixed neutral sun + sky, whatever the time of day
-    meta["env"] = env_for(doc, hd, sky)
+    meta["env"] = env_for(doc, hd, sky); gold = golden_hour_env(doc, meta["env"], photo_self, sky)
+    if gold and not mesh_under_roof(meta, f"{d}/mesh.bin"):
+        meta["env"] = gold; print("photo hd portrait: sun below the horizon outdoors -> golden hour (sunset sky, sun azimuth kept)", file=sys.stderr)
     if far or terrain_hd: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
     tj = (far or terrain_hd) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}  # region heightmap (exports 2026-10-04+)
@@ -671,7 +711,7 @@ def main(a):
         except Exception as e: print(f"projector texture {u}: {e}", file=sys.stderr)
     n_scanned = write_manifest(WORK, {**info.get("tex_paths", {}), **bake_paths, **{k: v for k, v in proj_paths.items() if v}})
     times["manifest"] = round(time.time() - t, 1)
-    view = "portrait" if photo_self else VIEWS.get(mode)
+    view = ("headshot" if headshot else "portrait") if photo_self else VIEWS.get(mode)
     if mode == "at":  # an avatar's name (mesh.json "others") or an object's name (scene.json root prims), first substring match
         who = next((o["name"] for o in meta.get("others", []) if target in o["name"].lower()), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)

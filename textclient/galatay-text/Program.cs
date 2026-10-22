@@ -375,6 +375,8 @@ public static partial class Program
         EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
         VisitorWatchStart(); // visitor_arrival wakes at home (VisitorArrival.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
+        IdlePoseLoginStart(); // clear a leftover collar pose / AO ground sit (IdlePose.cs)
+        LoginJoinStart(); // walk over to David myself + measured placement for the david_login wake (LoginJoin.cs)
         _ = Task.Run(AfterQuickLogin); // quick relog: floor spot beside the furniture, never re-sit (LoginStart.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);
@@ -413,6 +415,7 @@ public static partial class Program
     public static async Task Shutdown(string why)
     {
         if (shuttingDown) return; shuttingDown = true;
+        try { if (LoggedIn) await Task.WhenAny(IdlePoseExitAsync("logout"), Task.Delay(12000)); } catch { }   // IdlePose.cs: never log out posed
         bool deliberate = why == "logout command" || DeliberateStopRequested();
         // 2026-09-26: a signal without a stop request (hang monitor's TERM, a stray kill) exits 75 so the supervisor relaunches
         ExitCode = ShutdownExitCode(why, deliberate, ExitCode);
@@ -1149,8 +1152,8 @@ public static partial class Program
     // (2K tier) before stage 1 and against any price field in the stage-1 reply before the image is sent.
     // Never calls PayUploadFee / any L$ transfer; the server itself charges on stage-2 completion.
     const int MaxPaidUploadL = 50;
-    // one marker per approved upload: paid-upload.done = 16:02 Burne-Jones profile 2K (used); this build = First Life 2K (2026-09-25 evening)
-    static readonly string PaidMarker = "/workspace/secondlife/paid-upload-firstlife.done";
+    // one marker per approved upload: paid-upload.done = 2026-09-25 Burne-Jones profile 2K; paid-upload-firstlife.done = First Life 2K; this build = 2026-10-21 profile 2K (David approved in chat 22:56 PT)
+    static readonly string PaidMarker = "/workspace/secondlife/paid-upload-profile-20261021.done";
 
     static (int w, int h)? J2cDims(byte[] b)
     {
@@ -1159,6 +1162,15 @@ public static partial class Program
         int xs = U32(8), ys = U32(12), xo = U32(16), yo = U32(20);
         return (xs - xo, ys - yo);
     }
+
+    // pure (tests): LL's published 2K upload fee by AgentProfile customer_type; -1 = unknown.
+    // 2026-10-21: "Monthly" (Premium, monthly billing) was charged L$40; the login/stage-1 price of 10 is wrong for 2K.
+    internal static int TwoKFeeFor(string customerType) => customerType switch
+    { "Base" or "Plus" => 50, "Premium" or "Monthly" => 40, "Premium_Plus" or "Premium Plus" or "PremiumPlus" => 0, _ => -1 };
+
+    // pure (tests): stage 2 refused the fee before charging -> the paid-upload guard may be re-armed
+    internal static bool FeeRefusedNoCharge(string state, string message, int? balBefore, int? balAfter) =>
+        state == "failure" && (message ?? "").Contains("different upload fee") && balBefore != null && balAfter == balBefore;
 
     static async Task<(int cost, object info)> TextureCostFor(int w, int h)
     {
@@ -1179,7 +1191,7 @@ public static partial class Program
             // "The server expects a different upload fee"). Use LL's published 2K schedule keyed by the profile's customer_type.
             var (pm, _) = await CapGetProfile();
             customerType = pm?["customer_type"].AsString();
-            cost = customerType switch { "Base" or "Plus" => 50, "Premium" => 40, "Premium_Plus" or "Premium Plus" or "PremiumPlus" => 0, _ => -1 };
+            cost = TwoKFeeFor(customerType);
             source = $"LL 2K schedule for customer_type '{customerType}'";
         }
         return (cost, new
@@ -1272,6 +1284,9 @@ public static partial class Program
         try
         {
             var (cost, info) = await TextureCostFor(w, h);
+            // 2026-10-21: customer_type 'Monthly' (not in the schedule) -> the caller's approved max is sent as the expected fee
+            bool costFromMax = false;
+            if (cost < 0 && w * h > 1024 * 1024) { cost = maxL; costFromMax = true; }
             if (cost < 0) return new { ok = false, result = "could not determine upload price", price_info = info };
             if (cost > maxL) return new { ok = false, result = $"STOPPED: price L${cost} exceeds max L${maxL}; nothing uploaded", price_info = info };
             var folder = await TexturesFolder();
@@ -1314,12 +1329,15 @@ public static partial class Program
             await Task.Delay(2000);
             var balAfter = await BalanceAsync();
             File.AppendAllText(PaidMarker, $"result: HTTP {s2} state {state} asset {newAsset} item {newItem} upload_price {price} balance {balBefore} -> {balAfter}\n");
+            // fee mismatch = server refused before charging: re-arm the guard (marker kept as a record under another name)
+            if (FeeRefusedNoCharge(state, r2?["message"].AsString(), balBefore, balAfter))
+                try { File.Move(PaidMarker, PaidMarker + $".feemismatch-L{cost}-{DateTime.Now:yyyyMMdd-HHmmss}"); } catch { }
             if (newItem != UUID.Zero) try { client.Inventory.RequestFetchInventory(newItem, client.Self.AgentID); } catch { }
             return new
             {
                 ok = s2 >= 200 && s2 < 300 && state == "complete" && newAsset != UUID.Zero,
                 http_status = s2, state, new_asset = newAsset.ToString(), new_inventory_item = newItem.ToString(), upload_price = price,
-                expected_cost = cost, price_info = info, textures_folder = folder.ToString(), name, width = w, height = h, bytes = bytes.Length,
+                expected_cost = cost, cost_from_max = costFromMax, price_info = info, textures_folder = folder.ToString(), name, width = w, height = h, bytes = bytes.Length,
                 stage1_reply = stage1Reply, reply = SafeKeys(r2), raw = raw2, balance_before = balBefore, balance_after = balAfter
             };
         }
@@ -1835,6 +1853,7 @@ public static partial class Program
                 Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}");
                 return "ok";
             }
+            case "body" when a.Length >= 1 && a[0] == "reattach": return await BodyReattachCmd();
             case "chan":
             {
                 if (a.Length < 2 || !int.TryParse(a[0], out var ch)) return "usage: chan <n> <text>";
@@ -1985,6 +2004,7 @@ public static partial class Program
             { var fc = rest[5..].Trim().Replace("_SP_", " "); var c = RlvParse("@" + fc + (fc.Contains('=') ? "" : "=force"))?.FirstOrDefault(); if (c == null || c.Param != "force") return "usage: rlv force <behaviour[:option]>";
               var r = await RlvForce(c.Behav, c.Option); RlvLog($"LOCAL TEST force {c.Behav}:{c.Option} -> {r}"); return r; }
             case "rlv": return RlvCmdText(a);   // Rlv.cs
+            case "idlepose": return await IdlePoseCmd(a);   // IdlePose.cs
             case "collar" when a.Length == 1 && a[0] == "stealth": return await CollarStealthOn("command");   // CollarStealth.cs
             case "invdump": return await InvDumpCmd(a);   // InvDump.cs
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
@@ -2149,6 +2169,12 @@ public static partial class Program
             case "follow" when NamesDavid(rest): { var prep = await JoinDavidBeachPrep("follow"); var fr = FollowCmd(rest); return prep == null ? fr : prep + "\n" + fr; }
             case "follow": return FollowCmd(rest);   // Follow.cs
             case "leash": return LeashCmd(rest);     // Leash.cs
+            case "cof" when a.Length >= 2 && a[0] == "unlink": return await CofUnlinkCmd(string.Join(' ', a.Skip(1)));   // CofUnlink.cs
+            case "v" when a.Length >= 1 && a[0] == "pause": return VPauseCmd(a.Length > 1 ? a[1] : "");
+            case "force" when a.Length >= 1 && a[0] == "rebake": return await ForceRebakeCmd();   // ForceRebake.cs
+            case "att" when a.Length >= 2 && a[0] == "faces": { var q = rest[(rest.IndexOf("faces") + 5)..].Trim().Split('|'); return await AttFacesCmd(q[0].Trim(), q.Length > 1 ? q[1].Trim() : ""); }
+            case "outfits" when a.Length >= 1 && a[0] == "collar": return await OutfitsCollarCmd(a.Length > 1 && a[1] == "check");   // OutfitCollarLinks.cs
+            case "maitreya" when a.Length >= 2 && a[0] == "show" && a[1] == "all": return await MaitreyaShowAllCmd();   // MaitreyaShowAll.cs
             case "cof" when a.Length >= 1 && a[0] == "purge": return await CofPurgeCmd(string.Join(' ', a.Skip(1)));   // CofPurge.cs
             case "accept":
             {

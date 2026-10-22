@@ -35,3 +35,41 @@ What the N° 9 notecards say: the leash is a particle chain from the collar to t
 | "Forgot I'm leashed" (`leash_wander_off`, `leash wanderoff on\|off`, **on** by default, persisted) | Every 10–20 min (random) of being leashed, I stroll toward something nearby, aiming only ~1.5 m past the leash length so the collar tugs me back quickly. After 4 s I stop trying and say a short line in nearby chat ("oops… forgot 😳"). Every attempt is logged | Leashed, holder in view | Never while seated, placed/held or under @unsit. Never teleports, never fights the pull, never goes far. No line under @sendchat or in quiet places | Not yet |
 | `leash_status` / `leash status \| walk on\|off \| wanderoff on\|off \| length <m> \| release` | Status; set the leash length locally. The length is read from the collar's text when it says it; otherwise it's assumed to be the shortest preset, **Shoelace** (the N° 9 README's name; David calls it shoestring). Its metre value isn't documented anywhere I could find, so I assume ~1 m. Release locally (refused when strict) | — | — | — |
 | Survives a relog | Saved in rlv-state.json; the scan takes over when the collar re-casts the chain. With no chain after 2 min, it ends | Relog | — | Not yet |
+
+## Leash diagnostics (leash-diag)
+Every leash/follow event is logged with a timestamp (`leash-diag:` lines): leash on/off, holder, length, follow on/off.
+- **Visible leash:** detected from the particle system target key on my collar's prims. Needs `libremetaverse-compressed-particles.patch`, because stock LMV parsed particle systems from compressed object updates as empty, so the hook never fired.
+- **Invisible leash** (no particles): detected from the collar's pull. If I move ≥0.4 m/s toward an avatar 0.5–40 m away (cos>0.85), without my own movement controls and without @follow, for 3 s, that is logged as "PULL toward …" and the leash starts as "collar pull (invisible leash?)". A missing chain only ends the leash after 30 s with no pull.
+
+## Keeping up on the leash (LeashWalk.cs)
+The trigger is motion, not distance. The holder's terse/full object updates are handled as they arrive, with no polling. The moment his speed passes 0.3 m/s (or his position changes between updates at more than 0.3 m/s), I start walking with him at once: agent controls, so the real walk/run and the AO play, and the controls are sent immediately. I head for a point at the stop distance behind him along his heading, led 0.5 s by his velocity. I walk while he walks and run when he runs (>3.2 m/s) or when I'm far behind (2× the leash + 2 m), unless RLV @alwaysrun/@temprun forbids it. When he has been under 0.1 m/s for 0.3 s, I stop at the stop distance, max(0.6 m, 0.6× the leash), facing him. Fallback: if he is standing more than 0.8× the leash away, I walk up to him. A 10 Hz loop steers, and while the collar's llMoveToTarget pull moves me (>0.2 m/s) it sets the walk control so I don't glide. It pauses while seated, held, during the playful wander-off, or if he is sitting or out of view; strict/RLV refusals are unchanged.
+The chain usually targets the leash handle he wears, not his avatar. A target whose root is attached to an avatar resolves to that avatar, so it is not treated as an anchor post (that bug had turned walking off).
+Reaction latency (his motion start → my first movement, plus the time to send the controls) is logged as `leash-diag: reaction latency N ms`, with SLOW above 500 ms.
+Safety and feel (after the 10:41 "pushing" report):
+- **No pushing:** I never walk inside the stop distance, max(0.9 m, 0.6× the leash), with a hard minimum gap of 0.7 m. I stop the moment the gap reaches it, even while he moves. I always steer at the gap point, never at his position.
+- **No feedback loop:** his motion only counts when it takes him away from me at more than 0.3 m/s, so my bump or the collar's pull toward him never triggers it.
+- **Login grace:** for 5 s after login, a teleport or a region change, the walker and the pull legs are ignored.
+- **Natural reaction:** I start 400–600 ms (with random jitter) after his motion starts, so he visibly leads.
+- **Kill switch:** create `/home/box/viewers/textclient/run/leash-walker-off` (or set GT_LEASH_WALKER=off). It is checked live, and it stops the walker and the pull legs at once.
+
+### Redesign after the 10:46 bounce (controller `LeashControl`, offline-simulated)
+The walker and the collar's llMoveToTarget were fighting each other, and my momentum overshot into him. Now:
+- **Never while he stands:** I never walk while he is standing; there is no distance fallback, and the collar handles that.
+- **Starting:** only his motion away from me (after the 400–600 ms delay) AND a gap over the leash length starts me. I stop when he stops.
+- **Forward controls:** only while the gap is at least max(1.0 m, stop + 0.5 m) plus my braking distance (v²/12). Never forward under 1.0 m, and the pull-legs nudge too is only used at 1.0 m or more.
+- **Collisions:** if my velocity toward him reverses, or drops suddenly near him, I stop at once.
+- **Tests:** LeashWalkSimTests (a 1-D model of the collar pull, walk physics and body collision) cover him standing still, walk, fast walk, run, and stop-go. They check that there are no collisions, the gap never goes under 0.7 m, there is at most one start per walk, and I end at rest.
+- **Production:** it stays OFF (kill-switch file present) until David chooses to retest.
+
+## Login placement (LoginJoin.cs)
+After every login while David is in my region, the spawn distance is measured only once my own avatar update and his avatar have both arrived; otherwise it is UNKNOWN. If I spawned more than 2.5 m away, I walk over to him myself with the follow engine (on a leash, too, instead of being dragged). The galatea_login david_login wake now waits for this (max 45 s) and carries a PLACEMENT line, e.g. "I spawned 15.6 m from him and walked over… did NOT appear by his side".
+
+## @adjustheight (RlvAdjustHeight.cs)
+`@adjustheight:<distance>[;factor[;delta]]=force` follows RLVa (Firestorm/Catznip): hover = distance × factor + delta. The factor defaults to 0.01 (centimetres: the collar Animator's -2/0/2/4 = -0.02…+0.04 m) and delta to 0. The value is absolute, clamped to ±2 m, and POSTed as AgentPreferences hover_height (server-side, seen by everyone, like Firestorm's hover slider). It is not reset on a pose STOP, and it is kept until logout (the login and sit hover pins use it). Each change is logged.
+
+## Idle pose (IdlePose.cs)
+After she has been idle for 3–5 min (base GT_IDLE_POSE_SEC=240 s, ±25% jitter) she settles into a pose. Idle means no own movement, following, sitting, walker or chat/IM activity.
+- **Collar visible (Stealth off) or a visible leash chain:** a random N° 9 collar pose from cutie/coy/kneel/nadu/pretty/shy/tower, never the same twice in a row. It goes through touch collar → Pose → ▸ pages until the label shows. Getting up is the Pose menu's **STOP**, verified by the pose animation disappearing.
+- **Collar hidden and no visible leash:** the Martha AO's 'force sitg' toggle (mapped in run/ao-groundsit.txt), never while leashed.
+- **Cleared first, before:** walking (AutoPilot/nav), the leash walker (on his motion start), follow, teleport, leash attach/unleash, a sit/force-sit, an outfit change, David walking away, and logout. A leftover pose is cleared on login. The leash wander-off never fires while posed.
+- **Controls:** the MCP tool `idle_pose` (status/on/off/now/stop/idle/aomap) and the command `idlepose`. The tool `texture_save` reads HUD textures.

@@ -13,6 +13,10 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 **Keeping docs current**: whenever a capability is added or changed, update this README and [docs/capabilities.md](docs/capabilities.md) in the same pull request.
 
 
+- Leash walking: when leashed, I start walking the moment the holder moves (motion trigger, no distance wait), match his walk/run, stop at the stop distance facing him, and keep my legs moving during the collar pull. Reaction latency is logged (docs/rlv-enhancements.md).
+- Idle pose: after 3-5 min idle, a random collar pose (collar or leash visible) or the AO ground sit (collar hidden), always cleared before moving (docs/rlv-enhancements.md).
+- Leash logging: every collar leash/follow event goes to the log (`leash-diag:`). It detects both particle leashes and invisible leashes (from the pull). See docs/rlv-enhancements.md.
+
 ## What's here
 - `textclient/galatay-text/` – headless C# text client (LibreMetaverse, .NET 10). It handles chat/IM, wandering, routes, AO guard, sit guard, mute list, profile, inventory read-only, webhook wake-up.
   - Added Oct 2, 2026 (`NewCmds.cs`), so Firestorm is rarely needed: `offers` (pending inventory/friendship offers, `offers accept|decline <n>`, never auto-accepted; anyone off the allow-list needs `confirm` = owner's OK), `friend list|accept|decline|add`, `landmark create|list|tp` (`list`/`tp` wait up to 15 s for the new region's inventory capability after a teleport instead of reporting an empty folder), `sethome` (set home to the current spot; prints the server's reply, e.g. a refusal off your own or group land), `worn links <attachment>` + `touch-attachment <attachment> <link|prim name> [face]` (press HUD buttons, e.g. the Martha AO power: `touch-attachment ao 1`), `shape get|set <slider> <0-100>` (only on the worn shape 'Galatea Petite shape - Jani short neck'; backup of the old asset in `shape-backups/`, upload, COF link refresh, server rebake).
@@ -138,3 +142,26 @@ Logged out (deliberate stop) until the token reset, about Oct 5. When restarting
 - Club floor 2 (Oct 19, 2026): under a roof `GT_INDOOR_LIGHT` 3 -> 5 and `GT_INDOOR_AMB` 0.3 -> 0.45. Floor 0.099 -> 0.140 (frame 0.114 -> 0.139), mid purple-grey with coloured pools, no veil, walls crisp. Run `photo-20261019-132833` (these values as env vars just before they became defaults). Proof `/workspace/secondlife/vision/warehouse-v8-vs-ref.png`.
 - Spotlights visible on dancers (Oct 19, 2026, David: "none are lit by the spots, all flatly lit"): projectors are not excluded or shadowed out of the avatar passes. Every pass builds all 76 lights; only the 2 nearest projectors cast shadows, so the rest light through, and 18 projector cones reach dancers (a cone/range check on mesh.json). The cause was the flat indoor avatar fill (`GT_AVATAR_AMB` x4 after the light boost), which drowned the spot contrast. It is now 1.5: coloured spot highlights show on the dancers and they stay readable. Run `photo-20261019-133821` (value set as an env var just before it became the default). Proof `/workspace/secondlife/vision/warehouse-v8-vs-ref.png`.
 - Floor texture "missing" (Oct 19, 2026, David): the texture is not missing. The floor under the camera is prim face texture `ac5ed762` (cracked concrete), fetched and decoded at full 1024 px, opaque, tint 0.84, UV repeats 1 x 1 (the export's own `scales`/`scalet`, applied correctly), so one image is stretched over a 15 x 20 m floor: low-contrast concrete at ~50 px/m, with its sparse cracks mostly outside the near view. A 50% black shadow-blob decal (`9b721547`, part of the build, also drawn in the viewer) darkens one patch. What hid the detail was noise: a dark room lit by dozens of coloured SL lights at the HD default of 24 samples; the denoiser turned that noise into smooth red/green blotches. Under a roof, Cycles now uses at least `GT_INDOOR_SAMPLES` (default 96, 0 = off): blotches gone (about 1.7x render time at 960x540). Room light under a roof `GT_INDOOR_AMB` 0.45 -> 0.6. The floor face carries no legacy material (its per-face entry has no `materialid`), so there is no normal map to add relief. Proof: `/workspace/secondlife/vision/floor-texture-fix.png`.
+
+## Appearance / outfit troubleshooting tools (2026-10-21)
+- `chan_say(channel, text)`: speak on a non-zero channel (e.g. `/95 jeans menu` for a Maitreya auto-hide item). Channel 0 is refused.
+- `body_reattach`: detaches the Maitreya body (not its HUD or add-ons) and re-attaches it immediately at the same point, which resets stuck alpha segments (e.g. an auto-hide item that never sent "show" on detach). COF is untouched; logged as `BODY REATTACH`.
+- `cof_unlink(name_or_uuid)`: removes one Current Outfit link (exact name or link uuid; protected items refused) and rebakes.
+- `v_pause(on|off)`: pauses The V auto re-attach (file `run/v-auto-paused`, survives relogs).
+- `force_rebake`: Firestorm "Rebake Textures" equivalent (bumps COF version, POSTs cof_version to UpdateAvatarAppearance, retries with the server's expected version, reports bake ids).
+- (`collar_pause` was a short-lived diagnostic switch, removed in #272.)
+- `attachment_faces(attachment, filter)`: read-only per-face TextureEntry dump (alpha/rgb/full texture UUID) for a worn attachment; feed a texture id to `texture_save` to read a HUD face.
+- `outfits_collar(check)`: every saved outfit in My Outfits links the N° 9 collar (adds missing links). `outfit_save(name)` (= `outfit create`) always includes the collar link. The #265 hard-coded collar guard and `collar_pause` were removed (the collar link in every outfit replaces them; `_always-wear.txt` unchanged; NX Remote refusal kept).
+- `redress` never goes back into Naked/Android; it falls back to the last clothed outfit (`run/last-clothed-outfit.txt`).
+- RLV `@detach/@remattach` match the inventory item name as well as the in-world name, and a COF link id resolves to its target item.
+- `maitreya_show_all`: opens the Maitreya HUD alpha page (tab bar) and presses Show all; reports hidden `hide:N` buttons before/after. Multi-page HUDs only react to buttons on the page they show.
+
+### Idle pose / auto-hover / feet (2026-10-21 PR)
+- Idle wait is random 90-300 s each time; a held collar pose changes to a different one every random 3-10 min (no STOP between).
+- Dancing is never idle. Leash on/off, collar visibility, chat or David moving nearby never stand her up: only real movement
+  (walk, follow, a leash pull past the start gap, teleport, outfit walk) does. Visibility change swaps kneel <-> AO ground sit.
+- AO ground sit = Martha AO 'force sitg' (side list link 2 face 4 uv 0.88,0.50, run/ao-groundsit.txt "link face u,v") + SitOnGround.
+- Leash walker starts sooner: reaction 0.25-0.4 s, start gap just over the hold distance (LeashStartGap); anti-bounce rules unchanged.
+- Auto-hover (AutoHover.cs): capsule-bottom vs floor (terrain + box tops); standing/kneel/ground sit only; seated = restore normal
+  hover; a collar @adjustheight in the last 10 min wins. Default GT_AUTO_HOVER=observe (logs only): feet are not measurable.
+- FeetAuto opens the LaraX HUD feet page before pressing f1-f5 (the HUD ignores buttons on hidden pages).

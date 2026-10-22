@@ -23,7 +23,7 @@ def test_self_defaults_portrait_scene_landscape():
 
 def test_explicit_and_bad_orientation():
     assert look.hd_settings("landscape", "self")[0] == "landscape"
-    with pytest.raises(ValueError): look.hd_settings("square", "self")
+    with pytest.raises(ValueError): look.hd_settings("squarish", "self")
 
 def test_cached_fallback_picks_largest(tmp_path):
     u = "8c08ee8c-a5a0-0424-7708-688d5aaf351e"

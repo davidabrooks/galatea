@@ -17,3 +17,16 @@ def test_headshot_needs_self_hd():
     if "No module named" in r.stderr:
         import pytest; pytest.skip("look deps")
     assert r.returncode != 0 and "--headshot needs self --hd" in (r.stderr + r.stdout)
+
+def test_headshot_defaults_square_2048():
+    try: sys.path.insert(0, os.path.join(HERE, "..")); import look
+    except ImportError:
+        import pytest; pytest.skip("look deps")
+    if os.environ.get("GT_HD_RES"): return
+    assert look.HD_RES["square"] == "2048x2048"
+    _, env = look.hd_settings("square", "self")
+    assert env["GT_RES"] == "2048x2048"
+
+def test_hd_avatars_get_terminator_offset():
+    src = open(SRC).read()
+    assert "shadow_terminator_geometry_offset" in src and 'HEADSHOT_KEY = float(os.environ.get("GT_HEADSHOT_KEY"' in src

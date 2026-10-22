@@ -462,6 +462,12 @@ def build(group, bones=None, lining=True):
         ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs, hold))
         obs.append(ob)
         if group.startswith("avatar"): ob["gt_avatar"] = 1   # avatar key light (photo hd under a roof) links to these
+        if HD and group.startswith("avatar"):
+            # 2026-10-21 profile headshot: a crisp grey "squiggle" beside her mouth (and nowhere in the bake, normal or spec map, or in
+            # an emission-only render) = Cycles' shadow terminator: SL avatar meshes are low-poly with smoothed normals, so shadow rays
+            # from the flat triangles self-intersect on a smile crease. Offsetting the shadow ray origin (Blender's terminator fix) removes
+            # it; the viewer has no such artifact. photo hd only (quick looks unchanged)
+            ob.cycles.shadow_terminator_geometry_offset = 1.0; ob.cycles.shadow_terminator_offset = 0.2
         # see-through avatar parts (lashes, hair strands) cast no shadow: under the 0.6 m portrait area lights a lash
         # shadow drew a grey "text" mark beside her nose. The SL viewer's sun shadow map is far too coarse to resolve them.
         # ponytail: decided per texture alpha; ceiling = no hair shadow on her neck
@@ -772,6 +778,9 @@ def eep(env):
 INDOOR_LIGHT = float(os.environ.get("GT_INDOOR_LIGHT", "2"))   # 2026-10-19: 5 painted red/orange pools over the green-gray club floor vs David's reference; 2 + ambient 0.9 reads closer   # SL point/spot light energy x this when the camera is under a roof; 1 = off
 PROJ_AMBIANCE = float(os.environ.get("GT_PROJ_AMBIANCE", "1"))   # projector ambiance fill (x the direct term), 0 = off (the old behaviour)
 
+# 2026-10-21 David (profile headshot "needs to be quite a bit brighter"): a headshot portrait gets the same avatar-only key light outdoors
+# too, full strength when her face is in shade, HEADSHOT_KEY_SUNLIT of it in direct sun (a portrait fill); under a roof AVATAR_KEY as before
+HEADSHOT_KEY = float(os.environ.get("GT_HEADSHOT_KEY", "12")); HEADSHOT_KEY_SUNLIT = 0.4
 AVATAR_KEY = float(os.environ.get("GT_AVATAR_KEY", "18"))   # 2026-10-20 David: 25 -> 18 (4K Warehouse 21: her jeans/skin highlights near clipping). photo hd under a roof: avatar-only key light, W per m^2 of distance; 0 = off
 
 def avatar_key_light():
@@ -780,25 +789,40 @@ def avatar_key_light():
     the camera lights the AVATARS only (Cycles light linking: receivers and blockers = the avatar objects), so the room, floor and
     walls keep their own lighting and no extra shadow falls on the world. Energy scales with the distance squared (same look at any
     framing). Applies to every avatar in every layered pass (base: her; batches: theirs)."""
-    if not HD or AVATAR_KEY <= 0 or not sc.camera or not under_roof(): return
+    headshot = os.environ.get("GT_VIEW", "").startswith("headshot")
+    if not HD or not sc.camera: return
+    roof = under_roof()
+    if roof: k = AVATAR_KEY
+    elif headshot: k = HEADSHOT_KEY * (1.0 if face_in_shade() else HEADSHOT_KEY_SUNLIT)
+    else: return
+    if k <= 0: return
     avs = [o for o in sc.objects if o.type == "MESH" and o.get("gt_avatar")]
     if not avs: return
     coll = bpy.data.collections.get("gt_avatar_key") or bpy.data.collections.new("gt_avatar_key")
     for o in avs:
         if o.name not in coll.objects: coll.objects.link(o)
     cam = sc.camera.matrix_world.translation.copy()
-    tgt = Vector(M.get("me") or cam) + Vector((0.0, 0.0, 1.2))
+    tgt = Vector(sc.camera["focus_target"]) if headshot and sc.camera.get("focus_target") is not None else Vector(M.get("me") or cam) + Vector((0.0, 0.0, 1.2))
     d = max(1.0, (tgt - cam).length)
     up = Vector((0.0, 0.0, 1.0)); fwd = (tgt - cam).normalized(); side = fwd.cross(up).normalized() if abs(fwd.z) < 0.99 else Vector((1.0, 0.0, 0.0))
     pos = cam + up * (0.35 * d) - side * (0.25 * d)
     L_ = bpy.data.lights.new("gt_avatar_key", "AREA"); L_.shape = "DISK"; L_.size = max(1.0, 0.5 * d)
-    L_.color = (1.0, 0.9, 0.8); L_.energy = AVATAR_KEY * d * d
+    L_.color = (1.0, 0.9, 0.8); L_.energy = k * d * d
     o = bpy.data.objects.new("gt_avatar_key", L_); o.location = pos
     o.rotation_euler = (tgt - pos).to_track_quat("-Z", "Y").to_euler(); sc.collection.objects.link(o)
     try:
         o.light_linking.receiver_collection = coll; o.light_linking.blocker_collection = coll
     except AttributeError as e: log("avatar key light: no light linking", e)
     log("avatar key light", round(L_.energy, 1), "W at", round(d, 2), "m on", len(avs), "avatar objects")
+
+def face_in_shade():
+    """headshot: the sun (Cycles SUN lights) can't reach the framing target (her face): a tree, a porch roof or a wall in the way"""
+    t = Vector(sc.camera.get("focus_target", (0, 0, 0))); dg = bpy.context.evaluated_depsgraph_get(); suns = [o for o in sc.objects if o.type == "LIGHT" and o.data.type == "SUN" and o.data.energy > 0]
+    if not suns: return True
+    for lo in suns:
+        dv = lo.matrix_world.to_quaternion() @ Vector((0, 0, 1))
+        if dv.z > 0 and not sc.ray_cast(dg, t + dv * 0.5, dv, distance=500.0)[0]: return False   # 0.5 m out: past her own head and hair
+    return True
 
 def under_roof():
     """camera under geometry within 80 m straight up (a club, a house): Oct 19 2026 Warehouse 21"""

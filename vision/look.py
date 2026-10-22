@@ -11,7 +11,8 @@ usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
   self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
   --views (self) only the full body, from each listed side / angle (degrees counter-clockwise from her front: 90 = her
           left, 180 = her back); all = front, back, left, right. One image per view: ...-self-body-<side|NNdeg>.jpg
-  --headshot (self --hd) head and shoulders from in front at a portrait lens (28 deg vertical; --fov overrides) instead of the whole body
+  --headshot (self --hd) head and shoulders from in front at a portrait lens (28 deg vertical; --fov overrides) instead of the whole body;
+          2048x2048 square by default (--hd=landscape keeps 16:9), brighter avatar-only key light (render_mesh HEADSHOT_KEY)
   --far   also the backdrop (scenery 30-96 m at a screen-size LOD, region terrain, water, sky gradient; needs a 96 m
           export). Off by default (David 2026-10-04: her renders are for her own needs, speed first): near scene only.
 Prints one image path per line (then a JSON summary line). Read-only: never talks to SL; only CDN asset GETs.
@@ -32,9 +33,10 @@ OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
 VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
 PHOTO_OUT = os.environ.get("GT_PHOTO_OUT", "/workspace/secondlife/photos")
-HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840"}
-if os.environ.get("GT_HD_RES"):   # test hook: a smaller "HD" frame (WxH, landscape; portrait is transposed)
-    _w, _h = os.environ["GT_HD_RES"].split("x"); HD_RES = {"landscape": f"{_w}x{_h}", "portrait": f"{_h}x{_w}"}
+# square: the headshot portrait (2026-10-21 David: profile pictures, 2048x2048 = Second Life's largest texture)
+HD_RES = {"landscape": "3840x2160", "portrait": "2160x3840", "square": "2048x2048"}
+if os.environ.get("GT_HD_RES"):   # test hook: a smaller "HD" frame (WxH, landscape; portrait is transposed; square = HxH)
+    _w, _h = os.environ["GT_HD_RES"].split("x"); HD_RES = {"landscape": f"{_w}x{_h}", "portrait": f"{_h}x{_w}", "square": f"{_h}x{_h}"}
 
 # render profiles = David's Firestorm graphics presets (2026-10-13). highplus = his photo preset "High+" (screenshots):
 # textures max 2048, tonemap ACES mix 0.0, CAS sharpening 0.4, exposure 1.0, draw distance 128, LOD volume 2.0 / avatar 1.0 /
@@ -598,6 +600,7 @@ def main(a):
     except ValueError as e: sys.exit(str(e))
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
+    if headshot and hd_arg == "": hd_arg = "square"   # headshot default frame (--hd=landscape|portrait still wins)
     try: hd, hd_env = hd_settings(hd_arg, mode, profile, no)
     except ValueError as e: sys.exit(str(e))
     if headshot and not (hd and mode == "self"): sys.exit("--headshot needs self --hd (head and shoulders photo)")

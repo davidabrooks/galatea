@@ -173,5 +173,18 @@ public class IdlePoseTests
             }
         Assert.Equal(1, Program.AoSitPick(1, 1, 0.5));
     }
+    [Fact] public void StandCooldown_OnlyHisStand_NotLogoutOrDeploy_NotAcrossRelog()   // 2026-10-23 regression
+    {
+        Assert.True(Program.IdleStandStartsCooldown("stand command"));
+        Assert.True(Program.IdleStandStartsCooldown("manual stop"));
+        Assert.False(Program.IdleStandStartsCooldown("logout"));
+        Assert.False(Program.IdleStandStartsCooldown("shutdown"));
+        Assert.False(Program.IdleCooldownActive(System.DateTime.Now, Program.IdleCooldownAfterLogin()));
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var login = src[src.IndexOf("static void IdlePoseLoginStart()")..]; login = login[..login.IndexOf("Task.Run")];
+        Assert.Contains("idleNoSitUntil = IdleCooldownAfterLogin()", login);
+        var prog = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/Program.cs"));
+        Assert.Contains("IdleExplicitStand(\"logout\")", prog);   // the logout stand passes "logout" (no cooldown)
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

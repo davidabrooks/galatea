@@ -96,6 +96,25 @@ public static partial class Program
         return k >= current && current >= 1 ? k + 1 : k;
     }
     static int aoSitCurrent;   // the number picked last (0 = unknown)
+    static volatile string aoSitCurrentName;   // from the AO's own owner-say "Current Sitting on Ground Animation::<name>"
+    static int aoSitHooked;
+    // pure (tested): the AO's confirmation line -> sit name (null = not that line)
+    internal static string AoSitConfirmName(string msg)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(msg ?? "", @"Current Sitting on Ground Animation::\s*(\S+)");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+    // pure (tested): the current sit's number: the AO's last confirmed name wins over our own memory (a relog resets ours)
+    internal static int AoSitCurrentNumber(List<(int n, string name)> all, string confirmedName, int remembered) =>
+        confirmedName != null && all.FirstOrDefault(a => a.name == confirmedName) is { n: > 0 } hit ? hit.n : remembered;
+    static void AoSitHook()
+    {
+        if (Interlocked.Exchange(ref aoSitHooked, 1) == 1) return;
+        client.Self.ChatFromSimulator += (s, e) =>
+        {
+            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) aoSitCurrentName = n; } catch { }
+        };
+    }
     static async Task<ScriptDialogEventArgs> AoDialogAfter(ScriptDialogEventArgs prev, int ms)
     {
         for (int i = 0; i < ms / 250; i++)
@@ -108,6 +127,7 @@ public static partial class Program
     }
     static async Task<string> AoGroundSitSwitch()
     {
+        AoSitHook();
         var spot = (File.Exists(Env("GT_AO_SITSELECT_FILE", "/home/box/viewers/textclient/run/ao-groundsit-select.txt")) ? File.ReadAllText(Env("GT_AO_SITSELECT_FILE", "/home/box/viewers/textclient/run/ao-groundsit-select.txt")).Trim() : AoSitSelectDefault).Split(' ');
         var prev = lastDialog;
         await Exec($"touch-attachment \"ao\" \"{spot[0]}\" {spot[1]} st={spot[2]}");
@@ -123,7 +143,8 @@ public static partial class Program
             all.AddRange(more.Where(m => !all.Any(a => a.n == m.n)));
         }
         int count = all.Count == 0 ? 0 : all.Max(a => a.n); if (count < 2) return $"only {count} ground sit(s): nothing to switch";
-        int pick = AoSitPick(count, aoSitCurrent, Random.Shared.NextDouble());
+        int current = AoSitCurrentNumber(all, aoSitCurrentName, aoSitCurrent);
+        int pick = AoSitPick(count, current, Random.Shared.NextDouble());
         // walk to the page whose buttons include the pick
         for (int i = 0; i < 10 && page != null && !(page.ButtonLabels ?? new()).Contains(pick.ToString()); i++)
         {
@@ -131,10 +152,13 @@ public static partial class Program
             var p0 = page; await Exec("dialog " + btn); page = await AoDialogAfter(p0, 5000);
         }
         if (page == null || !(page.ButtonLabels ?? new()).Contains(pick.ToString())) return $"could not reach ground sit {pick}";
-        await Exec("dialog " + pick);
-        aoSitCurrent = pick;
         var name = all.FirstOrDefault(a => a.n == pick).name ?? "?";
-        return $"ground sit {pick} {name} (of {count})";
+        await Exec("dialog " + pick);
+        // confirmed only by the AO's own line; a failed pick is reported, never retried or re-sat (no stand/resit)
+        for (int i = 0; i < 16 && aoSitCurrentName != name; i++) await Task.Delay(250);
+        if (aoSitCurrentName != name) return $"ground sit {pick} {name} pressed but the AO did not confirm (current {aoSitCurrentName ?? "unknown"}); left as is";
+        aoSitCurrent = pick;
+        return $"ground sit {(current > 0 ? current + " -> " : "")}{pick} {name} (of {count})";
     }
     static double idleRotate = IdleRotateSec(Random.Shared.NextDouble());
     static async Task<string> IdlePoseRotate()
@@ -222,20 +246,31 @@ public static partial class Program
     static void IdleSave() { try { var s = idlePosed; if (s == null) File.Delete(IdlePoseFile); else File.WriteAllText(IdlePoseFile, JsonSerializer.Serialize(s)); } catch { } }
     static IdlePoseState IdleLoad() { try { return File.Exists(IdlePoseFile) ? JsonSerializer.Deserialize<IdlePoseState>(File.ReadAllText(IdlePoseFile)) : null; } catch { return null; } }
 
+    // pure (tested): collar visible from its prims' alphas. 2026-10-23 bug: right after a relog the collar's prims (or their
+    // TextureEntry) have not arrived yet and that was read as "visible", so a hidden (Stealth) collar got collar poses.
+    // Unknown (no single collar match, or no texture data yet) now counts as hidden: ground sit, and IdleSwitch moves to a
+    // collar pose once real alphas show it.
+    internal static bool CollarVisibleFrom(int matches, IEnumerable<IEnumerable<float>> primAlphas)
+    {
+        if (matches != 1 || primAlphas == null) return false;
+        foreach (var prim in primAlphas) { if (prim == null) continue; foreach (var a in prim) if (a > 0.05f) return true; }
+        return false;
+    }
     static bool CollarVisibleNow()
     {
         try
         {
-            var mm = MatchAttachment("Premium Collar", WornPrims()); if (mm.Count != 1) return true;   // unknown: assume visible (human outfits)
-            foreach (var p in LinkPrims(mm[0]))
+            var mm = MatchAttachment("Premium Collar", WornPrims());
+            var alphas = mm.Count != 1 ? null : LinkPrims(mm[0]).Select(p =>
             {
-                var te = p.Textures; if (te == null) continue;
-                if (te.DefaultTexture != null && te.DefaultTexture.RGBA.A > 0.05f) return true;
-                for (int f = 0; f < 45; f++) { var fe = te.FaceTextures[f]; if (fe != null && fe.RGBA.A > 0.05f) return true; }
-            }
-            return false;
+                var te = p.Textures; if (te == null) return (IEnumerable<float>)null;
+                var l = new List<float>(); if (te.DefaultTexture != null) l.Add(te.DefaultTexture.RGBA.A);
+                for (int f = 0; f < 45; f++) { var fe = te.FaceTextures[f]; if (fe != null) l.Add(fe.RGBA.A); }
+                return l;
+            }).ToList();
+            return CollarVisibleFrom(mm.Count, alphas);
         }
-        catch { return true; }
+        catch { return false; }   // unknown = hidden
     }
 
     // ---- collar Pose menu ----
@@ -374,7 +409,7 @@ public static partial class Program
     static DateTime idleLoginAt;
     static void IdlePoseLoginStart()
     {
-        idleLoginAt = DateTime.Now; IdleNoteActivity(); idleNoSitUntil = IdleCooldownAfterLogin();   // a cooldown never survives a relog
+        idleLoginAt = DateTime.Now; IdleNoteActivity(); try { AoSitHook(); } catch { } idleNoSitUntil = IdleCooldownAfterLogin();   // a cooldown never survives a relog
         _ = Task.Run(async () =>
         {
             try

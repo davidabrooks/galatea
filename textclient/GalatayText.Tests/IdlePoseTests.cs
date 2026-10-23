@@ -186,5 +186,27 @@ public class IdlePoseTests
         var prog = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/Program.cs"));
         Assert.Contains("IdleExplicitStand(\"logout\")", prog);   // the logout stand passes "logout" (no cooldown)
     }
+    [Fact] public void CollarVisibility_UnknownAfterRelog_IsHidden()   // 2026-10-23 regression: hidden collar read as visible after relog
+    {
+        Assert.False(Program.CollarVisibleFrom(0, null));                                   // collar prims not arrived yet
+        Assert.False(Program.CollarVisibleFrom(1, new[] { (float[])null, null }));         // TextureEntry not arrived yet
+        Assert.False(Program.CollarVisibleFrom(1, new[] { new[] { 0f, 0f }, new[] { 0f } })); // Stealth: every face alpha 0
+        Assert.True(Program.CollarVisibleFrom(1, new[] { new[] { 0f }, new[] { 1f, 0f } }));  // a visible face
+        Assert.False(Program.CollarVisibleFrom(2, new[] { new[] { 1f } }));                // ambiguous match: unknown
+        Assert.Equal("groundsit", Program.IdlePoseKind(Program.CollarVisibleFrom(0, null), false));
+    }
+    [Fact] public void AoGroundSitSwitch_KnowsTheCurrentSit_AfterRelog()   // 2026-10-23 regression
+    {
+        Assert.Equal("VAMOSITG26", Program.AoSitConfirmName("Current Sitting on Ground Animation::VAMOSITG26"));
+        Assert.Null(Program.AoSitConfirmName("Current Walking Animation::X"));
+        var all = new System.Collections.Generic.List<(int, string)> { (1, "VAMOSITG11"), (2, "VAMOSITG12"), (9, "VAMOSITG26"), (10, "VAMOSITG27") };
+        Assert.Equal(9, Program.AoSitCurrentNumber(all, "VAMOSITG26", 0));   // relog: our memory is 0, the AO's line says 9
+        Assert.Equal(9, Program.AoSitCurrentNumber(all, "VAMOSITG26", 2));   // the AO wins over stale memory
+        Assert.Equal(2, Program.AoSitCurrentNumber(all, null, 2));
+        foreach (var r in new[] { 0.0, 0.5, 0.99 }) Assert.NotEqual(9, Program.AoSitPick(10, Program.AoSitCurrentNumber(all, "VAMOSITG26", 0), r));
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var sw = src[src.IndexOf("static async Task<string> AoGroundSitSwitch()")..]; sw = sw[..sw.IndexOf("\n    }\n")];
+        Assert.DoesNotContain("SitOnGround", sw); Assert.DoesNotContain("Stand()", sw); Assert.DoesNotContain("AoGroundSitToggle", sw);   // never re-sits
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

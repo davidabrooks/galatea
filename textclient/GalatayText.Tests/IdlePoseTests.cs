@@ -278,5 +278,17 @@ public class IdlePoseTests
         var body = src[src.IndexOf("static async Task PoseHoverCheck(")..];
         Assert.True(body.IndexOf("FormCertainNow()") < body.IndexOf("PoseNumSet") && body.IndexOf("FormCertainNow()") < body.IndexOf("PostHover"));
     }
+    [Fact] public void UnexpectedDisconnect_InMcpConnector_RelogsInProcess()   // 2026-10-23 15:34 offline 23 min
+    {
+        Assert.Equal("relogin", Program.DisconnectAction(exitOnLogout: false, clientInitiated: false, shuttingDown: false));
+        Assert.Equal("exit-relaunch", Program.DisconnectAction(true, false, false));
+        Assert.Equal("none", Program.DisconnectAction(false, true, false));
+        Assert.Equal("none", Program.DisconnectAction(false, false, true));   // our own logout/deploy: never relogin
+        Assert.Equal(30, Program.EmbeddedReloginDelay(1, false).TotalSeconds);
+        Assert.Equal(300, Program.EmbeddedReloginDelay(5, false).TotalSeconds);
+        Assert.True(Program.EmbeddedReloginDelay(1, true).TotalMinutes >= 10);
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/Program.cs"));
+        Assert.Contains("ScheduleEmbeddedRelogin(", src);
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

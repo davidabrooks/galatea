@@ -621,6 +621,9 @@ public static partial class Program
                     try { File.WriteAllText(KickedMarkerPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {e.Message}\n"); } catch { }
                     Log("disconnect", "kicked by a login of this account elsewhere: marker written, the supervisor waits longer before logging back in");
                 }
+                // 2026-10-23 15:34: in the MCP connector (ExitOnLogout=false) nothing exits, so no supervisor ever relaunched:
+                // she stayed offline 23 min. Embedded: log back in from inside the process.
+                if (DisconnectAction(ExitOnLogout, false, shuttingDown) == "relogin") ScheduleEmbeddedRelogin(KickedElsewhere(e.Message));
             }
             if (!shuttingDown) { shuttingDown = true; if (ExitOnLogout) cts.Cancel(); }
         };

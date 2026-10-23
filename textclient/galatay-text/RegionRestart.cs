@@ -1,3 +1,4 @@
+using System.Threading;
 // RegionRestart (added 2026-09-25, David's rule: when the region restarts she must go somewhere else or log out).
 // Signals: AlertMessage with AlertInfo RegionRestartMinutes / RegionRestartSeconds (ExtraParams MINUTES|SECONDS, NAME),
 //          legacy RESTART_X_MINUTES / RESTART_X_SECONDS, the "region you are in now is about to restart" text,
@@ -419,6 +420,36 @@ public static partial class Program
         return (DateTime.Now - lastRestartWarning).TotalMinutes < 30 || RestartActive;
     }
     // called from the Disconnected handler; true = reconnect scheduled (process keeps running)
+    // pure (tested): what an unexpected disconnect does. Daemon: exit 75 for the supervisor. MCP connector (no exit): relogin here.
+    internal static string DisconnectAction(bool exitOnLogout, bool clientInitiated, bool shuttingDown)
+        => shuttingDown || clientInitiated ? "none" : exitOnLogout ? "exit-relaunch" : "relogin";
+    // pure (tested): delay before embedded relogin try n (1-based); kicked by another login of this account: wait much longer
+    internal static TimeSpan EmbeddedReloginDelay(int tryN, bool kicked) => kicked ? TimeSpan.FromMinutes(10 * tryN) : TimeSpan.FromSeconds(Math.Min(300, 30 * Math.Pow(2, tryN - 1)));
+    internal const int EmbeddedReloginMax = 5;
+    static int embeddedReloginRunning;
+    static void ScheduleEmbeddedRelogin(bool kicked)
+    {
+        if (Interlocked.Exchange(ref embeddedReloginRunning, 1) == 1) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (int n = 1; n <= EmbeddedReloginMax; n++)
+                {
+                    var d = EmbeddedReloginDelay(n, kicked);
+                    Log("disconnect", $"auto-relogin {n}/{EmbeddedReloginMax} in {d.TotalSeconds:F0} s (MCP connector: no supervisor relaunch)");
+                    await Task.Delay(d);
+                    if (LoggedIn) { Log("disconnect", "auto-relogin: already logged in again"); return; }
+                    var r = await LoginAsync();
+                    Log("disconnect", $"auto-relogin {n}: {r}");
+                    if (r.StartsWith("OK")) return;
+                }
+                Log("disconnect", "auto-relogin: giving up after 5 tries");
+            }
+            catch (Exception ex) { Log("disconnect", "auto-relogin error: " + ex.GetBaseException().Message); }
+            finally { Interlocked.Exchange(ref embeddedReloginRunning, 0); }
+        });
+    }
     static bool MaybeScheduleReconnect(NetworkManager.DisconnectType reason, string message)
     {
         if (!RestartDisconnect(reason, message)) return false;

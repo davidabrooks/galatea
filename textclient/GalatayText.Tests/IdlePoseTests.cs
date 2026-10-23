@@ -111,4 +111,35 @@ public class IdlePoseTests
         Assert.Equal((2, 4, "0.88,0.50"), Program.AoGroundSitSpot("2 4 0.88,0.50\n"));
         Assert.Null(Program.AoGroundSitSpot(""));
     }
+    // 2026-10-23 regression: stood up on David's word, sat right back down twice
+    [Fact] public void ExplicitStandBlocksIdleSitFor30Min()
+    {
+        Assert.Equal(1800, Program.IdleStandCooldownSec);
+        var t = new System.DateTime(2026, 10, 23, 9, 0, 0); var until = t.AddSeconds(Program.IdleStandCooldownSec);
+        Assert.True(Program.IdleCooldownActive(t.AddMinutes(1), until));
+        Assert.True(Program.IdleCooldownActive(t.AddMinutes(29), until));
+        Assert.False(Program.IdleCooldownActive(t.AddMinutes(31), until));
+        Assert.False(Program.IdleCooldownActive(t, System.DateTime.MinValue));   // never stood explicitly: no block
+    }
+    [Fact] public void AoForceSitStateFromPlayingAnimsNeverBlindToggle()
+    {
+        var ground = new[] { LibreMetaverse.Animations.STAND, LibreMetaverse.Animations.SIT_GROUND_staticRAINED };
+        Assert.True(Program.AoForceSitOn(ground, false));
+        Assert.True(Program.AoShouldToggleOff(Program.AoForceSitOn(ground, false)));
+        Assert.False(Program.AoForceSitOn(ground, true));                                   // on a seat: not the AO
+        Assert.False(Program.AoForceSitOn(new[] { LibreMetaverse.Animations.STAND }, false));  // already off: don't touch (would turn it ON)
+        Assert.False(Program.AoShouldToggleOff(Program.AoForceSitOn(new LibreMetaverse.UUID[0], false)));
+        Assert.False(Program.AoForceSitOn(null, false));
+    }
+    [Fact] public void LogoutAndStandUseExplicitStandPath()
+    {
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/Program.cs"));
+        var sd = src[src.IndexOf("public static async Task Shutdown(")..];
+        Assert.True(sd.IndexOf("IdleExplicitStand(\"logout\")") is > 0 and var i && i < sd.IndexOf("Network.Logout()"));
+        var st = src[src.IndexOf("case \"stand\":")..]; Assert.Contains("IdleExplicitStand(\"stand command\")", st[..1200]);
+        var ip = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        Assert.Contains("case \"stop\": case \"stand\": return await IdleExplicitStand(", ip);
+        Assert.Contains("login: \" + await AoGroundSitEnsureOff(", ip);
+    }
+    static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

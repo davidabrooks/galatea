@@ -415,7 +415,7 @@ public static partial class Program
     public static async Task Shutdown(string why)
     {
         if (shuttingDown) return; shuttingDown = true;
-        try { if (LoggedIn) await Task.WhenAny(IdlePoseExitAsync("logout"), Task.Delay(12000)); } catch { }   // IdlePose.cs: never log out posed
+        try { if (LoggedIn) await Task.WhenAny(IdleExplicitStand("logout"), Task.Delay(15000)); } catch { }   // IdlePose.cs: stand up (pose + AO force sit off) before every logout
         bool deliberate = why == "logout command" || DeliberateStopRequested();
         // 2026-09-26: a signal without a stop request (hang monitor's TERM, a stray kill) exits 75 so the supervisor relaunches
         ExitCode = ShutdownExitCode(why, deliberate, ExitCode);
@@ -2085,6 +2085,7 @@ public static partial class Program
                 Interlocked.Increment(ref sitGen);
                 client.Self.Stand();
                 await Task.Delay(800);
+                try { Log("idlepose", "stand: " + await IdleExplicitStand("stand command")); } catch { }   // AO force sit off + 30 min no idle sit
                 if (client.Self.SittingOn == 0) { try { SeatLingerTick(); } catch { } _ = Task.Run(CleanupTempAttachesAfterStand); return (DateTime.Now - lastSitEnded).TotalSeconds < 5 ? $"standing; seat anims: {seatLingerLast}" : "standing"; }   // SeatLinger.cs + Experiences.cs temp props
                 return "stand sent (still reported seated)";
             case "moveto": case "goto":

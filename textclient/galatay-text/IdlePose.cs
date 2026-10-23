@@ -106,6 +106,38 @@ public static partial class Program
         if (want == "groundsit" && (leashed || !groundSitMapped)) return null;   // keep kneeling rather than stand
         return want;
     }
+    // 2026-10-23 (David): an explicit stand (stand tool, idle_pose stop, logout) blocks the idle sit/kneel for a fixed 30 min
+    internal const double IdleStandCooldownSec = 1800;
+    internal static bool IdleCooldownActive(DateTime now, DateTime noSitUntil) => now < noSitUntil;
+    static DateTime idleNoSitUntil = DateTime.MinValue;
+    // pure (tested): is the AO force sit really on? Judged from the playing anims (ground sit playing while not on an object),
+    // never from an internal flag: the AO toggle persists across logins (2026-10-23 sat-right-back-down bug).
+    internal static bool AoForceSitOn(IEnumerable<UUID> playing, bool sittingOnObject) =>
+        !sittingOnObject && (playing ?? Enumerable.Empty<UUID>()).Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED);
+    // pure (tested): touch the AO toggle only when its real state is on (touching it while off turns force sit ON)
+    internal static bool AoShouldToggleOff(bool forceSitOn) => forceSitOn;
+    // turn the AO ground sit off if (and only if) it is really on; verified
+    static async Task<string> AoGroundSitEnsureOff(string why)
+    {
+        if (!AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0)) return "AO force sit already off";
+        try { client.Self.Stand(); } catch { }
+        await Task.Delay(800);
+        if (!AoShouldToggleOff(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0))) return "stood (AO force sit off)";
+        var r = await AoGroundSitToggle("off: " + why);
+        await Task.Delay(1500);
+        if (AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0)) { try { client.Self.Stand(); } catch { } await Task.Delay(800); }
+        return $"AO force sit toggled off ({r}); {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "STILL ground sitting" : "standing")}";
+    }
+    // explicit stand (stand tool, idle_pose stop, logout): clear any pose, make sure the AO force sit is off, start the cooldown
+    static async Task<string> IdleExplicitStand(string why)
+    {
+        idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec); IdleNoteActivity();
+        string a = idlePosed != null ? await IdlePoseExit(why) : "not posed";
+        string b = await AoGroundSitEnsureOff(why);
+        idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec);
+        Log("idlepose", $"explicit stand ({why}): {a}; {b}; no idle sit until {idleNoSitUntil:HH:mm}");
+        return $"{a}; {b}; no idle sit/kneel for 30 min";
+    }
     internal sealed record IdlePoseState(string kind, string pose, List<string> anims, DateTime since);
     static volatile IdlePoseState idlePosed;
     static string idleLastPose;
@@ -231,12 +263,7 @@ public static partial class Program
             if (s.kind == "collar") { var (ok, i) = await CollarPoseStop(s.anims); info = i; if (!ok) foreach (var a in s.anims) try { client.Self.AnimationStop(new UUID(a), true); } catch { } }
             else
             {
-                try { client.Self.Stand(); } catch { }
-                await Task.Delay(800);
-                info = await AoGroundSitToggle("exit: " + why);
-                await Task.Delay(1500);
-                var still = s.anims.Where(a => SelfAnims().Any(x => x.ToString() == a)).ToList();
-                if (still.Count > 0) { try { client.Self.Stand(); } catch { } info += "; stood up"; }
+                info = await AoGroundSitEnsureOff("exit: " + why);
             }
             idlePosed = null; IdleSave(); IdleNoteActivity(); AutoHoverKick("pose cleared");
             idleThreshold = IdleThresholdSec(IdleBaseSec(), Random.Shared.NextDouble());
@@ -264,7 +291,7 @@ public static partial class Program
                 await Task.Delay(20000);
                 if (!LoggedIn) return;
                 var saved = IdleLoad(); idlePosed = null;
-                if (saved?.kind == "groundsit") { Log("idlepose", "login: leftover AO ground sit -> off: " + await AoGroundSitToggle("login reset")); }
+                Log("idlepose", "login: " + await AoGroundSitEnsureOff("login reset"));
                 var d = await CollarPoseMenu();
                 var playing = CollarPlaying(d?.Message);
                 if (playing != null || saved?.kind == "collar")
@@ -323,6 +350,7 @@ public static partial class Program
         var kind = IdleEnter(new IdleIn(idlePoseOn, l != null, leashDriving, following, sitObj, moving, forceSat,
             rlv.Has("sit") || rlv.Has("unsit") && sitObj, leashForgetBusy != 0 || shuttingDown, dancing,
             (DateTime.Now - idleActivityAt).TotalSeconds, idleThreshold, CollarVisibleNow(), LeashParticleTarget() != null, AoGroundSitNow() != null));
+        if (kind != null && IdleCooldownActive(DateTime.Now, idleNoSitUntil)) return;   // explicit stand cooldown
         if (kind != null) Log("idlepose", "enter: " + await IdlePoseEnter(kind, $"idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0} s"));
     }
 
@@ -334,14 +362,14 @@ public static partial class Program
             case "on" when a.Length == 1: idlePoseOn = true; IdleNoteActivity(); return $"idle pose ON (after {idleThreshold:F0} s idle)";
             case "off": idlePoseOn = false; return "idle pose OFF; " + await IdlePoseExit("idle pose off");
             case "now": { var k = a.Length > 1 ? (a[1] == "collar" || a[1] == "kneel" ? "collar" : "groundsit") : IdlePoseKind(CollarVisibleNow(), LeashParticleTarget() != null); return await IdlePoseEnter(k, "manual"); }
-            case "stop": case "stand": return await IdlePoseExit("manual");
+            case "stop": case "stand": return await IdleExplicitStand("manual stop");
             case "idle" when a.Length > 1 && double.TryParse(a[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sec) && sec >= 30:
                 idleThreshold = sec; return $"idle threshold {sec:F0} s (this round; base GT_IDLE_POSE_SEC={IdleBaseSec():F0})";
             case "aomap" when a.Length is 3 or 4: { var t = string.Join(" ", a.Skip(1)); if (AoGroundSitSpot(t) is not { } sp) return "usage: idlepose aomap [link] <face> <u,v>"; File.WriteAllText(AoGroundSitFile, t + "\n"); return $"AO 'force sitg' mapped: link {sp.link} face {sp.face} st {sp.st}"; }
             default:
             {
                 var p = idlePosed;
-                return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; {(p == null ? "standing" : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; " +
+                return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; {(p == null ? "standing" : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; {(IdleCooldownActive(DateTime.Now, idleNoSitUntil) ? $"stand cooldown until {idleNoSitUntil:HH:mm}; " : "")}AO force sit {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "ON" : "off")}; " +
                        $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
             }
         }

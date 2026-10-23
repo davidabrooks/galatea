@@ -60,3 +60,14 @@ Task4 done: PR #227 merged (lights viewer parity). Report sent.
 ## 11:55 run d: boost never applied - camera matrix_world stale (origin) at light setup; now cam.location. run e = defaults
 ## 12:13 run f (fixed roof check, boost 3 + proj ambiance) = photo-20261019-120500 mean .139 floor .089, coloured dapples on near floor. run g: GT_AVATAR_AMB=2
 ## 12:21 PR #234 automerge; best f; v5 image warehouse-v5-vs-ref.png; AVATAR_AMB=2 (run g) no visible gain
+## 12:36 walls: run h (--no=dof, LIGHT_FX=0, PROJ_AMB=0) -> crisp dark brick BUT 0/85 avatars in view (layer plan bug with nodof?). run i: dof on, FX off, amb off
+## 12:41 run i (FX off, amb off, dof on): veil gone, dark crisp-ish, avatars dark. layer_plan stale camera fix applied (view_layer.update). run j: GT_LIGHT_BEAM=0 only
+## 12:53 PR #235 automerge (beam indoor 0, layer_plan fix). v6 image warehouse-v6-vs-ref.png (run j)
+## 13:00 branch fix/avatar-pop: GT_AVATAR_AMB default 4 (indoor-only via AO map: occluded->4, open sky->1). run k
+## 13:04 PR #236 automerge (AVATAR_AMB 4). v6 image = run k
+## 13:12 branch fix/club-v7: indoor DOF off, INDOOR_AMB .2, ROOT CAUSE others' fill: their group is 'avatar:<id>' not 'avatar' -> startswith. run l
+## 13:16 PR #237 automerge. run m test: PROJ_AMBIANCE 1, INDOOR_AMB .3
+## 13:28 PR #238 (floor defaults); v7 image = run m
+## 13:28 run n test: INDOOR_LIGHT 5, INDOOR_AMB .45
+## 13:46 PR #240 avatar fill 1.5; v8 = run o
+## 14:16 floor: texture present (ac5ed762 1024, repeats 1 over 15x20m); blotches = 24-sample denoise. branch fix/indoor-samples: GT_INDOOR_SAMPLES 96, INDOOR_AMB .6. run q pure defaults

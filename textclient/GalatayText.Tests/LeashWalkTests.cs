@@ -23,7 +23,7 @@ public class LeashWalkTests
         Assert.True(Program.LeashForwardCutoff(1f) >= 1.4f - 1e-4);
         foreach (var gap in new[] { 0.5f, 0.9f, 0.99f, 1.3f })
             Assert.False(Program.LeashControl(true, true, false, gap, 1f, true, 0.5f, 0.5f, true).forward);
-        Assert.False(Program.PullNeedsWalkAnim(1f, false, false, 0.9f));
+        Assert.False(Program.PullNeedsWalkAnim(1f, false, false, 0.9f, 1f));
     }
     [Fact] public void CollisionStopsAtOnce()
     {
@@ -54,10 +54,12 @@ public class LeashWalkTests
     }
     [Fact] public void WalkAnimDuringPull()
     {
-        Assert.True(Program.PullNeedsWalkAnim(0.5f, false, false, 1.5f));
-        Assert.False(Program.PullNeedsWalkAnim(0.1f, false, false));
-        Assert.False(Program.PullNeedsWalkAnim(2f, true, false));
-        Assert.False(Program.PullNeedsWalkAnim(2f, false, true));
+        Assert.True(Program.PullNeedsWalkAnim(0.5f, false, false, 1.5f, 1f));
+        Assert.False(Program.PullNeedsWalkAnim(0.1f, false, false, 9f, 1f));
+        Assert.False(Program.PullNeedsWalkAnim(2f, true, false, 9f, 1f));
+        Assert.False(Program.PullNeedsWalkAnim(2f, false, true, 9f, 1f));
+        Assert.False(Program.PullNeedsWalkAnim(-1f, false, false, 2f, 1f));   // moving AWAY from him (overshoot/bounce): never thrust
+        Assert.False(Program.PullNeedsWalkAnim(3f, false, false, 1.6f, 1f));  // fast toward him: inside braking distance
     }
 }
 public class LeashHolderResolveTests

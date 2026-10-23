@@ -69,8 +69,12 @@ partial class Program
         if (hisStopped) return new("stop", false, "he stopped");
         return new("", gap >= LeashForwardCutoff(length, vToward), "");
     }
-    // pure (tested): the collar pull is moving me without my legs: show the walk (never forward-nudge under 1 m)
-    internal static bool PullNeedsWalkAnim(float speed, bool sitting, bool driving, float gap = 9f) => !sitting && !driving && speed > 0.2f && gap >= LeashNoForwardUnder;
+    // pure (tested): the collar pull is moving me without my legs: show the walk. 2026-10-23 live test (back and forth after he
+    // stopped): the nudge used to fire on ANY speed, facing my velocity, so an overshoot or bounce away from him got thrust in
+    // that direction too, and the collar pulled back, and so on (positive feedback). Now: only while the pull is carrying me
+    // TOWARD him, and only past the speed-aware forward cutoff (braking distance included), so it can never add overshoot.
+    internal static bool PullNeedsWalkAnim(float vToward, bool sitting, bool driving, float gap, float length) =>
+        !sitting && !driving && vToward > 0.2f && gap >= LeashForwardCutoff(length, vToward);
     // pure (tested): reaction latency tracker (his motion start -> my first movement)
     internal sealed class LeashLatency
     {
@@ -214,9 +218,11 @@ partial class Program
         LeashWalkStep("tick");   // never starts on its own: only his motion starts the walker
         if (leashDriving) return;
         // the collar is dragging me: put the legs under it
-        var v0 = client.Self.Velocity; var vel = new Vector3(v0.X, v0.Y, 0);
-        bool need = PullNeedsWalkAnim(vel.Length(), sitting, false, holderSeen == l.holder ? Vector3.Distance(client.Self.SimPosition, holderPos) : 9f) && leashForgetBusy == 0 && !LeashInGrace(leashArrivedAt, DateTime.Now);
-        if (need) { try { m.TurnToward(client.Self.SimPosition + vel); } catch { } m.NudgeAtPos = true; m.SendUpdate(true); leashPullAnim = true; }
-        else if (leashPullAnim) { leashPullAnim = false; m.NudgeAtPos = false; m.SendUpdate(true); }
+        var v0 = client.Self.Velocity; var vel = new Vector3(v0.X, v0.Y, 0); var me0 = client.Self.SimPosition;
+        var toHim = new Vector3(holderPos.X - me0.X, holderPos.Y - me0.Y, 0);
+        float vTow = holderSeen == l.holder && toHim.Length() > 0.01f ? Vector3.Dot(vel, Vector3.Normalize(toHim)) : 0f;
+        bool need = holderSeen == l.holder && PullNeedsWalkAnim(vTow, sitting, false, toHim.Length(), leashLength) && leashForgetBusy == 0 && !LeashInGrace(leashArrivedAt, DateTime.Now);
+        if (need) { try { m.TurnToward(new Vector3(holderPos.X, holderPos.Y, me0.Z)); } catch { } m.NudgeAtPos = true; m.SendUpdate(true); if (!leashPullAnim) RlvLog($"leash-walk: pull legs on at {toHim.Length():F1} m ({vTow:F2} m/s toward {l.holderName})"); leashPullAnim = true; }
+        else if (leashPullAnim) { leashPullAnim = false; m.NudgeAtPos = false; m.SendUpdate(true); RlvLog("leash-walk: pull legs off"); }
     }
 }

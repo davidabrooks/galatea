@@ -268,5 +268,15 @@ public class IdlePoseTests
             Assert.DoesNotContain(bad, src.Split("using LibreMetaverse;")[1]);
         Assert.Equal("ref|android|sit", Program.PoseRefKey(true, "sit"));
     }
+    [Fact] public void PoseHover_NothingSavedUntilFormKnown()   // 2026-10-23 15:19 human|stand misread after login
+    {
+        Assert.False(Program.FormCertain(false, 12, 3));    // names still arriving: unknown
+        Assert.False(Program.FormCertain(false, 0, 0));     // nothing worn seen yet
+        Assert.True(Program.FormCertain(false, 12, 12));
+        Assert.True(Program.FormCertain(true, 12, 0));      // the outfit name already says android
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
+        var body = src[src.IndexOf("static async Task PoseHoverCheck(")..];
+        Assert.True(body.IndexOf("FormCertainNow()") < body.IndexOf("PoseNumSet") && body.IndexOf("FormCertainNow()") < body.IndexOf("PostHover"));
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

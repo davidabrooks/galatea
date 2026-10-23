@@ -225,12 +225,34 @@ public static partial class Program
         return r;
     }
 
+    // 2026-10-23 (David): before a kneel or ground sit, turn to face the leash holder (else David) when he is nearby.
+    internal const float IdleFaceRadius = 10f;
+    // pure (tested): whom to face: the leash holder if within the radius, else David if within it, else nobody
+    internal static Vector3? IdleFaceTarget(Vector3 me, Vector3? holder, Vector3? david, float radius = IdleFaceRadius)
+    {
+        bool near(Vector3? p) { if (p is not Vector3 v || v == Vector3.Zero) return false; var d = Vector3.Distance(new Vector3(v.X, v.Y, 0), new Vector3(me.X, me.Y, 0)); return d > 0.05f && d <= radius; }
+        return near(holder) ? holder : near(david) ? david : null;
+    }
+    static async Task IdleFaceHim()
+    {
+        try
+        {
+            var l = leash; var me = client.Self.SimPosition;
+            Vector3? hp = l != null && l.holder != UUID.Zero ? Avatars().Where(a => a.av.ID == l.holder && a.dist >= 0).Select(a => (Vector3?)a.pos).FirstOrDefault() : null;
+            if (IdleFaceTarget(me, hp, DavidPos()) is not Vector3 t) return;
+            client.Self.Movement.TurnToward(new Vector3(t.X, t.Y, me.Z)); client.Self.Movement.SendUpdate(true);
+            Log("idlepose", $"facing {(hp == t ? l.holderName : "David")} before posing ({Vector3.Distance(me, t):F1} m)");
+            await Task.Delay(600);   // let the turn land before the pose locks the body
+        }
+        catch (Exception ex) { Log("idlepose", "face-him error " + ex.GetBaseException().Message); }
+    }
     static async Task<string> IdlePoseEnter(string kind, string why)
     {
         if (!await idleLock.WaitAsync(0)) return "idle pose busy";
         try
         {
             if (idlePosed != null) return $"already posed ({idlePosed.kind} {idlePosed.pose})";
+            await IdleFaceHim();
             if (kind == "collar")
             {
                 var pose = PickIdlePose(idleLastPose, Random.Shared.NextDouble());

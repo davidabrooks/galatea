@@ -141,5 +141,22 @@ public class IdlePoseTests
         Assert.Contains("case \"stop\": case \"stand\": return await IdleExplicitStand(", ip);
         Assert.Contains("login: \" + await AoGroundSitEnsureOff(", ip);
     }
+    [Fact] public void FaceHim_HolderFirst_ThenDavid_OnlyNearby()
+    {
+        var me = new LibreMetaverse.Vector3(10, 10, 20);
+        var holder = new LibreMetaverse.Vector3(12, 10, 20); var david = new LibreMetaverse.Vector3(10, 14, 20);
+        Assert.Equal(holder, Program.IdleFaceTarget(me, holder, david));
+        Assert.Equal(david, Program.IdleFaceTarget(me, null, david));
+        Assert.Equal(david, Program.IdleFaceTarget(me, new LibreMetaverse.Vector3(60, 60, 20), david));   // holder too far
+        Assert.Null(Program.IdleFaceTarget(me, null, new LibreMetaverse.Vector3(40, 10, 20)));           // nobody nearby
+        Assert.Null(Program.IdleFaceTarget(me, LibreMetaverse.Vector3.Zero, null));                      // unknown position
+    }
+    [Fact] public void FaceHim_BeforeEitherPose()
+    {
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var body = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..];
+        int face = body.IndexOf("await IdleFaceHim();");
+        Assert.True(face > 0 && face < body.IndexOf("CollarPosePlay(") && face < body.IndexOf("AoGroundSitToggle("));
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

@@ -24,5 +24,6 @@ public class AutoHoverTests
         Assert.Null(Program.AutoHoverDecide("groundsit", false, 0.2, -0.04, 0, 1e9, -0.04));          // a gap reading never undoes it
         Assert.Null(Program.AutoHoverDecide("groundsit", false, -0.2, -0.04, 0, 120, -0.04));         // nor a recent manual hover
         Assert.Equal(0, Program.AutoHoverDecide("seat", true, null, -0.04, 0, 1e9, -0.04));            // seated: back to normal
+        Assert.Equal(-0.12, Program.AutoHoverDecide("groundsit", false, null, -0.10, 0.02, 1e9, -0.12)); // ABSOLUTE, not pin + offset (15:01: -0.10)
     }
 }

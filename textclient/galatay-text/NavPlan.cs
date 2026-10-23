@@ -336,6 +336,9 @@ public static partial class Program
     // times, and only if the leaf has not moved at all; a leaf that has started to swing is waited for (up to DoorGuardSwingS).
     internal const double DoorGuardHoldS = 3.0, DoorGuardSwingS = 4.0; internal const int DoorGuardRetouchMax = 1;
     internal enum GuardStep { Wait, Touch, GiveUp }
+    internal const int DoorSeenWaitMs = 2500;
+    // pure (tested): a door on the route whose prim has not arrived: wait for it briefly, then give up (stay put); never walk on
+    internal static GuardStep DoorUnknownStep(double waitedMs, bool allKnown) => allKnown ? GuardStep.Touch : waitedMs < DoorSeenWaitMs ? GuardStep.Wait : GuardStep.GiveUp;
     internal static GuardStep DoorGuardStep(double sinceTouchS, bool movedAtAll, int guardTouches)
     {
         if (sinceTouchS < DoorGuardHoldS) return GuardStep.Wait;
@@ -355,6 +358,21 @@ public static partial class Program
     {
         if (doors == null || doors.Count == 0) return 0;
         var sim = client.Network.CurrentSim; if (sim == null) return 0;
+        // 2026-10-23 14:57 (login walk to David): side-room-1's prim had not arrived yet right after login, so every check read
+        // "not in view; walking on" and she ground into the closed door for 4 s. Now: stop and wait (<= DoorSeenWaitMs) for
+        // it to arrive; still unknown -> abort the walk and stay put (never walk into an unknown door).
+        if (doors.Any(d => !DoorState(d).known))
+        {
+            try { client.Self.AutoPilotCancel(); } catch { }
+            var tw0 = DateTime.Now;
+            while (DoorUnknownStep((DateTime.Now - tw0).TotalMilliseconds, doors.All(d => DoorState(d).known)) == GuardStep.Wait) await Task.Delay(150, ct);
+            var missing = doors.Where(d => !DoorState(d).known).Select(d => d.Name).ToList();
+            if (missing.Count > 0)
+            {
+                Log("nav", $"door {string.Join(", ", missing)}: still not in view after {DoorSeenWaitMs} ms: stopping here (no safe route)");
+                throw new OperationCanceledException("door not in view");
+            }
+        }
         var need = new List<(NavDoor d, Primitive p, string how)>();
         int alreadyOpen = 0;
         foreach (var d in doors)

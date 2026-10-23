@@ -30,6 +30,15 @@ public static partial class Program
                p.how == "walk-failed" ? $" and tried to walk over but am still {p.finalDist?.ToString("F1") ?? "?"} m away" : "") +
               (p.spawnDist > LoginJoinWithin ? ". I did NOT appear by his side: say I came over to him, never that I logged in right next to him." : ".");
 
+    internal const double LoginStallS = 3.0;
+    // pure (tested): samples (age s, dist m), oldest first: stalled = we have >= LoginStallS of samples and the distance fell
+    // by < 0.3 m over the last LoginStallS (2026-10-23 14:57: she ground into the corner for ~35 s instead of giving up)
+    internal static bool LoginJoinStalled(System.Collections.Generic.IReadOnlyList<(double ageS, float d)> s)
+    {
+        if (s.Count == 0 || s[0].ageS < LoginStallS) return false;
+        var then = s.Where(x => x.ageS >= LoginStallS).Last().d;
+        return then - s[^1].d < 0.3f;
+    }
     static void LoginJoinStart() { loginJoinDone = new(TaskCreationOptions.RunContinuationsAsynchronously); loginPlacement = null; _ = Task.Run(LoginJoinDavid); }
     static async Task LoginJoinDavid()
     {
@@ -52,13 +61,16 @@ public static partial class Program
             if (!LoginShouldJoin(spawn, him != null, client.Self.SittingOn != 0)) { loginPlacement = new(spawn, spawn == null ? "unknown" : "spawned-near", spawn); return; }
             Log("login", $"placement: walking over to David ({spawn:F1} m){(leash != null ? " (leashed: walking myself, not dragged)" : "")}");
             followDistThis = 1.2f; followName = DavidName; followId = DavidId;
-            var t1 = DateTime.Now; float d = spawn.Value;
+            var t1 = DateTime.Now; float d = spawn.Value; var best = new System.Collections.Generic.List<(DateTime t, float d)>();
             while ((DateTime.Now - t1).TotalSeconds < 40 && LoggedIn)
             {
                 await Task.Delay(500);
                 var dav = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId);
                 if (dav.av == null) break;
                 d = dav.dist; if (d <= 2f) break;
+                best.Add((DateTime.Now, d));
+                if (LoginJoinStalled(best.Select(b => ((DateTime.Now - b.t).TotalSeconds, b.d)).ToList()))
+                { Log("login", $"placement: approach blocked (no progress in {LoginStallS:F0} s, {d:F1} m): stopping, staying put"); break; }
             }
             if (followId == DavidId) { followId = UUID.Zero; followDistThis = null; try { client.Self.AutoPilotCancel(); } catch { } }
             loginPlacement = new(spawn, d <= LoginJoinWithin ? "walked" : "walk-failed", d);

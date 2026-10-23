@@ -228,8 +228,13 @@ public class IdlePoseTests
         Assert.DoesNotContain("Stand()", enter[sit..]);                                          // no stand in between
         var all = new System.Collections.Generic.List<(int, string)> { (1, "VAMOSITG11"), (8, "VAMOSITG25") };
         Assert.NotEqual(8, Program.AoSitPick(10, Program.AoSitCurrentNumber(all, "VAMOSITG25", 0), 0.99));   // last used (saved) is never the start pick
-        Assert.Equal(-0.12, Program.GroundSitHoverOffset(true), 3);
-        Assert.Equal(0, Program.GroundSitHoverOffset(false), 3);
+        var none = new System.Collections.Generic.Dictionary<string, double>();
+        Assert.Equal(-0.12, Program.PoseHoverLookup(none, true, "VAMOSITG26").Value, 3);   // David's approved value, in the sit it was tuned in
+        Assert.Null(Program.PoseHoverLookup(none, true, "VAMOSITG24"));                    // 15:01 bug: never another sit's value
+        Assert.Null(Program.PoseHoverLookup(none, false, "VAMOSITG26"));                   // per form
+        Assert.Null(Program.PoseHoverLookup(none, true, null));
+        var saved = new System.Collections.Generic.Dictionary<string, double> { ["android|VAMOSITG24"] = -0.02 };
+        Assert.Equal(-0.02, Program.PoseHoverLookup(saved, true, "VAMOSITG24").Value, 3);
     }
     [Fact] public void GroundSitEnter_SitsOnce_NoStandResit_HoverNeverStands()   // 2026-10-23 14:30/14:47 regression
     {
@@ -240,6 +245,15 @@ public class IdlePoseTests
         Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(enter, @"SitOnGround\(\)").Count);
         var hov = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/AutoHover.cs"));
         Assert.DoesNotContain("Stand()", hov); Assert.DoesNotContain("SitOnGround", hov); Assert.DoesNotContain("AoGroundSitToggle", hov);
+    }
+    [Fact] public void BlockedApproach_GivesUp_DoorUnknown_StaysPut()   // 2026-10-23 14:57 corner grind after login
+    {
+        Assert.False(Program.LoginJoinStalled(new[] { (2.0, 8f), (0.0, 7.9f) }));            // < 3 s of data
+        Assert.True(Program.LoginJoinStalled(new[] { (4.0, 6f), (3.0, 6f), (0.0, 5.9f) }));  // stuck at the wall
+        Assert.False(Program.LoginJoinStalled(new[] { (4.0, 8f), (3.0, 7f), (0.0, 5f) }));   // closing in
+        Assert.Equal(Program.GuardStep.Wait, Program.DoorUnknownStep(500, false));
+        Assert.Equal(Program.GuardStep.GiveUp, Program.DoorUnknownStep(2600, false));        // never "walking on"
+        Assert.Equal(Program.GuardStep.Touch, Program.DoorUnknownStep(100, true));
     }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

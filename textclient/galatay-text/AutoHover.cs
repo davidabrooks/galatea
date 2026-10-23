@@ -16,9 +16,11 @@ public static partial class Program
     internal const double AutoHoverTol = 0.03, AutoHoverMax = 0.30, AutoHoverManualSec = 600;
     internal static DateTime? hoverManualAt;   // set by @adjustheight from the collar
     // pure (tested): the hover to set now, or null = leave it. gap = capsule bottom - floor (+ = floating), cur = current hover.
-    internal static double? AutoHoverDecide(string posture, bool seatedOnObject, double? gap, double cur, double pinned, double manualAgeSec)
+    // offset = a deliberate per-pose/form offset (David 14:45: android ground sit -0.04 m): it is THE target, never undone.
+    internal static double? AutoHoverDecide(string posture, bool seatedOnObject, double? gap, double cur, double pinned, double manualAgeSec, double offset = 0)
     {
         if (seatedOnObject) return Math.Abs(cur - pinned) > 0.005 ? pinned : null;   // seats come later: back to normal
+        if (offset != 0 && posture == "groundsit") { var t0 = Math.Round(pinned + offset, 3); return Math.Abs(t0 - cur) > 0.005 ? t0 : null; }
         if (manualAgeSec < AutoHoverManualSec) return null;                            // David's recent collar hover wins
         if (posture is not ("stand" or "groundsit" or "kneel")) return null;
         if (gap is not double g || Math.Abs(g) <= AutoHoverTol || Math.Abs(g) > 1.0) return null;   // >1 m: not a floor problem
@@ -56,7 +58,9 @@ public static partial class Program
             if (!seated && FloorBelow(client.Self.SimPosition) is double f) gap = client.Self.SimPosition.Z - av.Scale.Z / 2 - f;
             double cur = SimHover() ?? PinnedHover(), pin = PinnedHover();
             double manualAge = hoverManualAt is DateTime m ? (DateTime.Now - m).TotalSeconds : 1e9;
-            if (AutoHoverDecide(posture, seated, gap, cur, pin, manualAge) is not double t) return;
+            double off = posture == "groundsit" ? GroundSitHoverOffset(AndroidFormNow()) : 0;
+            if (AutoHoverDecide(posture, seated, gap, cur, pin, manualAge, off) is not double t) return;
+            if (off != 0) { var (ok0, i0) = await PostHover(t, $"auto-hover: deliberate {posture} offset {off:+0.00;-0.00}"); RlvLog($"auto-hover: {posture} offset {off:+0.00;-0.00} -> {t:F3} ({i0})"); return; }
             // default OBSERVE: the capsule-vs-floor estimate is unproven (possible fixed bias -> a wrong hover), so only the
             // seated restore is applied; GT_AUTO_HOVER=on applies the corrections too.
             if (!seated && Env("GT_AUTO_HOVER", "observe") != "on")

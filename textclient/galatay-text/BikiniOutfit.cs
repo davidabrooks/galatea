@@ -36,10 +36,33 @@ public static partial class Program
         return kids.OfType<InventoryFolder>().FirstOrDefault(f => f.PreferredType == FolderType.MyOutfits && f.ParentUUID == root.UUID);
     }
 
+    // 2026-10-23 (David): "I never want to see the vtech outfit unless I ask for it specifically. Your default android outfit
+    // should always be the other one." The My Outfits folder 'Android' holds 'MISAKI -Kay Body V-Tech' (the V-Tech one);
+    // 'Android Base' holds the plain 'MISAKI -Kay Body' = the default android form.
+    internal const string DefaultAndroidOutfit = "Android Base";
+    internal static readonly string[] VTechOutfitFolders = { "Android" };   // folders whose body is the V-Tech one
+    internal static bool IsVTechOutfit(string folder) =>
+        folder != null && (VTechOutfitFolders.Any(v => v.Equals(folder.Trim(), StringComparison.OrdinalIgnoreCase)) || Regex.IsMatch(folder, @"v[\s-]?tech", RegexOptions.IgnoreCase));
+    internal static bool AsksForVTech(string request) => Regex.IsMatch(request ?? "", @"v[\s-]?tech", RegexOptions.IgnoreCase);
+    // pure (tested): which outfit folder a request may resolve to. null = no guard needed (use the normal match)
+    internal static string OutfitGuardResolve(string request, string matchedFolder)
+    {
+        var r = (request ?? "").Trim();
+        if (AsksForVTech(r)) return VTechOutfitFolders[0];                                   // explicit V-Tech request
+        if (matchedFolder != null && IsVTechOutfit(matchedFolder)) return DefaultAndroidOutfit; // any other way to it -> the default
+        if (Regex.IsMatch(r, @"^(android|robot|cyborg)( form| outfit| body| mode)?$|^default android", RegexOptions.IgnoreCase)) return DefaultAndroidOutfit;
+        return null;
+    }
     static async Task<InventoryFolder> FindOutfitFolder(string name, CancellationToken ct)
     {
         var mo = await FindMyOutfits(ct); if (mo == null) return null;
         var kids = (await ReadFolderRO(mo.UUID, ct)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID).ToList();
+        var raw = kids.FirstOrDefault(f => f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) ?? kids.FirstOrDefault(f => f.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
+        if (OutfitGuardResolve(name, raw?.Name) is string g && !g.Equals(raw?.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            var gf = kids.FirstOrDefault(f => f.Name.Equals(g, StringComparison.OrdinalIgnoreCase));
+            if (gf != null) { Log("outfit", $"'{name}' -> '{gf.Name}' (V-Tech only when asked for by name)"); return gf; }
+        }
         return kids.FirstOrDefault(f => f.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
             ?? kids.FirstOrDefault(f => f.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
     }

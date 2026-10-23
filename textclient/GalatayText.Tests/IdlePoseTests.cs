@@ -208,5 +208,38 @@ public class IdlePoseTests
         var sw = src[src.IndexOf("static async Task<string> AoGroundSitSwitch()")..]; sw = sw[..sw.IndexOf("\n    }\n")];
         Assert.DoesNotContain("SitOnGround", sw); Assert.DoesNotContain("Stand()", sw); Assert.DoesNotContain("AoGroundSitToggle", sw);   // never re-sits
     }
+    [Fact] public void AndroidDefault_NeverVTechUnlessAskedByName()   // 2026-10-23 David: "never the vtech outfit unless I ask"
+    {
+        Assert.Equal("Android Base", Program.OutfitGuardResolve("Android", "Android"));          // the V-Tech folder is named 'Android'
+        Assert.Equal("Android Base", Program.OutfitGuardResolve("android form", null));
+        Assert.Equal("Android Base", Program.OutfitGuardResolve("andr", "Android"));             // partial match landing on V-Tech
+        Assert.Equal("Android", Program.OutfitGuardResolve("Android VTech", null));              // explicit V-Tech request
+        Assert.Equal("Android", Program.OutfitGuardResolve("v-tech", null));
+        Assert.Null(Program.OutfitGuardResolve("Android Base", "Android Base"));
+        Assert.Null(Program.OutfitGuardResolve("Beach", "Beach"));
+        Assert.True(Program.IsVTechOutfit("Android")); Assert.False(Program.IsVTechOutfit("Android Base"));
+    }
+    [Fact] public void GroundSitStart_RandomPickAndAndroidHover()   // 2026-10-23: first sit was always the last one; android sits too high
+    {
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release(); }")];
+        int sit = enter.IndexOf("SitOnGround()"), pick = enter.IndexOf("AoGroundSitSwitch()");
+        Assert.True(sit > 0 && pick > sit, "start pick right after the sit");
+        Assert.DoesNotContain("Stand()", enter[sit..]);                                          // no stand in between
+        var all = new System.Collections.Generic.List<(int, string)> { (1, "VAMOSITG11"), (8, "VAMOSITG25") };
+        Assert.NotEqual(8, Program.AoSitPick(10, Program.AoSitCurrentNumber(all, "VAMOSITG25", 0), 0.99));   // last used (saved) is never the start pick
+        Assert.Equal(-0.12, Program.GroundSitHoverOffset(true), 3);
+        Assert.Equal(0, Program.GroundSitHoverOffset(false), 3);
+    }
+    [Fact] public void GroundSitEnter_SitsOnce_NoStandResit_HoverNeverStands()   // 2026-10-23 14:30/14:47 regression
+    {
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release(); }")];
+        int sit = enter.IndexOf("SitOnGround()"), tog = enter.IndexOf("AoGroundSitToggle(");
+        Assert.True(sit > 0 && tog > sit, "sit down first, then force sitg (one transition)");
+        Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(enter, @"SitOnGround\(\)").Count);
+        var hov = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/AutoHover.cs"));
+        Assert.DoesNotContain("Stand()", hov); Assert.DoesNotContain("SitOnGround", hov); Assert.DoesNotContain("AoGroundSitToggle", hov);
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

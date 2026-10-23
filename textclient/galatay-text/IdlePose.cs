@@ -192,15 +192,20 @@ public static partial class Program
         if (AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0)) { try { client.Self.Stand(); } catch { } await Task.Delay(800); }
         return $"AO force sit toggled off ({r}); {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "STILL ground sitting" : "standing")}";
     }
-    // explicit stand (stand tool, idle_pose stop, logout): clear any pose, make sure the AO force sit is off, start the cooldown
+    // 2026-10-23 (David): only HIS stand (stand tool, idle_pose stop) starts the 30 min cooldown; an internal stand
+    // (logout, shutdown, deploy) never does, and a new login clears any cooldown.
+    internal static bool IdleStandStartsCooldown(string why) => why is "stand command" or "manual stop";
+    internal static DateTime IdleCooldownAfterLogin() => DateTime.MinValue;
+    // stand (stand tool, idle_pose stop, logout): clear any pose, make sure the AO force sit is off; cooldown only for his stand
     static async Task<string> IdleExplicitStand(string why)
     {
-        idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec); IdleNoteActivity();
+        bool cool = IdleStandStartsCooldown(why);
+        if (cool) idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec); IdleNoteActivity();
         string a = idlePosed != null ? await IdlePoseExit(why) : "not posed";
         string b = await AoGroundSitEnsureOff(why);
-        idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec);
-        Log("idlepose", $"explicit stand ({why}): {a}; {b}; no idle sit until {idleNoSitUntil:HH:mm}");
-        return $"{a}; {b}; no idle sit/kneel for 30 min";
+        if (cool) idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec);
+        Log("idlepose", $"stand ({why}): {a}; {b}; {(cool ? $"no idle sit until {idleNoSitUntil:HH:mm}" : "no cooldown (internal stand)")}");
+        return cool ? $"{a}; {b}; no idle sit/kneel for 30 min" : $"{a}; {b}";
     }
     internal sealed record IdlePoseState(string kind, string pose, List<string> anims, DateTime since);
     static volatile IdlePoseState idlePosed;
@@ -369,7 +374,7 @@ public static partial class Program
     static DateTime idleLoginAt;
     static void IdlePoseLoginStart()
     {
-        idleLoginAt = DateTime.Now; IdleNoteActivity();
+        idleLoginAt = DateTime.Now; IdleNoteActivity(); idleNoSitUntil = IdleCooldownAfterLogin();   // a cooldown never survives a relog
         _ = Task.Run(async () =>
         {
             try

@@ -13,7 +13,8 @@ public class IdlePoseTests
         Assert.True(Program.IdleShouldRotate("collar", 400, 300, false));
         Assert.False(Program.IdleShouldRotate("collar", 200, 300, false));
         Assert.False(Program.IdleShouldRotate("collar", 400, 300, true));
-        Assert.False(Program.IdleShouldRotate("groundsit", 900, 300, false));
+        Assert.True(Program.IdleShouldRotate("groundsit", 900, 300, false));   // 2026-10-23: AO ground sits rotate too
+        Assert.False(Program.IdleShouldRotate("groundsit", 900, 300, true));
         for (int i = 0; i < 50; i++) Assert.NotEqual("nadu", Program.PickIdlePose("nadu", System.Random.Shared.NextDouble()));
     }
     [Fact] public void UnleashWhileKneelingWithCollarVisibleStaysKneeling()
@@ -157,6 +158,20 @@ public class IdlePoseTests
         var body = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..];
         int face = body.IndexOf("await IdleFaceHim();");
         Assert.True(face > 0 && face < body.IndexOf("CollarPosePlay(") && face < body.IndexOf("AoGroundSitToggle("));
+    }
+    [Fact] public void AoGroundSitChooser_ParseAndPick()
+    {
+        var msg = "Select the Sitting on Ground animation to use:\n\n\n1. VAMOSITG11\n2. VAMOSITG12\n3. VAMOSITG13\n4. VAMOSITG21\n5. VAMOSITG22\n6. VAMOSITG23\n7. VAMOSITG24\n8. VAMOSITG25";
+        var e = Program.AoSitEntries(msg);
+        Assert.Equal(8, e.Count); Assert.Equal((1, "VAMOSITG11"), e[0]); Assert.Equal((8, "VAMOSITG25"), e[7]);
+        Assert.Equal(new[] { (9, "VAMOSITG26"), (10, "VAMOSITG27") }, Program.AoSitEntries("Select the Sitting on Ground animation to use:\n\n\n9. VAMOSITG26\n10. VAMOSITG27").ToArray());
+        for (int cur = 0; cur <= 10; cur++)
+            foreach (var r in new[] { 0.0, 0.3, 0.6, 0.99, 1.0 })
+            {
+                int p = Program.AoSitPick(10, cur, r);
+                Assert.InRange(p, 1, 10); Assert.NotEqual(cur, p);   // always a different sit
+            }
+        Assert.Equal(1, Program.AoSitPick(1, 1, 0.5));
     }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

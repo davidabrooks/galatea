@@ -78,15 +78,79 @@ public static partial class Program
     }
     // pure (tested): how long to hold one pose before changing to another (David 11:29: random 3-10 min)
     internal static double IdleRotateSec(double r01) => 180 + 420 * Math.Clamp(r01, 0, 1);
-    // pure (tested): change pose now? collar poses only (the Vista AO has no "next ground sit" button we can rely on); never while dancing
-    internal static bool IdleShouldRotate(string kind, double heldSec, double rotateSec, bool dancing) => kind == "collar" && !dancing && heldSec >= rotateSec;
+    // pure (tested): change pose now? collar poses and (2026-10-23) AO ground sits; never while dancing
+    internal static bool IdleShouldRotate(string kind, double heldSec, double rotateSec, bool dancing) => (kind == "collar" || kind == "groundsit") && !dancing && heldSec >= rotateSec;
+    // ---- Martha AO ground-sit chooser (found 2026-10-23): link 5 'HUD2016 V05' face 4, the hidden pop-out by SITS GROUNDS.
+    // Its top half 'SELECT' (st 0.40,0.75) opens "Select the Sitting on Ground animation to use:" with numbered entries
+    // (VAMOSITG11,12,13,21..27 = 10 sits), buttons 1-8 + NEXT, then 9,10 + PREV. Picking one switches the playing sit at once
+    // (owner-say "Current Sitting on Ground Animation::<name>"). The bottom half 'HIGH' is not used. Override: run/ao-groundsit-select.txt.
+    internal const string AoSitSelectDefault = "5 4 0.40,0.75";
+    // pure (tested): the numbered entries of the chooser text: (number, name)
+    internal static List<(int n, string name)> AoSitEntries(string msg) =>
+        System.Text.RegularExpressions.Regex.Matches(msg ?? "", @"(?m)^\s*(\d+)\.\s*(\S+)").Select(m => (int.Parse(m.Groups[1].Value), m.Groups[2].Value)).ToList();
+    // pure (tested): pick a different sit number (1..count), never the current one when there is a choice
+    internal static int AoSitPick(int count, int current, double r01)
+    {
+        if (count <= 1) return 1;
+        int k = 1 + (int)Math.Floor(Math.Clamp(r01, 0, 0.999999) * (count - 1));   // 1..count-1
+        return k >= current && current >= 1 ? k + 1 : k;
+    }
+    static int aoSitCurrent;   // the number picked last (0 = unknown)
+    static async Task<ScriptDialogEventArgs> AoDialogAfter(ScriptDialogEventArgs prev, int ms)
+    {
+        for (int i = 0; i < ms / 250; i++)
+        {
+            var d = lastDialog;
+            if (d != null && !ReferenceEquals(d, prev) && (d.ObjectName ?? "").Contains("VISTA", StringComparison.OrdinalIgnoreCase) && d.OwnerID == client.Self.AgentID) return d;
+            await Task.Delay(250);
+        }
+        return null;
+    }
+    static async Task<string> AoGroundSitSwitch()
+    {
+        var spot = (File.Exists(Env("GT_AO_SITSELECT_FILE", "/home/box/viewers/textclient/run/ao-groundsit-select.txt")) ? File.ReadAllText(Env("GT_AO_SITSELECT_FILE", "/home/box/viewers/textclient/run/ao-groundsit-select.txt")).Trim() : AoSitSelectDefault).Split(' ');
+        var prev = lastDialog;
+        await Exec($"touch-attachment \"ao\" \"{spot[0]}\" {spot[1]} st={spot[2]}");
+        var d = await AoDialogAfter(prev, 6000);
+        if (d == null || !(d.Message ?? "").Contains("Sitting on Ground", StringComparison.OrdinalIgnoreCase)) return "AO ground-sit chooser did not open";
+        var all = new List<(int n, string name)>(AoSitEntries(d.Message));
+        // count the later pages: NEXT shows the rest (page 1 holds 1-8)
+        var page = d;
+        while ((page.ButtonLabels ?? new()).Contains("NEXT") && all.Count < 60)
+        {
+            var p0 = page; await Exec("dialog NEXT"); page = await AoDialogAfter(p0, 5000); if (page == null) break;
+            var more = AoSitEntries(page.Message); if (more.Count == 0 || more.All(m => all.Any(a => a.n == m.n))) break;
+            all.AddRange(more.Where(m => !all.Any(a => a.n == m.n)));
+        }
+        int count = all.Count == 0 ? 0 : all.Max(a => a.n); if (count < 2) return $"only {count} ground sit(s): nothing to switch";
+        int pick = AoSitPick(count, aoSitCurrent, Random.Shared.NextDouble());
+        // walk to the page whose buttons include the pick
+        for (int i = 0; i < 10 && page != null && !(page.ButtonLabels ?? new()).Contains(pick.ToString()); i++)
+        {
+            var btn = (page.ButtonLabels ?? new()).Contains("PREV") ? "PREV" : "NEXT";
+            var p0 = page; await Exec("dialog " + btn); page = await AoDialogAfter(p0, 5000);
+        }
+        if (page == null || !(page.ButtonLabels ?? new()).Contains(pick.ToString())) return $"could not reach ground sit {pick}";
+        await Exec("dialog " + pick);
+        aoSitCurrent = pick;
+        var name = all.FirstOrDefault(a => a.n == pick).name ?? "?";
+        return $"ground sit {pick} {name} (of {count})";
+    }
     static double idleRotate = IdleRotateSec(Random.Shared.NextDouble());
     static async Task<string> IdlePoseRotate()
     {
         if (!await idleLock.WaitAsync(0)) return "busy";
         try
         {
-            var cur = idlePosed; if (cur == null || cur.kind != "collar") return "not in a collar pose";
+            var cur = idlePosed; if (cur == null) return "not posed";
+            if (cur.kind == "groundsit")
+            {
+                var r = await AoGroundSitSwitch();
+                idleRotate = IdleRotateSec(Random.Shared.NextDouble());
+                idlePosed = cur with { pose = r.StartsWith("ground sit ") ? r : cur.pose, since = DateTime.Now }; IdleSave();
+                return r;
+            }
+            if (cur.kind != "collar") return "not in a collar pose";
             var pose = PickIdlePose(cur.pose, Random.Shared.NextDouble());   // never the current one
             var (ok, info, anims) = await CollarPosePlay(pose);              // picked straight from the Pose menu, no STOP
             idleRotate = IdleRotateSec(Random.Shared.NextDouble());

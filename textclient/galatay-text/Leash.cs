@@ -133,7 +133,7 @@ public static partial class Program
         leashArrivedAt = DateTime.Now;   // a new or restored leash: LeashWalk grace (no walking straight after login/relog)
         if (cur != null) LeashEnd($"replaced by {mode} to {name}", quiet: true);
         leash = new LeashState(mode, holder, name, anchor, leashLength, how, DateTime.Now); leashMissScans = 0; leashNextWanderOff = DateTime.MaxValue;
-        if (mode == "leash") { try { SetPauseNow("rlv", $"leash held by {name}"); } catch { } afSnoozeUntil = DateTime.MaxValue; }
+        if (mode == "leash") { try { SetPauseNow("rlv", $"leash held by {name}"); } catch { } afSnoozeUntil = DateTime.MaxValue; if (cur?.mode != "leash") LeashCollarOnLeashRun(); }
         bool strict = LeashStrictNow();
         var text = mode == "leash"
             ? $"leashed {(anchor ? "(anchored) to" : "by")} {name} [{how}]; strict {(strict ? "ON (no self-unleash/teleport)" : "off")}; I walk with them when they walk off (never while they stand), forward only past {LeashForwardCutoff(leashLength):F1} m"
@@ -146,6 +146,7 @@ public static partial class Program
     {
         var l = leash; if (l == null) return;
         leash = null; leashNextWanderOff = DateTime.MaxValue;
+        try { LeashCollarOnUnleash(l.mode, why); } catch { }
         if (l.mode == "leash" && followId == l.holder) { followId = UUID.Zero; followDistThis = null; try { client.Self.AutoPilotCancel(); } catch { } }
         if (l.mode == "leash" && rlvHoldSeat == null) { afSnoozeUntil = DateTime.Now; try { if (wanderPause == "rlv") wanderPause = null; } catch { } }
         var text = $"{(l.mode == "leash" ? "unleashed" : "follow stopped")} ({why}); was {l.mode} to {l.holderName} for {(DateTime.Now - l.since):hh\\:mm\\:ss}";

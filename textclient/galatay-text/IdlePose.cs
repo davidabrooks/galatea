@@ -96,6 +96,10 @@ public static partial class Program
         return k >= current && current >= 1 ? k + 1 : k;
     }
     static int aoSitCurrent;   // the number picked last (0 = unknown)
+    internal static string IdleStartSitPick(string switchResult) => switchResult ?? "no result";
+    // pure (tested): hover offset for the AO ground sit by form (David 14:45: android sits ~4 cm too high)
+    internal const double AndroidGroundSitHover = -0.12;
+    internal static double GroundSitHoverOffset(bool android) => android ? AndroidGroundSitHover : 0;
     static volatile string aoSitCurrentName;   // from the AO's own owner-say "Current Sitting on Ground Animation::<name>"
     static int aoSitHooked;
     // pure (tested): the AO's confirmation line -> sit name (null = not that line)
@@ -107,12 +111,14 @@ public static partial class Program
     // pure (tested): the current sit's number: the AO's last confirmed name wins over our own memory (a relog resets ours)
     internal static int AoSitCurrentNumber(List<(int n, string name)> all, string confirmedName, int remembered) =>
         confirmedName != null && all.FirstOrDefault(a => a.name == confirmedName) is { n: > 0 } hit ? hit.n : remembered;
+    static readonly string AoSitLastFile = Env("GT_AO_SITLAST_FILE", "/home/box/viewers/textclient/run/ao-groundsit-last.txt");
     static void AoSitHook()
     {
+        try { if (aoSitCurrentName == null && File.Exists(AoSitLastFile)) aoSitCurrentName = File.ReadAllText(AoSitLastFile).Trim(); } catch { }   // the AO keeps its pick across relogs
         if (Interlocked.Exchange(ref aoSitHooked, 1) == 1) return;
         client.Self.ChatFromSimulator += (s, e) =>
         {
-            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) aoSitCurrentName = n; } catch { }
+            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } } } catch { }
         };
     }
     static async Task<ScriptDialogEventArgs> AoDialogAfter(ScriptDialogEventArgs prev, int ms)
@@ -367,11 +373,19 @@ public static partial class Program
                 return $"collar pose '{pose}': {info}";
             }
             var before = SelfAnims().ToHashSet();
+            if (AoGroundSitNow() == null) return "AO 'force sitg' button not mapped (run/ao-groundsit.txt)";
+            // 2026-10-23 14:30/14:47 (David: "stood up and sat back down in the same pose"): touching force sitg first made the
+            // AO start its sit while standing, then SitOnGround 0.8 s later sat her again (two transitions). Now: sit down
+            // first, then turn force sitg on, so the AO only swaps the sit animation in place.
+            try { client.Self.SitOnGround(); } catch { }
+            await Task.Delay(1500);
             var r = await AoGroundSitToggle("enter: " + why);
-            if (r.StartsWith("AO 'force sitg' button not mapped")) return r;
-            await Task.Delay(800);
-            try { client.Self.SitOnGround(); } catch { }   // force sitg only changes which sit plays: actually sit down
-            await Task.Delay(2500);
+            await Task.Delay(2000);
+            // 2026-10-23 (David): the first ground sit was always the last one used: pick a different one right away
+            // through the AO's SELECT chooser (swaps the playing sit in place, no stand in between)
+            string pickInfo; try { pickInfo = IdleStartSitPick(await AoGroundSitSwitch()); } catch (Exception ex) { pickInfo = "start pick error " + ex.GetBaseException().Message; }
+            Log("idlepose", "ground sit start pick: " + pickInfo);
+            // 2026-10-23 (David): android ground sit ~4 cm too high: auto-hover owns that offset (GroundSitHoverOffset)
             var added = SelfAnims().Where(a => !before.Contains(a)).Select(a => a.ToString()).ToList();
             idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave(); AutoHoverKick("ground sit");
             return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")})";
@@ -390,6 +404,7 @@ public static partial class Program
             else
             {
                 info = await AoGroundSitEnsureOff("exit: " + why);
+                try { if (SimHover() is double hv && Math.Abs(hv - PinnedHover()) > 0.005) await PostHover(PinnedHover(), "ground sit ended: back to normal hover"); } catch { }
             }
             idlePosed = null; IdleSave(); IdleNoteActivity(); AutoHoverKick("pose cleared");
             idleThreshold = IdleThresholdSec(IdleBaseSec(), Random.Shared.NextDouble());

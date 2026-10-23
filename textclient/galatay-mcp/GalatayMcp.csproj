@@ -57,6 +57,7 @@
     <Compile Include="../galatay-text/LoginJoin.cs" Link="Core/LoginJoin.cs" />
     <Compile Include="../galatay-text/RlvAdjustHeight.cs" Link="Core/RlvAdjustHeight.cs" />
     <Compile Include="../galatay-text/IdlePose.cs" Link="Core/IdlePose.cs" />
+    <Compile Include="../galatay-text/PoseHover.cs" Link="Core/PoseHover.cs" />
     <Compile Include="../galatay-text/AutoHover.cs" Link="Core/AutoHover.cs" />
     <Compile Include="../galatay-text/OutfitCollarLinks.cs" Link="Core/OutfitCollarLinks.cs" />
     <Compile Include="../galatay-text/AttFaces.cs" Link="Core/AttFaces.cs" />

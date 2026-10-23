@@ -255,5 +255,18 @@ public class IdlePoseTests
         Assert.Equal(Program.GuardStep.GiveUp, Program.DoorUnknownStep(2600, false));        // never "walking on"
         Assert.Equal(Program.GuardStep.Touch, Program.DoorUnknownStep(100, true));
     }
+    [Fact] public void PoseHover_NudgesToReference_NeverStandsOrResits()
+    {
+        Assert.Equal(-0.07, Program.PoseHoverTarget(-0.12, 0.05, 0.10), 3);   // sunk 5 cm below the reference contact -> up 5 cm
+        Assert.Equal(-0.15, Program.PoseHoverTarget(-0.12, 0.13, 0.10), 3);   // floating 3 cm -> down 3 cm
+        Assert.Equal(0.30, Program.PoseHoverTarget(0, -1, 0), 3);              // clamped
+        Assert.True(Program.PoseHoverConfirmed(0.105, 0.10)); Assert.False(Program.PoseHoverConfirmed(0.12, 0.10));
+        Assert.True(Program.PoseSeedsRef(true, "sit", "VAMOSITG26")); Assert.False(Program.PoseSeedsRef(true, "sit", "VAMOSITG24"));
+        Assert.True(Program.PoseSeedsRef(true, "stand", "stand:abcd1234"));
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
+        foreach (var bad in new[] { "Stand()", "SitOnGround", "AoGroundSitToggle", "AoGroundSitSwitch", "RequestSit", "touch" })
+            Assert.DoesNotContain(bad, src.Split("using LibreMetaverse;")[1]);
+        Assert.Equal("ref|android|sit", Program.PoseRefKey(true, "sit"));
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

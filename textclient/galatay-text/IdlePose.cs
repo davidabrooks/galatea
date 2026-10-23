@@ -144,7 +144,7 @@ public static partial class Program
         if (Interlocked.Exchange(ref aoSitHooked, 1) == 1) return;
         client.Self.ChatFromSimulator += (s, e) =>
         {
-            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } } } catch { }
+            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } PoseHoverSchedule("sit", n); } } catch { }
         };
     }
     static async Task<ScriptDialogEventArgs> AoDialogAfter(ScriptDialogEventArgs prev, int ms)

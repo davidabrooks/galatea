@@ -157,6 +157,8 @@ public static partial class Program
             {
                 if (log) AnimLogWrite(AnimLogMsg(prev.ContainsKey(kv.Key) ? "RESTART" : "start", AnimName(kv.Key), kv.Value.Item1, SrcDesc(kv.Value.Item2), !AnimLogFull));
                 NoteSeatOffAnim(kv.Key, kv.Value.Item2); // learn AO/seat-off anims while standing so we can stop them after sit
+                if (!prev.ContainsKey(kv.Key) && client.Self.SittingOn == 0 && idlePosed == null && IsAoHudSource(kv.Value.Item2))
+                    PoseHoverSchedule("stand", "stand:" + kv.Key.ToString()[..8], 4000);   // PoseHover.cs: an AO stand change (walks fail PoseStill)
             }
             foreach (var k in stopped)
                 if (log) AnimLogWrite(AnimLogMsg("stop", AnimName(k), 0, SrcDesc(prev[k].src), !AnimLogFull));

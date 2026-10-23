@@ -31,6 +31,15 @@ public static partial class Program
     // pure (tested): may this pose seed the reference? android sit: only David's approved sit; otherwise the first pose measured at the pin
     internal static bool PoseSeedsRef(bool android, string kind, string pose) => kind == "sit" && android ? string.Equals(pose, HoverRefSit, StringComparison.OrdinalIgnoreCase) : true;
 
+    // pure (tested): is the form (android/human) known for certain? 2026-10-23 15:19: right after login the worn prims had no
+    // names yet, AndroidWorn() read false and an android stand was saved as human|stand (and seeded ref|human|stand).
+    // Certain = the outfit name says android, or every worn attachment's name has arrived (then AndroidWorn is real).
+    internal static bool FormCertain(bool outfitSaysAndroid, int wornCount, int wornNamed) => outfitSaysAndroid || (wornCount > 0 && wornNamed == wornCount);
+    static bool FormCertainNow()
+    {
+        if (IsAndroidOutfit(currentOutfit)) return true;
+        try { var w = WornPrims().Where(p => p.ParentID == client.Self.LocalID).ToList(); return FormCertain(false, w.Count, w.Count(p => !string.IsNullOrEmpty(p.Properties?.Name))); } catch { return false; }
+    }
     static readonly ConcurrentDictionary<string, bool> poseChecked = new();
     static readonly SemaphoreSlim poseGate = new(1, 1);
     static readonly ConcurrentDictionary<string, DateTime> poseDue = new();
@@ -59,6 +68,7 @@ public static partial class Program
     static async Task PoseHoverCheck(string kind, string pose)
     {
         if (!LoggedIn || !PoseStill(kind, pose)) return;
+        if (!FormCertainNow()) { Log("posehover", $"{pose}: form not known yet (attachments still loading); retry in 10 s, nothing saved"); PoseHoverSchedule(kind, pose, 10000); return; }
         bool android = AndroidFormNow(); var key = PoseHoverKey(android, pose); var refKey = PoseRefKey(android, kind);
         var nums = PoseNums();
         double pin = PinnedHover();

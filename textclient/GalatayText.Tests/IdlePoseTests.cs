@@ -323,5 +323,18 @@ public class IdlePoseTests
         var lk = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "vision/look.py"));
         Assert.Contains("a[1] == \"hovercheck\": a = [a[0], \"view\"", lk);    // scene mode: the real floor geometry is meshed
     }
+    [Fact] public void PoseHover_PerPoseBias_PhotoIsTruth()   // 2026-10-23 17:33 VAMOSITG22 floated ~7 cm while the render said contact
+    {
+        var n = new System.Collections.Generic.Dictionary<string, double> { ["bias|android|sit"] = -0.055, ["bias|android|VAMOSITG22"] = 0.137 };
+        Assert.Equal(0.137, Program.PoseBiasFor(n, true, "sit", "VAMOSITG22"), 3);     // its own bias wins
+        Assert.Equal(-0.055, Program.PoseBiasFor(n, true, "sit", "VAMOSITG27"), 3);    // else the (form, kind) bias
+        Assert.Equal(0.2315, Program.PoseBiasFor(n, true, "stand", "stand:x"), 4);     // else the default
+        Assert.Equal(0.137, Program.PoseBiasFor(new System.Collections.Generic.Dictionary<string, double>(), false, "sit", "q") + 0.192, 3);
+        // render said gap +0.267 at bias -0.055; the photo shows ~0.075 really: bias must rise by 0.192
+        Assert.Equal(0.137, Program.PoseBiasFromPhoto(-0.055, 0.267, 0.075), 3);
+        // with the lowest body point (hand/back/thigh) the gap is already the minimum over every avatar vertex
+        var py = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "vision/cloud-render/render_mesh.py"));
+        Assert.Contains("z0 + lo_z - floor_z", py);
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

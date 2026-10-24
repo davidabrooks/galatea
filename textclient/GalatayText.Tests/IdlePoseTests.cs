@@ -307,5 +307,21 @@ public class IdlePoseTests
         Assert.True(Program.PoseMeasureSane(29.0, 0.517, 0.490));
         Assert.Equal(0.370, Program.PoseRefFromApproved(0.490, 0.0, -0.12), 3);    // G26 seeded at its approved -0.12
     }
+    [Fact] public void HoverCheckRender_AppliesHoverAndDrawsFloor()   // 2026-10-23 17:15 David "Fix it"
+    {
+        var env = Program.HoverCheckEnv(1.566, -0.11, -0.055);
+        Assert.Equal("1", env["GT_HOVER_CHECK"]); Assert.Equal("-0.110", env["GT_HOVER"]); Assert.Equal("1.566", env["GT_AGENT_SIZE"]);
+        Assert.Equal(-0.003, Program.HoverCheckGap("hover check gap -0.003 m (hover -0.110, size 1.566, floor 28.033)\n/x.jpg").Value, 3);
+        Assert.Null(Program.HoverCheckGap("look failed"));
+        Assert.Equal(-0.107, Program.PoseHoverFromGap(0.02, 0.127), 3);   // VAMOSITG27 17:20: floating 12.7 cm
+        Assert.False(Program.PoseGapSane(3.3)); Assert.True(Program.PoseGapConfirmed(-0.003));
+        var root = Root();
+        var rm = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "vision/cloud-render/render_mesh.py"));
+        Assert.Contains("z0 = agent_z - size / 2 + hov", rm);                      // the hover offset is applied
+        Assert.Contains("HC = hover_check_z0(os.environ, g[2], lo[2], fl)", rm);   // not snapped; gap vs the scene floor
+        Assert.Contains("if view == \"side\":", rm);
+        var lk = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "vision/look.py"));
+        Assert.Contains("a[1] == \"hovercheck\": a = [a[0], \"view\"", lk);    // scene mode: the real floor geometry is meshed
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

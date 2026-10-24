@@ -630,6 +630,7 @@ def main(a):
     vw = next((x.split("=", 1)[1] for x in a if x.startswith("--views=")), ""); a = [x for x in a if not x.startswith("--views=")]
     try: bviews = body_views(vw)
     except ValueError as e: sys.exit(str(e))
+    if len(a) >= 2 and a[1] == "hovercheck": a = [a[0], "view", *a[2:]]; fast = True; os.environ.update({"GT_HOVER_CHECK": "1", "GT_VIEW_OVERRIDE": "side", "GT_RES": "640x400", "GT_HC_SAMPLES": "32", "GT_EXPOSURE": os.environ.get("GT_EXPOSURE", "0")})
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     if headshot and hd_arg == "": hd_arg = "square"   # headshot default frame (--hd=landscape|portrait still wins)
@@ -712,6 +713,7 @@ def main(a):
     n_scanned = write_manifest(WORK, {**info.get("tex_paths", {}), **bake_paths, **{k: v for k, v in proj_paths.items() if v}})
     times["manifest"] = round(time.time() - t, 1)
     view = ("headshot" if headshot else "portrait") if photo_self else VIEWS.get(mode)
+    if os.environ.get("GT_VIEW_OVERRIDE"): view = os.environ["GT_VIEW_OVERRIDE"]   # hovercheck: the low side view
     if mode == "at":  # an avatar's name (mesh.json "others") or an object's name (scene.json root prims), first substring match
         who = next((o["name"] for o in meta.get("others", []) if target in o["name"].lower()), None)
         obj = next((p for p in doc["prims"] if target in str(p.get("name", "")).lower() and "world_pos" in p), None)
@@ -724,7 +726,7 @@ def main(a):
     os.makedirs(out_dir, exist_ok=True); stamp = time.strftime("%Y%m%d-%H%M%S"); outs = []
     for kind in ((["body"] if bviews else ["face", "body"]) if mode == "self" and not hd else ["scene"]):
         out = f"{out_dir}/{'photo' if hd else 'look'}-{stamp}-{mode}{'-' + kind if mode == 'self' and not hd else ''}.{'png' if hd else 'jpg'}"; t = time.time()
-        env = {**os.environ, "GT_SAMPLES": "8" if fast else "12" if mode == "around" else "48", **({"GT_VIEW": view} if view else {}),
+        env = {**os.environ, "GT_SAMPLES": os.environ.get("GT_HC_SAMPLES") or "8" if fast else "12" if mode == "around" else "48", **({"GT_VIEW": view} if view else {}),
                **({"GT_BODY_VIEWS": bviews} if kind == "body" and bviews else {}), **hd_env}
         if mode == "around":
             env.setdefault("GT_RES", "640x360")
@@ -758,6 +760,8 @@ def main(a):
                 if l.startswith("GT: avatar omitted") or l.startswith("GT: avatar stand-in"): print(l[4:], file=sys.stderr)
             hdr_files = [x for l in lines if l.startswith("GT: hdr master") for x in l.split()[3:5]]   # photo hd: EXR + .hdr masters
             rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
+            for l in lines:
+                if l.startswith("GT: hover check"): print(l[4:])   # hovercheck: the measured gap, on stdout for the client
             build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
             if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
         if hd:   # the PNG is the photo (David 2026-10-13: small but lossless); a quality-95 JPG next to it, secondary

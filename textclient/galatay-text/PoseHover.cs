@@ -31,6 +31,34 @@ public static partial class Program
     internal static bool PoseMeasureSane(double? floor, double e, double? eRef) => floor != null && (eRef is not double r || Math.Abs(e - r) <= PoseHoverMaxSane);
     // pure (tested): the reference contact when seeding from David's approved sit measured at hover hov: the contact it has at the approved value
     internal static double PoseRefFromApproved(double e, double hov, double approved) => e - hov + approved;
+    internal static string PoseBiasKey(bool android, string kind) => $"bias|{(android ? "android" : "human")}|{kind}";
+    // measured 2026-10-23 17:19 (android): stands render 0.2315 m high at the pin (the sim keeps her feet on the floor);
+    // ground sits -0.055 m at David's approved VAMOSITG26 -0.12 m
+    internal static double PoseBiasDefault(string kind) => kind == "stand" ? 0.2315 : -0.055;
+    internal static bool PoseGapSane(double gap) => Math.Abs(gap) <= 0.25;
+    internal static bool PoseGapConfirmed(double gap) => Math.Abs(gap) <= PoseHoverTol;
+    internal static double PoseHoverFromGap(double hov, double gap) => Math.Round(Math.Clamp(hov - gap, -0.4, 0.4), 3);
+    // pure (tested): the env that makes the quick render a hover check (hover offset applied, real placement, floor drawn)
+    internal static Dictionary<string, string> HoverCheckEnv(double size, double hover, double bias) => new()
+    {
+        ["GT_HOVER_CHECK"] = "1", ["GT_AGENT_SIZE"] = size.ToString("0.000", CultureInfo.InvariantCulture),
+        ["GT_HOVER"] = hover.ToString("0.000", CultureInfo.InvariantCulture), ["GT_HOVER_BIAS"] = bias.ToString("0.0000", CultureInfo.InvariantCulture),
+    };
+    internal static double? HoverCheckGap(string stdout)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "", @"hover check gap ([+-]?\d+\.\d+) m");
+        return m.Success ? double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : null;
+    }
+    static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias)
+    {
+        var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        psi.ArgumentList.Add(LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
+        foreach (var kv in HoverCheckEnv(size, hover, bias)) psi.Environment[kv.Key] = kv.Value;
+        using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
+        if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
+        var text = await o; await e;
+        return (HoverCheckGap(text), text.Split('\n').FirstOrDefault(l => l.EndsWith(".jpg"))?.Trim() ?? "no image");
+    }
     internal static bool PoseHoverConfirmed(double eCur, double eRef) => Math.Abs(eCur - eRef) <= PoseHoverTol;
     internal static string PoseRefKey(bool android, string kind) => $"ref|{(android ? "android" : "human")}|{kind}";
     // pure (tested): may this pose seed the reference? android sit: only David's approved sit; otherwise the first pose measured at the pin
@@ -89,40 +117,30 @@ public static partial class Program
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { Log("posehover", $"{key}: export failed: {ex}"); return; }
             var dir = Path.GetDirectoryName(scene)!;
-            var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-            psi.ArgumentList.Add(PoseContactPy); psi.ArgumentList.Add(dir); psi.ArgumentList.Add(kind);
-            using var pr = Process.Start(psi)!; var outT = pr.StandardOutput.ReadToEndAsync(); var errT = pr.StandardError.ReadToEndAsync();
-            if (!pr.WaitForExit(90000)) { try { pr.Kill(); } catch { } Log("posehover", $"{key}: mesher timed out"); return; }
-            var line = (await outT).Trim().Split('\n').LastOrDefault() ?? "";
-            if (pr.ExitCode != 0 || !line.StartsWith("{")) { Log("posehover", $"{key}: contact failed: {(await errT).Trim()}"); return; }
-            using var j = JsonDocument.Parse(line); var r = j.RootElement;
-            if (r.GetProperty("lo").ValueKind != JsonValueKind.Number || r.GetProperty("agent_off").ValueKind != JsonValueKind.Number) { Log("posehover", $"{key}: no contact"); return; }
-            if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed while measuring; skipped"); return; }
-            double? floorN = FloorBelow(client.Self.SimPosition); double floor = floorN ?? 0, hov = SimHover() ?? cur;
-            double e = r.GetProperty("lo").GetDouble() + r.GetProperty("agent_off").GetDouble() + r.GetProperty("me_z").GetDouble() + hov - floor;
-            if (!PoseMeasureSane(floorN, e, nums.TryGetValue(refKey, out var rr) ? rr : null)) { Log("posehover", $"{key}: implausible contact e {e:0.000} (floor {(floorN is double fz ? fz.ToString("0.00") : "?")}): nothing changed or saved"); return; }
+            // 2026-10-23 17:15 (David "Fix it"): the check is the hover-check RENDER: look.py hovercheck = her real placement
+            // (agent z - size/2 + hover - posture bias, never snapped to the floor) over the scene's own floor, seen level from
+            // her side at the contact; it prints the gap of her lowest vertex above that floor. Nudge by the gap, then render
+            // again to confirm. Private: the images are never sent to David.
+            if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed while exporting; skipped"); return; }
+            double hov = SimHover() ?? cur, size = SelfAv()?.Scale.Z ?? 0;
+            if (size < 1) { Log("posehover", $"{key}: agent size unknown; skipped"); return; }
+            double bias = nums.TryGetValue(PoseBiasKey(android, kind), out var bv) ? bv : PoseBiasDefault(kind);
+            var (g1, img1) = await HoverCheckRender(dir, size, hov, bias);
+            if (g1 is not double gap || !PoseGapSane(gap)) { Log("posehover", $"{key}: hover-check render gave no usable gap ({g1?.ToString("0.000") ?? "none"}): nothing changed or saved ({img1})"); return; }
             string how;
-            if (!nums.TryGetValue(refKey, out var eRef))
-            {
-                if (!PoseSeedsRef(android, kind, pose)) { Log("posehover", $"{key}: no reference yet for {refKey} (needs {HoverRefSit} at {AndroidGroundSitHover:0.00}); kept {hov:0.000}"); return; }
-                // 16:17: G26 seeded the reference at hover 0.000 instead of David's approved -0.12, skewing every android sit
-                double appr = kind == "sit" && android ? AndroidGroundSitHover : hov;
-                var er = PoseRefFromApproved(e, hov, appr);
-                PoseNumSet(refKey, er); PoseNumSet(key, appr); if (Math.Abs(appr - hov) > 0.005) await PostHover(appr, $"pose hover: {key} approved {appr:0.000}");
-                how = $"reference {refKey} = this pose at {appr:0.000} (contact e {er:0.000})";
-            }
-            else if (PoseHoverConfirmed(e, eRef)) { PoseNumSet(key, hov); how = $"confirmed {hov:0.000} (e {e:0.000} vs ref {eRef:0.000})"; }
+            if (PoseGapConfirmed(gap)) { PoseNumSet(key, hov); how = $"render confirms contact at {hov:0.000} (gap {gap:+0.000})"; }
             else
             {
-                var t = PoseHoverTarget(hov, e, eRef);
-                var (ok, info) = await PostHover(t, $"pose hover: {key} nudge");
+                var t = PoseHoverFromGap(hov, gap);
+                if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed; skipped"); return; }
+                var (ok, info) = await PostHover(t, $"pose hover: {key} render nudge");
+                var (g2, img2) = await HoverCheckRender(dir, size, t, bias);   // same pose, re-rendered at the new hover
+                bool good = ok && g2 is double gg && PoseGapConfirmed(gg);
                 if (ok) PoseNumSet(key, t);
-                how = $"nudged {hov:0.000} -> {t:0.000} (e {e:0.000} vs ref {eRef:0.000}): {info}";
+                how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({(good ? "contact confirmed" : "NOT confirmed")}): {info}; {img2}";
             }
             poseChecked[key] = true;
-            Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s");
-            // one quick low-res side view for her own checking (internal: never sent to David)
-            _ = Task.Run(async () => { try { var l = await LookCmd(new[] { "self", "left", "fast" }); Log("posehover", $"{key}: side render {l.Split('\n').FirstOrDefault()}"); } catch { } });
+            Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1})");
         }
         finally { poseGate.Release(); }
     }

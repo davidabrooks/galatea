@@ -31,6 +31,10 @@ partial class Program
     // pure (tested): natural reaction delay so he visibly starts first: 400-600 ms with jitter (total reaction stays < ~0.8 s)
     internal static int LeashReactionDelayMs(double r01) => 250 + (int)(150 * Math.Clamp(r01, 0, 1));   // David 11:26: sooner, 0.25-0.4 s
     // pure (tested): leashed idle pose: rise only when he walks away AND the gap passes the start gap (a real pull)
+    internal const float LeashRiseSpeed = 0.5f;
+    // pure (tested): seated/posed while leashed and he starts moving (walking speed, or already past the start gap) -> stand now
+    internal static bool LeashMustStand(bool leashed, bool seatedOrPosed, bool hisMotion, float hisSpeed, float gap, float length)
+        => leashed && seatedOrPosed && (hisSpeed > LeashRiseSpeed || (hisMotion && gap > LeashStartGap(length)));
     internal static bool LeashIdleMustRise(bool leashed, bool hisMotionAway, float gap, float length) => leashed && hisMotionAway && gap > LeashStartGap(length);
     // pure (tested): start gap: just over the collar-pull hold distance (stop + 0.1 m), at most the old "gap > leash"
     internal static float LeashStartGap(float length) => Math.Max(LeashWalkStop(length) + 0.1f, Math.Min(length, LeashWalkStop(length) + 0.3f));
@@ -133,7 +137,14 @@ partial class Program
             float vToward = toHim.Length() > 0.01f ? Vector3.Dot(new Vector3(v.X, v.Y, 0), Vector3.Normalize(toHim)) : 0;
             bool moveCounts = holderMoving && (leashDriving || LeashReactionReady(holderMotionAt, holderDelayMs, DateTime.Now));
             // David 11:31: get up only when he is actually about to pull me (walking away past the start gap), not when he moves nearby
-            if (idlePosed != null && LeashIdleMustRise(l != null, holderMoving, dist, leashLength)) _ = IdlePoseExitAsync("leash pull: he walks away");
+            // 2026-10-23 16:57 (David: "always stand when I start walking and you're leashed"): seated on the ground (idle pose or
+            // not) and he moves away -> stand at once (no stand cooldown: internal) and follow
+            bool groundSat = AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0);
+            if (LeashMustStand(l != null, idlePosed != null || groundSat, holderMoving, new Vector3(holderVel.X, holderVel.Y, 0).Length(), dist, leashLength))
+            {
+                if (idlePosed != null) _ = IdlePoseExitAsync("leash: he walks away");
+                else { try { client.Self.Stand(); } catch { } RlvLog("leash-walk: stood up from the ground: he walks away"); }
+            }
             var o = LeashControl(leashDriving, moveCounts, LeashHolderStopped(holderSlowSince, DateTime.Now), dist, leashLength, can, vToward, leashPrevVToward, leashFwdWas);
             leashPrevVToward = vToward;
             if (o.act == "walk")
@@ -141,7 +152,7 @@ partial class Program
                 leashDriving = true; leashPullAnim = false; LeashDrive(o.forward); leashFwdWas = o.forward; leashLat.Commanded(DateTime.Now);
                 RlvLog($"leash-walk: start ({why}): {l.holderName} moving {new Vector3(holderVel.X, holderVel.Y, 0).Length():F2} m/s at {dist:F1} m");
             }
-            else if (o.act == "stop") { leashDriving = false; leashFwdWas = false; LeashWalkStopNow(holderPos); RlvLog($"leash-walk: stopped ({o.why}) at {dist:F1} m facing {l?.holderName}"); }
+            else if (o.act == "stop") { IdleNoteActivity(); idleThreshold = IdleThresholdSec(IdleBaseSec(), Random.Shared.NextDouble()); leashDriving = false; leashFwdWas = false; LeashWalkStopNow(holderPos); RlvLog($"leash-walk: stopped ({o.why}) at {dist:F1} m facing {l?.holderName}"); }
             else if (leashDriving) { if (o.forward != leashFwdWas || o.forward) LeashDrive(o.forward); leashFwdWas = o.forward; }
         }
     }

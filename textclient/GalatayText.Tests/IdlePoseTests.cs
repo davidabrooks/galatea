@@ -290,5 +290,22 @@ public class IdlePoseTests
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/Program.cs"));
         Assert.Contains("ScheduleEmbeddedRelogin(", src);
     }
+    [Fact] public void Leash_StandsWhenHeWalks_ActivityResets_PoseHoverGuards()   // 2026-10-23 16:57 live test
+    {
+        Assert.True(Program.LeashMustStand(true, true, true, 3.2f, 2.1f, 1.5f));   // he walks off at 3.2 m/s
+        Assert.True(Program.LeashMustStand(true, true, false, 1.0f, 0.7f, 1.5f));  // walking speed even before the gap grows
+        Assert.False(Program.LeashMustStand(true, true, false, 0.1f, 0.7f, 1.5f)); // he shuffles in place
+        Assert.False(Program.LeashMustStand(false, true, true, 3f, 3f, 1.5f));
+        Assert.False(Program.LeashMustStand(true, false, true, 3f, 3f, 1.5f));
+        Assert.True(Program.GroundSitStandNeeded(new[] { LibreMetaverse.Animations.SIT_GROUND_staticRAINED }, false));
+        Assert.False(Program.GroundSitStandNeeded(new LibreMetaverse.UUID[0], false));
+        var lw = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/LeashWalk.cs"));
+        Assert.Contains("else if (o.act == \"stop\") { IdleNoteActivity();", lw);
+        Assert.DoesNotContain("IdleExplicitStand", lw);                           // never the 30-min cooldown
+        Assert.False(Program.PoseMeasureSane(2.0, 3.953, 0.632));                  // 16:57 bogus -0.30
+        Assert.False(Program.PoseMeasureSane(null, 0.5, null));
+        Assert.True(Program.PoseMeasureSane(29.0, 0.517, 0.490));
+        Assert.Equal(0.370, Program.PoseRefFromApproved(0.490, 0.0, -0.12), 3);    // G26 seeded at its approved -0.12
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

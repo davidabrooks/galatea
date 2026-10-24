@@ -26,6 +26,11 @@ public static partial class Program
     internal static double PoseHoverTarget(double curHover, double eCur, double eRef)
         => Math.Round(curHover - Math.Clamp(eCur - eRef, -PoseHoverMaxDelta, PoseHoverMaxDelta), 3);
     // pure (tested): does the check confirm the saved value (no nudge)?
+    internal const double PoseHoverMaxSane = 0.15;
+    // pure (tested): is a measurement believable? 16:57 a stand measured while being led read e 3.953 (ref 0.632) and set -0.30
+    internal static bool PoseMeasureSane(double? floor, double e, double? eRef) => floor != null && (eRef is not double r || Math.Abs(e - r) <= PoseHoverMaxSane);
+    // pure (tested): the reference contact when seeding from David's approved sit measured at hover hov: the contact it has at the approved value
+    internal static double PoseRefFromApproved(double e, double hov, double approved) => e - hov + approved;
     internal static bool PoseHoverConfirmed(double eCur, double eRef) => Math.Abs(eCur - eRef) <= PoseHoverTol;
     internal static string PoseRefKey(bool android, string kind) => $"ref|{(android ? "android" : "human")}|{kind}";
     // pure (tested): may this pose seed the reference? android sit: only David's approved sit; otherwise the first pose measured at the pin
@@ -63,7 +68,7 @@ public static partial class Program
     // is she still in that pose? (a check must never act on a pose she has left)
     static bool PoseStill(string kind, string pose) => kind == "sit"
         ? idlePosed?.kind == "groundsit" && string.Equals(aoSitCurrentName, pose, StringComparison.OrdinalIgnoreCase) && client.Self.SittingOn == 0
-        : idlePosed == null && client.Self.SittingOn == 0 && client.Self.Velocity.Length() < 0.1f && pose.StartsWith("stand:") && SelfAnims().Any(a => a.ToString().StartsWith(pose[6..]));
+        : idlePosed == null && client.Self.SittingOn == 0 && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false) && pose.StartsWith("stand:") && SelfAnims().Any(a => a.ToString().StartsWith(pose[6..]));
 
     static async Task PoseHoverCheck(string kind, string pose)
     {
@@ -93,13 +98,18 @@ public static partial class Program
             using var j = JsonDocument.Parse(line); var r = j.RootElement;
             if (r.GetProperty("lo").ValueKind != JsonValueKind.Number || r.GetProperty("agent_off").ValueKind != JsonValueKind.Number) { Log("posehover", $"{key}: no contact"); return; }
             if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed while measuring; skipped"); return; }
-            double floor = FloorBelow(client.Self.SimPosition) ?? 0, hov = SimHover() ?? cur;
+            double? floorN = FloorBelow(client.Self.SimPosition); double floor = floorN ?? 0, hov = SimHover() ?? cur;
             double e = r.GetProperty("lo").GetDouble() + r.GetProperty("agent_off").GetDouble() + r.GetProperty("me_z").GetDouble() + hov - floor;
+            if (!PoseMeasureSane(floorN, e, nums.TryGetValue(refKey, out var rr) ? rr : null)) { Log("posehover", $"{key}: implausible contact e {e:0.000} (floor {(floorN is double fz ? fz.ToString("0.00") : "?")}): nothing changed or saved"); return; }
             string how;
             if (!nums.TryGetValue(refKey, out var eRef))
             {
                 if (!PoseSeedsRef(android, kind, pose)) { Log("posehover", $"{key}: no reference yet for {refKey} (needs {HoverRefSit} at {AndroidGroundSitHover:0.00}); kept {hov:0.000}"); return; }
-                PoseNumSet(refKey, e); PoseNumSet(key, hov); how = $"reference {refKey} = this pose at {hov:0.000} (contact e {e:0.000})";
+                // 16:17: G26 seeded the reference at hover 0.000 instead of David's approved -0.12, skewing every android sit
+                double appr = kind == "sit" && android ? AndroidGroundSitHover : hov;
+                var er = PoseRefFromApproved(e, hov, appr);
+                PoseNumSet(refKey, er); PoseNumSet(key, appr); if (Math.Abs(appr - hov) > 0.005) await PostHover(appr, $"pose hover: {key} approved {appr:0.000}");
+                how = $"reference {refKey} = this pose at {appr:0.000} (contact e {er:0.000})";
             }
             else if (PoseHoverConfirmed(e, eRef)) { PoseNumSet(key, hov); how = $"confirmed {hov:0.000} (e {e:0.000} vs ref {eRef:0.000})"; }
             else

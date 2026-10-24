@@ -1284,6 +1284,25 @@ def z0_of(fl, ll, lo, seated=False):
     if seated and ll is not None: return ll
     return fl - lo if ll is None or abs(ll + lo - fl) < 0.35 else ll
 
+def hover_check_z0(env, agent_z, lo_z, floor_z):
+    """Hover check (2026-10-23, David: judge her hover by eye). The viewer puts her rest-pose foot level at agent z - size/2
+    (the sim's capsule bottom; the sim's size IS the viewer's body size) plus her hover; animations move the body from there.
+    So mesh z0 = agent_z - size/2 + hover, never snapped to the floor (z0_of snaps standing avatars: that hid every hover).
+    Returns (z0, gap of her lowest vertex above the floor, hover, size) or None when GT_HOVER_CHECK is off.
+    ponytail: the viewer's exact root offset per posture isn't modelled; GT_HOVER_BIAS calibrates it per (form, kind)."""
+    if env.get("GT_HOVER_CHECK") != "1": return None
+    size = float(env["GT_AGENT_SIZE"]); hov = float(env.get("GT_HOVER", "0"))
+    # GT_HOVER_BIAS: the model's measured error for this posture (2026-10-23: stands render 0.25 m high at the pin, where the sim
+    # keeps her feet on the floor; ground sits -0.055 m at David's approved VAMOSITG26 -0.12): subtracted so contact = gap 0
+    z0 = agent_z - size / 2 + hov - float(env.get("GT_HOVER_BIAS", "0"))
+    return z0, z0 + lo_z - floor_z, hov, size
+
+def side_camera_spec(x, y, yaw_deg, lo_z, floor_z, dist=1.4):
+    """camera for the hover check: from her side (yaw + 90), at hip height just above the floor, looking level at the
+    floor contact -> (camera location, target)"""
+    a = math.radians(yaw_deg + 90); hz = max(floor_z, lo_z) + 0.18
+    return (x + math.cos(a) * dist, y + math.sin(a) * dist, hz), (x, y, hz - 0.05)
+
 def omit_stand_in(env):
     """HD photos leave out an avatar that would be a stand-in (GT_STANDIN=1 forces it back)"""
     return env.get("GT_HD") == "1" and env.get("GT_STANDIN") != "1"
@@ -1436,6 +1455,8 @@ if kind == "scene":
     placed = [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
     lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
+    HC = hover_check_z0(os.environ, g[2], lo[2], fl)   # 2026-10-23 hover check: real placement + her hover, floor from the scene
+    if HC: z0 = HC[0]; print(f"GT: hover check gap {HC[1]:+.3f} m (hover {HC[2]:+.3f}, size {HC[3]:.3f}, floor {fl:.3f})", flush=True)
     for ob in obs: ob.location = (x, y, z0); ob.rotation_euler = (0, 0, math.radians(yaw))
     log("avatar at", round(x, 2), round(y, 2), "mesh z0", round(z0, 2), "floor", round(fl, 2), "LL", ll and round(ll, 2))
     def to_world(local, at, yw):
@@ -1487,7 +1508,12 @@ if kind == "scene":
             if hd_fov():
                 rx, ry = (int(v) for v in os.environ.get("GT_RES", "3840x2160").split("x")); lens = lens_for_vfov(hd_fov(), rx, ry)
             camera(loc - u * 0.15 if hit else want, target, lens, (960, 540))
-        if view.startswith("portrait"):
+        if view == "side":   # hover check: level side view at the floor contact, close and low-res
+            bpy.context.view_layer.update()
+            zl = min((ob.matrix_world @ Vector(c)).z for ob in obs for c in ob.bound_box)
+            loc_, tgt_ = side_camera_spec(x, y, yaw, zl, fl)
+            camera(loc_, tgt_, 35, (640, 400))
+        elif view.startswith("portrait"):
             # `photo hd self` (2026-10-13): her whole body from in front, in the real scene; "portrait[:yaw offset]".
             # Framed on her world bounding box (standing, sitting or lying), lens 50; Blender's sensor fit = the long side
             a = math.radians(yaw + (float(view[9:]) if view.startswith("portrait:") else 0)); f = Vector((math.cos(a), math.sin(a), 0))

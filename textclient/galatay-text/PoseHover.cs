@@ -31,6 +31,13 @@ public static partial class Program
     internal static bool PoseMeasureSane(double? floor, double e, double? eRef) => floor != null && (eRef is not double r || Math.Abs(e - r) <= PoseHoverMaxSane);
     // pure (tested): the reference contact when seeding from David's approved sit measured at hover hov: the contact it has at the approved value
     internal static double PoseRefFromApproved(double e, double hov, double approved) => e - hov + approved;
+    // pure (tested): per-pose bias first (2026-10-23 17:33 VAMOSITG22: the sit bias tuned in VAMOSITG26 left her ~7 cm above the
+    // floor while the render said contact: the model's body-root error differs per animation), then the (form, kind) bias, then the default
+    internal static string PoseBiasPoseKey(bool android, string pose) => $"bias|{(android ? "android" : "human")}|{pose}";
+    internal static double PoseBiasFor(IReadOnlyDictionary<string, double> nums, bool android, string kind, string pose)
+        => nums.TryGetValue(PoseBiasPoseKey(android, pose), out var a) ? a : nums.TryGetValue(PoseBiasKey(android, kind), out var b) ? b : PoseBiasDefault(kind);
+    // pure (tested): David's photo is truth: the bias that makes the render's gap equal the real gap he sees
+    internal static double PoseBiasFromPhoto(double biasUsed, double renderGap, double realGap) => Math.Round(biasUsed + (renderGap - realGap), 4);
     internal static string PoseBiasKey(bool android, string kind) => $"bias|{(android ? "android" : "human")}|{kind}";
     // measured 2026-10-23 17:19 (android): stands render 0.2315 m high at the pin (the sim keeps her feet on the floor);
     // ground sits -0.055 m at David's approved VAMOSITG26 -0.12 m
@@ -124,9 +131,9 @@ public static partial class Program
             if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed while exporting; skipped"); return; }
             double hov = SimHover() ?? cur, size = SelfAv()?.Scale.Z ?? 0;
             if (size < 1) { Log("posehover", $"{key}: agent size unknown; skipped"); return; }
-            double bias = nums.TryGetValue(PoseBiasKey(android, kind), out var bv) ? bv : PoseBiasDefault(kind);
+            double bias = PoseBiasFor(nums, android, kind, pose);
             var (g1, img1) = await HoverCheckRender(dir, size, hov, bias);
-            if (g1 is not double gap || !PoseGapSane(gap)) { Log("posehover", $"{key}: hover-check render gave no usable gap ({g1?.ToString("0.000") ?? "none"}): nothing changed or saved ({img1})"); return; }
+            if (g1 is not double gap || !PoseGapSane(gap)) { Log("posehover", $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed or saved ({img1})"); return; }
             string how;
             if (PoseGapConfirmed(gap)) { PoseNumSet(key, hov); how = $"render confirms contact at {hov:0.000} (gap {gap:+0.000})"; }
             else

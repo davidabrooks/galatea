@@ -30,7 +30,8 @@ public static partial class Program
         {
             var q = p.EndsWith("deg") ? p[..^3] : p;
             if (q == "side") q = "left";   // 2026-10-26: "side" = her left (90 deg), the level side view the seat / hover checks read
-            if (LookSides.Contains(q)) outp.Add(q);
+            if (q == "contact") q = "feet";
+            if (LookSides.Contains(q) || q == "feet") outp.Add(q);   // feet = her left side, tight on her lowest contact (feet standing, hips sitting)
             else if (double.TryParse(q, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && Math.Abs(d) <= 360 && !double.IsNaN(d))
                 outp.Add(d.ToString("0.#", CultureInfo.InvariantCulture));
             else return null;
@@ -165,13 +166,14 @@ public static partial class Program
         var (kind, pose) = PoseNow(); bool android = AndroidFormNow(); var nums = PoseNums();
         var (hov, _) = await EffectiveHoverFresh();
         var env = HoverCheckEnv(size, hov ?? PinnedHover(), PoseBiasFor(nums, android, kind, pose ?? ""));
+        env["GT_HC_POSTURE"] = HoverContactLabel(kind);
         env["GT_HOVER_CAL"] = BiasCalibrated(nums, android, kind, pose) ? "calibrated" : "default";
         return env;
     }
 
     static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null, string no = null, string fov = null)
     {
-        const string usage = "usage: look [self [front|back|left|right|side|<degrees>|all]|around|at <avatar or object name>] [fast] [far]  (self also: preset=<hover-ground|hover-seat|photo-fast|outfit|photo-hd> scope=<full|nearby|seat|none> floor=<auto|on|off> avatars=off hide-attach=<points> textures=off materials=off small scale=<n> size=WxH samples=<n> jpeg=<n> exposure=<stops> cam-margin=<n> cam-lens=<mm> cam-fov=<deg> cam-height=<m>; docs/render-presets.md)";
+        const string usage = "usage: look [self [front|back|left|right|side|<degrees>|all]|around|at <avatar or object name>] [fast] [far]  (self also: views feet = tight close-up on her lowest floor contact (feet / hips / shins), zoom=feet = every view that tight; preset=<hover-ground|hover-seat|photo-fast|outfit|photo-hd> scope=<full|nearby|seat|none> floor=<auto|on|off> avatars=off hide-attach=<points> textures=off materials=off small scale=<n> size=WxH samples=<n> jpeg=<n> exposure=<stops> cam-margin=<n> cam-lens=<mm> cam-fov=<deg> cam-height=<m>; docs/render-presets.md)";
         // render options (look_scope.py) are only read for `look self` (or a bare preset=...): a target name can't swallow them
         var lookOpts = new List<string>();
         if (a.Length > 0 && (a[0] == "self" || a.Any(x => x.StartsWith("preset=", StringComparison.Ordinal)) && a[0] is not ("around" or "at")))

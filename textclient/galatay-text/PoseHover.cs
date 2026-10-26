@@ -51,11 +51,18 @@ public static partial class Program
         var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "", @"hover check gap ([+-]?\d+\.\d+) m");
         return m.Success ? double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : null;
     }
-    static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias)
+    // pure (tested): what the close-up is framed on, for the log: the lowest body contact of the posture
+    internal static string HoverContactLabel(string kind) => kind switch { "stand" => "feet (soles)", "sit" => "hips and any thighs / heels in contact", _ => "lowest contact" };
+    // pure (tested): renders one hover check costs. Each HoverCheckRender call is ONE blender run of ONE image (the contact close-up, which REPLACES the wide
+    // side view: look_scope.hovercheck_view). 1 when the contact is confirmed; 2 when a fix was applied (the re-render at the hover really in force is the verification)
+    internal static int HoverCheckRenderCount(bool fixApplied) => fixApplied ? 2 : 1;
+    // ONE render, ONE image. kind (stand|sit) only labels what the close-up frames
+    static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null)
     {
         var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add(LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
         foreach (var kv in HoverCheckEnv(size, hover, bias)) psi.Environment[kv.Key] = kv.Value;
+        psi.Environment["GT_HC_POSTURE"] = HoverContactLabel(kind);
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
         var text = await o; await e;
@@ -113,23 +120,25 @@ public static partial class Program
         var prev = Interlocked.Exchange(ref hoverPosture, now);
         if (prev == now) return;
         hoverPostureAt = DateTime.Now;
-        if (HoverCheckWantedOnPosture(prev, now)) HoverCheckRequest(now, 4000);
+        if (HoverCheckWantedOnPosture(prev, now)) _ = HoverCheckRequest(now, 4000);
     }
     // schedule ONE check (why: sit, stand, region or manual). A newer request replaces an older pending one; blocked states retry a few times, then give up.
-    internal static void HoverCheckRequest(string why, int delayMs = 4000)
+    // returns the task that ends with the check's one-line result (what a manual `hover check` waits for and returns)
+    static volatile string hoverCheckResult = "";
+    internal static Task<string> HoverCheckRequest(string why, int delayMs = 4000)
     {
-        if (Env("GT_POSE_HOVER_CHECK", "on") == "off") return;
+        if (Env("GT_POSE_HOVER_CHECK", "on") == "off") return Task.FromResult("hover check is off (GT_POSE_HOVER_CHECK=off)");
         long id = Interlocked.Increment(ref hoverReqSeq);
         Log("posehover", $"visual hover check requested ({why}), in {delayMs / 1000.0:0.#} s");
-        _ = Task.Run(async () =>
+        return Task.Run(async () =>
         {
             try
             {
                 await Task.Delay(delayMs);
                 for (int attempt = 1; ; attempt++)
                 {
-                    if (Interlocked.Read(ref hoverReqSeq) != id) return;   // a newer request replaced this one
-                    if (!LoggedIn) return;
+                    if (Interlocked.Read(ref hoverReqSeq) != id) return "replaced by a newer hover check request";   // a newer request replaced this one
+                    if (!LoggedIn) return "not logged in";
                     var (kind, pose) = PoseNow(); var sitting = client.Self.SittingOn != 0;
                     var (go, block) = HoverCheckReady(sitting ? "seat" : kind, client.Self.Velocity.Length(), IdleLeashedNow(), followId != UUID.Zero, idleLock.CurrentCount == 0,
                                                       (DateTime.Now - hoverPostureAt).TotalSeconds, (DateTime.Now - hoverCheckLastRun).TotalSeconds, why == "manual");
@@ -138,15 +147,15 @@ public static partial class Program
                     {
                         hoverCheckLastRun = DateTime.Now;
                         retry = await PoseHoverCheck(kind, pose);
-                        if (retry == null) return;
+                        if (retry == null) return hoverCheckResult;
                     }
-                    else if (block.StartsWith("skip:")) { Log("posehover", $"{why}: {block}"); return; }
-                    if (attempt >= HoverCheckMaxTries) { Log("posehover", $"{why}: gave up after {attempt} tries ({retry})"); return; }
+                    else if (block.StartsWith("skip:")) { Log("posehover", $"{why}: {block}"); return $"{why}: {block}"; }
+                    if (attempt >= HoverCheckMaxTries) { Log("posehover", $"{why}: gave up after {attempt} tries ({retry})"); return $"{why}: gave up after {attempt} tries ({retry})"; }
                     Log("posehover", $"{why}: waiting ({retry}); try {attempt + 1}/{HoverCheckMaxTries} in {HoverCheckRetryMs / 1000} s");
                     await Task.Delay(HoverCheckRetryMs);
                 }
             }
-            catch (Exception ex) { Log("posehover", $"{why}: {ex.GetBaseException().Message}"); }
+            catch (Exception ex) { Log("posehover", $"{why}: {ex.GetBaseException().Message}"); return $"{why}: error {ex.GetBaseException().Message}"; }
         });
     }
     // is she still in that pose? (a check must never act on a pose she has left). The AO's anim_list decides sit vs stand, never the sim.
@@ -184,9 +193,10 @@ public static partial class Program
             bool calibrated = BiasCalibrated(nums, android, kind, pose);
             if (size < 1) { Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
             double bias = PoseBiasFor(nums, android, kind, pose);
-            var (g1, img1) = await HoverCheckRender(dir, size, hov, bias);
-            if (g1 is not double gap || !PoseGapSane(gap)) { Log("posehover", $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"); return null; }
-            string how;
+            var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind);   // render 1: the contact close-up (replaces the wide side view)
+            string finalImg = img1;
+            if (g1 is not double gap || !PoseGapSane(gap)) { var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; Log("posehover", bad); hoverCheckResult = bad; return null; }
+            string how; bool fixedHover = false;
             string calTxt = calibrated ? "bias calibrated against David's viewer" : "DEFAULT bias, not yet calibrated against David's viewer (hover calibrate)";
             if (PoseGapConfirmed(gap)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {gap:+0.000}; {calTxt}); hover left alone";
             else
@@ -197,12 +207,15 @@ public static partial class Program
                 // verify: the cap must now hold t (fresh GET), and the re-render is drawn at THAT value, not at the value we meant to set
                 var (eff2, src2) = await EffectiveHoverFresh();
                 bool applied = ok && eff2 is double e2 && Math.Abs(e2 - t) <= 0.002;
-                var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias);   // same pose, re-rendered at the hover really in force
+                var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias, kind);   // render 2 (only after a fix): the verification at the hover really in force
+                fixedHover = true; finalImg = img2;
                 bool good = applied && g2 is double gg && PoseGapConfirmed(gg);
                 string verdict = good ? (calibrated ? "contact confirmed" : "contact in the render; NOT verified against David's viewer (default bias)") : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
                 how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}): {info}; {img2}";
             }
-            Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1})");
+            int renders = HoverCheckRenderCount(fixedHover);
+            Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}");
+            hoverCheckResult = $"{key}: {how}; renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}" + (fixedHover ? $" (before the fix: {img1})" : "");
             return null;
         }
         finally { poseGate.Release(); }

@@ -216,7 +216,12 @@ public static partial class Program
         }
         if (a[0] == "calibrate") return await HoverCalibrate(a[1..]);
         if (a[0] == "repin") return (await PostHover(PinnedHover(), "hover repin")).info;
-        if (a[0] == "check") { HoverCheckRequest("manual", 500); return "visual hover check requested: scene export + side render over the floor, then a fix only if she is not on it (see the posehover log)"; }
+        if (a[0] == "check")
+        {
+            // waits for the check and returns its one line: the render count and the path of the contact close-up (feet standing, hips sitting) to show David
+            var t = HoverCheckRequest("manual", 500);
+            return await Task.WhenAny(t, Task.Delay(120000)) == t ? await t : "visual hover check requested but still running after 120 s (see the posehover log for its close-up path)";
+        }
         return "usage: hover [get] | hover set <meters -2..2> (pins it in hover.txt) | hover apply <meters> (not saved) | hover repin | hover check | hover calibrate stand|sit|here <cm> | show | reset stand|sit|here";
     }
 

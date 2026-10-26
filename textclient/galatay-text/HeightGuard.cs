@@ -56,8 +56,29 @@ public static partial class Program
     static List<UUID> SelfAnims() => client.Self.SignaledAnimations.Keys.ToList();
     static bool HasPoseAnim(List<UUID> anims) => anims.Any(a => !BuiltinAnims.ContainsKey(a));
 
-    // hover_height as the sim currently applies it (from our own AvatarAppearance), or null if not received
+    // hover_height as our OWN AvatarAppearance reports it, or null if not received. 2026-10-26: this is NOT the hover David's viewer shows:
+    // after a POST (-0.186) it stayed 0 ("sim applies 0") while his viewer drew her sunk by the AgentPreferences value. Never use it to
+    // judge what is in force (EffectiveHoverNow / EffectiveHoverFresh below); it is only the last-resort fallback and a diagnostic.
     static double? SimHover() { var av = SelfAv(); return av != null && av.VisualParameters.Length > 0 ? av.HoverHeight.Z : null; }
+
+    // The hover IN FORCE = what the AgentPreferences cap holds = what David's viewer applies to her (observed 2026-10-26: prefs -0.186,
+    // his viewer showed her sunk, our own appearance still said 0). Sources, best first: a fresh AgentPreferences GET, the value the
+    // cap answered to our last POST, our own appearance (stale, last resort).
+    static double? hoverInForce; static DateTime hoverInForceAt = DateTime.MinValue;
+    internal static (double? v, string src) EffectiveHoverPick(double? prefsGet, double? lastPost, double? simAppearance)
+        => prefsGet is double g ? (g, "AgentPreferences GET") : lastPost is double p ? (p, "last POST answered by the cap") : simAppearance is double s ? (s, "own appearance (may be stale)") : (null, "unknown");
+    static double? EffectiveHoverNow() => EffectiveHoverPick(null, hoverInForce, SimHover()).v;
+    static async Task<double?> PrefsHoverValue()
+    {
+        try { using var t = new CancellationTokenSource(10000); var m = await client.Self.GetAgentPreferencesAsync(t.Token); return m == null ? null : (double?)m.HoverHeight; }
+        catch { return null; }
+    }
+    static async Task<(double? v, string src)> EffectiveHoverFresh()
+    {
+        var g = await PrefsHoverValue();
+        if (g is double x) { if (hoverInForce is double old && Math.Abs(old - x) > 0.002) Log("height", $"hover in force {I(x)} (AgentPreferences GET) differs from the last POST answer {I(old)}: using the GET"); hoverInForce = x; hoverInForceAt = DateTime.Now; }
+        return EffectiveHoverPick(g, hoverInForce, SimHover());
+    }
 
     static async Task<(bool ok, string info)> PostHover(double v, string why)
     {
@@ -67,8 +88,9 @@ public static partial class Program
         try
         {
             var (resp, data) = await client.HttpCapsClient.PostAsync(cap, OSDFormat.Xml, new OSDMap { ["hover_height"] = OSD.FromReal(v) }, t.Token);
-            string back = "?";
-            try { if (data != null && OSDParser.Deserialize(data) is OSDMap m && m.ContainsKey("hover_height")) back = I(m["hover_height"].AsReal()); } catch { }
+            string back = "?"; double? backV = null;
+            try { if (data != null && OSDParser.Deserialize(data) is OSDMap m && m.ContainsKey("hover_height")) { backV = m["hover_height"].AsReal(); back = I(backV.Value); } } catch { }
+            if (resp.IsSuccessStatusCode) { hoverInForce = backV ?? v; hoverInForceAt = DateTime.Now; }   // what David's viewer follows (see EffectiveHoverPick)
             var info = $"POST hover_height={I(v)} ({why}): HTTP {(int)resp.StatusCode}, server says {back}";
             Log("height", info);
             return (resp.IsSuccessStatusCode, info);
@@ -86,14 +108,17 @@ public static partial class Program
         }
         catch (Exception ex) { return "n/a (" + ex.GetBaseException().GetType().Name + ")"; }
     }
+    // pure (tested): the one-line state `hover get` prints. "in force" is what the viewers draw; "own appearance" is the stale self value
+    internal static string HoverGetLine(double pinned, double? inForce, string src, double? ownAppearance)
+        => $"hover in force {(inForce is double f ? I(f) : "unknown")} ({src}; this is what David's viewer applies, the renders use it too); pinned {I(pinned)}; own appearance says {(ownAppearance is double h ? I(h) : "?")} (stale, ignored)";
 
     static async Task<string> HeightDiag()
     {
         var sb = new StringBuilder();
         var sim = client.Network.CurrentSim; var av = SelfAv();
         sb.AppendLine($"pinned hover (GT_HOVER / {HoverFile}): {I(PinnedHover())}   sit guard: {(sitGuard ? "on" : "off")}");
-        sb.AppendLine($"hover the sim applies (our AvatarAppearance AppearanceHover.Z): {(SimHover() is double h ? I(h) : "no appearance received yet")}");
-        sb.AppendLine($"hover from AgentPreferences GET: {await PrefsHover()}");
+        sb.AppendLine($"hover our own AvatarAppearance reports (AppearanceHover.Z; stale after a POST, not what viewers draw): {(SimHover() is double h ? I(h) : "no appearance received yet")}");
+        sb.AppendLine($"hover in force from AgentPreferences GET (what David's viewer applies): {await PrefsHover()}");
         if (av == null) sb.AppendLine("own avatar object: not in the object list");
         else
             sb.AppendLine($"own avatar: size(scale)={I(av.Scale.X)} x {I(av.Scale.Y)} x {I(av.Scale.Z)} m, visual params={av.VisualParameters.Length}, appearance v{av.AppearanceVersion} COF v{av.COFVersion}, parent localid={av.ParentID}");
@@ -142,9 +167,9 @@ public static partial class Program
             if (gen != sitGen || !LoggedIn) return;
             if (client.Self.SittingOn == 0) { lastHeightCheck = $"{DateTime.Now:HH:mm:ss} not seated after sit"; Log("height", "sit check: not seated"); return; }
             var anims = SelfAnims(); var pose = HasPoseAnim(anims);
-            var hv = SimHover(); var pin = PinnedHover();
+            var hv = EffectiveHoverNow(); var pin = PinnedHover();
             var av = SelfAv();
-            var msg = $"sit check {seatId}: pose anim {(pose ? "yes" : "NO")} [{string.Join(", ", anims.Select(AnimName))}], sim hover {(hv is double h ? I(h) : "?")} (pinned {I(pin)}), size z {(av != null ? I(av.Scale.Z) : "?")}, offset z {I(client.Self.RelativePosition.Z)}";
+            var msg = $"sit check {seatId}: pose anim {(pose ? "yes" : "NO")} [{string.Join(", ", anims.Select(AnimName))}], hover in force {(hv is double h ? I(h) : "?")} (pinned {I(pin)}), size z {(av != null ? I(av.Scale.Z) : "?")}, offset z {I(client.Self.RelativePosition.Z)}";
             if (hv is double h2 && Math.Abs(h2 - pin) > 0.02) { msg += " -> re-pin hover"; await PostHover(pin, "sit check"); }
             if (av != null && (av.VisualParameters.Length == 0 || av.Scale.Z < 1.0f)) { msg += " -> rebake"; _ = client.Appearance.RequestSetAppearance(true); }
             if (!pose && sitGuard && mayResit)
@@ -164,22 +189,35 @@ public static partial class Program
     }
     static void ScheduleSitGuard(UUID seatId) { if (animLogUntil < DateTime.Now.AddMinutes(10)) animLogUntil = DateTime.Now.AddMinutes(10); var g = Interlocked.Increment(ref sitGen); _ = Task.Run(() => SitGuard(seatId, g, true)); }
 
+    internal const double HoverApplyMax = 0.5;
     static async Task<string> HoverCmd(string[] a)
     {
         if (a.Length == 0 || a[0] == "get")
-            return $"pinned {I(PinnedHover())}; sim applies {(SimHover() is double h ? I(h) : "?")}; AgentPreferences GET {await PrefsHover()}";
+        { var (ef, src) = await EffectiveHoverFresh(); return HoverGetLine(PinnedHover(), ef, src, SimHover()); }
         if (a[0] == "set" && a.Length == 2 && double.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
         {
             v = Math.Clamp(v, -2.0, 2.0);
-            var old = $"pinned {I(PinnedHover())}, sim applied {(SimHover() is double h ? I(h) : "?")}";
+            var old = $"pinned {I(PinnedHover())}, in force {(EffectiveHoverNow() is double h ? I(h) : "?")}";
             try { File.AppendAllText(HoverHistory, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} old: {old} -> new {I(v)}\n"); } catch { }
             var (ok, info) = await PostHover(v, "hover set");
             if (ok) { try { File.WriteAllText(HoverFile, I(v) + "\n"); } catch { } rlvHoverOverride = HoverSetOverride(rlvHoverOverride, v); }
             return $"old: {old}; {info}; {(ok ? $"pinned value saved to {HoverFile}" : "NOT saved")}";
         }
+        // `hover apply <m>`: POST only. Nothing is written to hover.txt (unlike `set`, which pins the value for every later login and region change).
+        // 2026-10-26: this is the fix David asked for: a value is applied right then, never remembered.
+        if (a[0] == "apply" && a.Length == 2 && double.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var av2))
+        {
+            if (Math.Abs(av2) > HoverApplyMax) return $"hover apply: {I(av2)} m is beyond +-{HoverApplyMax} m";
+            var old = $"in force {(EffectiveHoverNow() is double h ? I(h) : "?")}";
+            try { File.AppendAllText(HoverHistory, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} apply (not saved): {old} -> {I(av2)}\n"); } catch { }
+            var (ok2, info2) = await PostHover(av2, "hover apply (not saved)");
+            var (eff, src) = await EffectiveHoverFresh();
+            return $"{old}; {info2}; hover in force now {(eff is double e ? I(e) : "unknown")} ({src}); not saved to hover.txt";
+        }
+        if (a[0] == "calibrate") return await HoverCalibrate(a[1..]);
         if (a[0] == "repin") return (await PostHover(PinnedHover(), "hover repin")).info;
         if (a[0] == "check") { HoverCheckRequest("manual", 500); return "visual hover check requested: scene export + side render over the floor, then a fix only if she is not on it (see the posehover log)"; }
-        return "usage: hover [get] | hover set <meters -2..2> | hover repin | hover check";
+        return "usage: hover [get] | hover set <meters -2..2> (pins it in hover.txt) | hover apply <meters> (not saved) | hover repin | hover check | hover calibrate stand|sit|here <cm> | show | reset stand|sit|here";
     }
 
     static string AnimCmd(string[] a)

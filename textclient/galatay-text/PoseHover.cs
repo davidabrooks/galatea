@@ -30,6 +30,9 @@ public static partial class Program
         => nums.TryGetValue(PoseBiasPoseKey(android, pose), out var a) ? a : nums.TryGetValue(PoseBiasKey(android, kind), out var b) ? b : PoseBiasDefault(kind);
     // pure (tested): David's photo is truth: the bias that makes the render's gap equal the real gap he sees
     internal static double PoseBiasFromPhoto(double biasUsed, double renderGap, double realGap) => Math.Round(biasUsed + (renderGap - realGap), 4);
+    // pure (tested): has this pose / posture a bias that was set from David's own view (hover calibrate)? else the default is only a first guess
+    internal static bool BiasCalibrated(IReadOnlyDictionary<string, double> nums, bool android, string kind, string pose)
+        => nums != null && (nums.ContainsKey(PoseBiasPoseKey(android, pose ?? "")) || nums.ContainsKey(PoseBiasKey(android, kind)));
     internal static string PoseBiasKey(bool android, string kind) => $"bias|{(android ? "android" : "human")}|{kind}";
     // measured 2026-10-23 17:19 (android): stands render 0.2315 m high at the pin (the sim keeps her feet on the floor);
     // ground sits -0.055 m at David's approved VAMOSITG26 -0.12 m
@@ -83,7 +86,9 @@ public static partial class Program
 
     // ---- when a visual hover check is requested ----
     // pure (tested): the posture from the AO's own anim_list: "seat" (on an object), "sit" (an AO/built-in ground sit playing), else "stand"
-    internal static string HoverPostureKind(bool aoSitPlaying, bool seatedOnObject) => seatedOnObject ? "seat" : aoSitPlaying ? "sit" : "stand";
+    // 2026-10-26: "unknown" = an AO animation that is in neither the sit nor the stand list plays (2941ee1d kept her kneeling while the status said standing):
+    // never treated as a stand, so no hover check runs on it
+    internal static string HoverPostureKind(bool aoSitPlaying, bool seatedOnObject, bool unclassifiedAoAnim = false) => seatedOnObject ? "seat" : aoSitPlaying ? "sit" : unclassifiedAoAnim ? "unknown" : "stand";
     // pure (tested): a sit or a stand that follows a different posture (login = unknown) wants a check; a stand->stand AO rotation, or sitting on an object, does not
     internal static bool HoverCheckWantedOnPosture(string prev, string now) => now is "sit" or "stand" && prev != now;
     internal const int HoverCheckMaxTries = 6, HoverCheckRetryMs = 8000, HoverCheckSettleSec = 3, HoverCheckCooldownSec = 30;
@@ -91,6 +96,7 @@ public static partial class Program
     internal static (bool go, string why) HoverCheckReady(string nowKind, float speed, bool leashed, bool following, bool poseBusy, double settledSec, double sinceLastRunSec, bool manual)
     {
         if (nowKind == "seat") return (false, "skip: sitting on an object (the normal hover is restored there)");
+        if (nowKind == "unknown") return (false, "unclassified AO animation playing (may be a sit): not a stand, no check");
         if (leashed) return (false, "leashed");
         if (following || speed >= 0.1f) return (false, "moving");
         if (poseBusy) return (false, "a pose is being entered or left");
@@ -102,7 +108,8 @@ public static partial class Program
     // from every own-animation packet and the idle tick: note the posture; a sit or stand after another posture requests ONE check
     static void HoverPostureNote(IEnumerable<UUID> playing, bool seatedOnObject)
     {
-        var now = HoverPostureKind(AoForceSitOn(playing, seatedOnObject), seatedOnObject);
+        playing = playing.ToList();
+        var now = HoverPostureKind(AoForceSitOn(playing, seatedOnObject), seatedOnObject, !seatedOnObject && AoUnclassifiedNow(playing).Count > 0);
         var prev = Interlocked.Exchange(ref hoverPosture, now);
         if (prev == now) return;
         hoverPostureAt = DateTime.Now;
@@ -145,9 +152,9 @@ public static partial class Program
     // is she still in that pose? (a check must never act on a pose she has left). The AO's anim_list decides sit vs stand, never the sim.
     static bool PoseStill(string kind, string pose) => client.Self.SittingOn == 0 && (kind == "sit"
         ? AoSitReallyOn() && (pose == "sit" || string.Equals(aoSitCurrentName, pose, StringComparison.OrdinalIgnoreCase))
-        : idlePosed == null && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false));
+        : kind == "stand" && idlePosed == null && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false) && AoUnclassifiedNow().Count == 0);
     // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose name)
-    static (string kind, string pose) PoseNow() => AoSitReallyOn() ? ("sit", aoSitCurrentName ?? "sit") : ("stand", "stand");
+    static (string kind, string pose) PoseNow() => AoSitReallyOn() ? ("sit", aoSitCurrentName ?? "sit") : AoUnclassifiedNow().Count > 0 ? ("unknown", "unknown") : ("stand", "stand");
 
     // the visual check: null = finished (checked, or nothing to do); a string = not now, retry (the reason)
     static async Task<string> PoseHoverCheck(string kind, string pose)
@@ -170,21 +177,30 @@ public static partial class Program
             // her side at the contact; it prints the gap of her lowest vertex above that floor. Nudge by the gap, then render
             // again to confirm. Private: the images are never sent to David. The result is applied now and NOT remembered.
             if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed while exporting; skipped"); return null; }
-            double hov = SimHover() ?? pin, size = SelfAv()?.Scale.Z ?? 0;
+            // 2026-10-26: the hover IN FORCE (AgentPreferences, what David's viewer applies), read fresh. Our own appearance value stayed 0 after a
+            // POST, so every re-render drew her at 0 and "contact confirmed" was arithmetic (David: sunk below the ground at the "confirmed" -0.186)
+            var (effHov, effSrc) = await EffectiveHoverFresh();
+            double hov = effHov ?? pin, size = SelfAv()?.Scale.Z ?? 0;
+            bool calibrated = BiasCalibrated(nums, android, kind, pose);
             if (size < 1) { Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
             double bias = PoseBiasFor(nums, android, kind, pose);
             var (g1, img1) = await HoverCheckRender(dir, size, hov, bias);
             if (g1 is not double gap || !PoseGapSane(gap)) { Log("posehover", $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"); return null; }
             string how;
-            if (PoseGapConfirmed(gap)) how = $"render confirms contact at {hov:0.000} (gap {gap:+0.000}); hover left alone";
+            string calTxt = calibrated ? "bias calibrated against David's viewer" : "DEFAULT bias, not yet calibrated against David's viewer (hover calibrate)";
+            if (PoseGapConfirmed(gap)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {gap:+0.000}; {calTxt}); hover left alone";
             else
             {
                 var t = PoseHoverFromGap(hov, gap);
                 if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed; skipped"); return null; }
                 var (ok, info) = await PostHover(t, $"visual hover fix: {key} (applied now, not saved)");
-                var (g2, img2) = await HoverCheckRender(dir, size, t, bias);   // same pose, re-rendered at the new hover
-                bool good = ok && g2 is double gg && PoseGapConfirmed(gg);
-                how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({(good ? "contact confirmed" : "NOT confirmed")}): {info}; {img2}";
+                // verify: the cap must now hold t (fresh GET), and the re-render is drawn at THAT value, not at the value we meant to set
+                var (eff2, src2) = await EffectiveHoverFresh();
+                bool applied = ok && eff2 is double e2 && Math.Abs(e2 - t) <= 0.002;
+                var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias);   // same pose, re-rendered at the hover really in force
+                bool good = applied && g2 is double gg && PoseGapConfirmed(gg);
+                string verdict = good ? (calibrated ? "contact confirmed" : "contact in the render; NOT verified against David's viewer (default bias)") : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
+                how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}): {info}; {img2}";
             }
             Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1})");
             return null;

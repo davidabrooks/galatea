@@ -198,3 +198,18 @@ def test_a_filtered_render_keeps_the_original_export_for_the_next_render():
     l = src("look.py")
     assert 'full_json = f"{d}/scene.full.json"' in l and "shutil.copyfile(f\"{d}/scene.json\", full_json)" in l
     assert 'json.load(open(full_json if os.path.exists(full_json) else f"{d}/scene.json"))' in l
+
+
+def test_hover_check_detail_line_reports_bias_calibration_and_viewer_formula_gap():
+    """2026-10-26: the hover check prints its bias, whether David's viewer ever confirmed it, and the gap the viewer's own placement formula
+    gives (render_mesh.py needs bpy, so the pure function is lifted out of the source)"""
+    import ast, pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "cloud-render" / "render_mesh.py").read_text()
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "hover_check_detail")
+    ns = {}; exec(compile(ast.Module([fn], []), "render_mesh", "exec"), ns)
+    # agent z 26.2647, viewer offset -0.8896, hover -0.075, lowest vertex 0.0808 above mesh z 0, floor 25.290
+    line = ns["hover_check_detail"]({"GT_HOVER_BIAS": "0.2315", "GT_HOVER_CAL": "calibrated"}, 26.2647, -0.8896, 0.0808, 25.290, -0.075)
+    assert line.startswith("GT: hover check detail:") and "bias +0.2315 (calibrated)" in line and "hover drawn -0.075" in line
+    assert "viewer-formula gap +0.091 m" in line
+    assert "(default)" in ns["hover_check_detail"]({}, 26.0, -0.9, 0.0, 25.0, 0.0)
+    assert "viewer-formula gap n/a" in ns["hover_check_detail"]({}, 26.0, None, 0.0, 25.0, 0.0)

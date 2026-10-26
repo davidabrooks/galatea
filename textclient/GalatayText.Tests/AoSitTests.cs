@@ -55,7 +55,7 @@ public class AoSitTests
         var s = Program.AoRealState(true, new[] { "7c8e8863" }, false, false);
         Assert.Contains("AO sit playing (7c8e8863)", s); Assert.Contains("sim says stand", s); Assert.Contains("MISMATCH", s);
         var ok = Program.AoRealState(false, new string[0], false, false);
-        Assert.Contains("standing (no AO sit playing)", ok); Assert.DoesNotContain("MISMATCH", ok);
+        Assert.Contains("standing (no AO sit playing", ok); Assert.DoesNotContain("MISMATCH", ok);
         Assert.DoesNotContain("MISMATCH", Program.AoRealState(true, new string[0], false, true));
         Assert.Contains("sitting on an object", Program.AoRealState(false, new string[0], true, false));
     }

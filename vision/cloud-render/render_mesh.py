@@ -1305,6 +1305,13 @@ def hover_check_z0(env, agent_z, lo_z, floor_z):
     z0 = agent_z - size / 2 + hov - float(env.get("GT_HOVER_BIAS", "0"))
     return z0, z0 + lo_z - floor_z, hov, size
 
+def hover_check_detail(env, agent_z, agent_off, lo_z, floor_z, hov):
+    """one diagnostic line for the hover check: the bias used, calibrated against David's viewer or the default, and the gap the viewer's own
+    placement formula (mesh z 0 = agent z + agent_off, scene-mesher) would give at the same hover; (no commands read it, `look` logs it)"""
+    bias = float(env.get("GT_HOVER_BIAS", "0")); cal = env.get("GT_HOVER_CAL", "default")
+    ll = "n/a" if agent_off is None else f"{agent_z + agent_off + hov + lo_z - floor_z:+.3f} m"
+    return f"GT: hover check detail: bias {bias:+.4f} ({cal}), viewer-formula gap {ll}, hover drawn {hov:+.3f} (the hover in force: AgentPreferences)"
+
 def self_body_camera_spec(x, y, yaw_deg, deg, pts, floor_z, margin=1.08, lens=50.0, height=None):
     """`look self <side>` camera (2026-10-26): level, at half her height above the floor (so the floor reads as a band below
     the horizon and her soles sit in the lower frame), from `deg` degrees counter-clockwise from her front, far enough that her
@@ -1496,7 +1503,11 @@ if SCENE:
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
     lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
     HC = hover_check_z0(os.environ, g[2], lo[2], fl)   # 2026-10-23 hover check: real placement + her hover, floor from the scene
-    if HC: z0 = HC[0]; print(f"GT: hover check gap {HC[1]:+.3f} m (hover {HC[2]:+.3f}, size {HC[3]:.3f}, floor {fl:.3f})", flush=True)
+    if HC:
+        z0 = HC[0]; print(f"GT: hover check gap {HC[1]:+.3f} m (hover {HC[2]:+.3f}, size {HC[3]:.3f}, floor {fl:.3f})", flush=True)
+        # diagnostics for the calibration (2026-10-26): the bias in use, whether David's viewer ever confirmed it, and where the viewer's own
+        # placement formula (scene-mesher agent_off, LLVOAvatar::computeBodySize) would have put her: the gap between the two is the raw model error
+        print(hover_check_detail(os.environ, M.get("agent_z", g[2]), M.get("agent_off"), lo[2], fl, HC[2]), flush=True)
     elif SELF_FLOOR: print("GT: self floor: no hover model (GT_HOVER_CHECK unset): her feet are snapped to the floor, so contact here says nothing about her hover", flush=True)
     for ob in obs: ob.location = (x, y, z0); ob.rotation_euler = (0, 0, math.radians(yaw))
     log("avatar at", round(x, 2), round(y, 2), "mesh z0", round(z0, 2), "floor", round(fl, 2), "LL", ll and round(ll, 2))

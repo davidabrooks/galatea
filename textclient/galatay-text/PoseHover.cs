@@ -1,12 +1,13 @@
-// PoseHover.cs (2026-10-23 David: "you should always check it when you sit or change poses"; "not just for sits but for stands too")
-// On every AO ground-sit pick/switch and every AO stand change: apply the pose's saved hover (pose-hover.json) first, then once
-// per pose per session measure the floor contact of her posed mesh (scene export -> scene-mesher -> vision/pose_contact.py),
-// nudge the hover toward the approved reference contact and save the per-pose value; one quick low-res side render
-// (look self left fast) is kept for her own checking (never sent to David). Only ever POSTs the hover: never stands, sits,
-// re-sits or touches the AO (tested).
-// Contact e = lowest body vertex (hips/thighs sitting, soles standing) + agent_off + agent z + hover - floor. The renderer's
-// body size is ~0.2 m off (render_mesh.z0_of), so e is compared to a REFERENCE e per (form, kind), never to 0: android sits =
-// VAMOSITG26 at David's approved -0.12 m (14:50 PT); stands and human sits = the first pose measured at the normal pinned hover.
+// PoseHover.cs (2026-10-26 David: "I don't think you should try to save the hover heights for each pose, because the ground can
+// change based on your location. When you sit, stand, or enter a new region you should visually check your hover height and fix
+// it at that time.")
+// NOTHING is saved or applied per pose or per AO stand any more. After a sit, a stand (judged from the AO's own anim_list, never the
+// sim) and an arrival in a new region, ONE visual hover check is requested (HoverCheckRequest): a few seconds after the pose has
+// settled it exports the scene, renders her side view over the real floor (look.py hovercheck) and, if her lowest vertex is not on
+// the floor, POSTs a corrected hover (the problem fix) and re-renders to confirm. The value is only ever applied right then, never
+// remembered. Pose first, hover after: a request waits while she is moving, leashed/following, mid pose-entry/exit or just changed
+// posture. Only ever POSTs the hover: never stands, sits, re-sits or touches the AO (tested).
+// pose-hover.json now only holds the renderer's calibration (bias|... keys); any other key in it is ignored.
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -21,16 +22,7 @@ using LibreMetaverse;
 namespace GalatayText;
 public static partial class Program
 {
-    internal const double PoseHoverTol = 0.01, PoseHoverMaxDelta = 0.30;
-    // pure (tested): the hover that puts this pose's contact where the reference pose's is
-    internal static double PoseHoverTarget(double curHover, double eCur, double eRef)
-        => Math.Round(curHover - Math.Clamp(eCur - eRef, -PoseHoverMaxDelta, PoseHoverMaxDelta), 3);
-    // pure (tested): does the check confirm the saved value (no nudge)?
-    internal const double PoseHoverMaxSane = 0.15;
-    // pure (tested): is a measurement believable? 16:57 a stand measured while being led read e 3.953 (ref 0.632) and set -0.30
-    internal static bool PoseMeasureSane(double? floor, double e, double? eRef) => floor != null && (eRef is not double r || Math.Abs(e - r) <= PoseHoverMaxSane);
-    // pure (tested): the reference contact when seeding from David's approved sit measured at hover hov: the contact it has at the approved value
-    internal static double PoseRefFromApproved(double e, double hov, double approved) => e - hov + approved;
+    internal const double PoseHoverTol = 0.01;
     // pure (tested): per-pose bias first (2026-10-23 17:33 VAMOSITG22: the sit bias tuned in VAMOSITG26 left her ~7 cm above the
     // floor while the render said contact: the model's body-root error differs per animation), then the (form, kind) bias, then the default
     internal static string PoseBiasPoseKey(bool android, string pose) => $"bias|{(android ? "android" : "human")}|{pose}";
@@ -66,11 +58,6 @@ public static partial class Program
         var text = await o; await e;
         return (HoverCheckGap(text), text.Split('\n').FirstOrDefault(l => l.EndsWith(".jpg"))?.Trim() ?? "no image");
     }
-    internal static bool PoseHoverConfirmed(double eCur, double eRef) => Math.Abs(eCur - eRef) <= PoseHoverTol;
-    internal static string PoseRefKey(bool android, string kind) => $"ref|{(android ? "android" : "human")}|{kind}";
-    // pure (tested): may this pose seed the reference? android sit: only David's approved sit; otherwise the first pose measured at the pin
-    internal static bool PoseSeedsRef(bool android, string kind, string pose) => kind == "sit" && android ? string.Equals(pose, HoverRefSit, StringComparison.OrdinalIgnoreCase) : true;
-
     // pure (tested): is the form (android/human) known for certain? 2026-10-23 15:19: right after login the worn prims had no
     // names yet, AndroidWorn() read false and an android stand was saved as human|stand (and seeded ref|human|stand).
     // Certain = the outfit name says android, or every worn attachment's name has arrived (then AndroidWorn is real).
@@ -80,99 +67,127 @@ public static partial class Program
         if (IsAndroidOutfit(currentOutfit)) return true;
         try { var w = WornPrims().Where(p => p.ParentID == client.Self.LocalID).ToList(); return FormCertain(false, w.Count, w.Count(p => !string.IsNullOrEmpty(p.Properties?.Name))); } catch { return false; }
     }
-    static readonly ConcurrentDictionary<string, bool> poseChecked = new();
     static readonly SemaphoreSlim poseGate = new(1, 1);
-    static readonly ConcurrentDictionary<string, DateTime> poseDue = new();
 
-    static Dictionary<string, double> PoseNums() { try { return JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(PoseHoverFile)) ?? new(); } catch { return new(); } }
-    static void PoseNumSet(string k, double v) { var d = PoseNums(); d[k] = Math.Round(v, 4); File.WriteAllText(PoseHoverFile, JsonSerializer.Serialize(d, new JsonSerializerOptions { WriteIndented = true })); }
-    static string PoseContactPy => Path.Combine(Path.GetDirectoryName(LookPy) ?? ".", "pose_contact.py");
-
-    // schedule a check a few seconds after the pose settles (debounced per pose)
-    internal static void PoseHoverSchedule(string kind, string pose, int delayMs = 3000)
+    // pure (tested): only the renderer's calibration is read from pose-hover.json; a saved hover height under any other key
+    // ("android|VAMOSITG24", "android|stand", ...) is ignored, never applied
+    internal static Dictionary<string, double> PoseBiasNums(IReadOnlyDictionary<string, double> all)
+        => (all ?? new Dictionary<string, double>()).Where(kv => kv.Key.StartsWith("bias|", StringComparison.OrdinalIgnoreCase)).ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+    static Dictionary<string, double> PoseNums()
     {
-        if (string.IsNullOrWhiteSpace(pose) || Env("GT_POSE_HOVER_CHECK", "on") == "off") return;
-        var due = DateTime.Now; poseDue[kind + "|" + pose] = due; lastPoseKind = kind; lastPoseName = pose;
+        try { return PoseBiasNums(JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(PoseHoverFile))); }
+        catch { return new(); }
+    }
+    static string PoseHoverFile => Env("GT_POSE_HOVER", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "pose-hover.json"));
+    internal static string PoseHoverKey(bool android, string anim) => (android ? "android|" : "human|") + (anim ?? "").Trim();
+
+    // ---- when a visual hover check is requested ----
+    // pure (tested): the posture from the AO's own anim_list: "seat" (on an object), "sit" (an AO/built-in ground sit playing), else "stand"
+    internal static string HoverPostureKind(bool aoSitPlaying, bool seatedOnObject) => seatedOnObject ? "seat" : aoSitPlaying ? "sit" : "stand";
+    // pure (tested): a sit or a stand that follows a different posture (login = unknown) wants a check; a stand->stand AO rotation, or sitting on an object, does not
+    internal static bool HoverCheckWantedOnPosture(string prev, string now) => now is "sit" or "stand" && prev != now;
+    internal const int HoverCheckMaxTries = 6, HoverCheckRetryMs = 8000, HoverCheckSettleSec = 3, HoverCheckCooldownSec = 30;
+    // pure (tested): may the check run now? (true, null) = go; (false, reason) = wait and retry; (false, "skip: ...") = never for this request
+    internal static (bool go, string why) HoverCheckReady(string nowKind, float speed, bool leashed, bool following, bool poseBusy, double settledSec, double sinceLastRunSec, bool manual)
+    {
+        if (nowKind == "seat") return (false, "skip: sitting on an object (the normal hover is restored there)");
+        if (leashed) return (false, "leashed");
+        if (following || speed >= 0.1f) return (false, "moving");
+        if (poseBusy) return (false, "a pose is being entered or left");
+        if (settledSec < HoverCheckSettleSec) return (false, "posture changed a moment ago");
+        if (!manual && sinceLastRunSec < HoverCheckCooldownSec) return (false, "another check ran a moment ago");
+        return (true, null);
+    }
+    static long hoverReqSeq; static string hoverPosture; static DateTime hoverPostureAt = DateTime.MinValue, hoverCheckLastRun = DateTime.MinValue;
+    // from every own-animation packet and the idle tick: note the posture; a sit or stand after another posture requests ONE check
+    static void HoverPostureNote(IEnumerable<UUID> playing, bool seatedOnObject)
+    {
+        var now = HoverPostureKind(AoForceSitOn(playing, seatedOnObject), seatedOnObject);
+        var prev = Interlocked.Exchange(ref hoverPosture, now);
+        if (prev == now) return;
+        hoverPostureAt = DateTime.Now;
+        if (HoverCheckWantedOnPosture(prev, now)) HoverCheckRequest(now, 4000);
+    }
+    // schedule ONE check (why: sit, stand, region or manual). A newer request replaces an older pending one; blocked states retry a few times, then give up.
+    internal static void HoverCheckRequest(string why, int delayMs = 4000)
+    {
+        if (Env("GT_POSE_HOVER_CHECK", "on") == "off") return;
+        long id = Interlocked.Increment(ref hoverReqSeq);
+        Log("posehover", $"visual hover check requested ({why}), in {delayMs / 1000.0:0.#} s");
         _ = Task.Run(async () =>
         {
-            await Task.Delay(delayMs);
-            if (poseDue.TryGetValue(kind + "|" + pose, out var d0) && d0 != due) return;   // a newer change replaced it
-            try { await PoseHoverCheck(kind, pose); } catch (Exception ex) { Log("posehover", $"{pose}: {ex.GetBaseException().Message}"); }
+            try
+            {
+                await Task.Delay(delayMs);
+                for (int attempt = 1; ; attempt++)
+                {
+                    if (Interlocked.Read(ref hoverReqSeq) != id) return;   // a newer request replaced this one
+                    if (!LoggedIn) return;
+                    var (kind, pose) = PoseNow(); var sitting = client.Self.SittingOn != 0;
+                    var (go, block) = HoverCheckReady(sitting ? "seat" : kind, client.Self.Velocity.Length(), IdleLeashedNow(), followId != UUID.Zero, idleLock.CurrentCount == 0,
+                                                      (DateTime.Now - hoverPostureAt).TotalSeconds, (DateTime.Now - hoverCheckLastRun).TotalSeconds, why == "manual");
+                    string retry = block;
+                    if (go)
+                    {
+                        hoverCheckLastRun = DateTime.Now;
+                        retry = await PoseHoverCheck(kind, pose);
+                        if (retry == null) return;
+                    }
+                    else if (block.StartsWith("skip:")) { Log("posehover", $"{why}: {block}"); return; }
+                    if (attempt >= HoverCheckMaxTries) { Log("posehover", $"{why}: gave up after {attempt} tries ({retry})"); return; }
+                    Log("posehover", $"{why}: waiting ({retry}); try {attempt + 1}/{HoverCheckMaxTries} in {HoverCheckRetryMs / 1000} s");
+                    await Task.Delay(HoverCheckRetryMs);
+                }
+            }
+            catch (Exception ex) { Log("posehover", $"{why}: {ex.GetBaseException().Message}"); }
         });
     }
-    // is she still in that pose? (a check must never act on a pose she has left)
-    static bool PoseStill(string kind, string pose) => kind == "sit"
-        ? idlePosed?.kind == "groundsit" && string.Equals(aoSitCurrentName, pose, StringComparison.OrdinalIgnoreCase) && client.Self.SittingOn == 0
-        : idlePosed == null && client.Self.SittingOn == 0 && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false) && pose.StartsWith("stand:") && SelfAnims().Any(a => a.ToString().StartsWith(pose[6..]));
+    // is she still in that pose? (a check must never act on a pose she has left). The AO's anim_list decides sit vs stand, never the sim.
+    static bool PoseStill(string kind, string pose) => client.Self.SittingOn == 0 && (kind == "sit"
+        ? AoSitReallyOn() && (pose == "sit" || string.Equals(aoSitCurrentName, pose, StringComparison.OrdinalIgnoreCase))
+        : idlePosed == null && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false));
+    // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose name)
+    static (string kind, string pose) PoseNow() => AoSitReallyOn() ? ("sit", aoSitCurrentName ?? "sit") : ("stand", "stand");
 
-    // 2026-10-26 (David: 0.02 is too high, and the corrected stand hover did not stick): stand hovers are keyed per AO stand animation
-    // id and the ids rotate, so a new id fell back to the pin (0.02). A new stand id now inherits ONE shared default, "android|stand"
-    // (human|stand), 0.0 until the floor render or `hover set` while standing measures otherwise. Per-id values stay where measured.
-    internal const double PoseStandDefaultBuiltin = 0.0;
-    internal static string PoseStandDefaultKey(bool android) => PoseHoverKey(android, "stand");
-    internal static double PoseStandDefault(IReadOnlyDictionary<string, double> nums, bool android)
-        => nums != null && nums.TryGetValue(PoseStandDefaultKey(android), out var v) ? v : PoseStandDefaultBuiltin;
-    // pure (tested): the hover a pose starts from: its own saved value, else (stands) the shared stand default, else (sits) the pin
-    internal static double PoseStartHover(string kind, double? saved, double standDefault, double pin) => saved ?? (kind == "stand" ? standDefault : pin);
-    static volatile string lastPoseKind, lastPoseName;
-    // `hover set` while standing: that value is the stand default and this stand pose's value
-    static void HoverSetRememberStand(double v)
+    // the visual check: null = finished (checked, or nothing to do); a string = not now, retry (the reason)
+    static async Task<string> PoseHoverCheck(string kind, string pose)
     {
-        if (idlePosed != null || client.Self.SittingOn != 0 || AoSitReallyOn()) return;
-        bool android = AndroidFormNow(); PoseNumSet(PoseStandDefaultKey(android), v);
-        if (lastPoseKind == "stand" && lastPoseName != null && PoseStill("stand", lastPoseName)) PoseNumSet(PoseHoverKey(android, lastPoseName), v);
-    }
-    // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose or null)
-    static (string kind, string pose) PoseNow()
-    {
-        if (AoSitReallyOn()) return ("sit", aoSitCurrentName);
-        return ("stand", lastPoseKind == "stand" && lastPoseName != null && PoseStill("stand", lastPoseName) ? lastPoseName : null);
-    }
-
-    static async Task PoseHoverCheck(string kind, string pose)
-    {
-        if (!LoggedIn || !PoseStill(kind, pose)) return;
-        if (!FormCertainNow()) { Log("posehover", $"{pose}: form not known yet (attachments still loading); retry in 10 s, nothing saved"); PoseHoverSchedule(kind, pose, 10000); return; }
-        bool android = AndroidFormNow(); var key = PoseHoverKey(android, pose); var refKey = PoseRefKey(android, kind);
+        if (!LoggedIn || !PoseStill(kind, pose)) return "not in that pose";
+        if (!FormCertainNow()) return "form not known yet (attachments still loading)";
+        bool android = AndroidFormNow(); var key = PoseHoverKey(android, pose);
         var nums = PoseNums();
         double pin = PinnedHover();
-        double? saved = nums.TryGetValue(key, out var sv) ? sv : PoseHoverLookup(nums, android, pose);
-        double cur = PoseStartHover(kind, saved, PoseStandDefault(nums, android), pin);
-        if (Math.Abs((SimHover() ?? pin) - cur) > 0.005) await PostHover(cur, $"pose hover: {key} saved {cur:0.000}");   // 1. apply the saved value first
-        if (poseChecked.ContainsKey(key)) return;                                                                         // checked this session: reuse
-        if (!await poseGate.WaitAsync(0)) { PoseHoverSchedule(kind, pose, 15000); return; }
+        if (!await poseGate.WaitAsync(0)) return "a check is already running";
         try
         {
             var sw = Stopwatch.StartNew();
             var ex = await SceneExport(new[] { "export", "4", "noenv" });
             var scene = ex.Split('\n').Last();
-            if (!scene.EndsWith("scene.json")) { Log("posehover", $"{key}: export failed: {ex}"); return; }
+            if (!scene.EndsWith("scene.json")) { Log("posehover", $"{key}: export failed: {ex}"); return null; }
             var dir = Path.GetDirectoryName(scene)!;
             // 2026-10-23 17:15 (David "Fix it"): the check is the hover-check RENDER: look.py hovercheck = her real placement
             // (agent z - size/2 + hover - posture bias, never snapped to the floor) over the scene's own floor, seen level from
             // her side at the contact; it prints the gap of her lowest vertex above that floor. Nudge by the gap, then render
-            // again to confirm. Private: the images are never sent to David.
-            if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed while exporting; skipped"); return; }
-            double hov = SimHover() ?? cur, size = SelfAv()?.Scale.Z ?? 0;
-            if (size < 1) { Log("posehover", $"{key}: agent size unknown; skipped"); return; }
+            // again to confirm. Private: the images are never sent to David. The result is applied now and NOT remembered.
+            if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed while exporting; skipped"); return null; }
+            double hov = SimHover() ?? pin, size = SelfAv()?.Scale.Z ?? 0;
+            if (size < 1) { Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
             double bias = PoseBiasFor(nums, android, kind, pose);
             var (g1, img1) = await HoverCheckRender(dir, size, hov, bias);
-            if (g1 is not double gap || !PoseGapSane(gap)) { Log("posehover", $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed or saved ({img1})"); return; }
+            if (g1 is not double gap || !PoseGapSane(gap)) { Log("posehover", $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"); return null; }
             string how;
-            if (PoseGapConfirmed(gap)) { PoseNumSet(key, hov); how = $"render confirms contact at {hov:0.000} (gap {gap:+0.000})"; }
+            if (PoseGapConfirmed(gap)) how = $"render confirms contact at {hov:0.000} (gap {gap:+0.000}); hover left alone";
             else
             {
                 var t = PoseHoverFromGap(hov, gap);
-                if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed; skipped"); return; }
-                var (ok, info) = await PostHover(t, $"pose hover: {key} render nudge");
+                if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed; skipped"); return null; }
+                var (ok, info) = await PostHover(t, $"visual hover fix: {key} (applied now, not saved)");
                 var (g2, img2) = await HoverCheckRender(dir, size, t, bias);   // same pose, re-rendered at the new hover
                 bool good = ok && g2 is double gg && PoseGapConfirmed(gg);
-                if (ok) PoseNumSet(key, t);
                 how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({(good ? "contact confirmed" : "NOT confirmed")}): {info}; {img2}";
             }
-            poseChecked[key] = true;
-            if (kind == "stand" && PoseStill(kind, pose)) { try { PoseNumSet(PoseStandDefaultKey(android), PoseNums().TryGetValue(key, out var mv) ? mv : hov); } catch { } }   // the measured stand value seeds new stand ids
             Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1})");
+            return null;
         }
         finally { poseGate.Release(); }
     }

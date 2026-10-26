@@ -58,4 +58,18 @@ public class SeatContactTests
         var rend = Src("PoseHover.cs"); rend = rend[rend.IndexOf("static async Task<(double? gap, string img)> HoverCheckRender(")..]; rend = rend[..rend.IndexOf("internal static bool FormCertain")];
         Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(rend, @"Process\.Start\(").Count);            // still one blender run per call
     }
+
+    // ---- the ground-sit close-up (2026-10-26 live test: it framed her head to heels) ----
+    [Theory] [InlineData("sit")] [InlineData("stand")] [InlineData("seat")] [InlineData("unknown")]
+    public void ContactEnv_TellsTheRendererWhichPostureTheCloseUpIsOf(string kind)
+    {
+        var e = Program.ContactEnv(kind); Assert.Equal(kind, e["GT_HC_KIND"]); Assert.Equal(Program.HoverContactLabel(kind), e["GT_HC_POSTURE"]);
+        Assert.Equal("", Program.ContactEnv(null)["GT_HC_KIND"]);
+    }
+    [Fact] public void BothCloseUpCallers_SendThePostureKind()
+    {
+        Assert.Contains("ContactEnv(seat ? \"seat\" : kind)", Src("PoseHover.cs"));       // the hover check
+        Assert.Contains("ContactEnv(kind)", Src("Look.cs"));                              // look self / feet
+        Assert.Equal("seat", Program.SeatLookEnv()["GT_HC_KIND"]);                        // furniture keeps its own branch
+    }
 }

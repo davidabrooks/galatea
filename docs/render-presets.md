@@ -72,7 +72,7 @@ David: zooming in close on the contact makes the hover easy to judge. `views=fee
 | Pose | What the close-up frames |
 |---|---|
 | Standing | the feet (soles and the floor) |
-| Ground sit | the hips / butt, plus the thighs or heels if they touch (a foot in the air is left out; the window widens to fit, up to 1.4 m) |
+| Ground sit (the AO's, `GT_HC_KIND=sit`) | **the hips-to-floor contact around her pelvis** (see below): the butt, the lower back and the backs of the thighs, about 0.6-0.9 m wide; heels, hands and the head are not in it |
 | Kneel | the shins and knees (and toes) on the floor |
 | **Sitting on furniture** (an object: chair, bench, AVsitter seat) | **the hips against the seat**, never the feet (see below) |
 
@@ -91,6 +91,17 @@ The close-up is never an extra render on top of the wide one. `GT_HC_ZOOM=off` i
 The contact decision is still the gap measured in that same render; the close-up is the picture of it. The path of the close-up is logged
 (`posehover`: `renders N; close-up of <what>: <path>`) and **`hover check` returns it**: it now waits for the check (up to 120 s) and answers with the verdict, the
 render count and the close-up image path, so it can be shown to David. Tests: `LookFeetTests` (render count per check) and `test_look_scope.py` (stand / sit / kneel framing).
+
+### Ground sit: tight on the butt, not head to heels (2026-10-26, live test after #315)
+
+In an AO ground sit leaning back with the legs forward and the hands propped behind, the "lowest 10 cm of her whole body" is the heels, both hands **and** the butt, about 1.4 m
+apart along the view, so the frame hit its 1.4 m cap and showed head to heels like a normal side view. The window is now searched only among the vertices within 0.30 m (horizontally)
+of her pelvis bone (`ground_sit_contact` in `render_mesh.py`); the contact is their lowest 10 cm, and the frame is that extent + 0.3 m, 0.6 m at least and **0.9 m at most** for a ground sit.
+Offline on the live export (hips 3 cm over a floor the heels touched): 1.40 m before, **0.70 m** after. The client sends the posture as `GT_HC_KIND` (`stand`, `sit` = AO ground sit, `seat` = on furniture,
+else empty); only `sit` uses the pelvis window, so the standing (soles), kneeling / unknown (whole-body lowest 10 cm) and furniture (hips against the seat) framings are unchanged. No pelvis bone
+in the export, or fewer than 20 vertices near it: the old whole-body contact is used.
+The gap and the hover fix of a ground-sit check still come from her whole-body lowest vertex (the bias was calibrated that way, VAMOSITG26), so the close-up can show the butt a few cm above the grass
+while the heels or hands touch it: that is the pose, not a hover error. Tests: `test_look_seat_contact.py` (synthetic leaning-back sit with heels and hands on the floor), `SeatContactTests` (`ContactEnv`).
 
 ### Sitting on furniture: hips against the seat (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet")
 

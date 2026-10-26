@@ -167,7 +167,7 @@ public static partial class Program
         var (kind, pose) = PoseNow(); bool android = AndroidFormNow(); var nums = PoseNums();
         var (hov, _) = await EffectiveHoverFresh();
         var env = HoverCheckEnv(size, hov ?? PinnedHover(), PoseBiasFor(nums, android, kind, pose ?? ""));
-        env["GT_HC_POSTURE"] = HoverContactLabel(kind);
+        foreach (var kv in ContactEnv(kind)) env[kv.Key] = kv.Value;
         env["GT_HOVER_CAL"] = BiasCalibrated(nums, android, kind, pose) ? "calibrated" : "default";
         return env;
     }

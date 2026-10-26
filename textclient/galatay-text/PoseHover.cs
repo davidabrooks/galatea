@@ -55,7 +55,10 @@ public static partial class Program
     internal static string HoverContactLabel(string kind) => kind switch { "stand" => "feet (soles)", "sit" => "hips and any thighs / heels in contact", "seat" => "hips against the seat", _ => "lowest contact" };
     // pure (tested): on furniture (sitting on an object) the contact close-up frames her HIPS against the SEAT, never her feet over the terrain, and the render uses the
     // sim's own seated placement (no hover model: hover is not the fix on furniture, the furniture's adjust is). Env for look.py / render_mesh.py
-    internal static Dictionary<string, string> SeatLookEnv() => new() { ["GT_SEATED"] = "1", ["GT_SEAT_CHECK"] = "1", ["GT_HC_POSTURE"] = HoverContactLabel("seat") };
+    // pure (tested): what tells the renderer which close-up to draw: the label for the log and the posture kind (stand | sit = AO ground sit | seat | other).
+    // 2026-10-26: a ground sit is framed on the hips-to-floor contact around her pelvis (render_mesh ground_sit_contact), not on the lowest 10 cm of her whole body
+    internal static Dictionary<string, string> ContactEnv(string kind) => new() { ["GT_HC_POSTURE"] = HoverContactLabel(kind), ["GT_HC_KIND"] = kind ?? "" };
+    internal static Dictionary<string, string> SeatLookEnv() => new(ContactEnv("seat")) { ["GT_SEATED"] = "1", ["GT_SEAT_CHECK"] = "1" };
     // 2026-10-26 live test on a slatted rocking chair: the render said -0.038 m and David's eye said "looks good": her butt sinks a few cm into slats and cushions in every
     // sit pose, so down to -0.06 m is ON the seat; floating more than 2 cm is not. The gap itself is the render's measurement (about +-2 cm: slat tops are uneven), David's eye decides
     internal const double SeatSinkTol = 0.06, SeatFloatTol = 0.02;
@@ -78,7 +81,7 @@ public static partial class Program
         var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add(LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
         foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, bias)) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
-        psi.Environment["GT_HC_POSTURE"] = HoverContactLabel(seat ? "seat" : kind);
+        foreach (var kv in ContactEnv(seat ? "seat" : kind)) psi.Environment[kv.Key] = kv.Value;
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
         var text = await o; await e;

@@ -61,7 +61,8 @@ public static partial class Program
         readonly Dictionary<UUID, (string name, HashSet<string> r)> src = new();
         static string Key(string b, string o) => o.Length == 0 ? b : b + ":" + o;
         public void Add(UUID s, string name, string b, string o) { lock (l) { if (!src.TryGetValue(s, out var e)) src[s] = e = (name, new()); e.r.Add(Key(b, o)); } }
-        public void Remove(UUID s, string b, string o) { lock (l) if (src.TryGetValue(s, out var e)) { e.r.Remove(Key(b, o)); if (e.r.Count == 0) src.Remove(s); } }
+        public bool Remove(UUID s, string b, string o) { lock (l) { if (!src.TryGetValue(s, out var e)) return false; bool had = e.r.Remove(Key(b, o)); if (e.r.Count == 0) src.Remove(s); return had; } }
+        public bool HasAnyFrom(UUID s, Func<string, bool> keyIs) { lock (l) return src.TryGetValue(s, out var e) && e.r.Any(keyIs); }
         public int Clear(UUID s, string filter)
         {
             lock (l)
@@ -240,8 +241,7 @@ public static partial class Program
         var v = RlvVersionReply(b);
         if (v != null) { if (!RlvChannel(p, out var ch)) return "bad channel"; RlvReply(ch, v); return $"replied '{v}' on {ch}"; }
         if (b == "clear") return $"cleared {rlv.Clear(src, p.Length > 0 ? p : o)}";
-        if (p is "n" or "add") { rlv.Add(src, srcName, b, o); return "restricted"; }
-        if (p is "y" or "rem") { rlv.Remove(src, b, o); return "lifted"; }
+        if (p is "n" or "add" or "y" or "rem") return RlvApplyRestriction(src, srcName, c);   // LeashRelease.cs: the collar's lift = unleash
         if (p == "force") return await RlvForce(b, o);
         if (b.StartsWith("get") || b == "findfolder")
         {

@@ -132,7 +132,7 @@ public static partial class Program
         // David 11:31: a leash attach/detach by itself never ends an idle kneel/sit (IdlePose.cs)
         leashArrivedAt = DateTime.Now;   // a new or restored leash: LeashWalk grace (no walking straight after login/relog)
         if (cur != null) LeashEnd($"replaced by {mode} to {name}", quiet: true);
-        leash = new LeashState(mode, holder, name, anchor, leashLength, how, DateTime.Now); leashMissScans = 0; leashNextWanderOff = DateTime.MaxValue;
+        leash = new LeashState(mode, holder, name, anchor, leashLength, how, DateTime.Now); leashMissScans = 0; leashHadStrict = false; leashRelease.Cancel(); leashNextWanderOff = DateTime.MaxValue;
         if (mode == "leash") { try { SetPauseNow("rlv", $"leash held by {name}"); } catch { } afSnoozeUntil = DateTime.MaxValue; if (cur?.mode != "leash") LeashCollarOnLeashRun(); }
         bool strict = LeashStrictNow();
         var text = mode == "leash"
@@ -145,7 +145,7 @@ public static partial class Program
     static void LeashEnd(string why, bool quiet = false)
     {
         var l = leash; if (l == null) return;
-        leash = null; leashNextWanderOff = DateTime.MaxValue;
+        leash = null; leashNextWanderOff = DateTime.MaxValue; leashHadStrict = false; leashRelease.Cancel();
         try { LeashCollarOnUnleash(l.mode, why); } catch { }
         if (l.mode == "leash" && followId == l.holder) { followId = UUID.Zero; followDistThis = null; try { client.Self.AutoPilotCancel(); } catch { } }
         if (l.mode == "leash" && rlvHoldSeat == null) { afSnoozeUntil = DateTime.Now; try { if (wanderPause == "rlv") wanderPause = null; } catch { } }
@@ -294,8 +294,9 @@ public static partial class Program
             }
             else if (l.how == "relog") leash = l = l with { how = "particle chain" };
         }
-        else if (l?.mode == "leash" && l.how == "particle chain" && ++leashMissScans >= 3 && LeashChainLossEnds(DateTime.Now, lastPullAt)) { LeashEnd("the chain is gone"); return; }
+        else if (l?.mode == "leash" && l.how == "particle chain" && ++leashMissScans >= 3 && (LeashChainLossEnds(DateTime.Now, lastPullAt) || LeashChainLossEndsFast(leashMissScans, leashHadStrict, LeashStrictNow()))) { leashNoPullStartUntil = DateTime.Now.AddSeconds(20); LeashEnd(LeashChainLossEnds(DateTime.Now, lastPullAt) ? "the chain is gone" : "the chain is gone and the collar's restrictions are lifted"); return; }
         l = leash; if (l == null) return;
+        if (l.mode == "leash") { if (LeashStrictNow()) leashHadStrict = true; try { LeashReleaseCheck(); } catch { } if (leash == null) return; }
         if (l.mode == "follow") { try { if (client.Self.Movement.AlwaysRun && !leashDriving) client.Self.Movement.AlwaysRun = false; } catch { } return; }   // he follows her: walking pace only
         // keep the soft hold and walk after the holder when out of range
         if (wanderPause != "rlv") try { SetPauseNow("rlv", $"{l.mode} held by {l.holderName}"); } catch { }

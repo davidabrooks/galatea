@@ -21,6 +21,14 @@ public static partial class Program
     // "standing (no AO sit playing)": the id was in neither list. It is a SIT. Seeded here so it is a sit from the first login, whatever the
     // learned file says; it can never be learned as a stand.
     internal static readonly UUID[] AoSitSeed = { UUID.Parse("2941ee1d-94c1-a56f-0d90-fe0e2e0918dc") };
+    // 2026-10-26 13:20 (live test after #316): the N° 9 collar (worn at the chin) starts these four animations right after every login (RLV ready) and again at
+    // random; they were "learned" as AO sit animations because they appeared while a ground-sit entry was running, so from then on a plain STAND counted as "AO sit
+    // playing", the hover check ran as `sit VAMOSITG12` on a standing avatar and posted a -0.229 fix. They come from the collar attachment (anim-events.log: "from att @Chin"),
+    // not from the AO, and are never sit animations. Seeded here; any animation seen starting from one of our own non-AO attachments joins them (persisted as "other").
+    internal static readonly UUID[] AoNotSitSeed = {
+        UUID.Parse("947dd903-cd66-158b-13ae-79a72ee7c947"), UUID.Parse("dccb493a-93f0-0903-041e-6a7469846d11"),
+        UUID.Parse("c9574fd9-e482-d213-ac65-9d5c9b4e33cb"), UUID.Parse("201d84aa-63e9-5cb0-ac55-6c6c4ddd334e") };
+    static readonly HashSet<UUID> aoOtherIds = new();
     // while a pose enters / leaves, the AO's animations are transitional: nothing is learned as "stand" from them
     static DateTime aoSitTransitionUntil = DateTime.MinValue;
     
@@ -30,14 +38,17 @@ public static partial class Program
         {
             if (aoClassLoaded) return; aoClassLoaded = true;
             foreach (var u in AoSitSeed) aoSitIds.Add(u);
+            foreach (var u in AoNotSitSeed) aoOtherIds.Add(u);
             try
             {
                 if (!File.Exists(AoClassFile)) return;
                 var d = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(File.ReadAllText(AoClassFile)) ?? new();
                 foreach (var s in d.GetValueOrDefault("sit") ?? new()) if (UUID.TryParse(s, out var u)) aoSitIds.Add(u);
                 foreach (var s in d.GetValueOrDefault("stand") ?? new()) if (UUID.TryParse(s, out var u)) aoStandIds.Add(u);
+                foreach (var s in d.GetValueOrDefault("other") ?? new()) if (UUID.TryParse(s, out var u)) aoOtherIds.Add(u);
                 foreach (var u in aoStandIds) aoSitIds.Remove(u);
                 foreach (var u in AoSitSeed) { aoStandIds.Remove(u); aoSitIds.Add(u); }
+                aoSitIds.ExceptWith(aoOtherIds);   // a collar animation learned as a sit by an older build is a sit no more
             }
             catch { }
         }
@@ -47,7 +58,7 @@ public static partial class Program
         try
         {
             Dictionary<string, List<string>> d;
-            lock (aoClassLock) d = new() { ["sit"] = aoSitIds.Select(x => x.ToString()).OrderBy(x => x).ToList(), ["stand"] = aoStandIds.Select(x => x.ToString()).OrderBy(x => x).ToList() };
+            lock (aoClassLock) d = new() { ["sit"] = aoSitIds.Select(x => x.ToString()).OrderBy(x => x).ToList(), ["stand"] = aoStandIds.Select(x => x.ToString()).OrderBy(x => x).ToList(), ["other"] = aoOtherIds.Select(x => x.ToString()).OrderBy(x => x).ToList() };
             Directory.CreateDirectory(Path.GetDirectoryName(AoClassFile)!);
             File.WriteAllText(AoClassFile, JsonSerializer.Serialize(d));
         }
@@ -56,9 +67,10 @@ public static partial class Program
     static HashSet<UUID> AoSitIdsNow() { AoClassEnsureLoaded(); lock (aoClassLock) return new(aoSitIds); }
 
     // pure (tested): the AO-added animations of a pose entry/rotation that are sit animations: not already playing before, not a known stand animation
-    internal static List<UUID> AoSitLearnable(IEnumerable<string> added, IEnumerable<UUID> before, IEnumerable<UUID> standIds)
+    internal static List<UUID> AoSitLearnable(IEnumerable<string> added, IEnumerable<UUID> before, IEnumerable<UUID> standIds, IEnumerable<UUID> otherIds = null)
     {
         var b = new HashSet<UUID>(before ?? Enumerable.Empty<UUID>()); var st = new HashSet<UUID>(standIds ?? Enumerable.Empty<UUID>());
+        st.UnionWith(otherIds ?? Enumerable.Empty<UUID>());   // other = animations of our own non-AO attachments (the collar): never a sit
         return (added ?? Enumerable.Empty<string>()).Select(s => UUID.TryParse(s, out var u) ? u : UUID.Zero)
             .Where(u => u != UUID.Zero && !b.Contains(u) && !st.Contains(u) && !BuiltinAnims.ContainsKey(u)).Distinct().ToList();
     }
@@ -129,12 +141,24 @@ public static partial class Program
     static void AoLearnSits(IEnumerable<string> added, IEnumerable<UUID> before)
     {
         AoClassEnsureLoaded(); bool changed = false;
-        lock (aoClassLock) foreach (var u in AoSitLearnable(added, before, aoStandIds)) changed |= aoSitIds.Add(u);
+        Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = new(ownAnims);
+        foreach (var u in (added ?? Enumerable.Empty<string>()).Select(a => UUID.TryParse(a, out var x) ? x : UUID.Zero).Where(u => u != UUID.Zero && cur.TryGetValue(u, out var e) && IsOwnNonAoAttachment(e.src)))
+            changed |= AoNoteOther(u);   // started by the collar / another attachment of ours: not the AO's
+        lock (aoClassLock) foreach (var u in AoSitLearnable(added, before, aoStandIds, aoOtherIds)) changed |= aoSitIds.Add(u);
         if (changed) { AoClassSave(); Log("idlepose", "learned AO sit animations: " + string.Join(",", AoSitIdsNow().Select(x => x.ToString()[..8]))); }
     }
     // OnAvatarAnimation: an AO animation that starts in plain standing is a stand animation
+    // an animation that one of our own non-AO attachments plays (the collar): never a sit; returns whether anything changed (saved by the caller)
+    static bool AoNoteOther(UUID id)
+    {
+        AoClassEnsureLoaded(); bool changed;
+        lock (aoClassLock) { changed = aoOtherIds.Add(id); changed |= aoSitIds.Remove(id); }
+        if (changed) { Log("idlepose", $"animation {id.ToString()[..8]} is played by one of my own non-AO attachments: never an AO sit"); AoClassSave(); }
+        return changed;
+    }
     static void AoNoteStarted(UUID id, UUID src, IEnumerable<UUID> playingNow)
     {
+        if (!BuiltinAnims.ContainsKey(id) && IsOwnNonAoAttachment(src)) { AoNoteOther(id); return; }
         if (BuiltinAnims.ContainsKey(id) || !IsAoHudSource(src) || AoSitSeed.Contains(id)) return;
         bool ground = playingNow.Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED);
         if (!AoStandLearnOk(idlePosed != null, ground, client.Self.SittingOn != 0, DateTime.Now, aoSitTransitionUntil)) return;

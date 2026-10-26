@@ -162,3 +162,10 @@ the anti-aliasing filter, the sky, depth of field (photo hd only). Options apply
 and `photo hd` keep their own settings and refuse these.
 
 The side view always draws the floor unless you say `floor=off` (David's rule): `look self side` is the level, low camera with the red line at floor height.
+
+## Hover check: pose-render guard (2026-10-26)
+
+The hover check never POSTs a hover fix from a render that does not show the pose the client believes.
+- On render 1 it reads the export's `scene.json` (`me.anims`) and `mesh.json` (`pelvis` local z). `sit` needs an AO sit animation in the export and a pelvis below 0.45 x her height; `stand` needs no AO sit animation and a pelvis above 0.55 x her height. Otherwise it logs `not verified: pose not rendered (...)`, changes nothing and returns `pose not rendered: ...` so the request retries.
+- A fix larger than 0.12 m is POSTed only after a second render confirms the same gap (within 2 cm); otherwise `large fix not confirmed by a second render`. Render count: 1 (no fix), 2 (small fix, verify), 3 (large fix: confirm + verify).
+- Cause of the 13:20 case: the collar's animations (947dd903, dccb493a, c9574fd9, 201d84aa) were learned as AO sits during a pose entry, so a stand counted as "AO sit playing". Animations started by own non-AO attachments are now recorded in the `other` class of `ao-anim-classes.json`, never learned as sits, and purged from the sit list on load.

@@ -200,7 +200,7 @@ public static partial class Program
                 Log("outfit-daily", $"login outfit SKIPPED: undressed at {wardrobeUndressedAt:HH:mm:ss} (no random change until she dresses deliberately); daily stays pending");
                 zoneArmed = true; return;
             }
-            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null, await AndroidWornSettled());
+            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null, await AndroidWornAtLogin());
             Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT)");
             if (plan == "keep-android") { zoneArmed = true; return; }   // android body: keep the outfit; the daily stays pending for a human login
             string pick = null; bool freshPick = false; var wornBefore = lastNamedOutfit;

@@ -28,8 +28,10 @@ public class SeatContactTests
     [Fact] public void SeatCheckVerdict_ReportsTheHipsToSeatGap_AndPointsAtTheFurnitureAdjust()
     {
         Assert.StartsWith("hips on the seat", Program.SeatCheckVerdict(0.01)); Assert.StartsWith("hips on the seat", Program.SeatCheckVerdict(-0.03));
-        var up = Program.SeatCheckVerdict(0.06); Assert.Contains("6 cm ABOVE the seat", up); Assert.Contains("AVsitter Z-", up);
-        var dn = Program.SeatCheckVerdict(-0.05); Assert.Contains("5 cm sunk INTO the seat", dn); Assert.Contains("AVsitter Z+", dn);
+        // the #314 live test: -0.038 on a slatted rocking chair was reported as "sunk INTO the seat" while David's eye said it looked good
+        Assert.StartsWith("hips on the seat", Program.SeatCheckVerdict(-0.038)); Assert.StartsWith("hips on the seat", Program.SeatCheckVerdict(-0.06)); Assert.StartsWith("hips on the seat", Program.SeatCheckVerdict(0.02));
+        var up = Program.SeatCheckVerdict(0.06); Assert.Contains("6 cm ABOVE the seat", up); Assert.Contains("AVsitter Z-", up); Assert.Contains("ABOVE", Program.SeatCheckVerdict(0.03));
+        var dn = Program.SeatCheckVerdict(-0.09); Assert.Contains("9 cm sunk INTO the seat", dn); Assert.Contains("AVsitter Z+", dn); Assert.Contains("INTO", Program.SeatCheckVerdict(-0.065));
         Assert.Contains("gap unknown", Program.SeatCheckVerdict(null));
         Assert.DoesNotContain("hover set", up + dn); Assert.DoesNotContain("hover apply", up + dn);   // never tells her to move the hover
     }

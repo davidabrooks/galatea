@@ -30,6 +30,7 @@ LAYER_AVS = {g for g in os.environ.get("GT_LAYER_AVATARS", "").split(",") if g}
 # be judged by eye; GT_SELF_FLOOR=1 (look.py, non-hd self). SCENE = every render that is built from the scene branch
 SELF_FLOOR = kind == "body" and os.environ.get("GT_SELF_FLOOR") == "1"
 SCENE = kind == "scene" or SELF_FLOOR
+FLOOR_ON = os.environ.get("GT_FLOOR") != "off"   # look self --floor=off (look_scope.py): no terrain fallback, no floor reference line
 HD = os.environ.get("GT_HD") == "1"   # `photo hd`: David's 4K stills (the only renders that use the region environment fully)
 def lin(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4   # sRGB -> linear
 
@@ -574,6 +575,8 @@ def camera(loc, target, lens, res):
     cam.data.lens = lens; cam.data.clip_start = 0.02
     if os.environ.get("GT_RES"):
         res = tuple(int(x) for x in os.environ["GT_RES"].split("x"))
+    if os.environ.get("GT_RES_SCALE"):   # look self --small: a smaller frame (look_scope.py)
+        res = tuple(max(64, int(v * float(os.environ["GT_RES_SCALE"]))) for v in res)
     sc.render.resolution_x, sc.render.resolution_y = res
     cam["focus_target"] = list(target)
 
@@ -1302,18 +1305,19 @@ def hover_check_z0(env, agent_z, lo_z, floor_z):
     z0 = agent_z - size / 2 + hov - float(env.get("GT_HOVER_BIAS", "0"))
     return z0, z0 + lo_z - floor_z, hov, size
 
-def self_body_camera_spec(x, y, yaw_deg, deg, pts, floor_z, margin=1.08):
+def self_body_camera_spec(x, y, yaw_deg, deg, pts, floor_z, margin=1.08, lens=50.0, height=None):
     """`look self <side>` camera (2026-10-26): level, at half her height above the floor (so the floor reads as a band below
     the horizon and her soles sit in the lower frame), from `deg` degrees counter-clockwise from her front, far enough that her
     whole bounding box (pts = its world corners) fits the frame at lens 50 (portrait 640x1024; landscape when she is wider than tall)
-    -> (location, target, distance, (width, height))"""
+    -> (location, target, distance, (width, height)). margin > 1 = farther; lens (mm) sets the field of view; height = camera height above
+    the floor in metres (default: half her height). look self --cam-margin / --cam-lens / --cam-fov / --cam-height (look_scope.py)"""
     a = math.radians(yaw_deg + deg); fx, fy = math.cos(a), math.sin(a)
-    zlo, zhi = min(p[2] for p in pts), max(p[2] for p in pts); h = max(0.3, zhi - zlo); cz = max(floor_z, zlo) + 0.5 * h
+    zlo, zhi = min(p[2] for p in pts), max(p[2] for p in pts); h = max(0.3, zhi - zlo); cz = max(floor_z, zlo) + 0.5 * h if height is None else floor_z + height
     ls = [-fy * (p[0] - x) + fx * (p[1] - y) for p in pts]; lc = (min(ls) + max(ls)) / 2   # centre the frame across the view on her box
     half_v = max(zhi - cz, cz - zlo); half_w = (max(ls) - min(ls)) / 2; half_d = max(fx * (p[0] - x) + fy * (p[1] - y) for p in pts)
     tx, ty = x - fy * lc, y + fx * lc
     res = (1024, 640) if half_w > half_v else (640, 1024)   # a sit is wider than tall: landscape frame, the long side = the sensor's 36 mm
-    t_long = 18 / 50; t_short = t_long * min(res) / max(res); ht, vt = (t_long, t_short) if res[0] > res[1] else (t_short, t_long)   # tan of the half angles at 50 mm
+    t_long = 18 / lens; t_short = t_long * min(res) / max(res); ht, vt = (t_long, t_short) if res[0] > res[1] else (t_short, t_long)   # tan of the half angles at 50 mm
     d = max(half_v / vt, half_w / ht) * margin + max(0.0, half_d)
     return (tx + fx * d, ty + fy * d, cz), (tx, ty, cz), d, res
 
@@ -1464,7 +1468,7 @@ def layer_plan():
 if SCENE:
     build("scene"); memlog("scene built")
     if LAYER != "batch": build("far")   # a batch pass only needs what can occlude / light its avatars: the backdrop is > 30 m out
-    if not SELF_FLOOR: terrain()   # `look self`: only when no prim floor is under her (below)
+    if not SELF_FLOOR and FLOOR_ON: terrain()   # `look self`: only when no prim floor is under her (below)
     if LAYER != "batch": water(); particle_systems()
     g = M["me"]; av = os.environ.get("GT_AV")  # "x,y,yaw_deg": stand/sit her there, on the first surface below
     x, y, yaw = [float(v) for v in av.split(",")] if av else (g[0], g[1], M.get("me_yaw", -90.0))
@@ -1486,7 +1490,7 @@ if SCENE:
         st = seated_keep or bool(o.get("seated"))
         off = o.get("agent_off_seated") if st and o.get("agent_off_seated") is not None else o.get("agent_off")
         return floor_at(px, py, pz), (pz + off if off is not None else None), st
-    if SELF_FLOOR and not sc.ray_cast(dg, Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))[0]:   # no prim floor under her: the region terrain is her floor
+    if SELF_FLOOR and FLOOR_ON and not sc.ray_cast(dg, Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))[0]:   # no prim floor under her: the region terrain is her floor
         terrain(); bpy.context.view_layer.update(); dg = bpy.context.evaluated_depsgraph_get()
     placed = [] if SELF_FLOOR else [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
@@ -1560,13 +1564,15 @@ if SCENE:
         if view.startswith("body:"):   # `look self <side>`: low level camera + the floor line, feet and floor contact in frame
             bpy.context.view_layer.update()
             pts_ = [tuple(ob.matrix_world @ Vector(c)) for ob in obs for c in ob.bound_box]; deg = float(view.split(":")[1])
-            self_floor_line(deg)
-            loc_, tgt_, dn_, res_ = self_body_camera_spec(x, y, yaw, deg, pts_, fl)
+            if FLOOR_ON: self_floor_line(deg)   # --floor=off: no red reference line either
+            ev_ = lambda k: float(os.environ[k]) if os.environ.get(k) else None
+            cam_lens_ = ev_("GT_CAM_LENS") or 50.0
+            loc_, tgt_, dn_, res_ = self_body_camera_spec(x, y, yaw, deg, pts_, fl, margin=ev_("GT_CAM_MARGIN") or 1.08, lens=cam_lens_, height=ev_("GT_CAM_HEIGHT"))
             d_ = Vector(loc_) - Vector(tgt_); u_ = d_.normalized()
             s0 = max(0.0, max(u_.x * (p_[0] - tgt_[0]) + u_.y * (p_[1] - tgt_[1]) for p_ in pts_)) + 0.05   # start outside her own box: her body isn't a wall
             hit, hl, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(tgt_) + u_ * s0, u_, distance=max(0.01, d_.length - s0))
             if hit: loc_ = tuple(Vector(hl) - u_ * 0.15)   # a wall behind: stop in front of it
-            da_ = (Vector(loc_) - Vector(tgt_)).length; lens_ = self_body_lens(dn_, da_)
+            da_ = (Vector(loc_) - Vector(tgt_)).length; lens_ = self_body_lens(dn_, da_, cam_lens_)
             camera(loc_, tgt_, lens_, res_); log("self floor camera: distance", round(da_, 2), "m (wanted", round(dn_, 2), "), lens", round(lens_, 1), "mm")
         elif view == "side":   # hover check: level side view at the floor contact, close and low-res
             bpy.context.view_layer.update()
@@ -1700,7 +1706,7 @@ if HD and kind == "scene" and M.get("env"): env_post(M["env"])
 if out.lower().endswith(".png"):   # `photo hd`: lossless master (look.py writes the high-quality JPG from it)
     sc.render.image_settings.file_format = "PNG"; sc.render.image_settings.color_mode = "RGB"; sc.render.image_settings.compression = 15
 else:
-    sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = 90
+    sc.render.image_settings.file_format = "JPEG"; sc.render.image_settings.quality = int(os.environ.get("GT_JPEG_QUALITY", "90"))   # look self --jpeg=<1..100>
 log("build seconds", round(time.time() - T0, 1))
 
 BAND_OVERLAP = 48

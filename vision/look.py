@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, f"{HERE}/c
 os.environ.setdefault("GT_MAX_TEXTURES", "4000")  # Warehouse 21 crowd: ~3200 scene + avatar textures (3000 dropped ~200 far ones); disk-cached after the first look
 os.environ.setdefault("GT_TEX_WORKERS", "24")  # local disk cache; parallel CDN GETs (crowd looks were ~50 s at 8)
 import layers  # layered photo hd (crowds)
+import look_scope  # `look self` scope / floor / small options (pure)
 import handler, llsky, make_job  # texture fetch (CDN, capped) + bake decode / region sky: same code as the Runpod path
 
 MESHER = os.environ.get("SCENE_MESHER", "/home/box/tools/scene-mesher/SceneMesher.dll")
@@ -629,6 +630,10 @@ def main(a):
     sky = next((x.split("=", 1)[1] for x in a if x.startswith("--sky=")), None); a = [x for x in a if not x.startswith("--sky=")]
     if sky and hd_arg is None: sys.exit("--sky needs --hd (her own looks never use the environment)")
     vw = next((x.split("=", 1)[1] for x in a if x.startswith("--views=")), ""); a = [x for x in a if not x.startswith("--views=")]
+    try: a, opts = look_scope.parse_options(a)
+    except ValueError as e: sys.exit(str(e))
+    hovercheck = len(a) >= 2 and a[1] == "hovercheck"
+    if not vw and opts["views"]: vw = opts["views"]   # a preset's default side list
     try: bviews = body_views(vw)
     except ValueError as e: sys.exit(str(e))
     if len(a) >= 2 and a[1] == "hovercheck": a = [a[0], "view", *a[2:]]; fast = True; os.environ.update({"GT_HOVER_CHECK": "1", "GT_VIEW_OVERRIDE": "side", "GT_RES": "640x400", "GT_HC_SAMPLES": "32", "GT_EXPOSURE": os.environ.get("GT_EXPOSURE", "0")})
@@ -646,7 +651,21 @@ def main(a):
     if sky and sky.lower() != "shared" and sky.lower() not in llsky.presets():
         sys.exit(f"unknown sky preset '{sky}' (shared, {', '.join(sorted(llsky.presets()))})")
     if hd: fast = False; os.environ.update({k: v for k, v in hd_env.items() if k.startswith("GT_TEX_CAP")})
-    doc = json.load(open(f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
+    full_json = f"{d}/scene.full.json"   # a filtered render keeps the export's original here: the hover check re-renders the same export after a fix
+    doc = json.load(open(full_json if os.path.exists(full_json) else f"{d}/scene.json")); me = doc["me"]["pos"]; t0 = time.time(); times = {}
+    # render scope (look_scope.py): only her own `look self` and the hover check; photo hd and the other looks keep the full scene
+    scoped = (mode == "self" and not hd) or hovercheck
+    if hovercheck and opts["preset"] is None and look_scope.is_default(opts) and os.environ.get("GT_HC_FULL") != "1":
+        # the automatic hover check draws only what it measures (2026-10-26): her + the floor under her, or her + the seat; GT_HC_FULL=1 = the old full scene
+        pre = look_scope.hovercheck_preset(doc); opts = {**opts, **look_scope.PRESETS[pre], "preset": pre}
+    if not scoped and not look_scope.is_default(opts): sys.exit("render options (--preset --scope --floor --small ...) apply to `look self` and the hover check only")
+    scope, floor, small = opts["scope"], opts["floor"], opts["small"]
+    if scoped and look_scope.needs_filter(opts):
+        doc, sinfo = look_scope.filter_scene(doc, opts)
+        if not os.path.exists(full_json): shutil.copyfile(f"{d}/scene.json", full_json)
+        json.dump(doc, open(f"{d}/scene.json", "w")); print("scope: " + json.dumps(sinfo), file=sys.stderr)
+    if scoped:
+        env_opts, quick = look_scope.env_for(opts); os.environ.update(env_opts); fast = fast or quick
     # photo hd: always the real surroundings (David 2026-10-13: no studio backdrop, `self` too): scene path with
     # terrain, water, sky from the export's environment; the 96 m backdrop when the export reaches that far
     photo_self = bool(hd) and mode == "self"
@@ -662,6 +681,7 @@ def main(a):
     # those centred beyond 30 m as backdrop at a screen-size LOD; `self` meshes her alone. --roots=32: the 32 m export's
     # linksets even from a 96 m export (an older client that still exports 96 m)
     args = mesher_args(d, mmode, me, far, float(doc.get("radius") or 96))
+    if scoped and scope == "nearby": args = look_scope.nearby_mesher_args(d, me)
     args += lod_args(hd_env if hd else {})
     if mode == "at":  # she turns her head toward the target (scene-mesher --look); an avatar's head ~0.7 m above its agent position
         av = next((v for v in doc.get("avatars", []) if target in str(v.get("name", "")).lower() and "pos" in v), None)
@@ -686,7 +706,7 @@ def main(a):
     json.dump(tj, open(f"{WORK}/terrain.json", "w"))
     # bakes: only agents in this mesh (not every bake-*.j2c in a crowded export — was ~55–100 s)
     t = time.time()
-    bake_cap = 2048 if hd else 256 if mode == "around" else (512 if fast else 1024)
+    bake_cap = 2048 if hd else 256 if mode == "around" or (scoped and small) else (512 if fast else 1024)
     only = bake_keys(meta, doc)
     n_bake, bake_hits = cached_bakes(d, only, bake_cap, WORK)
     times["bakes"] = round(time.time() - t, 1)

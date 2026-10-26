@@ -29,6 +29,7 @@ public static partial class Program
         foreach (var p in parts)
         {
             var q = p.EndsWith("deg") ? p[..^3] : p;
+            if (q == "side") q = "left";   // 2026-10-26: "side" = her left (90 deg), the level side view the seat / hover checks read
             if (LookSides.Contains(q)) outp.Add(q);
             else if (double.TryParse(q, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && Math.Abs(d) <= 360 && !double.IsNaN(d))
                 outp.Add(d.ToString("0.#", CultureInfo.InvariantCulture));
@@ -166,7 +167,14 @@ public static partial class Program
 
     static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null, string no = null, string fov = null)
     {
-        const string usage = "usage: look [self [front|back|left|right|<degrees>|all]|around|at <avatar or object name>] [fast] [far]";
+        const string usage = "usage: look [self [front|back|left|right|side|<degrees>|all]|around|at <avatar or object name>] [fast] [far]  (self also: preset=<hover-ground|hover-seat|photo-fast|outfit|photo-hd> scope=<full|nearby|seat|none> floor=<auto|on|off> avatars=off hide-attach=<points> textures=off materials=off small scale=<n> size=WxH samples=<n> jpeg=<n> exposure=<stops> cam-margin=<n> cam-lens=<mm> cam-fov=<deg> cam-height=<m>; docs/render-presets.md)";
+        // render options (look_scope.py) are only read for `look self` (or a bare preset=...): a target name can't swallow them
+        var lookOpts = new List<string>();
+        if (a.Length > 0 && (a[0] == "self" || a.Any(x => x.StartsWith("preset=", StringComparison.Ordinal)) && a[0] is not ("around" or "at")))
+        {
+            var (aRest, oList, pre) = LookOptions(a); lookOpts = oList; a = aRest.Length == 0 ? new[] { "self" } : aRest;
+            if (pre == "photo-hd") return await PhotoCmd(new[] { "hd", "self" });
+        }
         bool fast = a.Contains("fast"), far = a.Contains("far"); var w = a.Where(x => x != "fast" && x != "far").ToArray();
         string mode = w.Length == 0 ? "view" : w[0] is "self" or "around" or "at" ? w[0] : null;
         string views = mode == "self" && w.Length > 1 ? LookSelfViews(string.Join(",", w[1..])) : null;
@@ -204,6 +212,7 @@ public static partial class Program
             if (fast) psi.ArgumentList.Add("--fast");
             if (far) psi.ArgumentList.Add("--far");
             if (views != null) psi.ArgumentList.Add("--views=" + views);
+            if (mode == "self" && hd == null) foreach (var o in lookOpts) psi.ArgumentList.Add(o);
             if (hd != null) psi.ArgumentList.Add(hd);
             if (hd != null && sky != null) psi.ArgumentList.Add("--sky=" + sky);
             if (hd != null && profile != null) psi.ArgumentList.Add("--profile=" + profile);

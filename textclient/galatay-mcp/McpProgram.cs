@@ -295,6 +295,32 @@ public sealed class SlTools
     [McpServerTool(Name = "maitreya_show_all"), Description("Unhide every Maitreya body segment: opens the HUD's alpha page (tab bar), presses Show all, and reports hidden 'hide:N' buttons before/after.")]
     public static Task<string> MaitreyaShowAll() => R("maitreya show all");
 
+    [McpServerTool(Name = "look", ReadOnly = true), Description("READ-ONLY render of what I (or something near me) look like, via the client's own `look` (no new renderer): returns the saved JPEG paths (open them with the image viewer). target = self (default: her whole body on the real floor, a red floor-height line, low level camera), view, around, or an avatar/object name. views (self only) = comma list of front,back,left,right,side(=left),all or degrees; use side/left to judge height on furniture or the floor. fast=true (default) is the quick render (exposure -1.5 stops, 8 samples); far adds the backdrop. Render options for self (all optional; docs/render-presets.md says which to use): preset = hover-ground | hover-seat | photo-fast | outfit | photo-hd(=4K `photo hd`, minutes, returns when started); scope = full|nearby|seat|none (what else is drawn: seat = only the object I sit on, none = only me; self-only/seat-only accepted); floor = auto|on|off; avatars = auto|off; hide_attach = attachment points to skip e.g. 'skull'; textures = on|off; materials = on|off; small = true (half-size, 4 samples); scale 0.1-2; size WxH; samples; jpeg quality 1-100; exposure stops; cam_margin (distance), cam_lens mm, cam_fov deg, cam_height m. Takes ~3-15 s; one render at a time.")]
+    public static async Task<string> Look([Description("self (default) | view | around | an avatar or object name")] string target = "self",
+                                          [Description("self only: front,back,left,right,side,all or degrees, comma list (default front)")] string views = "",
+                                          [Description("quick render (default true)")] bool fast = true,
+                                          [Description("also draw the backdrop to 96 m")] bool far = false,
+                                          string preset = "", string scope = "", string floor = "", string avatars = "", string hide_attach = "", string textures = "", string materials = "",
+                                          bool small = false, string scale = "", string size = "", string samples = "", string jpeg = "", string exposure = "",
+                                          string cam_margin = "", string cam_lens = "", string cam_fov = "", string cam_height = "")
+    {
+        var o = new List<(string, string)> { ("preset", preset), ("scope", scope), ("floor", floor), ("avatars", avatars), ("hide-attach", hide_attach), ("textures", textures), ("materials", materials),
+            ("small", small ? "true" : ""), ("scale", scale), ("size", size), ("samples", samples), ("jpeg", jpeg), ("exposure", exposure), ("cam-margin", cam_margin), ("cam-lens", cam_lens), ("cam-fov", cam_fov), ("cam-height", cam_height) };
+        if (!(Clean(target).Length == 0 || Clean(target).Equals("self", StringComparison.OrdinalIgnoreCase)) && o.Any(x => !string.IsNullOrWhiteSpace(x.Item2)))
+            return Json(new { ok = false, result = "render options only apply to target=self" });
+        return Json(await Core.LookObj(Clean(target), Clean(views), fast, far, o.Select(x => (x.Item1, Clean(x.Item2)))));
+    }
+
+    [McpServerTool(Name = "seat_info", ReadOnly = true), Description("READ-ONLY: the object I am sitting on (uuid, name, owner), its position and rotation, my avatar position and my offset from the seat (world and in the seat's own axes; z = my height relative to the seat prim). Read it before and after an AVsitter adjust (Z+/Z-) to compare, and `look` with views=side to see it.")]
+    public static async Task<string> SeatInfo() => Json(await Core.SeatInfoObj());
+
+    [McpServerTool(Name = "client_cmd", ReadOnly = true), Description("Run ONE read-only text-client command (the old daemon socket's diagnostics), allow-list only: `look ...` (same options as the look tool, e.g. `look self side preset=hover-seat`), `hover` / `hover get` / `hover check` (visual hover check: renders, fixes only the hover), `height` / `diag`, `posehover status` (hover + last posehover log lines) / `posehover check`. Everything else is refused (no say, im, pay, logout, hover set ...).")]
+    public static async Task<string> ClientCmd([Description("the command line, e.g. 'look self left' or 'hover check'")] string command)
+    {
+        var txt = await Core.ClientCmd(command);
+        return Json(new { ok = !(txt.StartsWith("refused") || txt.StartsWith("not logged in") || txt.StartsWith("usage")), result = txt.TrimEnd() });
+    }
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

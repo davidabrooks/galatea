@@ -386,6 +386,7 @@ def fetch_textures(meta, out, work):
         if lfrac >= 1: return tex_mem_mb(w)
         return tex_mem_mb({t: c for t, c in w.items() if t in world_keys}) + lfrac * tex_mem_mb({t: c for t, c in w.items() if t not in world_keys})
     want = collect(bias); est0 = est_pass(want)
+    if os.environ.get("GT_NO_TEXTURES") == "1": want = {}   # look self --textures=off: geometry-only check, every face its plain colour (look_scope.py)
     # LLViewerTexture::updateClass under low memory: bias to >= 1.5, then up until it fits (here: in 0.5 steps, max 5)
     while tiered and budget and est_pass(want) > budget and bias < 5.0:
         bias = max(1.5, bias + 0.5); want = collect(bias)

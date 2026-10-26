@@ -336,5 +336,23 @@ public class IdlePoseTests
         var py = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "vision/cloud-render/render_mesh.py"));
         Assert.Contains("z0 + lo_z - floor_z", py);
     }
+    [Fact] public void CollarMenu_OneSessionAtATime_RightPageWaited()   // 2026-10-26 08:58 magic leash + pose switch crossed
+    {
+        Assert.True(Program.CollarLooksLikePoseMenu(new[] { "◂", "▸", "▴", "☐ Crawl", "cutie", "STOP", "beg" }));
+        Assert.False(Program.CollarLooksLikePoseMenu(new[] { "Title", "Tracker", "Magic Leash", "Bell" }));
+        Assert.True(Program.CollarLooksLikeMainMenu(new[] { "RLV", "Extras", "About", "Leash", "Strip", "Pose" }));
+        Assert.False(Program.CollarLooksLikeMainMenu(new[] { "Title", "Tracker", "Magic Leash" }));
+        Assert.Equal("Magic Leash", Program.MenuPick(new[] { "Title", "Tracker", "▴", "Little Hearts", "Magic Leash", "Sobriquet" }, "Magic"));
+        var root = Root();
+        var cs = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "textclient/galatay-text/CollarStealth.cs"));
+        var ip = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "textclient/galatay-text/IdlePose.cs"));
+        Assert.DoesNotContain("stealthLock.WaitAsync(0)", cs);                       // never skip: wait for the other session
+        Assert.Contains("if (!await CollarMenuEnter()) return (\"collar menu busy for 90 s\", null);", cs);   // Stealth takes it
+        Assert.Contains("await CollarMenuEnter()) return \"collar menu busy for 90 s\"", cs);                  // Magic Leash takes it
+        Assert.Contains("try { return await CollarPosePlayLocked(pose); } finally { stealthLock.Release(); }", ip);  // pose switch too
+        Assert.Contains("try { return await CollarPoseStopLocked(anims); } finally { stealthLock.Release(); }", ip);
+        Assert.Contains("CollarLooksLikePoseMenu(d.ButtonLabels), 10000)", ip);       // 'Pose' waits for the Pose page, not any dialog
+        Assert.Contains("CollarLooksLikeMainMenu(d.ButtonLabels), 10000)", cs);       // Magic Leash starts from the real main menu
+    }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

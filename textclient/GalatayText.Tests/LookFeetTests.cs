@@ -76,6 +76,6 @@ public class LookFeetTests
     [Fact] public void ContactLabel_NamesWhatTheCloseUpFrames()
     {
         Assert.Contains("feet", Program.HoverContactLabel("stand")); Assert.Contains("hips", Program.HoverContactLabel("sit")); Assert.Equal("lowest contact", Program.HoverContactLabel("unknown"));
-        Assert.Contains("HoverContactLabel(kind)", Src("Look.cs"));
+        Assert.Contains("ContactEnv(kind)", Src("Look.cs"));
     }
 }

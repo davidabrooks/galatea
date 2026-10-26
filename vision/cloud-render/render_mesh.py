@@ -1340,6 +1340,20 @@ def contact_points(verts, band=CONTACT_BAND, quantile=0.002, cap=4000):
     if len(sel) > cap: sel = sel[np.linspace(0, len(sel) - 1, cap).astype(int)]
     return zlow, [tuple(float(c) for c in r) for r in sel]
 
+SIT_HIPS_R = 0.30   # m around the pelvis (horizontal) that count as the hips-to-floor contact of a ground sit
+
+def ground_sit_contact(verts, pelvis, r=SIT_HIPS_R, min_verts=20):
+    """the contact of a GROUND sit (2026-10-26 live test: leaning back, legs forward, hands propped behind: the lowest 10 cm of her whole body was the heels, the
+    hands AND the butt, 1.2 m apart, so the close-up framed her head to heels). Only the vertices within `r` of the pelvis bone (horizontally: the butt, the
+    lower back and the backs of the thighs near the floor) are searched; the contact is their lowest 10 cm (contact_points). Heels, hands and the head lie
+    farther out. None when too few vertices are there (no pelvis, odd pose): the caller keeps the whole-body contact. -> (zlow, [(x, y, z), ...]) | None"""
+    v = np.asarray(verts, dtype=np.float64).reshape(-1, 3)
+    if len(v) == 0: return None
+    sel = v[np.hypot(v[:, 0] - pelvis[0], v[:, 1] - pelvis[1]) <= r]
+    if len(sel) < min_verts: return None
+    zlow, cp = contact_points(sel)
+    return (zlow, cp) if cp else None
+
 def feet_camera_spec(x, y, yaw_deg, deg, cpts, zlow, floor_z, lens=50.0, res=(1024, 640), min_width=0.6, pad=0.3, max_width=1.4, sink=0.06):
     """the contact close-up camera: level, from `deg` degrees counter-clockwise from her front (90 = her left), looking at the contact area
     (cpts from contact_points). The frame is `width` wide (the contact's extent along the view + pad, at least min_width = 0.6 m, at most max_width),
@@ -1687,9 +1701,12 @@ if SCENE:
             print("GT: seat contact gap " + (f"{gap:+.3f} m (hips above the seat +, sunk into it -)" if gap is not None else "unknown (seat surface not found)"), flush=True)
             cut_corridor(seat_cutaway(tgt, loc, cp, width, min(floor, zlow) - 0.06, res))   # nothing of the seat between the camera and her hips
         else:
-            zlow, cp = contact_points(allv)
+            gs_ = None
+            if os.environ.get("GT_HC_KIND") == "sit" and M.get("pelvis"):   # AO ground sit (the client says so): the hips-to-floor contact, not heels and hands
+                pg_ = to_world(M["pelvis"], (x, y, z0), yaw); gs_ = ground_sit_contact(allv, (pg_.x, pg_.y, pg_.z))
+            zlow, cp = gs_ if gs_ else contact_points(allv)
             if not cp: cp = [(px, py, floor)]; zlow = floor
-            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res)
+            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, max_width=0.9 if gs_ else 1.4)   # a ground sit: at most 0.9 m
             print(f"GT: contact close-up: {os.environ.get('GT_HC_POSTURE') or 'lowest contact'}, {len(cp)} vertices within {CONTACT_BAND:g} m of her lowest point (z {zlow:.3f}, floor {floor:.3f}), "
                   f"frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
         # a wall behind the camera: stop in front of it and widen the lens in proportion so the contact still fits (as `look self` does)

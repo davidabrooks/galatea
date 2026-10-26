@@ -9,9 +9,9 @@ SRC = pathlib.Path(__file__).resolve().parents[1] / "cloud-render" / "render_mes
 
 def _rm():
     src = SRC.read_text(); tree = ast.parse(src)
-    consts = {"CONTACT_BAND", "SEAT_HIPS_R", "SEAT_PLANE_BELOW", "SEAT_TOP_NEAR", "SEAT_RAY_START"}
+    consts = {"CONTACT_BAND", "SIT_HIPS_R", "SEAT_HIPS_R", "SEAT_PLANE_BELOW", "SEAT_TOP_NEAR", "SEAT_RAY_START"}
     body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in consts for t in n.targets)] + \
-           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"contact_points", "feet_camera_spec", "seat_contact", "seat_hips", "seat_top_under", "seat_cutaway", "cutaway_mask"}]
+           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"contact_points", "feet_camera_spec", "seat_contact", "seat_hips", "seat_top_under", "seat_cutaway", "cutaway_mask", "ground_sit_contact"}]
     ns = {"np": np, "math": math}; exec(compile(ast.Module(body, []), "render_mesh", "exec"), ns)
     return ns
 
@@ -83,7 +83,7 @@ def test_the_renderer_uses_the_seat_branch_only_when_seated_on_an_object():
     src = SRC.read_text()
     assert 'prim_under = sc.ray_cast(dg, Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))[0]' in src
     assert 'sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None)' in src and "        if mst:" in src   # only a seated avatar; terrain is never the seat plane
-    assert 'if sc_:' in src and 'zlow, cp = contact_points(allv)' in src                                                 # stand / ground sit / kneel: the #313 path
+    assert 'if sc_:' in src and 'zlow, cp = gs_ if gs_ else contact_points(allv)' in src                                                 # stand / ground sit / kneel: the #313 path
     assert 'elif SELF_FLOOR and mst: print("GT: self floor: seated on an object' in src                                   # no hover model on furniture
     look = (pathlib.Path(__file__).resolve().parents[1] / "look.py").read_text()
     assert '"GT_HOVER_CHECK": "0" if os.environ.get("GT_SEAT_CHECK") == "1" else "1"' in look and '"GT: seat contact"' in look
@@ -155,3 +155,55 @@ def test_the_renderer_cuts_the_corridor_before_the_wall_check_and_never_touches_
     cc = src[src.index("    def cut_corridor(box):"):src.index("    def contact_closeup(")]
     assert "ob_ in obs" in cc and '"floor-line"' in cc and "bmesh.ops.delete" in cc and "me_.copy()" in cc   # her own meshes and the floor line stay; shared mesh data is copied before editing
     assert "def seat_cast(" in src and "id(ob_) not in mine" in src                                         # the seat rays skip her body
+
+
+# ---- the AO ground sit (2026-10-26 live test): leaning back, legs forward, hands propped behind, heels on the floor: the close-up framed head to heels ------------
+def _leaning_sit(rng):
+    """z 0 = the floor. butt + thighs on the floor, lower back rising behind, extended legs forward with the HEELS on the floor 0.95 m away, hands propped on the floor
+    0.45 m behind, torso leaning back, head high. pelvis bone at (0, 0, 0.12)"""
+    butt = _box(rng, 900, -0.2, 0.2, 0.0, 0.12); thighs = _box(rng, 700, 0.2, 0.55, 0.03, 0.13); lower_back = _box(rng, 500, -0.35, -0.15, 0.05, 0.35)
+    calves = _box(rng, 600, 0.55, 0.9, 0.06, 0.30); heels = _box(rng, 300, 0.88, 1.0, 0.0, 0.08, y=0.08)
+    hands = np.vstack([_box(rng, 150, -0.5, -0.42, 0.0, 0.06, y=0.04) + [0, s_, 0] for s_ in (-0.3, 0.3)]); arms = _box(rng, 500, -0.55, -0.3, 0.06, 0.6, y=0.3)
+    torso = _box(rng, 2000, -0.7, -0.3, 0.35, 0.8); head = _box(rng, 800, -0.85, -0.65, 0.85, 1.05)
+    return np.vstack([butt, thighs, lower_back, calves, heels, hands, arms, torso, head])
+GS_PELVIS = (0.0, 0.0, 0.12)
+
+def test_whole_body_contact_of_a_leaning_back_sit_spans_heels_to_hands_the_bug():
+    ns = _rm(); rng = np.random.default_rng(30); v = _leaning_sit(rng)
+    zlow, cp = ns["contact_points"](v)
+    xs = [p[0] for p in cp]; assert max(xs) > 0.85 and min(xs) < -0.4                # heels (x 0.9+) and hands (x -0.5) both in the lowest 10 cm
+    loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, 0.0)
+    assert width == 1.4                                                              # capped: head to heels in the frame
+
+def test_ground_sit_close_up_is_tight_on_the_hips_to_floor_contact():
+    ns = _rm(); rng = np.random.default_rng(31); v = _leaning_sit(rng)
+    zlow, cp = ns["ground_sit_contact"](v, GS_PELVIS)
+    xs = [p[0] for p in cp]
+    assert max(xs) < 0.6 and min(xs) > -0.45                                         # no heels (x 0.9), no hands (x -0.5), no head
+    assert max(p[2] for p in cp) <= zlow + 0.1 + 1e-9 and abs(zlow) < 0.02          # the lowest 10 cm around the butt, on the floor
+    assert max(xs) - min(xs) < 0.65                                                  # the patch itself is the butt + the backs of the thighs, not a leg's length
+    loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, 0.0, max_width=0.9)
+    assert 0.6 <= width <= 0.9                                                       # about 0.6-0.8 m wide, not 1.4
+    assert -0.1 < tgt[0] < 0.3 and abs(tgt[0] - 0.9) > 0.5                           # centred on the butt / thighs, nowhere near the heels
+    assert loc[2] < 0.3 and abs(loc[2] - tgt[2]) < 1e-9 and loc[1] > tgt[1]         # level, low, from her left; the floor line is in the frame (starts 6 cm under it)
+    assert loc[2] - width * 0.625 / 2 <= -0.05
+
+def test_ground_sit_contact_follows_the_pelvis_not_the_world_origin():
+    ns = _rm(); rng = np.random.default_rng(32); v = _leaning_sit(rng) + [5.0, -3.0, 20.0]
+    zlow, cp = ns["ground_sit_contact"](v, (5.0, -3.0, 20.12))
+    assert abs(zlow - 20.0) < 0.02 and max(p[0] for p in cp) < 5.6 and min(p[0] for p in cp) > 4.55
+
+def test_ground_sit_contact_falls_back_when_the_pelvis_has_no_vertices_near():
+    ns = _rm(); rng = np.random.default_rng(33)
+    assert ns["ground_sit_contact"](_leaning_sit(rng), (50.0, 50.0, 0.1)) is None       # the caller keeps the whole-body contact
+    assert ns["ground_sit_contact"](np.zeros((0, 3)), GS_PELVIS) is None
+
+def test_stand_and_seat_framing_are_unchanged_by_the_ground_sit_fix():
+    src = SRC.read_text()
+    # only the AO ground sit (the client sends GT_HC_KIND=sit) uses the pelvis window; stand / kneel / unknown keep contact_points(allv); furniture keeps seat_contact
+    assert 'os.environ.get("GT_HC_KIND") == "sit" and M.get("pelvis")' in src and "zlow, cp = gs_ if gs_ else contact_points(allv)" in src
+    assert src.index("if mst:") < src.index('os.environ.get("GT_HC_KIND") == "sit"')            # the furniture branch comes first
+    ns = _rm(); rng = np.random.default_rng(34)
+    stand = np.vstack([_box(rng, 400, -0.1, 0.2, 0.0, 0.10), _box(rng, 3000, -0.1, 0.1, 0.1, 1.5)])
+    zlow, cp = ns["contact_points"](stand); loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, 0.0)
+    assert abs(width - 0.6) < 1e-6                                                             # soles: 0.6 m as in #313

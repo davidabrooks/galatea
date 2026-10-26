@@ -52,21 +52,35 @@ public static partial class Program
         return m.Success ? double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : null;
     }
     // pure (tested): what the close-up is framed on, for the log: the lowest body contact of the posture
-    internal static string HoverContactLabel(string kind) => kind switch { "stand" => "feet (soles)", "sit" => "hips and any thighs / heels in contact", _ => "lowest contact" };
+    internal static string HoverContactLabel(string kind) => kind switch { "stand" => "feet (soles)", "sit" => "hips and any thighs / heels in contact", "seat" => "hips against the seat", _ => "lowest contact" };
+    // pure (tested): on furniture (sitting on an object) the contact close-up frames her HIPS against the SEAT, never her feet over the terrain, and the render uses the
+    // sim's own seated placement (no hover model: hover is not the fix on furniture, the furniture's adjust is). Env for look.py / render_mesh.py
+    internal static Dictionary<string, string> SeatLookEnv() => new() { ["GT_SEATED"] = "1", ["GT_SEAT_CHECK"] = "1", ["GT_HC_POSTURE"] = HoverContactLabel("seat") };
+    internal const double SeatGapTol = 0.03;
+    internal static double? SeatContactGap(string stdout)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "", @"seat contact gap ([+-]?\d+\.\d+) m");
+        return m.Success ? double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : null;
+    }
+    // pure (tested): the one-line verdict of a seated check; it never changes the hover
+    internal static string SeatCheckVerdict(double? gap) => gap is not double g ? "seat surface not found in the render: framed the hips only, gap unknown"
+        : Math.Abs(g) <= SeatGapTol ? $"hips on the seat (gap {g:+0.000;-0.000} m)"
+        : g > 0 ? $"hips {g * 100:0.#} cm ABOVE the seat (gap {g:+0.000} m): lower her with the furniture's own adjust (AVsitter Z-, then SAVE)"
+        : $"hips {-g * 100:0.#} cm sunk INTO the seat (gap {g:+0.000;-0.000} m): lift her with the furniture's own adjust (AVsitter Z+, then SAVE)";
     // pure (tested): renders one hover check costs. Each HoverCheckRender call is ONE blender run of ONE image (the contact close-up, which REPLACES the wide
     // side view: look_scope.hovercheck_view). 1 when the contact is confirmed; 2 when a fix was applied (the re-render at the hover really in force is the verification)
     internal static int HoverCheckRenderCount(bool fixApplied) => fixApplied ? 2 : 1;
     // ONE render, ONE image. kind (stand|sit) only labels what the close-up frames
-    static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null)
+    static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null, bool seat = false)
     {
         var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add(LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
-        foreach (var kv in HoverCheckEnv(size, hover, bias)) psi.Environment[kv.Key] = kv.Value;
-        psi.Environment["GT_HC_POSTURE"] = HoverContactLabel(kind);
+        foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, bias)) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
+        psi.Environment["GT_HC_POSTURE"] = HoverContactLabel(seat ? "seat" : kind);
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
         var text = await o; await e;
-        return (HoverCheckGap(text), text.Split('\n').FirstOrDefault(l => l.EndsWith(".jpg"))?.Trim() ?? "no image");
+        return (seat ? SeatContactGap(text) : HoverCheckGap(text), text.Split('\n').FirstOrDefault(l => l.EndsWith(".jpg"))?.Trim() ?? "no image");
     }
     // pure (tested): is the form (android/human) known for certain? 2026-10-23 15:19: right after login the worn prims had no
     // names yet, AndroidWorn() read false and an android stand was saved as human|stand (and seeded ref|human|stand).
@@ -135,6 +149,7 @@ public static partial class Program
             try
             {
                 await Task.Delay(delayMs);
+                if (why == "manual" && client.Self.SittingOn != 0) return await SeatContactCheck();   // on furniture: report the hips-to-seat gap, leave the hover alone
                 for (int attempt = 1; ; attempt++)
                 {
                     if (Interlocked.Read(ref hoverReqSeq) != id) return "replaced by a newer hover check request";   // a newer request replaced this one
@@ -164,6 +179,25 @@ public static partial class Program
         : kind == "stand" && idlePosed == null && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false) && AoUnclassifiedNow().Count == 0);
     // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose name)
     static (string kind, string pose) PoseNow() => AoSitReallyOn() ? ("sit", aoSitCurrentName ?? "sit") : AoUnclassifiedNow().Count > 0 ? ("unknown", "unknown") : ("stand", "stand");
+
+    // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): ONE render of the hips against the seat;
+    // reports the gap and the close-up path; changes nothing (the AO, the hover and the furniture stay as they are)
+    static async Task<string> SeatContactCheck()
+    {
+        if (!LoggedIn || client.Self.SittingOn == 0) return "seat check: not sitting on an object";
+        if (!await poseGate.WaitAsync(0)) return "seat check: a check is already running";
+        try
+        {
+            var ex = await SceneExport(new[] { "export", "4", "noenv" });
+            var scene = ex.Split('\n').Last();
+            if (!scene.EndsWith("scene.json")) { Log("posehover", $"seat check: export failed: {ex}"); return "seat check: export failed"; }
+            if (client.Self.SittingOn == 0) return "seat check: she is no longer sitting on an object";
+            var (gap, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, 0, "seat", seat: true);
+            var r = $"seat: {SeatCheckVerdict(gap)}; hover left alone; renders 1; close-up of {HoverContactLabel("seat")}: {img}";
+            Log("posehover", r); hoverCheckResult = r; return r;
+        }
+        finally { poseGate.Release(); }
+    }
 
     // the visual check: null = finished (checked, or nothing to do); a string = not now, retry (the reason)
     static async Task<string> PoseHoverCheck(string kind, string pose)

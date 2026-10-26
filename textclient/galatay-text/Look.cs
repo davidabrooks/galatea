@@ -162,6 +162,7 @@ public static partial class Program
     // the hover in force (AgentPreferences), read fresh: a look after a fix must show the fix (2026-10-26: the render used our own appearance value, which stayed 0)
     static async Task<Dictionary<string, string>> LookHoverEnv()
     {
+        if (client.Self.SittingOn != 0) return SeatLookEnv();   // on furniture: hips against the seat, the sim's seated placement, no hover model
         double size = SelfAv()?.Scale.Z ?? 0; if (size < 1) return new();
         var (kind, pose) = PoseNow(); bool android = AndroidFormNow(); var nums = PoseNums();
         var (hov, _) = await EffectiveHoverFresh();

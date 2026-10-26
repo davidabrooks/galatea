@@ -74,6 +74,7 @@ David: zooming in close on the contact makes the hover easy to judge. `views=fee
 | Standing | the feet (soles and the floor) |
 | Ground sit | the hips / butt, plus the thighs or heels if they touch (a foot in the air is left out; the window widens to fit, up to 1.4 m) |
 | Kneel | the shins and knees (and toes) on the floor |
+| **Sitting on furniture** (an object: chair, bench, AVsitter seat) | **the hips against the seat**, never the feet (see below) |
 
 How: the lowest 0.2 % of her vertices are the "lowest point"; every vertex within 10 cm above it is the contact, and the frame is that area's extent plus 0.3 m,
 at least 0.6 m. The render logs `contact close-up: <what>, N vertices within 0.1 m of her lowest point, frame W m wide`.
@@ -84,11 +85,31 @@ at least 0.6 m. The render logs `contact close-up: <what>, N vertices within 0.1
 |---|---|
 | Contact confirmed / nothing to fix | **1** (the close-up) |
 | A fix was applied | **2**: the close-up, then one more close-up at the hover really in force to verify (#312). Nothing else renders. |
+| Sitting on furniture (manual `hover check` only) | **1**: the hips close-up; no fix exists to verify (hover is never changed), so never 2 |
 
 The close-up is never an extra render on top of the wide one. `GT_HC_ZOOM=off` in the client's environment goes back to the wide side view (still one render).
 The contact decision is still the gap measured in that same render; the close-up is the picture of it. The path of the close-up is logged
 (`posehover`: `renders N; close-up of <what>: <path>`) and **`hover check` returns it**: it now waits for the check (up to 120 s) and answers with the verdict, the
 render count and the close-up image path, so it can be shown to David. Tests: `LookFeetTests` (render count per check) and `test_look_scope.py` (stand / sit / kneel framing).
+
+### Sitting on furniture: hips against the seat (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet")
+
+Found live after #313: seated on an AVsitter chair, `look self feet` framed her dangling foot over the grass, because the close-up assumed the terrain is what she touches.
+When she sits **on an object** (`seat_info` says seated; the export's `sitting_on` is set), the close-up now frames the **hips against the seat surface** instead:
+
+- **Hips:** the vertices within 0.30 m (horizontally) of her pelvis bone and between 0.30 m under and 0.15 m over it; the legs that hang in front are farther out. The contact
+  is the lowest 10 cm of those, like the other postures (a stray vertex is ignored). No pelvis bone in the export: the agent position stands in for it.
+- **Seat plane:** the top of the object directly under the hips, found by the downward ray cast that places her (before she is drawn). It is used only when a prim is
+  really under her (never the terrain) and within 0.35 m under / 0.25 m over her lowest hip vertex; otherwise **the seat surface is "not found" and the frame falls back to the hips' own
+  bounding area** (still the hips, never the feet). The frame is at least 0.8 m wide and starts 6 cm under the seat, so the seat line and the gap are in the picture.
+- **Gap:** the render logs `contact close-up: hips against the seat, ...` and `seat contact gap +0.012 m` (hips above the seat +, sunk into it -). `look.py` prints both.
+- **No hover model:** she is drawn at the sim's own seated placement (agent position + the seated offset, no hover pin, no bias, no floor snap), so the gap is her real sit height.
+  Hover is not the fix on furniture: the furniture's own adjust is (AVsitter HUD, Z+ / Z-, then SAVE).
+
+`hover check` while she sits on an object (manual only; the automatic sit / stand checks still skip furniture) renders **one** hips close-up and answers
+`seat: hips on the seat (gap +0.010 m) | hips N cm ABOVE / sunk INTO the seat ...; hover left alone; renders 1; close-up of hips against the seat: <path>`. It never posts a hover,
+touches the AO, stands her up or moves the furniture. `look self ...` while seated gets the same placement (the hover env is replaced by `GT_SEATED=1 GT_SEAT_CHECK=1`).
+Ground sits, stands and kneels are unchanged (the table above). Tests: `vision/tests/test_look_seat_contact.py` (synthetic chair, floating / sunk / no-seat-surface / stray vertex) and `SeatContactTests`.
 
 Use it by hand: MCP `look {target: "self", views: "feet"}`, or `client_cmd` `look self feet` / `look self side zoom=feet`.
 

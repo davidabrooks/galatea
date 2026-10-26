@@ -8,7 +8,8 @@ usage: look.py <export dir> {view|self|around|at} [target name] [--fast] [--far]
           terrain, water and the export's sky/sun (96 m backdrop when the export reaches it), adaptive sampling +
           OpenImageDenoise, full-res textures and bakes (~5 min on 8 CPUs for a furnished room). Firestorm-tonemapped PNG + quality-95 JPG, and the HDR masters (32-bit OpenEXR + Radiance .hdr) in GT_PHOTO_OUT (/workspace/secondlife/photos), photo-<stamp>-<mode>.png/.jpg
   view    over her shoulder, along her facing        around  4 views (front, left, back, right)
-  self    her face + full body (avatar only)         at X    from beside her head toward avatar/object X
+  self    her face + full body, the body in the real  at X    from beside her head toward avatar/object X
+          scene: floor under her, red floor-height line, low level camera (the client's GT_HOVER_CHECK env adds her real hover)
   --views (self) only the full body, from each listed side / angle (degrees counter-clockwise from her front: 90 = her
           left, 180 = her back); all = front, back, left, right. One image per view: ...-self-body-<side|NNdeg>.jpg
   --headshot (self --hd) head and shoulders from in front at a portrait lens (28 deg vertical; --fov overrides) instead of the whole body;
@@ -651,7 +652,12 @@ def main(a):
     photo_self = bool(hd) and mode == "self"
     if hd: far = far or float(doc.get("radius") or 0) >= 96; terrain_hd = True
     else: terrain_hd = False
-    mmode = "view" if photo_self else mode
+    # her own quick `look self` (2026-10-26, David: "fix your renderer so it shows a floor"): the full body is drawn in the real scene
+    # (the floor under her + a reference line at floor height + a low level side camera) so her feet / floor contact can be judged by
+    # eye; the scene mesher with the near export (8 m), the face close-up still reads only her avatar group from the same mesh
+    self_floor = mode == "self" and not hd
+    if self_floor: os.environ["GT_SELF_FLOOR"] = "1"
+    mmode = "view" if photo_self or self_floor else mode
     # her surroundings: whole objects reaching within 30 m (Highest LOD within 12); with --far also objects out to 96 m,
     # those centred beyond 30 m as backdrop at a screen-size LOD; `self` meshes her alone. --roots=32: the 32 m export's
     # linksets even from a 96 m export (an older client that still exports 96 m)
@@ -675,7 +681,7 @@ def main(a):
         meta["env"] = gold; print("photo hd portrait: sun below the horizon outdoors -> golden hour (sunset sky, sun azimuth kept)", file=sys.stderr)
     if far or terrain_hd: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
-    tj = (far or terrain_hd) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}  # region heightmap (exports 2026-10-04+)
+    tj = (far or terrain_hd or self_floor) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}  # region heightmap (exports 2026-10-04+)
     if terrain_hd: tj = {**tj, "composition": terrain_composition(doc, f"{WORK}/tex")}
     json.dump(tj, open(f"{WORK}/terrain.json", "w"))
     # bakes: only agents in this mesh (not every bake-*.j2c in a crowded export — was ~55–100 s)

@@ -201,7 +201,9 @@ public static partial class Program
             var cur = idlePosed; if (cur == null) return "not posed";
             if (cur.kind == "groundsit")
             {
+                var beforeAnims = SelfAnims().ToHashSet(); aoSitTransitionUntil = DateTime.Now.AddSeconds(30);
                 var r = await AoGroundSitSwitch();
+                try { AoLearnSits(SelfAnims().Where(a => !beforeAnims.Contains(a)).Select(a => a.ToString()), beforeAnims); } catch { }
                 idleRotate = IdleRotateSec(Random.Shared.NextDouble());
                 idlePosed = cur with { pose = r.StartsWith("ground sit ") ? r : cur.pose, since = DateTime.Now }; IdleSave();
                 return r;
@@ -232,23 +234,11 @@ public static partial class Program
     static DateTime idleNoSitUntil = DateTime.MinValue;
     // pure (tested): is the AO force sit really on? Judged from the playing anims (ground sit playing while not on an object),
     // never from an internal flag: the AO toggle persists across logins (2026-10-23 sat-right-back-down bug).
-    internal static bool AoForceSitOn(IEnumerable<UUID> playing, bool sittingOnObject) =>
-        !sittingOnObject && (playing ?? Enumerable.Empty<UUID>()).Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED);
+    // 2026-10-26: built-in ground sits AND the AO's own learned sit animations (AoSit.cs): the sim can say STAND while the AO holds a sit
+    internal static bool AoForceSitOn(IEnumerable<UUID> playing, bool sittingOnObject) => AoSitPlaying(playing, sittingOnObject, AoSitIdsNow());
     // pure (tested): touch the AO toggle only when its real state is on (touching it while off turns force sit ON)
     internal static bool GroundSitStandNeeded(IEnumerable<UUID> playing, bool sittingOnObject) => AoForceSitOn(playing, sittingOnObject);
     internal static bool AoShouldToggleOff(bool forceSitOn) => forceSitOn;
-    // turn the AO ground sit off if (and only if) it is really on; verified
-    static async Task<string> AoGroundSitEnsureOff(string why)
-    {
-        if (!AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0)) return "AO force sit already off";
-        try { client.Self.Stand(); } catch { }
-        await Task.Delay(800);
-        if (!AoShouldToggleOff(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0))) return "stood (AO force sit off)";
-        var r = await AoGroundSitToggle("off: " + why);
-        await Task.Delay(1500);
-        if (AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0)) { try { client.Self.Stand(); } catch { } await Task.Delay(800); }
-        return $"AO force sit toggled off ({r}); {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "STILL ground sitting" : "standing")}";
-    }
     // 2026-10-23 (David): only HIS stand (stand tool, idle_pose stop) starts the 30 min cooldown; an internal stand
     // (logout, shutdown, deploy) never does, and a new login clears any cooldown.
     internal static bool IdleStandStartsCooldown(string why) => why is "stand command" or "manual stop";
@@ -404,6 +394,7 @@ public static partial class Program
             // 2026-10-23 14:30/14:47 (David: "stood up and sat back down in the same pose"): touching force sitg first made the
             // AO start its sit while standing, then SitOnGround 0.8 s later sat her again (two transitions). Now: sit down
             // first, then turn force sitg on, so the AO only swaps the sit animation in place.
+            aoSitTransitionUntil = DateTime.Now.AddSeconds(60);
             try { client.Self.SitOnGround(); } catch { }
             await Task.Delay(1500);
             var r = await AoGroundSitToggle("enter: " + why);
@@ -414,6 +405,7 @@ public static partial class Program
             Log("idlepose", "ground sit start pick: " + pickInfo);
             // 2026-10-23 (David): android ground sit ~4 cm too high: auto-hover owns that offset (GroundSitHoverOffset)
             var added = SelfAnims().Where(a => !before.Contains(a)).Select(a => a.ToString()).ToList();
+            AoLearnSits(added, before);
             idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave(); AutoHoverKick("ground sit");
             return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")})";
         }
@@ -525,6 +517,14 @@ public static partial class Program
         if (kind != null) Log("idlepose", "enter: " + await IdlePoseEnter(kind, $"idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0} s"));
     }
 
+    static string IdleRealStateText()
+    {
+        var sit = AoSitIdsNow(); var playing = SelfAnims();
+        var ids = playing.Where(sit.Contains).Select(x => x.ToString()[..8]).ToList();
+        bool simGround = playing.Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED);
+        return AoRealState(AoForceSitOn(playing, client.Self.SittingOn != 0), ids, client.Self.SittingOn != 0, simGround);
+    }
+
     static async Task<string> IdlePoseCmd(string[] a)
     {
         var sub = a.Length > 0 ? a[0].ToLowerInvariant() : "status";
@@ -540,7 +540,7 @@ public static partial class Program
             default:
             {
                 var p = idlePosed;
-                return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; {(p == null ? "standing" : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; {(IdleCooldownActive(DateTime.Now, idleNoSitUntil) ? $"stand cooldown until {idleNoSitUntil:HH:mm}; " : "")}AO force sit {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "ON" : "off")}; " +
+                return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; {(p == null ? "standing" : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; {(IdleCooldownActive(DateTime.Now, idleNoSitUntil) ? $"stand cooldown until {idleNoSitUntil:HH:mm}; " : "")}AO force sit {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "ON" : "off")}; {IdleRealStateText()}; " +
                        $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
             }
         }

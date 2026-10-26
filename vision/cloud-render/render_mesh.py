@@ -25,6 +25,11 @@ def memlog(tag):   # GT_MEM_TRACE=1: this process's resident/anonymous memory at
 # Both save scene-linear RGBA as GT_LAYER_NPY (.npy) and skip the tonemap: look.py composites back-to-front, then tonemaps once.
 LAYER = os.environ.get("GT_LAYER", "") if os.environ.get("GT_HD") == "1" else ""
 LAYER_AVS = {g for g in os.environ.get("GT_LAYER_AVATARS", "").split(",") if g}
+# `look self` (2026-10-26, David: "fix your renderer so it shows a floor when you need to see it"): the full-body render is drawn in the
+# real scene (the floor under her, a thin red reference line at floor height, a low level side camera) so her feet / floor contact can
+# be judged by eye; GT_SELF_FLOOR=1 (look.py, non-hd self). SCENE = every render that is built from the scene branch
+SELF_FLOOR = kind == "body" and os.environ.get("GT_SELF_FLOOR") == "1"
+SCENE = kind == "scene" or SELF_FLOOR
 HD = os.environ.get("GT_HD") == "1"   # `photo hd`: David's 4K stills (the only renders that use the region environment fully)
 def lin(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4   # sRGB -> linear
 
@@ -128,7 +133,7 @@ def amblit(env):
     k_s, k_l = (SKY_AMB_SCALE * 0.9, 1.1) if env.get("classic", True) else (1.0, 1.0)
     t = [lin(min(1.0, (x + (1 - x) * cs * 0.5) ** 0.9 * 0.57 * 0.9 * k_s)) * k_l for x in env["ambient"]]
     return 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2]
-AMB = amblit(M.get("env")) if kind == "scene" else 0.0  # face/body portraits have their own studio lights
+AMB = amblit(M.get("env")) if SCENE else 0.0  # face/body portraits have their own studio lights
 # look.py writes tex-manifest.json: the exact file each texture was fetched to for this job (no 5-way exists() search,
 # no bigger cached copy picked over the job's cap) and each file's alpha stats (PIL, cached across looks), so the build
 # never reads image pixels in Python (Warehouse 21: ~11 s for ~3500 images)
@@ -1297,6 +1302,35 @@ def hover_check_z0(env, agent_z, lo_z, floor_z):
     z0 = agent_z - size / 2 + hov - float(env.get("GT_HOVER_BIAS", "0"))
     return z0, z0 + lo_z - floor_z, hov, size
 
+def self_body_camera_spec(x, y, yaw_deg, deg, pts, floor_z, margin=1.08):
+    """`look self <side>` camera (2026-10-26): level, at half her height above the floor (so the floor reads as a band below
+    the horizon and her soles sit in the lower frame), from `deg` degrees counter-clockwise from her front, far enough that her
+    whole bounding box (pts = its world corners) fits the frame at lens 50 (portrait 640x1024; landscape when she is wider than tall)
+    -> (location, target, distance, (width, height))"""
+    a = math.radians(yaw_deg + deg); fx, fy = math.cos(a), math.sin(a)
+    zlo, zhi = min(p[2] for p in pts), max(p[2] for p in pts); h = max(0.3, zhi - zlo); cz = max(floor_z, zlo) + 0.5 * h
+    ls = [-fy * (p[0] - x) + fx * (p[1] - y) for p in pts]; lc = (min(ls) + max(ls)) / 2   # centre the frame across the view on her box
+    half_v = max(zhi - cz, cz - zlo); half_w = (max(ls) - min(ls)) / 2; half_d = max(fx * (p[0] - x) + fy * (p[1] - y) for p in pts)
+    tx, ty = x - fy * lc, y + fx * lc
+    res = (1024, 640) if half_w > half_v else (640, 1024)   # a sit is wider than tall: landscape frame, the long side = the sensor's 36 mm
+    t_long = 18 / 50; t_short = t_long * min(res) / max(res); ht, vt = (t_long, t_short) if res[0] > res[1] else (t_short, t_long)   # tan of the half angles at 50 mm
+    d = max(half_v / vt, half_w / ht) * margin + max(0.0, half_d)
+    return (tx + fx * d, ty + fy * d, cz), (tx, ty, cz), d, res
+
+def self_body_lens(d_need, d_avail, lens=50.0, lo=14.0):
+    """a wall behind the camera shortens the distance: widen the lens in proportion (a 14 mm floor) so she still fits"""
+    return lens if d_avail >= d_need else max(lo, lens * max(0.0, d_avail) / d_need)
+
+def self_floor_line_spec(x, y, yaw_deg, deg, floor_z, half=0.8, depth=0.012, height=0.006):
+    """thin reference line at floor height through her position, across the view (perpendicular to the camera direction)
+    -> (centre, rotation about z in degrees, (length, depth, height))"""
+    return (x, y, floor_z + height / 2), yaw_deg + deg + 90.0, (2 * half, depth, height)
+
+def self_floor_views(spec):
+    """GT_BODY_VIEWS ("left;back;45", "" = front) -> render_mesh view ids "body:<degrees>:<file label>" (label "" = the plain file name)"""
+    items = [v for v in (spec or "").split(";") if v.strip()]
+    return [f"body:{body_view_deg(v):g}:{body_view_label(v)}" for v in items] or ["body:0:"]
+
 def side_camera_spec(x, y, yaw_deg, lo_z, floor_z, dist=1.4):
     """camera for the hover check: from her side (yaw + 90), at hip height just above the floor, looking level at the
     floor contact -> (camera location, target)"""
@@ -1427,10 +1461,10 @@ def layer_plan():
     json.dump(plan, open(f"{jobdir}/layer-plan.json", "w"))
     log("layer plan", len(plan), "avatars,", sum(1 for p in plan if p["visible"]), "in view")
 
-if kind == "scene":
+if SCENE:
     build("scene"); memlog("scene built")
     if LAYER != "batch": build("far")   # a batch pass only needs what can occlude / light its avatars: the backdrop is > 30 m out
-    terrain()
+    if not SELF_FLOOR: terrain()   # `look self`: only when no prim floor is under her (below)
     if LAYER != "batch": water(); particle_systems()
     g = M["me"]; av = os.environ.get("GT_AV")  # "x,y,yaw_deg": stand/sit her there, on the first surface below
     x, y, yaw = [float(v) for v in av.split(",")] if av else (g[0], g[1], M.get("me_yaw", -90.0))
@@ -1452,11 +1486,14 @@ if kind == "scene":
         st = seated_keep or bool(o.get("seated"))
         off = o.get("agent_off_seated") if st and o.get("agent_off_seated") is not None else o.get("agent_off")
         return floor_at(px, py, pz), (pz + off if off is not None else None), st
-    placed = [(o, place(o, *o["pos"])) for o in M.get("others", [])]
+    if SELF_FLOOR and not sc.ray_cast(dg, Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))[0]:   # no prim floor under her: the region terrain is her floor
+        terrain(); bpy.context.view_layer.update(); dg = bpy.context.evaluated_depsgraph_get()
+    placed = [] if SELF_FLOOR else [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
     lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
     HC = hover_check_z0(os.environ, g[2], lo[2], fl)   # 2026-10-23 hover check: real placement + her hover, floor from the scene
     if HC: z0 = HC[0]; print(f"GT: hover check gap {HC[1]:+.3f} m (hover {HC[2]:+.3f}, size {HC[3]:.3f}, floor {fl:.3f})", flush=True)
+    elif SELF_FLOOR: print("GT: self floor: no hover model (GT_HOVER_CHECK unset): her feet are snapped to the floor, so contact here says nothing about her hover", flush=True)
     for ob in obs: ob.location = (x, y, z0); ob.rotation_euler = (0, 0, math.radians(yaw))
     log("avatar at", round(x, 2), round(y, 2), "mesh z0", round(z0, 2), "floor", round(fl, 2), "LL", ll and round(ll, 2))
     def to_world(local, at, yw):
@@ -1484,7 +1521,7 @@ if kind == "scene":
             at = (o["pos"][0], o["pos"][1], z0_of(fp[0], fp[1], olo[2], fp[2]))
             for ob in oobs: ob.location = at; ob.rotation_euler = (0, 0, math.radians(o["yaw"]))
             heads[o["name"]] = to_world(o["head"], at, o["yaw"]) + Vector((0, 0, 0.07)); log("other avatar", o["name"], "at", [round(v, 2) for v in at])
-    if not LAYER: add_others()   # layered: after the camera is placed (the wall / DOF ray casts must not see avatars, same in every pass)
+    if not LAYER and not SELF_FLOOR: add_others()   # layered: after the camera is placed (the wall / DOF ray casts must not see avatars, same in every pass)
     if os.environ.get("GT_NOSKY") == "1":
         # lean look-around: flat horizon, one sun; no sky gradient / water reflections work
         bpy.ops.object.light_add(type="SUN", rotation=(math.radians(50), 0, math.radians(200))); bpy.context.object.data.energy = 2.5
@@ -1496,7 +1533,19 @@ if kind == "scene":
         world(1.0)
     cam = os.environ.get("GT_CAM")  # "x,y,z,tx,ty,tz[,lens]" in region coordinates
     # look: GT_VIEW = ";"-separated views, one image each: "eye[:yaw offset deg]" over her shoulder, "at:<avatar name>|x,y,z"
-    views = [v for v in os.environ.get("GT_VIEW", "").split(";") if v]
+    views = self_floor_views(os.environ.get("GT_BODY_VIEWS", "")) if SELF_FLOOR else [v for v in os.environ.get("GT_VIEW", "").split(";") if v]
+    def self_floor_line(deg):
+        old = bpy.data.objects.get("floor-line")
+        if old: bpy.data.objects.remove(old, do_unlink=True)
+        c, rot, (ln, dp, ht) = self_floor_line_spec(x, y, yaw, deg, fl)
+        me = bpy.data.meshes.new("floor-line"); me.from_pydata([(sx * ln / 2, sy * dp / 2, sz * ht / 2) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], [],
+                                                              [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)])
+        ob = bpy.data.objects.new("floor-line", me); sc.collection.objects.link(ob); ob.location = c; ob.rotation_euler = (0, 0, math.radians(rot))
+        m = bpy.data.materials.new("floor-line"); m.use_nodes = True; nt = m.node_tree
+        for n in list(nt.nodes): nt.nodes.remove(n)
+        em = nt.nodes.new("ShaderNodeEmission"); em.inputs["Color"].default_value = (1.0, 0.05, 0.05, 1); em.inputs["Strength"].default_value = 6.0
+        outn = nt.nodes.new("ShaderNodeOutputMaterial"); nt.links.new(em.outputs[0], outn.inputs["Surface"]); me.materials.append(m)
+        ob.visible_shadow = False
     def set_view(view):
         h = heads["me"]; DOF_SUBJECT[0] = dof_subject(view, heads)
         def shoulder(f, back, side, up, target, lens):
@@ -1508,7 +1557,18 @@ if kind == "scene":
             if hd_fov():
                 rx, ry = (int(v) for v in os.environ.get("GT_RES", "3840x2160").split("x")); lens = lens_for_vfov(hd_fov(), rx, ry)
             camera(loc - u * 0.15 if hit else want, target, lens, (960, 540))
-        if view == "side":   # hover check: level side view at the floor contact, close and low-res
+        if view.startswith("body:"):   # `look self <side>`: low level camera + the floor line, feet and floor contact in frame
+            bpy.context.view_layer.update()
+            pts_ = [tuple(ob.matrix_world @ Vector(c)) for ob in obs for c in ob.bound_box]; deg = float(view.split(":")[1])
+            self_floor_line(deg)
+            loc_, tgt_, dn_, res_ = self_body_camera_spec(x, y, yaw, deg, pts_, fl)
+            d_ = Vector(loc_) - Vector(tgt_); u_ = d_.normalized()
+            s0 = max(0.0, max(u_.x * (p_[0] - tgt_[0]) + u_.y * (p_[1] - tgt_[1]) for p_ in pts_)) + 0.05   # start outside her own box: her body isn't a wall
+            hit, hl, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(tgt_) + u_ * s0, u_, distance=max(0.01, d_.length - s0))
+            if hit: loc_ = tuple(Vector(hl) - u_ * 0.15)   # a wall behind: stop in front of it
+            da_ = (Vector(loc_) - Vector(tgt_)).length; lens_ = self_body_lens(dn_, da_)
+            camera(loc_, tgt_, lens_, res_); log("self floor camera: distance", round(da_, 2), "m (wanted", round(dn_, 2), "), lens", round(lens_, 1), "mm")
+        elif view == "side":   # hover check: level side view at the floor contact, close and low-res
             bpy.context.view_layer.update()
             zl = min((ob.matrix_world @ Vector(c)).z for ob in obs for c in ob.bound_box)
             loc_, tgt_ = side_camera_spec(x, y, yaw, zl, fl)
@@ -1635,7 +1695,7 @@ else:
             log("focus", [round(v, 2) for v in rig.location], "dist", dist)
     world(0.5)
 sc.view_settings.view_transform = "Standard"  # SL shows textures as plain sRGB
-sc.view_settings.exposure = view_exposure(os.environ, HD, kind)
+sc.view_settings.exposure = view_exposure(os.environ, HD, "scene" if SCENE else kind)
 if HD and kind == "scene" and M.get("env"): env_post(M["env"])
 if out.lower().endswith(".png"):   # `photo hd`: lossless master (look.py writes the high-quality JPG from it)
     sc.render.image_settings.file_format = "PNG"; sc.render.image_settings.color_mode = "RGB"; sc.render.image_settings.compression = 15
@@ -1759,6 +1819,9 @@ for i, v in enumerate(views):
     if isinstance(v, tuple) and v[0] == "body":  # body side views: rotate the camera/light rig, name the file by side
         rig.rotation_euler = (0, 0, math.radians(v[1]))
         sc.render.filepath = re.sub(r"\.(jpg|png)$", rf"-{v[2]}.\1", out)
+    elif SELF_FLOOR:   # one image per side, named like the studio render: ...-self-body-<side|NNdeg>.jpg
+        if i: set_view(v)
+        lab = v.split(":", 2)[2]; sc.render.filepath = re.sub(r"\.(jpg|png)$", rf"-{lab}.\1", out) if lab else out
     else:
         if i: set_view(v)
         sc.render.filepath = out if len(views) == 1 else re.sub(r"\.(jpg|png)$", rf"-{i}.\1", out)

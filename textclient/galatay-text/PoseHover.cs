@@ -92,7 +92,7 @@ public static partial class Program
     internal static void PoseHoverSchedule(string kind, string pose, int delayMs = 3000)
     {
         if (string.IsNullOrWhiteSpace(pose) || Env("GT_POSE_HOVER_CHECK", "on") == "off") return;
-        var due = DateTime.Now; poseDue[kind + "|" + pose] = due;
+        var due = DateTime.Now; poseDue[kind + "|" + pose] = due; lastPoseKind = kind; lastPoseName = pose;
         _ = Task.Run(async () =>
         {
             await Task.Delay(delayMs);
@@ -105,6 +105,30 @@ public static partial class Program
         ? idlePosed?.kind == "groundsit" && string.Equals(aoSitCurrentName, pose, StringComparison.OrdinalIgnoreCase) && client.Self.SittingOn == 0
         : idlePosed == null && client.Self.SittingOn == 0 && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false) && pose.StartsWith("stand:") && SelfAnims().Any(a => a.ToString().StartsWith(pose[6..]));
 
+    // 2026-10-26 (David: 0.02 is too high, and the corrected stand hover did not stick): stand hovers are keyed per AO stand animation
+    // id and the ids rotate, so a new id fell back to the pin (0.02). A new stand id now inherits ONE shared default, "android|stand"
+    // (human|stand), 0.0 until the floor render or `hover set` while standing measures otherwise. Per-id values stay where measured.
+    internal const double PoseStandDefaultBuiltin = 0.0;
+    internal static string PoseStandDefaultKey(bool android) => PoseHoverKey(android, "stand");
+    internal static double PoseStandDefault(IReadOnlyDictionary<string, double> nums, bool android)
+        => nums != null && nums.TryGetValue(PoseStandDefaultKey(android), out var v) ? v : PoseStandDefaultBuiltin;
+    // pure (tested): the hover a pose starts from: its own saved value, else (stands) the shared stand default, else (sits) the pin
+    internal static double PoseStartHover(string kind, double? saved, double standDefault, double pin) => saved ?? (kind == "stand" ? standDefault : pin);
+    static volatile string lastPoseKind, lastPoseName;
+    // `hover set` while standing: that value is the stand default and this stand pose's value
+    static void HoverSetRememberStand(double v)
+    {
+        if (idlePosed != null || client.Self.SittingOn != 0 || AoSitReallyOn()) return;
+        bool android = AndroidFormNow(); PoseNumSet(PoseStandDefaultKey(android), v);
+        if (lastPoseKind == "stand" && lastPoseName != null && PoseStill("stand", lastPoseName)) PoseNumSet(PoseHoverKey(android, lastPoseName), v);
+    }
+    // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose or null)
+    static (string kind, string pose) PoseNow()
+    {
+        if (AoSitReallyOn()) return ("sit", aoSitCurrentName);
+        return ("stand", lastPoseKind == "stand" && lastPoseName != null && PoseStill("stand", lastPoseName) ? lastPoseName : null);
+    }
+
     static async Task PoseHoverCheck(string kind, string pose)
     {
         if (!LoggedIn || !PoseStill(kind, pose)) return;
@@ -113,7 +137,7 @@ public static partial class Program
         var nums = PoseNums();
         double pin = PinnedHover();
         double? saved = nums.TryGetValue(key, out var sv) ? sv : PoseHoverLookup(nums, android, pose);
-        double cur = saved ?? pin;
+        double cur = PoseStartHover(kind, saved, PoseStandDefault(nums, android), pin);
         if (Math.Abs((SimHover() ?? pin) - cur) > 0.005) await PostHover(cur, $"pose hover: {key} saved {cur:0.000}");   // 1. apply the saved value first
         if (poseChecked.ContainsKey(key)) return;                                                                         // checked this session: reuse
         if (!await poseGate.WaitAsync(0)) { PoseHoverSchedule(kind, pose, 15000); return; }
@@ -147,6 +171,7 @@ public static partial class Program
                 how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({(good ? "contact confirmed" : "NOT confirmed")}): {info}; {img2}";
             }
             poseChecked[key] = true;
+            if (kind == "stand" && PoseStill(kind, pose)) { try { PoseNumSet(PoseStandDefaultKey(android), PoseNums().TryGetValue(key, out var mv) ? mv : hov); } catch { } }   // the measured stand value seeds new stand ids
             Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1})");
         }
         finally { poseGate.Release(); }

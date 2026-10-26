@@ -51,7 +51,7 @@ public static partial class Program
             var av = SelfAv(); if (av == null || av.Scale.Z < 1f) return;
             bool seated = client.Self.SittingOn != 0;
             var posed = idlePosed;
-            string posture = seated ? "seat" : posed?.kind == "groundsit" ? "groundsit" : posed?.kind == "collar" ? "kneel"
+            string posture = seated ? "seat" : posed?.kind == "groundsit" || AoSitReallyOn() ? "groundsit" : posed?.kind == "collar" ? "kneel"
                            : client.Self.Velocity.Length() < 0.1f ? "stand" : "moving";
             double? gap = null;
             // capsule bottom only means "feet" when standing; for kneels/ground sits the server keeps the same capsule

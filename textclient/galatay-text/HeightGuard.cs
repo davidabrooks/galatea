@@ -29,14 +29,21 @@ public static partial class Program
 
     static string I(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
 
+    // pure (tested): the pin. @adjustheight (RlvAdjustHeight.cs, the collar) wins until logout, then GT_HOVER, then hover.txt, else 0
+    internal static double PinnedHoverFrom(double? rlvOverride, string env, string fileText)
+    {
+        if (rlvOverride is double rh) return rh;
+        string s = !string.IsNullOrWhiteSpace(env) ? env : fileText;
+        if (s != null && double.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return Math.Clamp(v, -2.0, 2.0);
+        return 0.0;
+    }
+    // pure (tested): `hover set <v>` must change the REAL pin: 2026-10-26 it wrote hover.txt only while the collar's in-memory @adjustheight
+    // override (0.02) kept winning in PinnedHover(), so `hover get` said 0.02 and every "back to normal hover" put 0.02 back
+    internal static double? HoverSetOverride(double? currentOverride, double v) => currentOverride is null ? null : v;
     static double PinnedHover()
     {
-        if (rlvHoverOverride is double rh) return rh;   // @adjustheight (RlvAdjustHeight.cs) wins until logout
-        var e = Environment.GetEnvironmentVariable("GT_HOVER");
-        string s = !string.IsNullOrWhiteSpace(e) ? e : null;
-        if (s == null) try { if (File.Exists(HoverFile)) s = File.ReadLines(HoverFile).FirstOrDefault()?.Trim(); } catch { }
-        if (s != null && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return Math.Clamp(v, -2.0, 2.0);
-        return 0.0;
+        string file = null; try { if (File.Exists(HoverFile)) file = File.ReadLines(HoverFile).FirstOrDefault()?.Trim(); } catch { }
+        return PinnedHoverFrom(rlvHoverOverride, Environment.GetEnvironmentVariable("GT_HOVER"), file);
     }
 
     static Avatar SelfAv()
@@ -167,7 +174,7 @@ public static partial class Program
             var old = $"pinned {I(PinnedHover())}, sim applied {(SimHover() is double h ? I(h) : "?")}";
             try { File.AppendAllText(HoverHistory, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} old: {old} -> new {I(v)}\n"); } catch { }
             var (ok, info) = await PostHover(v, "hover set");
-            if (ok) { try { File.WriteAllText(HoverFile, I(v) + "\n"); } catch { } }
+            if (ok) { try { File.WriteAllText(HoverFile, I(v) + "\n"); } catch { } rlvHoverOverride = HoverSetOverride(rlvHoverOverride, v); try { HoverSetRememberStand(v); } catch { } }
             return $"old: {old}; {info}; {(ok ? $"pinned value saved to {HoverFile}" : "NOT saved")}";
         }
         if (a[0] == "repin") return (await PostHover(PinnedHover(), "hover repin")).info;

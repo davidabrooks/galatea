@@ -157,6 +157,13 @@ public static partial class Program
         return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky, prof, no, fov);
     }
 
+    static Dictionary<string, string> LookHoverEnv()
+    {
+        double size = SelfAv()?.Scale.Z ?? 0; if (size < 1) return new();
+        var (kind, pose) = PoseNow(); bool android = AndroidFormNow();
+        return HoverCheckEnv(size, SimHover() ?? PinnedHover(), PoseBiasFor(PoseNums(), android, kind, pose ?? ""));
+    }
+
     static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null, string no = null, string fov = null)
     {
         const string usage = "usage: look [self [front|back|left|right|<degrees>|all]|around|at <avatar or object name>] [fast] [far]";
@@ -202,6 +209,9 @@ public static partial class Program
             if (hd != null && profile != null) psi.ArgumentList.Add("--profile=" + profile);
             if (hd != null && no != null) psi.ArgumentList.Add("--no=" + no);
             if (hd != null && fov != null) psi.ArgumentList.Add("--fov=" + fov);
+            // `look self` draws her on the real floor: her real hover, pose bias and body size so the render's gap is her real gap (PoseHover.cs
+            // HoverCheckEnv, same as the automatic check). Sit vs stand is what the AO really plays (AoSit.cs), not the sim's state.
+            if (mode == "self" && hd == null) try { foreach (var kv in LookHoverEnv()) psi.Environment[kv.Key] = kv.Value; } catch (Exception hx) { Log("look", "hover env skipped: " + hx.GetBaseException().Message); }
             // the client-side stages, so look.py's timing summary covers the whole look
             psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
             psi.Environment["GT_LOOK_EXPORT_S"] = lastExportStages;   // export sub-stages, e.g. prims=1.2(20696),bakes=3.4(...)

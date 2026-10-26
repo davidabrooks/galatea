@@ -25,4 +25,4 @@ def test_hd_and_studio_portraits_unchanged():
 
 def test_render_uses_view_exposure():
     src = open(SRC).read()
-    assert "sc.view_settings.exposure = view_exposure(os.environ, HD, kind)" in src
+    assert 'sc.view_settings.exposure = view_exposure(os.environ, HD, "scene" if SCENE else kind)' in src   # `look self` (floor) is a scene render too

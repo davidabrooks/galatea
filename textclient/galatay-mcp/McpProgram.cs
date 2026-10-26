@@ -233,7 +233,7 @@ public sealed class SlTools
     [McpServerTool(Name = "outfit_wear"), Description("Change into a saved outfit from My Outfits by name (the always-wear collar stays on; Android* outfits also turn the collar's Stealth on).")]
     public static Task<string> OutfitWear(string name) => R("outfit wear " + Clean(name));
 
-    [McpServerTool(Name = "idle_pose"), Description("Idle pose (IdlePose.cs): action status | on | off | now [collar|groundsit] | stop | idle <seconds> | aomap <face> <u,v> (map the Martha AO 'force sitg' button). Collar visible or a visible leash -> a random collar pose (cutie/coy/kneel/nadu/pretty/shy/tower), cleared with the Pose menu's STOP before any movement; collar hidden and no visible leash -> AO ground sit.")]
+    [McpServerTool(Name = "idle_pose"), Description("Idle pose (IdlePose.cs): action status | on | off | now [collar|groundsit] | stop | idle <seconds> | rotate on|off (pause automatic pose switching) | aomap <face> <u,v> (map the Martha AO 'force sitg' button). Collar visible or a visible leash -> a random collar pose (cutie/coy/kneel/nadu/pretty/shy/tower), cleared with the Pose menu's STOP before any movement; collar hidden and no visible leash -> AO ground sit.")]
     public static Task<string> IdlePose([Description("status | on | off | now [collar|groundsit] | stop | idle <s> | aomap <face> <u,v>")] string action = "status") => R("idlepose " + Clean(action));
     [McpServerTool(Name = "texture_save"), Description("READ-ONLY: download one texture by uuid and save it as a PNG under /workspace/secondlife/textures/ (e.g. to read a HUD's button labels).")]
     public static Task<string> TextureSave(string uuid) => R("texture save " + Clean(uuid));

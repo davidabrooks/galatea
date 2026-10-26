@@ -158,11 +158,15 @@ public static partial class Program
         return LookCmd(la, p.Value.orient.Length > 0 ? "--hd=" + p.Value.orient : "--hd", sky, prof, no, fov);
     }
 
-    static Dictionary<string, string> LookHoverEnv()
+    // the hover in force (AgentPreferences), read fresh: a look after a fix must show the fix (2026-10-26: the render used our own appearance value, which stayed 0)
+    static async Task<Dictionary<string, string>> LookHoverEnv()
     {
         double size = SelfAv()?.Scale.Z ?? 0; if (size < 1) return new();
-        var (kind, pose) = PoseNow(); bool android = AndroidFormNow();
-        return HoverCheckEnv(size, SimHover() ?? PinnedHover(), PoseBiasFor(PoseNums(), android, kind, pose ?? ""));
+        var (kind, pose) = PoseNow(); bool android = AndroidFormNow(); var nums = PoseNums();
+        var (hov, _) = await EffectiveHoverFresh();
+        var env = HoverCheckEnv(size, hov ?? PinnedHover(), PoseBiasFor(nums, android, kind, pose ?? ""));
+        env["GT_HOVER_CAL"] = BiasCalibrated(nums, android, kind, pose) ? "calibrated" : "default";
+        return env;
     }
 
     static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null, string no = null, string fov = null)
@@ -220,7 +224,7 @@ public static partial class Program
             if (hd != null && fov != null) psi.ArgumentList.Add("--fov=" + fov);
             // `look self` draws her on the real floor: her real hover, pose bias and body size so the render's gap is her real gap (PoseHover.cs
             // HoverCheckEnv, same as the automatic check). Sit vs stand is what the AO really plays (AoSit.cs), not the sim's state.
-            if (mode == "self" && hd == null) try { foreach (var kv in LookHoverEnv()) psi.Environment[kv.Key] = kv.Value; } catch (Exception hx) { Log("look", "hover env skipped: " + hx.GetBaseException().Message); }
+            if (mode == "self" && hd == null) try { foreach (var kv in await LookHoverEnv()) psi.Environment[kv.Key] = kv.Value; } catch (Exception hx) { Log("look", "hover env skipped: " + hx.GetBaseException().Message); }
             // the client-side stages, so look.py's timing summary covers the whole look
             psi.Environment["GT_LOOK_PRE_S"] = string.Format(CultureInfo.InvariantCulture, "wait={0:F1},export={1:F1}", tWait, tEx);
             psi.Environment["GT_LOOK_EXPORT_S"] = lastExportStages;   // export sub-stages, e.g. prims=1.2(20696),bakes=3.4(...)

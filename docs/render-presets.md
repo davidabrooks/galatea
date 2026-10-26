@@ -37,6 +37,33 @@ environment to get the old full-scene check back.
 The floor a check measures against is every scene prim a ray straight down from her could hit (the chair, the rug, the slab). The kept set is a superset of that,
 so removing everything else cannot change the floor height.
 
+## Hover check: what the render draws, and how to calibrate it (2026-10-26)
+
+**The hover in force.** The render draws her at the hover that the AgentPreferences capability holds (a fresh GET; falls back to the value the cap
+answered to our last POST). That is what David's viewer applies. Our own `AvatarAppearance` value (`hover get`: "own appearance") stayed 0 after a
+POST (-0.186 in the cap, 0 in our appearance, her sunk in his viewer), so until now every re-render drew hover 0 and "contact confirmed" after a fix
+was arithmetic. `hover get` now prints `hover in force X (source)`. Every look's `hover check gap` line shows the hover it drew.
+
+**Verification after a fix.** The check POSTs, GETs the preferences again (must equal the target), then re-renders at the value actually in force.
+If the cap does not hold the target the log says `NOT verified: the hover in force is ...`. A gap of 0 from a bias that was never set from David's
+viewer is reported as `contact in the render; NOT verified against David's viewer (default bias)`, never as "confirmed".
+
+**Floor bias (calibration).** The placement `agent z - size/2 + hover - bias` is a model; the bias is its error per posture (default stand +0.2315, sit
+-0.055, per pose possible). The error is not derivable: on 2026-10-26 the sim's agent z stood 0.975 m above the floor under her (body size 1.566 -> 0.783 m),
+the viewer's own formula (scene-mesher `agent_off`) puts the mesh 0.107 m lower than `size/2`, and ground-sit animations move the hips by the pose.
+The render prints both: `hover check detail: bias ..., viewer-formula gap ...` (diagnostic only). So the bias is **set from what David sees**:
+
+| Command (also via `client_cmd`) | Effect |
+|---|---|
+| `hover calibrate stand <cm>` / `sit <cm>` / `here <cm>` | `<cm>` = what he sees in his viewer **now**, at the hover in force: `+4` she floats 4 cm, `-6` she is sunk 6 cm, `0` touching. Renders her now, sets the bias so the render's gap equals his, re-renders to confirm. `stand`/`sit` = the posture's bias; `here` = this exact pose (a VAMOSITG sit). Refused while moving, leashed, on an object, in an unclassified AO state, or if the posture does not match. |
+| `hover calibrate show` / `reset stand|sit|here` | List the biases / remove one (back to the default). |
+| `hover apply <m>` | Apply a hover now (+-0.5 m), **not saved** (no hover.txt). |
+| `hover repin` | Back to the normal pinned hover. |
+
+Recipe: `hover apply -0.05`, `look self side` (the picture shows -0.05), ask David "feet floating or sunk, how many cm?", `hover calibrate stand <cm>`.
+After that the automatic check's `contact confirmed` means "contact in the render **and** the bias was set from his view". `hover set` is not in the
+`client_cmd` list: it pins the value in hover.txt for every later login.
+
 ## Every option (`name=value` after `look self`, or an argument of the `look` tool)
 
 | Option | Values | Effect |

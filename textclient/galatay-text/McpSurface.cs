@@ -1,7 +1,7 @@
 // McpSurface.cs (2026-10-26, David): what the MCP connector needs to see and check her height without the old daemon socket.
 //   look      - `look` over MCP: the saved image paths (LookCmd; no new renderer), every render option (vision/look_scope.py)
 //   seat_info - the object she sits on, its position / rotation, her position and her offset from the seat (before / after an AVsitter adjust)
-//   client_cmd- a read-only allow-list of the text-client commands the daemon socket used to give her: look, hover (get|check), height / diag, posehover (status|check)
+//   client_cmd- an allow-list of the text-client commands the daemon socket used to give her: look, hover (get|check|repin|apply|calibrate), height / diag, posehover (status|check)
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -117,7 +117,7 @@ public static partial class Program
 
     // ---- client_cmd: a read-only allow-list over the command layer ------------
     // pure (test): the line to run, or the reason it is refused. look (render options validated by LookCmd), hover [get|check], height / diag,
-    // posehover status|check (= hover check). Everything else (say, im, pay, logout, hover set / repin, ...) is refused.
+    // posehover status|check (= hover check). Everything else (say, im, pay, logout, hover set, ...) is refused.
     internal static (bool ok, string line, string error) ClientCmdGate(string line)
     {
         var l = (line ?? "").Trim();
@@ -127,12 +127,18 @@ public static partial class Program
         switch (cmd)
         {
             case "look": return (true, string.Join(" ", w.Skip(1).Prepend("look")), null);
-            case "hover" when rest.Length == 0 || rest is ["get"] or ["check"]: return (true, string.Join(" ", w.Select(x => x.ToLowerInvariant())), null);
+            case "hover" when rest.Length == 0 || rest is ["get"] or ["check"] or ["repin"]: return (true, string.Join(" ", w.Select(x => x.ToLowerInvariant())), null);
+            // 2026-10-26: `hover apply <m>` sets only HER OWN hover, within +-0.5 m, and writes nothing to hover.txt (applied now, never remembered);
+            // `hover repin` re-posts the normal pinned hover; `hover calibrate ...` only edits the renderer's bias file. `hover set` stays refused: it pins
+            // the value in hover.txt for every later login and region change, which David's rule (no saved hover) forbids
+            case "hover" when rest is ["apply", _] && double.TryParse(rest[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hv) && Math.Abs(hv) <= HoverApplyMax:
+                return (true, "hover apply " + rest[1], null);
+            case "hover" when rest.Length > 0 && rest[0] == "calibrate" && HoverCalibrateParse(rest[1..]).ok: return (true, "hover calibrate " + string.Join(" ", rest[1..]), null);
             case "height" or "diag" when rest.Length == 0: return (true, cmd, null);
             case "posehover" when rest is ["check"]: return (true, "hover check", null);
             case "posehover" when rest is ["status"] or []: return (true, "posehover status", null);
         }
-        return (false, null, $"refused: '{cmd}{(rest.Length > 0 ? " " + rest[0] : "")}' is not in the read-only allow-list (look, hover [get|check], height|diag, posehover status|check)");
+        return (false, null, $"refused: '{cmd}{(rest.Length > 0 ? " " + rest[0] : "")}' is not in the allow-list (look, hover [get|check|repin|apply <m, +-0.5>|calibrate stand|sit|here <cm>|show|reset ...], height|diag, posehover status|check)");
     }
 
     static string PoseHoverTail(int n)

@@ -428,7 +428,7 @@ public static partial class Program
                 // 2026-10-23 16:57: since entry sits with SitOnGround() first (#297), AO force sit off alone left her sitting on the
                 // ground (idle pose cleared, body still seated); stand for real. Internal stand: no 30-min cooldown.
                 if (GroundSitStandNeeded(SelfAnims(), client.Self.SittingOn != 0)) { try { client.Self.Stand(); } catch { } info += "; stood up (SitOnGround cleared)"; }
-                try { if (SimHover() is double hv && Math.Abs(hv - PinnedHover()) > 0.005) await PostHover(PinnedHover(), "ground sit ended: back to normal hover"); } catch { }
+                try { if (EffectiveHoverNow() is double hv && Math.Abs(hv - PinnedHover()) > 0.005) await PostHover(PinnedHover(), "ground sit ended: back to normal hover"); } catch { }
             }
             idlePosed = null; IdleSave(); IdleNoteActivity(); AutoHoverKick("pose cleared");
             idleThreshold = IdleThresholdSec(IdleBaseSec(), Random.Shared.NextDouble());
@@ -527,12 +527,15 @@ public static partial class Program
         if (kind != null) Log("idlepose", "enter: " + await IdlePoseEnter(kind, $"idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0} s"));
     }
 
+    // "standing" only when no unclassified AO animation plays (2026-10-26: it may be a sit)
+    static string IdleStandingWord() => AoUnclassifiedNow().Count > 0 && !AoSitReallyOn() ? "not posed by me, but an AO animation is unclassified (may be a sit)" : "standing";
     static string IdleRealStateText()
     {
         var sit = AoSitIdsNow(); var playing = SelfAnims();
         var ids = playing.Where(sit.Contains).Select(x => x.ToString()[..8]).ToList();
         bool simGround = playing.Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED);
-        return AoRealState(AoForceSitOn(playing, client.Self.SittingOn != 0), ids, client.Self.SittingOn != 0, simGround);
+        var unk = AoUnclassifiedNow(playing).Select(x => x.ToString()[..8]).ToList();
+        return AoRealState(AoForceSitOn(playing, client.Self.SittingOn != 0), ids, client.Self.SittingOn != 0, simGround, unk);
     }
 
     static async Task<string> IdlePoseCmd(string[] a)
@@ -550,7 +553,7 @@ public static partial class Program
             default:
             {
                 var p = idlePosed;
-                return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; {(p == null ? "standing" : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; {(IdleCooldownActive(DateTime.Now, idleNoSitUntil) ? $"stand cooldown until {idleNoSitUntil:HH:mm}; " : "")}AO force sit {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "ON" : "off")}; {IdleRealStateText()}; " +
+                return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; {(p == null ? IdleStandingWord() : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; {(IdleCooldownActive(DateTime.Now, idleNoSitUntil) ? $"stand cooldown until {idleNoSitUntil:HH:mm}; " : "")}AO force sit {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "ON" : AoUnclassifiedNow().Count > 0 ? "UNKNOWN (unclassified AO animation)" : "off")}; {IdleRealStateText()}; " +
                        $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
             }
         }

@@ -33,10 +33,10 @@ public static partial class Program
         if (RlvAdjustHeightParse(opt) is not double v) return $"adjustheight: bad option '{opt}'";
         if (!RlvAdjustHeightApplies(Environment.GetEnvironmentVariable("GT_RLV_ADJUSTHEIGHT")))
         {
-            RlvLog($"adjustheight:{opt} -> hover {v:+0.000;-0.000;0} m ignored (hover is only changed to fix a problem; the visual hover check owns it); hover stays {(SimHover() is double h0 ? h0.ToString("0.000", CultureInfo.InvariantCulture) : "?")}");
+            RlvLog($"adjustheight:{opt} -> hover {v:+0.000;-0.000;0} m ignored (hover is only changed to fix a problem; the visual hover check owns it); hover stays {(EffectiveHoverNow() is double h0 ? h0.ToString("0.000", CultureInfo.InvariantCulture) : "?")}");
             return $"adjustheight {v:0.000} m ignored (hover unchanged)";
         }
-        var before = SimHover();
+        var before = EffectiveHoverNow();
         rlvHoverOverride = v; hoverManualAt = DateTime.Now;
         var (ok, info) = await PostHover(v, $"rlv adjustheight:{opt}");
         RlvLog($"adjustheight:{opt} -> hover {v:+0.000;-0.000;0} m (was {(before is double b ? b.ToString("0.000", CultureInfo.InvariantCulture) : "?")}): {info}");

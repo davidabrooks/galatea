@@ -51,11 +51,11 @@ public static partial class Program
             bool seated = client.Self.SittingOn != 0;
             var posed = idlePosed;
             string posture = seated ? "seat" : posed?.kind == "groundsit" || AoSitReallyOn() ? "groundsit" : posed?.kind == "collar" ? "kneel"
-                           : client.Self.Velocity.Length() < 0.1f ? "stand" : "moving";
+                           : client.Self.Velocity.Length() < 0.1f ? (AoUnclassifiedNow().Count > 0 ? "unknown" : "stand") : "moving";   // unknown (unclassified AO animation) is never judged as a stand
             double? gap = null;
             // capsule bottom only means "feet" when standing; for kneels/ground sits the server keeps the same capsule
             if (!seated && FloorBelow(client.Self.SimPosition) is double f) gap = client.Self.SimPosition.Z - av.Scale.Z / 2 - f;
-            double cur = SimHover() ?? PinnedHover(), pin = PinnedHover();
+            double cur = EffectiveHoverNow() ?? PinnedHover(), pin = PinnedHover();
             double manualAge = hoverManualAt is DateTime m ? (DateTime.Now - m).TotalSeconds : 1e9;
             if (AutoHoverDecide(posture, seated, gap, cur, pin, manualAge) is not double t) return;
             // default OBSERVE: the capsule-vs-floor estimate is unproven (possible fixed bias -> a wrong hover), so only the

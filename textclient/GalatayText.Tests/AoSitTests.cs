@@ -86,17 +86,5 @@ public class AoSitTests
         var hg = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/HeightGuard.cs"));
         Assert.Contains("rlvHoverOverride = HoverSetOverride(rlvHoverOverride, v)", hg);
     }
-    [Fact] public void NewStandIdsInheritOneSharedDefault_ZeroUntilMeasured()
-    {
-        var nums = new Dictionary<string, double> { ["android|stand:fba08491"] = 0.015, ["ref|android|stand"] = 0.6324, ["bias|android|stand"] = 0.2315 };
-        Assert.Equal(0.0, Program.PoseStandDefault(nums, true));                                  // never the 0.02 pin
-        Assert.Equal("android|stand", Program.PoseStandDefaultKey(true)); Assert.Equal("human|stand", Program.PoseStandDefaultKey(false));
-        nums["android|stand"] = -0.013;
-        Assert.Equal(-0.013, Program.PoseStandDefault(nums, true));
-        Assert.Equal(0.0, Program.PoseStandDefault(nums, false));
-        Assert.Equal(0.015, Program.PoseStartHover("stand", 0.015, -0.013, 0.02));                // a measured id keeps its own value
-        Assert.Equal(-0.013, Program.PoseStartHover("stand", null, -0.013, 0.02));                // a new id inherits the default
-        Assert.Equal(0.02, Program.PoseStartHover("sit", null, -0.013, 0.02));                    // unknown sit: the pin, as before
-    }
     static string Root() { var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

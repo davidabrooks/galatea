@@ -17,13 +17,9 @@ public class AutoHoverTests
         Assert.Null(Program.AutoHoverDecide("stand", false, 1.5, 0, 0, 1e9));
         Assert.Null(Program.AutoHoverDecide("moving", false, 0.1, 0, 0, 1e9));
     }
-    [Fact] public void DeliberateGroundSitOffset_NeverUndone()   // 2026-10-23 regression: "went down and right back up"
+    [Fact] public void NoPerPoseGroundSitOffset_GapPathAndSeatedRestoreOnly()   // 2026-10-26 David: no saved/applied per-pose hover
     {
-        Assert.Equal(-0.04, Program.AutoHoverDecide("groundsit", false, -0.04, 0, 0, 1e9, -0.04));   // apply it
-        Assert.Null(Program.AutoHoverDecide("groundsit", false, -0.04, -0.04, 0, 1e9, -0.04));        // already there: leave it
-        Assert.Null(Program.AutoHoverDecide("groundsit", false, 0.2, -0.04, 0, 1e9, -0.04));          // a gap reading never undoes it
-        Assert.Null(Program.AutoHoverDecide("groundsit", false, -0.2, -0.04, 0, 120, -0.04));         // nor a recent manual hover
-        Assert.Equal(0, Program.AutoHoverDecide("seat", true, null, -0.04, 0, 1e9, -0.04));            // seated: back to normal
-        Assert.Equal(-0.12, Program.AutoHoverDecide("groundsit", false, null, -0.10, 0.02, 1e9, -0.12)); // ABSOLUTE, not pin + offset (15:01: -0.10)
+        Assert.Null(Program.AutoHoverDecide("groundsit", false, null, -0.10, 0.02, 1e9));     // nothing to apply without a measured gap
+        Assert.Equal(0, Program.AutoHoverDecide("seat", true, null, -0.04, 0, 1e9));          // seated: back to normal
     }
 }

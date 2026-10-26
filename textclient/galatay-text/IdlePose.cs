@@ -111,34 +111,8 @@ public static partial class Program
     static int aoSitCurrent;   // the number picked last (0 = unknown)
     internal static string IdleStartSitPick(string switchResult) => switchResult ?? "no result";
     // pure (tested): hover offset for the AO ground sit by form (David 14:45: android sits ~4 cm too high)
-    // Per-pose hover (2026-10-23 David): an ABSOLUTE hover per (form, AO animation), never one value for every sit.
-    // -0.12 was tuned at 14:50 PT in VAMOSITG26 (android); at 15:01 the same -0.12 (applied relative to the +0.02 pin = -0.10)
-    // sank VAMOSITG24 far too low. Unknown pose -> null = the normal pinned hover (slightly high is safe; sinking is not).
-    // Live-tuned values persist in PoseHoverFile, which overrides the built-in table.
-    internal const double AndroidGroundSitHover = -0.12;
-    internal const string HoverRefSit = "VAMOSITG26";
-    static readonly Dictionary<string, double> PoseHoverBuiltin = new(StringComparer.OrdinalIgnoreCase) { ["android|" + HoverRefSit] = AndroidGroundSitHover };
-    static string PoseHoverFile => Env("GT_POSE_HOVER", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "pose-hover.json"));
-    internal static string PoseHoverKey(bool android, string anim) => (android ? "android|" : "human|") + (anim ?? "").Trim();
-    internal static double? PoseHoverLookup(IReadOnlyDictionary<string, double> saved, bool android, string anim)
-    {
-        if (string.IsNullOrWhiteSpace(anim)) return null;
-        var k = PoseHoverKey(android, anim);
-        if (saved != null && saved.TryGetValue(k, out var v)) return v;
-        return PoseHoverBuiltin.TryGetValue(k, out var b) ? b : null;
-    }
-    static Dictionary<string, double> PoseHoverSaved()
-    {
-        try { return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(PoseHoverFile)) is { } d ? new(d, StringComparer.OrdinalIgnoreCase) : new(); }
-        catch { return new(); }
-    }
-    internal static void PoseHoverSave(bool android, string anim, double v)
-    {
-        var d = PoseHoverSaved(); d[PoseHoverKey(android, anim)] = Math.Round(v, 3);
-        File.WriteAllText(PoseHoverFile, System.Text.Json.JsonSerializer.Serialize(d, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-    }
-    // absolute target hover for the current ground sit (null = no per-pose value: normal pinned hover)
-    internal static double? GroundSitHoverFor(bool android) => PoseHoverLookup(PoseHoverSaved(), android, aoSitCurrentName);
+    // 2026-10-26 (David): hover heights are NOT saved or applied per pose or per AO stand (the ground changes with the location):
+    // after a sit, a stand or a new region PoseHover.cs checks the hover visually and fixes it then.
     static volatile string aoSitCurrentName;   // from the AO's own owner-say "Current Sitting on Ground Animation::<name>"
     static int aoSitHooked;
     // pure (tested): the AO's confirmation line -> sit name (null = not that line)
@@ -157,7 +131,7 @@ public static partial class Program
         if (Interlocked.Exchange(ref aoSitHooked, 1) == 1) return;
         client.Self.ChatFromSimulator += (s, e) =>
         {
-            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } PoseHoverSchedule("sit", n); } } catch { }
+            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } HoverCheckRequest("sit"); } } catch { }
         };
     }
     static async Task<ScriptDialogEventArgs> AoDialogAfter(ScriptDialogEventArgs prev, int ms)
@@ -533,6 +507,7 @@ public static partial class Program
         bool davidAway = dav.av != null && dav.dist < 15 && LeashMovingAway(dav.pos, dav.av.Velocity, client.Self.SimPosition);
         bool dancing = IdleDancingNow();
         if (Env("GT_AUTO_HOVER", "observe") != "off") _ = AutoHoverCheck("idle tick");
+        try { HoverPostureNote(SelfAnims(), client.Self.SittingOn != 0); } catch { }   // PoseHover.cs: a sit/stand the anim packets missed
         if (moving || following || sitObj || leashDriving || dancing) IdleNoteActivity();   // the timer restarts after a dance
         var posed = idlePosed;
         if (posed != null)

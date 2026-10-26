@@ -174,11 +174,12 @@ public static partial class Program
             var old = $"pinned {I(PinnedHover())}, sim applied {(SimHover() is double h ? I(h) : "?")}";
             try { File.AppendAllText(HoverHistory, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} old: {old} -> new {I(v)}\n"); } catch { }
             var (ok, info) = await PostHover(v, "hover set");
-            if (ok) { try { File.WriteAllText(HoverFile, I(v) + "\n"); } catch { } rlvHoverOverride = HoverSetOverride(rlvHoverOverride, v); try { HoverSetRememberStand(v); } catch { } }
+            if (ok) { try { File.WriteAllText(HoverFile, I(v) + "\n"); } catch { } rlvHoverOverride = HoverSetOverride(rlvHoverOverride, v); }
             return $"old: {old}; {info}; {(ok ? $"pinned value saved to {HoverFile}" : "NOT saved")}";
         }
         if (a[0] == "repin") return (await PostHover(PinnedHover(), "hover repin")).info;
-        return "usage: hover [get] | hover set <meters -2..2> | hover repin";
+        if (a[0] == "check") { HoverCheckRequest("manual", 500); return "visual hover check requested: scene export + side render over the floor, then a fix only if she is not on it (see the posehover log)"; }
+        return "usage: hover [get] | hover set <meters -2..2> | hover repin | hover check";
     }
 
     static string AnimCmd(string[] a)

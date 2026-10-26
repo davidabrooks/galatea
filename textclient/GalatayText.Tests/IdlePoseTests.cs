@@ -228,13 +228,6 @@ public class IdlePoseTests
         Assert.DoesNotContain("Stand()", enter[sit..]);                                          // no stand in between
         var all = new System.Collections.Generic.List<(int, string)> { (1, "VAMOSITG11"), (8, "VAMOSITG25") };
         Assert.NotEqual(8, Program.AoSitPick(10, Program.AoSitCurrentNumber(all, "VAMOSITG25", 0), 0.99));   // last used (saved) is never the start pick
-        var none = new System.Collections.Generic.Dictionary<string, double>();
-        Assert.Equal(-0.12, Program.PoseHoverLookup(none, true, "VAMOSITG26").Value, 3);   // David's approved value, in the sit it was tuned in
-        Assert.Null(Program.PoseHoverLookup(none, true, "VAMOSITG24"));                    // 15:01 bug: never another sit's value
-        Assert.Null(Program.PoseHoverLookup(none, false, "VAMOSITG26"));                   // per form
-        Assert.Null(Program.PoseHoverLookup(none, true, null));
-        var saved = new System.Collections.Generic.Dictionary<string, double> { ["android|VAMOSITG24"] = -0.02 };
-        Assert.Equal(-0.02, Program.PoseHoverLookup(saved, true, "VAMOSITG24").Value, 3);
     }
     [Fact] public void GroundSitEnter_SitsOnce_NoStandResit_HoverNeverStands()   // 2026-10-23 14:30/14:47 regression
     {
@@ -255,18 +248,11 @@ public class IdlePoseTests
         Assert.Equal(Program.GuardStep.GiveUp, Program.DoorUnknownStep(2600, false));        // never "walking on"
         Assert.Equal(Program.GuardStep.Touch, Program.DoorUnknownStep(100, true));
     }
-    [Fact] public void PoseHover_NudgesToReference_NeverStandsOrResits()
+    [Fact] public void PoseHover_NeverStandsOrResits()
     {
-        Assert.Equal(-0.07, Program.PoseHoverTarget(-0.12, 0.05, 0.10), 3);   // sunk 5 cm below the reference contact -> up 5 cm
-        Assert.Equal(-0.15, Program.PoseHoverTarget(-0.12, 0.13, 0.10), 3);   // floating 3 cm -> down 3 cm
-        Assert.Equal(0.30, Program.PoseHoverTarget(0, -1, 0), 3);              // clamped
-        Assert.True(Program.PoseHoverConfirmed(0.105, 0.10)); Assert.False(Program.PoseHoverConfirmed(0.12, 0.10));
-        Assert.True(Program.PoseSeedsRef(true, "sit", "VAMOSITG26")); Assert.False(Program.PoseSeedsRef(true, "sit", "VAMOSITG24"));
-        Assert.True(Program.PoseSeedsRef(true, "stand", "stand:abcd1234"));
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
         foreach (var bad in new[] { "Stand()", "SitOnGround", "AoGroundSitToggle", "AoGroundSitSwitch", "RequestSit", "touch" })
             Assert.DoesNotContain(bad, src.Split("using LibreMetaverse;")[1]);
-        Assert.Equal("ref|android|sit", Program.PoseRefKey(true, "sit"));
     }
     [Fact] public void PoseHover_NothingSavedUntilFormKnown()   // 2026-10-23 15:19 human|stand misread after login
     {
@@ -275,8 +261,8 @@ public class IdlePoseTests
         Assert.True(Program.FormCertain(false, 12, 12));
         Assert.True(Program.FormCertain(true, 12, 0));      // the outfit name already says android
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
-        var body = src[src.IndexOf("static async Task PoseHoverCheck(")..];
-        Assert.True(body.IndexOf("FormCertainNow()") < body.IndexOf("PoseNumSet") && body.IndexOf("FormCertainNow()") < body.IndexOf("PostHover"));
+        var body = src[src.IndexOf("static async Task<string> PoseHoverCheck(")..];
+        Assert.True(body.IndexOf("FormCertainNow()") < body.IndexOf("PostHover"));
     }
     [Fact] public void UnexpectedDisconnect_InMcpConnector_RelogsInProcess()   // 2026-10-23 15:34 offline 23 min
     {
@@ -302,10 +288,6 @@ public class IdlePoseTests
         var lw = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/LeashWalk.cs"));
         Assert.Contains("else if (o.act == \"stop\") { IdleNoteActivity();", lw);
         Assert.DoesNotContain("IdleExplicitStand", lw);                           // never the 30-min cooldown
-        Assert.False(Program.PoseMeasureSane(2.0, 3.953, 0.632));                  // 16:57 bogus -0.30
-        Assert.False(Program.PoseMeasureSane(null, 0.5, null));
-        Assert.True(Program.PoseMeasureSane(29.0, 0.517, 0.490));
-        Assert.Equal(0.370, Program.PoseRefFromApproved(0.490, 0.0, -0.12), 3);    // G26 seeded at its approved -0.12
     }
     [Fact] public void HoverCheckRender_AppliesHoverAndDrawsFloor()   // 2026-10-23 17:15 David "Fix it"
     {
@@ -407,9 +389,9 @@ public class IdlePoseTests
         Assert.True(enter.IndexOf("AoGroundSitToggle(") < enter.IndexOf("AutoHoverKick(\"ground sit\")"));
         var exit = src[src.IndexOf("static async Task<string> IdlePoseExit(")..]; exit = exit[..exit.IndexOf("finally { idleLock.Release(); }")];
         Assert.True(exit.IndexOf("client.Self.Stand()") < exit.IndexOf("PostHover("));   // stand first, hover afterwards
-        // the saved/measured hover of a pose is applied by the scheduled check, a few seconds AFTER the pose started
+        // the hover is checked/fixed by the requested visual check, a few seconds AFTER the pose started
         var ph = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
-        Assert.Contains("int delayMs = 3000", ph);
+        Assert.Contains("int delayMs = 4000", ph);
         Assert.True(ph.IndexOf("await Task.Delay(delayMs)") < ph.IndexOf("await PoseHoverCheck(kind, pose)"));
         // the collar's own @adjustheight (sent while the pose starts) is not applied
         var rlv = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/RlvAdjustHeight.cs"));
@@ -424,7 +406,7 @@ public class IdlePoseTests
         Assert.DoesNotContain("rlvHoverOverride", ign); Assert.DoesNotContain("hoverManualAt", ign); Assert.DoesNotContain("PostHover", ign);
         // so the pin stays the file value and the 10-min "manual hover wins" window never opens
         Assert.Equal(0.0, Program.PinnedHoverFrom(null, null, "0"), 3);
-        Assert.Equal(-0.12, Program.AutoHoverDecide("groundsit", false, null, 0.0, 0.0, 1e9, -0.12));
+        Assert.Null(Program.AutoHoverDecide("groundsit", false, null, 0.0, 0.0, 1e9));   // no per-pose offset any more
         Assert.Equal(0.105, Program.AutoHoverDecide("stand", false, -0.045, 0.06, 0.0, 1e9)!.Value, 3);   // sinking into the floor: the problem-fix path still works
     }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }

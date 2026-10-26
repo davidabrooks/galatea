@@ -158,9 +158,8 @@ public static partial class Program
                 if (log) AnimLogWrite(AnimLogMsg(prev.ContainsKey(kv.Key) ? "RESTART" : "start", AnimName(kv.Key), kv.Value.Item1, SrcDesc(kv.Value.Item2), !AnimLogFull));
                 try { AoNoteStarted(kv.Key, kv.Value.Item2, now.Keys); } catch { }   // AoSit.cs: an AO animation that starts in plain standing is a stand animation
                 NoteSeatOffAnim(kv.Key, kv.Value.Item2); // learn AO/seat-off anims while standing so we can stop them after sit
-                if (!prev.ContainsKey(kv.Key) && client.Self.SittingOn == 0 && idlePosed == null && !AoForceSitOn(now.Keys, false) && IsAoHudSource(kv.Value.Item2))
-                    PoseHoverSchedule("stand", "stand:" + kv.Key.ToString()[..8], 4000);   // PoseHover.cs: an AO stand change (walks fail PoseStill)
             }
+            try { HoverPostureNote(now.Keys, client.Self.SittingOn != 0); } catch { }   // PoseHover.cs: a sit or stand (AO anim_list) after another posture -> ONE visual hover check; AO stand rotations do nothing
             foreach (var k in stopped)
                 if (log) AnimLogWrite(AnimLogMsg("stop", AnimName(k), 0, SrcDesc(prev[k].src), !AnimLogFull));
             try { SeatLingerNote(now); } catch (Exception ex2) { Log("anim", "seat linger error: " + ex2.GetBaseException().Message); } // SeatLinger.cs

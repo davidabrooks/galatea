@@ -5,8 +5,8 @@ using Xunit;
 public class IdlePoseTests
 {
     static Program.IdleIn S(double idle = 400, bool collar = true, bool chain = false, bool leashed = false, bool mapped = true,
-        bool following = false, bool sitObj = false, bool moving = false, bool forceSat = false, bool sitLocked = false, bool driving = false, bool busy = false, bool on = true, bool dancing = false)
-        => new(on, leashed, driving, following, sitObj, moving, forceSat, sitLocked, busy, dancing, idle, 300, collar, chain, mapped);
+        bool following = false, bool sitObj = false, bool moving = false, bool forceSat = false, bool sitLocked = false, bool driving = false, bool busy = false, bool on = true, bool dancing = false, bool android = false, bool leashHold = false)
+        => new(on, leashed, driving, following, sitObj, moving, forceSat, sitLocked, busy, dancing, idle, 300, collar, chain, mapped, android, leashHold);
     [Fact] public void RotationRandom3to10MinCollarOnlyNotWhileDancing()
     {
         Assert.Equal(180, Program.IdleRotateSec(0)); Assert.Equal(600, Program.IdleRotateSec(1));
@@ -24,7 +24,7 @@ public class IdlePoseTests
         Assert.Null(Program.IdleSwitch("collar", true, false, false, true));
         Assert.Equal("groundsit", Program.IdleSwitch("collar", false, false, false, true));  // collar hidden, no leash
         Assert.Null(Program.IdleSwitch("collar", false, false, true, true));                 // invisible leash: keep kneeling
-        Assert.Equal("collar", Program.IdleSwitch("groundsit", false, true, true, true));    // chain appears
+        Assert.Null(Program.IdleSwitch("groundsit", false, true, true, true));               // chain appears while leashed: exit only (IdleMustExit "leashed"), never a kneel (2026-10-26)
         Assert.Equal("walker", Program.IdleMustExit("collar", false, false, false, false, true, false, true));
         Assert.Null(Program.IdleMustExit("collar", false, false, false, false, false, true, false));   // David walking away alone: stay
         Assert.Equal("follow", Program.IdleMustExit("collar", true, false, false, false, false, true, false));
@@ -97,7 +97,7 @@ public class IdlePoseTests
         Assert.Equal("moving", Program.IdleMustExit("collar", false, false, true, false, false, false, false));
         Assert.Null(Program.IdleMustExit("collar", false, false, false, false, true, true, false));
         Assert.Equal("walker", Program.IdleMustExit("collar", false, false, false, false, true, false, true));
-        Assert.Null(Program.IdleMustExit("groundsit", false, false, false, false, true, false, false));
+        Assert.Equal("leashed", Program.IdleMustExit("groundsit", false, false, false, false, true, false, false));   // a leash ends the AO ground sit
         Assert.Null(Program.IdleMustExit(null, true, true, true, true, true, true, true));
     }
     [Fact] public void CollarMenuParsing()
@@ -353,6 +353,79 @@ public class IdlePoseTests
         Assert.Contains("try { return await CollarPoseStopLocked(anims); } finally { stealthLock.Release(); }", ip);
         Assert.Contains("CollarLooksLikePoseMenu(d.ButtonLabels), 10000)", ip);       // 'Pose' waits for the Pose page, not any dialog
         Assert.Contains("CollarLooksLikeMainMenu(d.ButtonLabels), 10000)", cs);       // Magic Leash starts from the real main menu
+    }
+    // ---- 2026-10-26 09:54 leash test: groundsit -> leash chain appears -> she stood, then entered the collar kneel 'pretty' ----
+    [Fact] public void LeashDuringGroundSit_ExitsAndNeverReEnters_Timeline()
+    {
+        // android, collar hidden (Stealth), AO ground sit, then the leash chain shows up (LeashParticleTarget != null => leashed)
+        Assert.Equal("leashed", Program.IdleMustExit("groundsit", false, false, false, false, true, false, false, true));
+        Assert.Null(Program.IdleSwitch("groundsit", false, true, true, true, true));       // the old code returned "collar" here
+        Assert.Null(Program.IdleSwitch("groundsit", false, true, true, true, false));      // human form too: leashed => no switch/enter
+        // after the stand, still leashed: nothing enters, even after the idle timer (leashHold) and in either form
+        Assert.Null(Program.IdleEnter(S(collar: false, chain: true, leashed: true, android: true, leashHold: true)));
+        Assert.Null(Program.IdleEnter(S(collar: true, chain: true, leashed: true, leashHold: true)));
+        // leash released: back to the normal idle timer (an android sits on the ground, never kneels)
+        Assert.Null(Program.IdleEnter(S(idle: 10, collar: false, android: true)));
+        Assert.Equal("groundsit", Program.IdleEnter(S(idle: 400, collar: false, android: true)));
+    }
+    [Fact] public void AndroidNeverUsesCollarKneel_LeashChainVisibleCollarHidden()
+    {
+        Assert.Equal("groundsit", Program.IdlePoseKind(false, true, true));     // chain visible, collar hidden, android
+        Assert.Equal("groundsit", Program.IdlePoseKind(true, true, true));
+        Assert.Equal("collar", Program.IdlePoseKind(false, true, false));       // human unchanged
+        Assert.Equal("groundsit", Program.IdleEnter(S(collar: false, chain: true, android: true)));
+        Assert.Equal("groundsit", Program.IdleEnter(S(collar: true, chain: true, android: true)));
+        Assert.Null(Program.IdleEnter(S(collar: false, chain: true, android: true, mapped: false)));   // never a kneel as the fallback
+        Assert.Null(Program.IdleEnter(S(collar: false, chain: true, leashed: true, android: true)));    // leashed: stand only
+        // a leftover collar kneel in android form: switched to the ground sit, or (leashed) just exited
+        Assert.Equal("groundsit", Program.IdleSwitch("collar", true, true, false, true, true));
+        Assert.Null(Program.IdleSwitch("collar", true, true, true, true, true));
+        Assert.Equal("leashed", Program.IdleMustExit("collar", false, false, false, false, true, false, false, true));
+        Assert.Null(Program.IdleMustExit("collar", false, false, false, false, true, false, false, false));   // human kneel on a leash is still fine
+        // every entry path (tick, `idlepose now collar`, rotation) goes through the same guards
+        Assert.Equal("groundsit", Program.IdleEnterKindFor("collar", true, false, false));
+        Assert.Null(Program.IdleEnterKindFor("collar", true, true, false));
+        Assert.Null(Program.IdleEnterKindFor("groundsit", false, true, false));
+        Assert.Equal("collar", Program.IdleEnterKindFor("collar", false, true, false));
+        Assert.Null(Program.IdleEnterKindFor("collar", false, true, true));
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release(); }")];
+        Assert.Contains("IdleEnterKindFor(kind, IdleAndroidNow()", enter);
+        Assert.True(enter.IndexOf("IdleEnterKindFor(") < enter.IndexOf("CollarPosePlay("));
+        var rot = src[src.IndexOf("static async Task<string> IdlePoseRotate(")..]; rot = rot[..rot.IndexOf("CollarPosePlay(")];
+        Assert.Contains("IdleAndroidNow()", rot);
+        Assert.Contains("IdlePoseKind(CollarVisibleNow(), LeashParticleTarget() != null, IdleAndroidNow())", src);
+    }
+    // 2026-10-26 (David): a pose that needs another hover: pose FIRST, hover checked/fixed afterwards, never before or during the entry
+    [Fact] public void PoseEntryNeverTouchesHoverBeforeThePose()
+    {
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release(); }")];
+        Assert.DoesNotContain("PostHover(", enter); Assert.DoesNotContain("hover set", enter);
+        Assert.True(enter.IndexOf("CollarPosePlay(") < enter.IndexOf("AutoHoverKick(\"kneel\")"));
+        Assert.True(enter.IndexOf("SitOnGround()") < enter.IndexOf("AutoHoverKick(\"ground sit\")"));
+        Assert.True(enter.IndexOf("AoGroundSitToggle(") < enter.IndexOf("AutoHoverKick(\"ground sit\")"));
+        var exit = src[src.IndexOf("static async Task<string> IdlePoseExit(")..]; exit = exit[..exit.IndexOf("finally { idleLock.Release(); }")];
+        Assert.True(exit.IndexOf("client.Self.Stand()") < exit.IndexOf("PostHover("));   // stand first, hover afterwards
+        // the saved/measured hover of a pose is applied by the scheduled check, a few seconds AFTER the pose started
+        var ph = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
+        Assert.Contains("int delayMs = 3000", ph);
+        Assert.True(ph.IndexOf("await Task.Delay(delayMs)") < ph.IndexOf("await PoseHoverCheck(kind, pose)"));
+        // the collar's own @adjustheight (sent while the pose starts) is not applied
+        var rlv = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/RlvAdjustHeight.cs"));
+        Assert.True(rlv.IndexOf("RlvAdjustHeightApplies(") < rlv.IndexOf("PostHover(v"));
+    }
+    [Fact] public void CollarAdjustHeightIsIgnoredByDefault_KeepsPinAndAutoHoverIntact()
+    {
+        Assert.False(Program.RlvAdjustHeightApplies(null)); Assert.False(Program.RlvAdjustHeightApplies("")); Assert.False(Program.RlvAdjustHeightApplies("off"));
+        Assert.True(Program.RlvAdjustHeightApplies("apply"));
+        var rlv = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/RlvAdjustHeight.cs"));
+        var ign = rlv[rlv.IndexOf("if (!RlvAdjustHeightApplies(")..]; ign = ign[..ign.IndexOf("return $\"adjustheight")];
+        Assert.DoesNotContain("rlvHoverOverride", ign); Assert.DoesNotContain("hoverManualAt", ign); Assert.DoesNotContain("PostHover", ign);
+        // so the pin stays the file value and the 10-min "manual hover wins" window never opens
+        Assert.Equal(0.0, Program.PinnedHoverFrom(null, null, "0"), 3);
+        Assert.Equal(-0.12, Program.AutoHoverDecide("groundsit", false, null, 0.0, 0.0, 1e9, -0.12));
+        Assert.Equal(0.105, Program.AutoHoverDecide("stand", false, -0.045, 0.06, 0.0, 1e9)!.Value, 3);   // sinking into the floor: the problem-fix path still works
     }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

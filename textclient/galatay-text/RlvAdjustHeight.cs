@@ -23,9 +23,19 @@ public static partial class Program
         if (double.IsNaN(v) || double.IsInfinity(v)) return null;
         return Math.Round(Math.Clamp(v, -2.0, 2.0), 4);
     }
+    // 2026-10-26 (David: "you should never change your hover height unless you are fixing a problem"): the collar's pose script sends
+    // @adjustheight:8=force when a kneel starts (and :2 on STOP) and that raised her 8 cm off the floor. Hover is owned by the
+    // pose-hover system (pose-hover.json per pose, AutoHoverCheck / PoseHoverCheck: pose first, then the render-based check), so an
+    // object's @adjustheight is recorded and NOT applied. GT_RLV_ADJUSTHEIGHT=apply restores the old behaviour.
+    internal static bool RlvAdjustHeightApplies(string env) => string.Equals((env ?? "").Trim(), "apply", StringComparison.OrdinalIgnoreCase);
     static async Task<string> RlvAdjustHeight(string opt)
     {
         if (RlvAdjustHeightParse(opt) is not double v) return $"adjustheight: bad option '{opt}'";
+        if (!RlvAdjustHeightApplies(Environment.GetEnvironmentVariable("GT_RLV_ADJUSTHEIGHT")))
+        {
+            RlvLog($"adjustheight:{opt} -> hover {v:+0.000;-0.000;0} m ignored (hover is only changed to fix a problem; pose-hover.json / auto-hover own it); hover stays {(SimHover() is double h0 ? h0.ToString("0.000", CultureInfo.InvariantCulture) : "?")}");
+            return $"adjustheight {v:0.000} m ignored (hover unchanged)";
+        }
         var before = SimHover();
         rlvHoverOverride = v; hoverManualAt = DateTime.Now;
         var (ok, info) = await PostHover(v, $"rlv adjustheight:{opt}");

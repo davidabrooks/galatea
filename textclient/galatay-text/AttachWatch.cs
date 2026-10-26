@@ -214,6 +214,18 @@ public static partial class Program
     {
         try { var it = AoItem; return it != UUID.Zero && SeatOffItems().ContainsKey(it); } catch { return true; }
     }
+    // an animation source that is one of MY attachments but not the AO (the collar at the chin...): its animations are never the AO's sit / stand
+    static bool IsOwnNonAoAttachment(UUID src)
+    {
+        if (src == UUID.Zero) return false;
+        try
+        {
+            var sim = client.Network.CurrentSim; if (sim == null) return false;
+            var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == src);
+            return p != null && p.ParentID == client.Self.LocalID && !IsAoHudSource(src);
+        }
+        catch { return false; }
+    }
     static bool IsAoHudSource(UUID src)
     {
         if (src == UUID.Zero) return false;

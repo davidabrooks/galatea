@@ -72,9 +72,38 @@ public static partial class Program
         : g >= -SeatSinkTol && g <= SeatFloatTol ? $"hips on the seat (gap {g:+0.000;-0.000} m; a few cm of sink into slats or cushions is normal, down to {-SeatSinkTol:0.00} m)"
         : g > 0 ? $"hips {g * 100:0.#} cm ABOVE the seat (gap {g:+0.000} m): lower her with the furniture's own adjust (AVsitter Z-, then SAVE)"
         : $"hips {-g * 100:0.#} cm sunk INTO the seat (gap {g:+0.000;-0.000} m): lift her with the furniture's own adjust (AVsitter Z+, then SAVE)";
+    // ---- the render must show the pose the client believes (2026-10-26 13:20 live test: the client said `sit VAMOSITG12`, the export held a STAND, the check posted -0.229) ----
+    internal const double HoverFixMax = 0.12, HoverConfirmTol = 0.01, SitPelvisMaxFrac = 0.45, StandPelvisMinFrac = 0.55;
+    // pure (tested): the animation ids of the export's me.anims ("id@seconds,id@seconds")
+    internal static List<UUID> ExportAnimIds(string anims) => (anims ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(a => UUID.TryParse(a.Split('@')[0], out var u) ? u : UUID.Zero).Where(u => u != UUID.Zero).ToList();
+    // pure (tested): null when the export / render shows the posture the check is about, else why not. kind = sit (AO ground sit) | stand. The export must hold (sit) or lack (stand) an AO sit
+    // animation, and the posed pelvis (mesh.json, metres above her feet level) must be low (sit: <= 0.45 x her height) or high (stand: >= 0.55 x her height). Unknown pelvis: only the animations count
+    internal static string PoseRenderMismatch(string kind, double size, double? pelvisZ, IEnumerable<UUID> exportAnims, IEnumerable<UUID> sitIds)
+    {
+        bool sitInExport = AoSitPlaying(exportAnims, false, sitIds);
+        if (kind == "sit")
+        {
+            if (!sitInExport) return "the export holds no AO sit animation (the sit has not started playing, or it is not the one I think)";
+            if (pelvisZ is double pz && size > 0 && pz > SitPelvisMaxFrac * size) return $"the render shows her pelvis {pz:0.00} m high: standing, not sitting";
+        }
+        else if (kind == "stand")
+        {
+            if (sitInExport) return "the export holds an AO sit animation but I think she stands";
+            if (pelvisZ is double pz && size > 0 && pz < StandPelvisMinFrac * size) return $"the render shows her pelvis only {pz:0.00} m high: sitting, not standing";
+        }
+        return null;
+    }
+    // pure (tested): the pelvis height of the export's mesh.json (metres), null when unreadable
+    internal static double? MeshPelvisZ(string meshJson)
+    {
+        try { var p = JsonDocument.Parse(meshJson).RootElement.GetProperty("pelvis"); return p.ValueKind == JsonValueKind.Array && p.GetArrayLength() == 3 ? p[2].GetDouble() : null; } catch { return null; }
+    }
+    // pure (tested): a hover fix this large (metres) needs a second, consistent render before it is posted
+    internal static bool HoverFixNeedsConfirm(double gap) => Math.Abs(gap) > HoverFixMax;
+    internal static bool HoverFixConfirmed(double gap1, double gap2) => Math.Abs(gap1 - gap2) <= HoverConfirmTol;
     // pure (tested): renders one hover check costs. Each HoverCheckRender call is ONE blender run of ONE image (the contact close-up, which REPLACES the wide
     // side view: look_scope.hovercheck_view). 1 when the contact is confirmed; 2 when a fix was applied (the re-render at the hover really in force is the verification)
-    internal static int HoverCheckRenderCount(bool fixApplied) => fixApplied ? 2 : 1;
+    internal static int HoverCheckRenderCount(bool fixApplied, bool confirmRender = false) => (fixApplied ? 2 : 1) + (confirmRender ? 1 : 0);
     // ONE render, ONE image. kind (stand|sit) only labels what the close-up frames
     static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null, bool seat = false)
     {
@@ -235,12 +264,32 @@ public static partial class Program
             var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind);   // render 1: the contact close-up (replaces the wide side view)
             string finalImg = img1;
             if (g1 is not double gap || !PoseGapSane(gap)) { var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; Log("posehover", bad); hoverCheckResult = bad; return null; }
-            string how; bool fixedHover = false;
+            // the guard: a fix is only ever computed from a render that shows the pose the client believes (never post on a standing render for a "sit")
+            {
+                double? pz = null; try { pz = MeshPelvisZ(File.ReadAllText(Path.Combine(dir, "mesh.json"))); } catch { }
+                List<UUID> exAnims = new(); try { using var sj = JsonDocument.Parse(File.ReadAllText(scene)); if (sj.RootElement.GetProperty("me").TryGetProperty("anims", out var an)) exAnims = ExportAnimIds(an.GetString()); } catch { }
+                var why = PoseRenderMismatch(kind, size, pz, exAnims, AoSitIdsNow());
+                if (why != null)
+                {
+                    var msg = $"{key}: not verified: pose not rendered ({why}); render gap {gap:+0.000;-0.000} ignored, nothing changed, wait and retry ({img1})";
+                    Log("posehover", msg); hoverCheckResult = msg; return "pose not rendered: " + why;
+                }
+            }
+            string how; bool fixedHover = false, confirmRender = false;
             string calTxt = calibrated ? "bias calibrated against David's viewer" : "DEFAULT bias, not yet calibrated against David's viewer (hover calibrate)";
             if (PoseGapConfirmed(gap)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {gap:+0.000}; {calTxt}); hover left alone";
             else
             {
                 var t = PoseHoverFromGap(hov, gap);
+                if (HoverFixNeedsConfirm(gap))   // a large fix (> 0.12 m): only after a second render at the same hover agrees
+                {
+                    var (gc, imgc) = await HoverCheckRender(dir, size, hov, bias, kind); confirmRender = true;
+                    if (gc is not double gc2 || !HoverFixConfirmed(gap, gc2))
+                    {
+                        var msg = $"{key}: not verified: the render gap {gap:+0.000;-0.000} (a fix of more than {HoverFixMax:0.00} m) was not confirmed by a second render ({(gc is double gq ? gq.ToString("+0.000;-0.000") : "none")}); nothing changed ({img1}, {imgc})";
+                        Log("posehover", msg); hoverCheckResult = msg; return "large fix not confirmed by a second render";
+                    }
+                }
                 if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed; skipped"); return null; }
                 var (ok, info) = await PostHover(t, $"visual hover fix: {key} (applied now, not saved)");
                 // verify: the cap must now hold t (fresh GET), and the re-render is drawn at THAT value, not at the value we meant to set
@@ -252,7 +301,7 @@ public static partial class Program
                 string verdict = good ? (calibrated ? "contact confirmed" : "contact in the render; NOT verified against David's viewer (default bias)") : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
                 how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}): {info}; {img2}";
             }
-            int renders = HoverCheckRenderCount(fixedHover);
+            int renders = HoverCheckRenderCount(fixedHover, confirmRender);
             Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}");
             hoverCheckResult = $"{key}: {how}; renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}" + (fixedHover ? $" (before the fix: {img1})" : "");
             return null;

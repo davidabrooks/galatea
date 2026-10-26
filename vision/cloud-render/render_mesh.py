@@ -1355,6 +1355,27 @@ def feet_camera_spec(x, y, yaw_deg, deg, cpts, zlow, floor_z, lens=50.0, res=(10
     d = (width / 2) / ht + max(0.0, half_d)
     return (tx + fx * d, ty + fy * d, cz), (tx, ty, cz), d, width
 
+SEAT_HIPS_R = 0.30        # m around the pelvis (horizontal) that count as her hips on a seat; thighs / dangling legs lie farther out
+SEAT_PLANE_BELOW = 0.35; SEAT_PLANE_ABOVE = 0.25   # a seat plane further than this under / over her lowest hip vertex is not her seat (a floor 1 m down, a ceiling)
+
+def seat_contact(verts, pelvis, seat_z, r=SEAT_HIPS_R, below=0.30, above=0.15, band=CONTACT_BAND):
+    """her hips against a seat (2026-10-26, David: sitting on furniture, check the hips, never the feet). verts = world (n, 3) vertices of everything
+    she wears, pelvis = the pelvis bone in world (x, y, z), seat_z = the top of the seat object under her hips (a downward ray cast before she is drawn)
+    or None. The hips = the vertices within `r` of the pelvis (horizontally) and between pelvis z - `below` and + `above`: the legs that dangle in front
+    are farther out, the shins under the seat lower and outside that window. Falls back to every vertex within 1.5 r of the pelvis when the window is
+    empty. The contact is contact_points() of those, so a stray vertex is ignored. -> (zlow, [(x, y, z), ...], seat_z or None, gap) | None when she has
+    no vertices there. seat_z is dropped (None, hips area only) when it is not within the hips' reach; gap = hips lowest z - seat_z (+ above the seat,
+    - sunk into it)."""
+    v = np.asarray(verts, dtype=np.float64).reshape(-1, 3)
+    if len(v) == 0: return None
+    d = np.hypot(v[:, 0] - pelvis[0], v[:, 1] - pelvis[1])
+    sel = v[(d <= r) & (v[:, 2] >= pelvis[2] - below) & (v[:, 2] <= pelvis[2] + above)]
+    if len(sel) < 20: sel = v[d <= r * 1.5]
+    if len(sel) == 0: return None
+    zlow, cp = contact_points(sel)
+    if seat_z is not None and not (zlow - SEAT_PLANE_BELOW <= seat_z <= zlow + SEAT_PLANE_ABOVE): seat_z = None
+    return zlow, cp, seat_z, (None if seat_z is None else zlow - seat_z)
+
 def self_body_lens(d_need, d_avail, lens=50.0, lo=14.0):
     """a wall behind the camera shortens the distance: widen the lens in proportion (a 14 mm floor) so she still fits"""
     return lens if d_avail >= d_need else max(lo, lens * max(0.0, d_avail) / d_need)
@@ -1524,17 +1545,19 @@ if SCENE:
         st = seated_keep or bool(o.get("seated"))
         off = o.get("agent_off_seated") if st and o.get("agent_off_seated") is not None else o.get("agent_off")
         return floor_at(px, py, pz), (pz + off if off is not None else None), st
+    prim_under = sc.ray_cast(dg, Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))[0]   # a prim under her (the seat when she sits on one); else the terrain is her floor
     if SELF_FLOOR and FLOOR_ON and not sc.ray_cast(dg, Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))[0]:   # no prim floor under her: the region terrain is her floor
         terrain(); bpy.context.view_layer.update(); dg = bpy.context.evaluated_depsgraph_get()
     placed = [] if SELF_FLOOR else [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
     lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
-    HC = hover_check_z0(os.environ, g[2], lo[2], fl)   # 2026-10-23 hover check: real placement + her hover, floor from the scene
+    HC = hover_check_z0(os.environ, g[2], lo[2], fl)   # 2026-10-23 hover check: real placement + her hover, floor from the scene (seated on an object: look.py leaves GT_HOVER_CHECK off, the sim's placement)
     if HC:
         z0 = HC[0]; print(f"GT: hover check gap {HC[1]:+.3f} m (hover {HC[2]:+.3f}, size {HC[3]:.3f}, floor {fl:.3f})", flush=True)
         # diagnostics for the calibration (2026-10-26): the bias in use, whether David's viewer ever confirmed it, and where the viewer's own
         # placement formula (scene-mesher agent_off, LLVOAvatar::computeBodySize) would have put her: the gap between the two is the raw model error
         print(hover_check_detail(os.environ, M.get("agent_z", g[2]), M.get("agent_off"), lo[2], fl, HC[2]), flush=True)
+    elif SELF_FLOOR and mst: print("GT: self floor: seated on an object: the sim's own placement (no hover model); hover is not the fix on furniture, the furniture's own adjust is", flush=True)
     elif SELF_FLOOR: print("GT: self floor: no hover model (GT_HOVER_CHECK unset): her feet are snapped to the floor, so contact here says nothing about her hover", flush=True)
     for ob in obs: ob.location = (x, y, z0); ob.rotation_euler = (0, 0, math.radians(yaw))
     log("avatar at", round(x, 2), round(y, 2), "mesh z0", round(z0, 2), "floor", round(fl, 2), "LL", ll and round(ll, 2))
@@ -1595,12 +1618,23 @@ if SCENE:
             if ob.type != "MESH" or not len(ob.data.vertices): continue
             a_ = np.empty(len(ob.data.vertices) * 3, np.float64); ob.data.vertices.foreach_get("co", a_); m_ = np.array(ob.matrix_world, np.float64)
             chunks.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
-        zlow, cp = contact_points(np.concatenate(chunks) if chunks else np.zeros((0, 3)))
-        if not cp: cp = [(px, py, floor)]; zlow = floor
-        loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res)
-        xs = [p[0] for p in cp]; ys = [p[1] for p in cp]
-        print(f"GT: contact close-up: {os.environ.get('GT_HC_POSTURE') or 'lowest contact'}, {len(cp)} vertices within {CONTACT_BAND:g} m of her lowest point (z {zlow:.3f}, floor {floor:.3f}), "
-              f"frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
+        allv = np.concatenate(chunks) if chunks else np.zeros((0, 3))
+        sc_ = None
+        if mst:   # seated on an object: the contact is her HIPS against the SEAT, never her dangling feet over the terrain (2026-10-26, David)
+            pm = M.get("pelvis"); pel = to_world(pm, (x, y, z0), yaw) if pm else Vector((px, py, g[2]))
+            sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), floor if prim_under else None)
+        if sc_:
+            zlow, cp, seat_z, gap = sc_; floor = seat_z if seat_z is not None else zlow   # the seat's top is the plane; none found -> frame the hips' own bounding area
+            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=0.8)
+            print(f"GT: contact close-up: hips against the seat, {len(cp)} hip vertices within {CONTACT_BAND:g} m of the lowest, hips z {zlow:.3f}, "
+                  f"{'seat top z %.3f' % seat_z if seat_z is not None else 'seat surface not found (hips area only)'}, frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
+            print("GT: seat contact gap " + (f"{gap:+.3f} m (hips above the seat +, sunk into it -)" if gap is not None else "unknown (seat surface not found)"), flush=True)
+        else:
+            zlow, cp = contact_points(allv)
+            if not cp: cp = [(px, py, floor)]; zlow = floor
+            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res)
+            print(f"GT: contact close-up: {os.environ.get('GT_HC_POSTURE') or 'lowest contact'}, {len(cp)} vertices within {CONTACT_BAND:g} m of her lowest point (z {zlow:.3f}, floor {floor:.3f}), "
+                  f"frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
         # a wall behind the camera: stop in front of it and widen the lens in proportion so the contact still fits (as `look self` does)
         u = (Vector(loc) - Vector(tgt)).normalized(); s0 = max(0.0, max(u.x * (p[0] - tgt[0]) + u.y * (p[1] - tgt[1]) for p in cp)) + 0.05
         hit, hl, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(tgt) + u * s0, u, distance=max(0.01, d - s0))

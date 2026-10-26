@@ -638,7 +638,7 @@ def main(a):
     if not vw and opts["views"]: vw = opts["views"]   # a preset's default side list
     try: bviews = body_views(vw)
     except ValueError as e: sys.exit(str(e))
-    if len(a) >= 2 and a[1] == "hovercheck": a = [a[0], "view", *a[2:]]; fast = True; os.environ.update({"GT_HOVER_CHECK": "1", "GT_VIEW_OVERRIDE": look_scope.hovercheck_view(os.environ), "GT_RES": "640x400", "GT_HC_SAMPLES": "32", "GT_EXPOSURE": os.environ.get("GT_EXPOSURE", "0")})
+    if len(a) >= 2 and a[1] == "hovercheck": a = [a[0], "view", *a[2:]]; fast = True; os.environ.update({"GT_HOVER_CHECK": "0" if os.environ.get("GT_SEAT_CHECK") == "1" else "1", "GT_VIEW_OVERRIDE": look_scope.hovercheck_view(os.environ), "GT_RES": "640x400", "GT_HC_SAMPLES": "32", "GT_EXPOSURE": os.environ.get("GT_EXPOSURE", "0")})
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     if headshot and hd_arg == "": hd_arg = "square"   # headshot default frame (--hd=landscape|portrait still wins)
@@ -789,7 +789,7 @@ def main(a):
             hdr_files = [x for l in lines if l.startswith("GT: hdr master") for x in l.split()[3:5]]   # photo hd: EXR + .hdr masters
             rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
             for l in lines:
-                if l.startswith(("GT: hover check", "GT: contact close-up")): print(l[4:])   # hovercheck: the measured gap, on stdout for the client
+                if l.startswith(("GT: hover check", "GT: contact close-up", "GT: seat contact")): print(l[4:])   # hovercheck: the measured gap, on stdout for the client
             build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
             if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
         if hd:   # the PNG is the photo (David 2026-10-13: small but lossless); a quality-95 JPG next to it, secondary

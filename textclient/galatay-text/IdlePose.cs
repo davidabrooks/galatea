@@ -114,7 +114,9 @@ public static partial class Program
     // 2026-10-26 (David): hover heights are NOT saved or applied per pose or per AO stand (the ground changes with the location):
     // after a sit, a stand or a new region PoseHover.cs checks the hover visually and fixes it then.
     static volatile string aoSitCurrentName;   // from the AO's own owner-say "Current Sitting on Ground Animation::<name>"
-    static int aoSitHooked;
+    static GridClient aoSitHookedClient;   // 2026-10-26: per client (a relog makes a new GridClient; a static flag left the new one unhooked: stale sit name, no hover check after a switch)
+    // pure (tested): does this client still need the AO-sit chat hook?
+    internal static bool AoSitHookNeeded(object hooked, object current) => !ReferenceEquals(hooked, current);
     // pure (tested): the AO's confirmation line -> sit name (null = not that line)
     internal static string AoSitConfirmName(string msg)
     {
@@ -128,7 +130,8 @@ public static partial class Program
     static void AoSitHook()
     {
         try { if (aoSitCurrentName == null && File.Exists(AoSitLastFile)) aoSitCurrentName = File.ReadAllText(AoSitLastFile).Trim(); } catch { }   // the AO keeps its pick across relogs
-        if (Interlocked.Exchange(ref aoSitHooked, 1) == 1) return;
+        if (!AoSitHookNeeded(aoSitHookedClient, client)) return;
+        aoSitHookedClient = client;
         client.Self.ChatFromSimulator += (s, e) =>
         {
             try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } HoverCheckRequest("sit"); } } catch { }
@@ -180,6 +183,7 @@ public static partial class Program
         return $"ground sit {(current > 0 ? current + " -> " : "")}{pick} {name} (of {count})";
     }
     static double idleRotate = IdleRotateSec(Random.Shared.NextDouble());
+    static volatile bool idleRotatePaused;   // `idlepose rotate off` (for tests): keep the current ground sit / collar pose, never switch automatically; resets on restart
     static async Task<string> IdlePoseRotate()
     {
         if (!await idleLock.WaitAsync(0)) return "busy";
@@ -516,7 +520,7 @@ public static partial class Program
             if (why != null) { if (why == "leashed") idleLeashHold = true; await IdlePoseExit(why); }
             else if (IdleSwitch(posed.kind, CollarVisibleNow(), LeashParticleTarget() != null, leashedNow, AoGroundSitNow() != null, androidNow) is string sw)
             { await IdlePoseExit("switch to " + sw); Log("idlepose", "switch: " + await IdlePoseEnter(sw, "visibility changed")); }
-            else if (IdleShouldRotate(posed.kind, (DateTime.Now - posed.since).TotalSeconds, idleRotate, dancing)) Log("idlepose", "rotate: " + await IdlePoseRotate());
+            else if (!idleRotatePaused && IdleShouldRotate(posed.kind, (DateTime.Now - posed.since).TotalSeconds, idleRotate, dancing)) Log("idlepose", "rotate: " + await IdlePoseRotate());
             return;
         }
         if (davidAway) IdleNoteActivity();
@@ -546,6 +550,7 @@ public static partial class Program
             case "on" when a.Length == 1: idlePoseOn = true; IdleNoteActivity(); return $"idle pose ON (after {idleThreshold:F0} s idle)";
             case "off": idlePoseOn = false; return "idle pose OFF; " + await IdlePoseExit("idle pose off");
             case "now": { var k = a.Length > 1 ? (a[1] == "collar" || a[1] == "kneel" ? "collar" : "groundsit") : IdlePoseKind(CollarVisibleNow(), LeashParticleTarget() != null, IdleAndroidNow()); return await IdlePoseEnter(k, "manual"); }   // IdlePoseEnter refuses collar kneels in android form
+            case "rotate" when a.Length == 2 && (a[1] == "on" || a[1] == "off"): idleRotatePaused = a[1] == "off"; return idleRotatePaused ? "automatic pose switching PAUSED (keeps the current pose until stand or restart)" : "automatic pose switching ON";
             case "stop": case "stand": return await IdleExplicitStand("manual stop");
             case "idle" when a.Length > 1 && double.TryParse(a[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sec) && sec >= 30:
                 idleThreshold = sec; return $"idle threshold {sec:F0} s (this round; base GT_IDLE_POSE_SEC={IdleBaseSec():F0})";

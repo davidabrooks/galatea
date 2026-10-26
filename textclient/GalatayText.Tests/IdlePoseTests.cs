@@ -378,6 +378,25 @@ public class IdlePoseTests
         Assert.Contains("IdleAndroidNow()", rot);
         Assert.Contains("IdlePoseKind(CollarVisibleNow(), LeashParticleTarget() != null, IdleAndroidNow())", src);
     }
+    // 2026-10-26 16:10 (David): after a relog the AO's sit-name hook was gone (a static flag, but a NEW GridClient per login): the sit name stayed stale and no hover check followed a ground-sit switch
+    [Fact] public void AoSitHookIsPerClientNotOncePerProcess()
+    {
+        var first = new object(); var relogged = new object();
+        Assert.True(Program.AoSitHookNeeded(null, first));
+        Assert.False(Program.AoSitHookNeeded(first, first));
+        Assert.True(Program.AoSitHookNeeded(first, relogged));
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        Assert.DoesNotContain("aoSitHooked,", src);
+        Assert.Contains("AoSitHookNeeded(aoSitHookedClient, client)", src);
+        Assert.Contains("HoverCheckRequest(\"sit\")", src);   // the AO's own confirmation line asks for the visual check
+    }
+    // 2026-10-26 (David: "disable the automatic switch when you're doing tests")
+    [Fact] public void IdleRotationCanBePausedForTests()
+    {
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        Assert.Contains("!idleRotatePaused && IdleShouldRotate(", src);
+        Assert.Contains("case \"rotate\" when a.Length == 2", src);
+    }
     // 2026-10-26 (David): a pose that needs another hover: pose FIRST, hover checked/fixed afterwards, never before or during the entry
     [Fact] public void PoseEntryNeverTouchesHoverBeforeThePose()
     {

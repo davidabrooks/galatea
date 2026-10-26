@@ -30,12 +30,33 @@ public static partial class Program
 
     // pure (tested): should the Stealth button be pressed to reach `want`? (null = no button / unknown -> never press)
     internal static bool StealthNeedsPress(string label, bool on, bool want) => label != null && on != want;
+    // 2026-10-26 08:58: ONE collar menu session at a time. The leash handler (Stealth: About; Magic Leash: Extras) and the idle
+    // collar-pose switch (Pose) all drive the same dialogs through the shared `lastDialog`, so they crossed: Magic Leash pressed
+    // "Extras" on the Pose menu (read back [Crawl|cutie|...|STOP]) and gave up; the pose switch got the About page and could not find 'nadu'.
     static readonly SemaphoreSlim stealthLock = new(1, 1);
+    internal const int CollarMenuWaitMs = 90000;
+    static async Task<bool> CollarMenuEnter() => await stealthLock.WaitAsync(CollarMenuWaitMs);
+    // pure (tested): which collar menu is this? (the Pose list has STOP; the main menu has About + Extras)
+    internal static bool CollarLooksLikePoseMenu(IEnumerable<string> b) => (b ?? Array.Empty<string>()).Any(x => x != null && x.Equals("STOP", StringComparison.OrdinalIgnoreCase));
+    internal static bool CollarLooksLikeMainMenu(IEnumerable<string> b) { var l = (b ?? Array.Empty<string>()).ToList(); return l.Contains("About") && l.Contains("Extras"); }
+    // wait for a NEW collar dialog the predicate accepts (others, e.g. a stray page from another flow, are skipped)
+    static async Task<ScriptDialogEventArgs> CollarDialogWhere(ScriptDialogEventArgs prev, Func<ScriptDialogEventArgs, bool> ok, int ms)
+    {
+        var seen = prev;
+        for (int i = 0; i < ms / 250; i++)
+        {
+            var d = lastDialog;
+            if (d != null && !ReferenceEquals(d, seen) && d.ObjectName == "Collar" && d.OwnerID == client.Self.AgentID)
+            { if (ok(d)) return d; seen = d; }
+            await Task.Delay(250);
+        }
+        return null;
+    }
     static Task<string> CollarStealthOn(string why) => CollarStealthSet(true, why).ContinueWith(t => t.Result.result);
     // collar main menu -> About -> press "Stealth" only if its state differs from `want`. wasOn = state before (null = unknown)
     static async Task<(string result, bool? wasOn)> CollarStealthSet(bool want, string why)
     {
-        if (!await stealthLock.WaitAsync(0)) return ("collar stealth already running", null);
+        if (!await CollarMenuEnter()) return ("collar menu busy for 90 s", null);
         try
         {
             var prev = lastDialog;
@@ -75,20 +96,24 @@ public static partial class Program
     internal static readonly string[] MagicLeashParents = { "Apps", "Features", "Extras", "Leash", "Settings", "Options" };
     static async Task<string> MagicLeashSet(bool invisible, string why)
     {
-        if (!await stealthLock.WaitAsync(0)) return "collar menu busy";
+        if (!await CollarMenuEnter()) return "collar menu busy for 90 s";
         try
         {
-            var prev = lastDialog;
-            var t = await Exec("touch-attachment \"Premium Collar\" 1");
-            var main = await CollarDialogAfter(prev, 10000);
-            if (main == null) return $"collar menu did not open ({t})";
+            ScriptDialogEventArgs main = null; string t = "";
+            for (int tryN = 1; tryN <= 2 && main == null; tryN++)
+            {
+                var prev = lastDialog;
+                t = await Exec("touch-attachment \"Premium Collar\" 1");
+                main = await CollarDialogWhere(prev, d => CollarLooksLikeMainMenu(d.ButtonLabels), 10000);
+            }
+            if (main == null) return $"collar main menu did not open ({t})";
             Log("collar", $"magic leash ({why}): main menu [{string.Join("|", main.ButtonLabels ?? new())}]");
             var cur = main; var ml = MenuPick(cur.ButtonLabels, "Magic");
             foreach (var parent in MagicLeashParents)
             {
                 if (ml != null) break;
                 var pb = MenuPick(main.ButtonLabels, parent); if (pb == null) continue;
-                await Exec("dialog " + pb); var sub = await CollarDialogAfter(cur, 8000); if (sub == null) continue;
+                await Exec("dialog " + pb); var sub = await CollarDialogWhere(cur, d => !CollarLooksLikePoseMenu(d.ButtonLabels) && !CollarLooksLikeMainMenu(d.ButtonLabels) || MenuPick(d.ButtonLabels, "Magic") != null, 8000); if (sub == null) continue;
                 Log("collar", $"magic leash ({why}): '{pb}' menu [{string.Join("|", sub.ButtonLabels ?? new())}]");
                 cur = sub; ml = MenuPick(sub.ButtonLabels, "Magic");
                 if (ml == null) { var back = MenuPick(sub.ButtonLabels, "BACK", "◄", "<<"); if (back == null) break; await Exec("dialog " + back); var m2 = await CollarDialogAfter(cur, 8000); if (m2 == null) break; cur = m2; }

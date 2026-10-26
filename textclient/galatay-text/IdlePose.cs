@@ -314,9 +314,14 @@ public static partial class Program
         var main = await CollarDialogAfter(prev, 10000);
         if (main == null || !(main.ButtonLabels ?? new()).Contains("Pose")) return null;
         await Exec("dialog Pose");
-        return await CollarDialogAfter(main, 10000);
+        return await CollarDialogWhere(main, d => CollarLooksLikePoseMenu(d.ButtonLabels), 10000);
     }
     static async Task<(bool ok, string info, List<string> anims)> CollarPosePlay(string pose)
+    {
+        if (!await CollarMenuEnter()) return (false, "collar menu busy for 90 s", null);
+        try { return await CollarPosePlayLocked(pose); } finally { stealthLock.Release(); }
+    }
+    static async Task<(bool ok, string info, List<string> anims)> CollarPosePlayLocked(string pose)
     {
         var d = await CollarPoseMenu(); if (d == null) return (false, "collar Pose menu did not open", null);
         for (int page = 1; page <= 6; page++)
@@ -338,6 +343,11 @@ public static partial class Program
     }
     // STOP on the Pose menu; verified when the pose anims are gone (or the menu reads Playing: (none))
     static async Task<(bool ok, string info)> CollarPoseStop(IReadOnlyCollection<string> anims)
+    {
+        if (!await CollarMenuEnter()) return (false, "collar menu busy for 90 s");
+        try { return await CollarPoseStopLocked(anims); } finally { stealthLock.Release(); }
+    }
+    static async Task<(bool ok, string info)> CollarPoseStopLocked(IReadOnlyCollection<string> anims)
     {
         for (int attempt = 1; attempt <= 2; attempt++)
         {
@@ -463,7 +473,8 @@ public static partial class Program
                 if (!LoggedIn) return;
                 var saved = IdleLoad(); idlePosed = null;
                 Log("idlepose", "login: " + await AoGroundSitEnsureOff("login reset"));
-                var d = await CollarPoseMenu();
+                ScriptDialogEventArgs d; await CollarMenuEnter();
+                try { d = await CollarPoseMenu(); } finally { stealthLock.Release(); }
                 var playing = CollarPlaying(d?.Message);
                 if (playing != null || saved?.kind == "collar")
                 {

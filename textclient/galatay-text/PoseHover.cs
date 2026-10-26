@@ -56,7 +56,9 @@ public static partial class Program
     // pure (tested): on furniture (sitting on an object) the contact close-up frames her HIPS against the SEAT, never her feet over the terrain, and the render uses the
     // sim's own seated placement (no hover model: hover is not the fix on furniture, the furniture's adjust is). Env for look.py / render_mesh.py
     internal static Dictionary<string, string> SeatLookEnv() => new() { ["GT_SEATED"] = "1", ["GT_SEAT_CHECK"] = "1", ["GT_HC_POSTURE"] = HoverContactLabel("seat") };
-    internal const double SeatGapTol = 0.03;
+    // 2026-10-26 live test on a slatted rocking chair: the render said -0.038 m and David's eye said "looks good": her butt sinks a few cm into slats and cushions in every
+    // sit pose, so down to -0.06 m is ON the seat; floating more than 2 cm is not. The gap itself is the render's measurement (about +-2 cm: slat tops are uneven), David's eye decides
+    internal const double SeatSinkTol = 0.06, SeatFloatTol = 0.02;
     internal static double? SeatContactGap(string stdout)
     {
         var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "", @"seat contact gap ([+-]?\d+\.\d+) m");
@@ -64,7 +66,7 @@ public static partial class Program
     }
     // pure (tested): the one-line verdict of a seated check; it never changes the hover
     internal static string SeatCheckVerdict(double? gap) => gap is not double g ? "seat surface not found in the render: framed the hips only, gap unknown"
-        : Math.Abs(g) <= SeatGapTol ? $"hips on the seat (gap {g:+0.000;-0.000} m)"
+        : g >= -SeatSinkTol && g <= SeatFloatTol ? $"hips on the seat (gap {g:+0.000;-0.000} m; a few cm of sink into slats or cushions is normal, down to {-SeatSinkTol:0.00} m)"
         : g > 0 ? $"hips {g * 100:0.#} cm ABOVE the seat (gap {g:+0.000} m): lower her with the furniture's own adjust (AVsitter Z-, then SAVE)"
         : $"hips {-g * 100:0.#} cm sunk INTO the seat (gap {g:+0.000;-0.000} m): lift her with the furniture's own adjust (AVsitter Z+, then SAVE)";
     // pure (tested): renders one hover check costs. Each HoverCheckRender call is ONE blender run of ONE image (the contact close-up, which REPLACES the wide

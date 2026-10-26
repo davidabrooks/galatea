@@ -99,16 +99,21 @@ When she sits **on an object** (`seat_info` says seated; the export's `sitting_o
 
 - **Hips:** the vertices within 0.30 m (horizontally) of her pelvis bone and between 0.30 m under and 0.15 m over it; the legs that hang in front are farther out. The contact
   is the lowest 10 cm of those, like the other postures (a stray vertex is ignored). No pelvis bone in the export: the agent position stands in for it.
-- **Seat plane:** the top of the object directly under the hips, found by the downward ray cast that places her (before she is drawn). It is used only when a prim is
-  really under her (never the terrain) and within 0.35 m under / 0.25 m over her lowest hip vertex; otherwise **the seat surface is "not found" and the frame falls back to the hips' own
-  bounding area** (still the hips, never the feet). The frame is at least 0.8 m wide and starts 6 cm under the seat, so the seat line and the gap are in the picture.
+- **Seat plane (#315, after the rocking-chair live test):** the median of up to 48 downward rays from the lowest patch of her butt (the contact points within 3 cm of her lowest vertex),
+  each started 10 cm over her lowest hip vertex and skipping her own body, taking the first scene surface. Rays that fall between slats (no hit) or reach a rail far below are dropped; the median of
+  the hits within 12 cm under her lowest vertex (else within 35 cm) is the seat top, and fewer than 3 hits means **"seat surface not found": the frame falls back to the hips' own
+  bounding area** (still the hips, never the feet). It is used only when a prim is really under her (never the terrain). #314 used ONE ray at the agent position, which hit a slat edge. The frame is at least 0.8 m wide and starts 6 cm under the seat, so the seat line and the gap are in the picture.
+- **Unobstructed (#315):** the chair's near frame, arm and rocker runners hid the hips from her left. Before the close-up is rendered, every face of the seat object (not her body, not the
+  floor line) inside the corridor between the camera and her hips is cut away: from 5 cm past the near edge of her butt's contact patch to 0.3 m behind the camera, as wide as the frame
+  plus 12 cm, from the frame's bottom to its top plus 12 cm. The seat under and beside her, the far frame and the slats she sits on stay. It is a cutaway of the render only; nothing in
+  the world changes. Still one render.
 - **Gap:** the render logs `contact close-up: hips against the seat, ...` and `seat contact gap +0.012 m` (hips above the seat +, sunk into it -). `look.py` prints both.
 - **No hover model:** she is drawn at the sim's own seated placement (agent position + the seated offset, no hover pin, no bias, no floor snap), so the gap is her real sit height.
   Hover is not the fix on furniture: the furniture's own adjust is (AVsitter HUD, Z+ / Z-, then SAVE).
 
 `hover check` while she sits on an object (manual only; the automatic sit / stand checks still skip furniture) renders **one** hips close-up and answers
 `seat: hips on the seat (gap +0.010 m) | hips N cm ABOVE / sunk INTO the seat ...; hover left alone; renders 1; close-up of hips against the seat: <path>`. It never posts a hover,
-touches the AO, stands her up or moves the furniture. `look self ...` while seated gets the same placement (the hover env is replaced by `GT_SEATED=1 GT_SEAT_CHECK=1`).
+touches the AO, stands her up or moves the furniture. **Verdict thresholds (#315):** a gap from -0.06 m to +0.02 m reads "hips on the seat" (her butt sinks a few cm into slats and cushions in every sit; the live rocking chair measured -0.038 m and David's eye said it looked good); more than 2 cm above reads ABOVE, more than 6 cm under reads sunk INTO. The gap is the render's measurement, about +-2 cm on a slatted seat (slat tops are uneven and the seat slopes), and the seated placement model is not calibrated against his viewer: his eye decides. `look self ...` while seated gets the same placement (the hover env is replaced by `GT_SEATED=1 GT_SEAT_CHECK=1`).
 Ground sits, stands and kneels are unchanged (the table above). Tests: `vision/tests/test_look_seat_contact.py` (synthetic chair, floating / sunk / no-seat-surface / stray vertex) and `SeatContactTests`.
 
 Use it by hand: MCP `look {target: "self", views: "feet"}`, or `client_cmd` `look self feet` / `look self side zoom=feet`.

@@ -1356,25 +1356,59 @@ def feet_camera_spec(x, y, yaw_deg, deg, cpts, zlow, floor_z, lens=50.0, res=(10
     return (tx + fx * d, ty + fy * d, cz), (tx, ty, cz), d, width
 
 SEAT_HIPS_R = 0.30        # m around the pelvis (horizontal) that count as her hips on a seat; thighs / dangling legs lie farther out
-SEAT_PLANE_BELOW = 0.35; SEAT_PLANE_ABOVE = 0.25   # a seat plane further than this under / over her lowest hip vertex is not her seat (a floor 1 m down, a ceiling)
+SEAT_PLANE_BELOW = 0.35   # a seat surface further than this under her lowest hip vertex is not her seat (the floor, a lower rail)
+SEAT_TOP_NEAR = 0.12      # the seat slab is looked for within this under her lowest hip vertex first (slats, cushion), the wider window only if nothing is there
+SEAT_RAY_START = 0.10     # the seat rays start this far over her lowest hip vertex (a sunk-in butt is still seen from above the slat)
 
-def seat_contact(verts, pelvis, seat_z, r=SEAT_HIPS_R, below=0.30, above=0.15, band=CONTACT_BAND):
-    """her hips against a seat (2026-10-26, David: sitting on furniture, check the hips, never the feet). verts = world (n, 3) vertices of everything
-    she wears, pelvis = the pelvis bone in world (x, y, z), seat_z = the top of the seat object under her hips (a downward ray cast before she is drawn)
-    or None. The hips = the vertices within `r` of the pelvis (horizontally) and between pelvis z - `below` and + `above`: the legs that dangle in front
-    are farther out, the shins under the seat lower and outside that window. Falls back to every vertex within 1.5 r of the pelvis when the window is
-    empty. The contact is contact_points() of those, so a stray vertex is ignored. -> (zlow, [(x, y, z), ...], seat_z or None, gap) | None when she has
-    no vertices there. seat_z is dropped (None, hips area only) when it is not within the hips' reach; gap = hips lowest z - seat_z (+ above the seat,
-    - sunk into it)."""
+def seat_hips(verts, pelvis, r=SEAT_HIPS_R, below=0.30, above=0.15):
+    """her hips on a seat: the vertices within `r` of the pelvis (horizontally) and between pelvis z - `below` and + `above` (the legs that dangle in
+    front are farther out, the shins under the seat lower and outside that window); every vertex within 1.5 r when that window is empty. -> (n, 3) array"""
     v = np.asarray(verts, dtype=np.float64).reshape(-1, 3)
-    if len(v) == 0: return None
+    if len(v) == 0: return v
     d = np.hypot(v[:, 0] - pelvis[0], v[:, 1] - pelvis[1])
     sel = v[(d <= r) & (v[:, 2] >= pelvis[2] - below) & (v[:, 2] <= pelvis[2] + above)]
-    if len(sel) < 20: sel = v[d <= r * 1.5]
+    return sel if len(sel) >= 20 else v[d <= r * 1.5]
+
+def seat_top_under(patch, zlow, cast, start=SEAT_RAY_START, near=SEAT_TOP_NEAR, far=SEAT_PLANE_BELOW, n=48, min_hits=3):
+    """the top of the seat under her hips' lowest patch (2026-10-26, #314 live test on a slatted rocking chair: ONE ray at the agent position hit a slat edge).
+    cast(x, y, z) = the z of the first surface under (x, y) at or below z (her own body skipped) or None. Rays go down from `start` above her lowest hip
+    vertex at up to `n` points of the patch; rays that fall between slats (no hit, or a rail far below) are dropped. The MEDIAN of the hits within `near`
+    under her lowest vertex (else within `far`) is the seat top; fewer than `min_hits` hits -> None (seat surface not found)."""
+    pts = list(patch); pts = pts[::max(1, len(pts) // n)][:n]
+    hits = [z for z in (cast(q[0], q[1], zlow + start) for q in pts) if z is not None]
+    for lo in (near, far):
+        sel = [z for z in hits if zlow - lo <= z <= zlow + start]
+        if len(sel) >= min_hits: return float(np.median(sel))
+    return None
+
+def seat_contact(verts, pelvis, cast, r=SEAT_HIPS_R, below=0.30, above=0.15, band=CONTACT_BAND):
+    """her hips against a seat (2026-10-26, David: sitting on furniture, check the hips, never the feet). verts = world (n, 3) vertices of everything
+    she wears, pelvis = the pelvis bone in world (x, y, z), cast = see seat_top_under (None: no seat surface known). The contact is contact_points() of
+    seat_hips(), so a stray vertex is ignored. -> (zlow, [(x, y, z), ...], seat_z or None, gap) | None when she has no vertices there.
+    gap = hips lowest z - seat top (+ above the seat, - sunk into it); seat_z None (hips area only) when no seat surface is found."""
+    sel = seat_hips(verts, pelvis, r, below, above)
     if len(sel) == 0: return None
     zlow, cp = contact_points(sel)
-    if seat_z is not None and not (zlow - SEAT_PLANE_BELOW <= seat_z <= zlow + SEAT_PLANE_ABOVE): seat_z = None
+    patch = [q for q in cp if q[2] <= zlow + 0.03] or cp   # the lowest patch of her butt: where it touches
+    seat_z = seat_top_under(patch, zlow, cast) if cast is not None else None
     return zlow, cp, seat_z, (None if seat_z is None else zlow - seat_z)
+
+def seat_cutaway(tgt, loc, contact, width, zbot, res=(640, 400), margin=0.05, pad=0.12):
+    """the corridor between the close-up camera and her hips (2026-10-26, #314 live test: the chair's near side frame, arm and rocker runners hid the hips).
+    Everything of the seat object inside it is cut away: from `margin` past the near edge of her hips' contact patch (cp of seat_contact; so the seat under and beside her stays) out to the camera,
+    as wide as the frame at her + pad, from just under the frame bottom to its top + pad. -> dict(origin, f, perp, s_min, s_max, half, z_lo, z_hi) (f = unit
+    vector from the target to the camera; perp = across the view)"""
+    fx, fy = loc[0] - tgt[0], loc[1] - tgt[1]; n = math.hypot(fx, fy) or 1.0; f = (fx / n, fy / n)
+    h = np.asarray(contact, dtype=np.float64).reshape(-1, 3)
+    s_hips = float(np.max((h[:, 0] - tgt[0]) * f[0] + (h[:, 1] - tgt[1]) * f[1])) if len(h) else 0.0
+    return {"origin": (tgt[0], tgt[1]), "f": f, "perp": (-f[1], f[0]), "s_min": s_hips + margin, "s_max": n + 0.3, "half": width / 2 + pad,
+            "z_lo": zbot - 0.02, "z_hi": zbot + width * min(res) / max(res) + pad}
+
+def cutaway_mask(centers, box):
+    """True for the points (n, 3) inside the cutaway box (seat_cutaway)"""
+    c = np.asarray(centers, dtype=np.float64).reshape(-1, 3); dx = c[:, 0] - box["origin"][0]; dy = c[:, 1] - box["origin"][1]
+    s = dx * box["f"][0] + dy * box["f"][1]; l = dx * box["perp"][0] + dy * box["perp"][1]
+    return (s > box["s_min"]) & (s < box["s_max"]) & (np.abs(l) < box["half"]) & (c[:, 2] > box["z_lo"]) & (c[:, 2] < box["z_hi"])
 
 def self_body_lens(d_need, d_avail, lens=50.0, lo=14.0):
     """a wall behind the camera shortens the distance: widen the lens in proportion (a 14 mm floor) so she still fits"""
@@ -1611,6 +1645,19 @@ if SCENE:
         em = nt.nodes.new("ShaderNodeEmission"); em.inputs["Color"].default_value = (1.0, 0.05, 0.05, 1); em.inputs["Strength"].default_value = 6.0
         outn = nt.nodes.new("ShaderNodeOutputMaterial"); nt.links.new(em.outputs[0], outn.inputs["Surface"]); me.materials.append(m)
         ob.visible_shadow = False
+    def cut_corridor(box):
+        """delete the faces of the scene (the seat object: near frame, arms, rocker runners) inside the cutaway box; her own body and the floor line stay"""
+        import bmesh
+        gone = 0
+        for ob_ in list(bpy.data.objects):
+            if ob_.type != "MESH" or ob_ in obs or ob_.name in ("floor-line", "water") or not len(ob_.data.polygons): continue
+            me_ = ob_.data; k_ = len(me_.polygons); c_ = np.empty(k_ * 3, np.float64); me_.polygons.foreach_get("center", c_)
+            m_ = np.array(ob_.matrix_world, np.float64); mask = cutaway_mask(c_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3], box)
+            if not mask.any(): continue
+            if me_.users > 1: ob_.data = me_ = me_.copy()
+            bm_ = bmesh.new(); bm_.from_mesh(me_); bm_.faces.ensure_lookup_table()
+            bmesh.ops.delete(bm_, geom=[bm_.faces[i] for i in np.nonzero(mask)[0]], context="FACES"); bm_.to_mesh(me_); bm_.free(); gone += int(mask.sum())
+        bpy.context.view_layer.update(); print(f"GT: contact close-up: cut away {gone} faces of the seat between the camera and her hips", flush=True)
     def contact_closeup(px, py, pyaw, deg, floor, lens, res):
         """camera for the close-up on her lowest contact (feet standing, hips sitting, shins kneeling); logs what it framed"""
         chunks = []
@@ -1622,13 +1669,23 @@ if SCENE:
         sc_ = None
         if mst:   # seated on an object: the contact is her HIPS against the SEAT, never her dangling feet over the terrain (2026-10-26, David)
             pm = M.get("pelvis"); pel = to_world(pm, (x, y, z0), yaw) if pm else Vector((px, py, g[2]))
-            sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), floor if prim_under else None)
+            def seat_cast(qx, qy, qz):   # first surface under (qx, qy) from qz down that is not her body (a slat, a cushion, a rail)
+                o_ = Vector((qx, qy, qz)); mine = {id(b_) for b_ in obs}
+                for _ in range(8):
+                    h_, l_, _n, _i, ob_, _m = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), o_, Vector((0, 0, -1)))
+                    if not h_: return None
+                    if id(ob_) not in mine and ob_.type == "MESH": return l_.z
+                    o_ = l_ - Vector((0, 0, 0.002))
+                return None
+            bpy.context.view_layer.update()
+            sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None)
         if sc_:
             zlow, cp, seat_z, gap = sc_; floor = seat_z if seat_z is not None else zlow   # the seat's top is the plane; none found -> frame the hips' own bounding area
             loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=0.8)
             print(f"GT: contact close-up: hips against the seat, {len(cp)} hip vertices within {CONTACT_BAND:g} m of the lowest, hips z {zlow:.3f}, "
-                  f"{'seat top z %.3f' % seat_z if seat_z is not None else 'seat surface not found (hips area only)'}, frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
+                  f"{'seat top z %.3f (median of the rays under the lowest patch)' % seat_z if seat_z is not None else 'seat surface not found (hips area only)'}, frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
             print("GT: seat contact gap " + (f"{gap:+.3f} m (hips above the seat +, sunk into it -)" if gap is not None else "unknown (seat surface not found)"), flush=True)
+            cut_corridor(seat_cutaway(tgt, loc, cp, width, min(floor, zlow) - 0.06, res))   # nothing of the seat between the camera and her hips
         else:
             zlow, cp = contact_points(allv)
             if not cp: cp = [(px, py, floor)]; zlow = floor

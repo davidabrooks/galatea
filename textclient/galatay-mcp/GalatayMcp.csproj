@@ -115,6 +115,7 @@
     <Compile Include="../galatay-text/InvDump.cs" Link="Core/InvDump.cs" />
     <Compile Include="../galatay-text/SceneExport.cs" Link="Core/SceneExport.cs" />
     <Compile Include="../galatay-text/Look.cs" Link="Core/Look.cs" />
+    <Compile Include="../galatay-text/McpSurface.cs" Link="Core/McpSurface.cs" />
     <Compile Include="../galatay-text/TheV.cs" Link="Core/TheV.cs" />
     <Compile Include="../galatay-text/Toilet.cs" Link="Core/Toilet.cs" />
     <Compile Include="../galatay-text/InvMove.cs" Link="Core/InvMove.cs" />

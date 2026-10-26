@@ -64,6 +64,38 @@ Recipe: `hover apply -0.05`, `look self side` (the picture shows -0.05), ask Dav
 After that the automatic check's `contact confirmed` means "contact in the render **and** the bias was set from his view". `hover set` is not in the
 `client_cmd` list: it pins the value in hover.txt for every later login.
 
+## Contact close-up (`feet` view, `zoom=feet`) and the hover check's render count (2026-10-26)
+
+David: zooming in close on the contact makes the hover easy to judge. `views=feet` (alias `contact`), or `zoom=feet` on a side view, draws a tight side view
+(about 0.6 m wide, camera level and low, the frame starting 6 cm under the floor) of **her lowest body contact for the pose she is in**, not always the feet:
+
+| Pose | What the close-up frames |
+|---|---|
+| Standing | the feet (soles and the floor) |
+| Ground sit | the hips / butt, plus the thighs or heels if they touch (a foot in the air is left out; the window widens to fit, up to 1.4 m) |
+| Kneel | the shins and knees (and toes) on the floor |
+
+How: the lowest 0.2 % of her vertices are the "lowest point"; every vertex within 10 cm above it is the contact, and the frame is that area's extent plus 0.3 m,
+at least 0.6 m. The render logs `contact close-up: <what>, N vertices within 0.1 m of her lowest point, frame W m wide`.
+
+**The hover check draws this close-up *instead of* the wide side view: one image, one render.** A check costs:
+
+| Case | Renders |
+|---|---|
+| Contact confirmed / nothing to fix | **1** (the close-up) |
+| A fix was applied | **2**: the close-up, then one more close-up at the hover really in force to verify (#312). Nothing else renders. |
+
+The close-up is never an extra render on top of the wide one. `GT_HC_ZOOM=off` in the client's environment goes back to the wide side view (still one render).
+The contact decision is still the gap measured in that same render; the close-up is the picture of it. The path of the close-up is logged
+(`posehover`: `renders N; close-up of <what>: <path>`) and **`hover check` returns it**: it now waits for the check (up to 120 s) and answers with the verdict, the
+render count and the close-up image path, so it can be shown to David. Tests: `LookFeetTests` (render count per check) and `test_look_scope.py` (stand / sit / kneel framing).
+
+Use it by hand: MCP `look {target: "self", views: "feet"}`, or `client_cmd` `look self feet` / `look self side zoom=feet`.
+
+**Connector error fixed.** `look {views: side, preset: hover-ground, cam_margin: 0.15, cam_height: 0.3}` failed with "An error occurred invoking look": the numbers were
+JSON numbers but the tool declared those parameters as strings, so the call was refused before the tool ran. The numeric and flag parameters now accept a number, a string or
+a boolean, and a failure inside `look` comes back as `look failed: <reason>`. `cam-margin` now allows 0.1–4.
+
 ## Every option (`name=value` after `look self`, or an argument of the `look` tool)
 
 | Option | Values | Effect |
@@ -81,10 +113,11 @@ After that the automatic check's `contact confirmed` means "contact in the rende
 | `samples` | 1–256 | Cycles samples (quick looks use 8). |
 | `jpeg` | 1–100 | JPEG quality (default 90). |
 | `exposure` | −6…6 stops | View exposure. Default for quick looks: −1.5. |
-| `cam-margin` | 0.5–4 | Camera distance factor (default 1.08; bigger = farther). |
+| `cam-margin` | 0.1–4 | Camera distance factor (default 1.08; bigger = farther). |
 | `cam-lens` / `cam-fov` | 14–200 mm / 5–120 deg | Lens or field of view across the long side (default 50 mm). `cam-lens` wins. |
 | `cam-height` | −1…3 m | Camera height above the floor (default: half her height). |
-| `views` / `views=` | `front,back,left,right,side` (= left), `all`, degrees | Which sides (self only). Use `side`/`left` to judge height; `front`/`back` for fit. |
+| `views` / `views=` | `front,back,left,right,side` (= left), `feet` (= `contact`), `all`, degrees | Which sides (self only). Use `side`/`left` to judge height; `front`/`back` for fit. |
+| `zoom` | `feet` (= `contact`, `close`), `off` | Turns a side view into the contact close-up (same as `views=feet`). See below. |
 | `fast` / `far` | flags | Existing: quick render / add the backdrop to 96 m. |
 
 Not exposed (the renderer has no switch for them): lighting and shadows (one fixed neutral sun, no per-light controls),

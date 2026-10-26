@@ -536,7 +536,7 @@ def world(strength):
     w.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.25 * strength
     w.node_tree.links.new(sky.outputs["Color"], w.node_tree.nodes["Background"].inputs["Color"])
 
-BODY_VIEW_DEG = {"front": 0.0, "back": 180.0, "left": 90.0, "right": -90.0}  # avatar faces +X; her left is +Y
+BODY_VIEW_DEG = {"front": 0.0, "back": 180.0, "left": 90.0, "right": -90.0, "feet": 90.0}  # avatar faces +X; her left is +Y; feet = left + the contact close-up
 def body_view_deg(v):
     """a side name or degrees counter-clockwise (from above) from her front -> rig rotation in degrees"""
     v = v.strip().lower()
@@ -1328,6 +1328,33 @@ def self_body_camera_spec(x, y, yaw_deg, deg, pts, floor_z, margin=1.08, lens=50
     d = max(half_v / vt, half_w / ht) * margin + max(0.0, half_d)
     return (tx + fx * d, ty + fy * d, cz), (tx, ty, cz), d, res
 
+CONTACT_BAND = 0.10   # m above her lowest point that count as "touching" (soles, hips, shins)
+
+def contact_points(verts, band=CONTACT_BAND, quantile=0.002, cap=4000):
+    """her lowest body contact (2026-10-26, David: zoom on where she touches the ground): verts = world (n, 3) vertices of everything she wears.
+    The lowest point is the 0.2 % quantile of z (a stray vertex doesn't move it); the contact = every vertex within `band` above it: the soles
+    standing, the hips (and thighs / heels that touch) in a ground sit, the shins / knees kneeling. -> (zlow, [(x, y, z), ...] at most `cap`)"""
+    v = np.asarray(verts, dtype=np.float64).reshape(-1, 3)
+    if len(v) == 0: return None, []
+    zlow = float(np.quantile(v[:, 2], quantile)); sel = v[v[:, 2] <= zlow + band]
+    if len(sel) > cap: sel = sel[np.linspace(0, len(sel) - 1, cap).astype(int)]
+    return zlow, [tuple(float(c) for c in r) for r in sel]
+
+def feet_camera_spec(x, y, yaw_deg, deg, cpts, zlow, floor_z, lens=50.0, res=(1024, 640), min_width=0.6, pad=0.3, max_width=1.4, sink=0.06):
+    """the contact close-up camera: level, from `deg` degrees counter-clockwise from her front (90 = her left), looking at the contact area
+    (cpts from contact_points). The frame is `width` wide (the contact's extent along the view + pad, at least min_width = 0.6 m, at most max_width),
+    and starts `sink` below the lower of the contact / the floor, so the floor line sits near the bottom with the contact above it; the camera is low
+    (frame height / 2 above that). -> (location, target, distance, width)"""
+    a = math.radians(yaw_deg + deg); fx, fy = math.cos(a), math.sin(a)
+    ls = [-fy * (p[0] - x) + fx * (p[1] - y) for p in cpts] or [0.0]; lc = (min(ls) + max(ls)) / 2
+    width = min(max_width, max(min_width, (max(ls) - min(ls)) + pad))
+    half_d = max([fx * (p[0] - x) + fy * (p[1] - y) for p in cpts] or [0.0])
+    zbot = min(floor_z, zlow) - sink; cz = zbot + width * min(res) / max(res) / 2
+    tx, ty = x - fy * lc, y + fx * lc
+    ht = 18.0 / lens   # tan of the half angle across the long side of the sensor
+    d = (width / 2) / ht + max(0.0, half_d)
+    return (tx + fx * d, ty + fy * d, cz), (tx, ty, cz), d, width
+
 def self_body_lens(d_need, d_avail, lens=50.0, lo=14.0):
     """a wall behind the camera shortens the distance: widen the lens in proportion (a 14 mm floor) so she still fits"""
     return lens if d_avail >= d_need else max(lo, lens * max(0.0, d_avail) / d_need)
@@ -1561,6 +1588,25 @@ if SCENE:
         em = nt.nodes.new("ShaderNodeEmission"); em.inputs["Color"].default_value = (1.0, 0.05, 0.05, 1); em.inputs["Strength"].default_value = 6.0
         outn = nt.nodes.new("ShaderNodeOutputMaterial"); nt.links.new(em.outputs[0], outn.inputs["Surface"]); me.materials.append(m)
         ob.visible_shadow = False
+    def contact_closeup(px, py, pyaw, deg, floor, lens, res):
+        """camera for the close-up on her lowest contact (feet standing, hips sitting, shins kneeling); logs what it framed"""
+        chunks = []
+        for ob in obs:
+            if ob.type != "MESH" or not len(ob.data.vertices): continue
+            a_ = np.empty(len(ob.data.vertices) * 3, np.float64); ob.data.vertices.foreach_get("co", a_); m_ = np.array(ob.matrix_world, np.float64)
+            chunks.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
+        zlow, cp = contact_points(np.concatenate(chunks) if chunks else np.zeros((0, 3)))
+        if not cp: cp = [(px, py, floor)]; zlow = floor
+        loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res)
+        xs = [p[0] for p in cp]; ys = [p[1] for p in cp]
+        print(f"GT: contact close-up: {os.environ.get('GT_HC_POSTURE') or 'lowest contact'}, {len(cp)} vertices within {CONTACT_BAND:g} m of her lowest point (z {zlow:.3f}, floor {floor:.3f}), "
+              f"frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
+        # a wall behind the camera: stop in front of it and widen the lens in proportion so the contact still fits (as `look self` does)
+        u = (Vector(loc) - Vector(tgt)).normalized(); s0 = max(0.0, max(u.x * (p[0] - tgt[0]) + u.y * (p[1] - tgt[1]) for p in cp)) + 0.05
+        hit, hl, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(tgt) + u * s0, u, distance=max(0.01, d - s0))
+        if hit: loc = tuple(Vector(hl) - u * 0.15)
+        da = (Vector(loc) - Vector(tgt)).length
+        return loc, tgt, d, res, self_body_lens(d, da, lens)
     def set_view(view):
         h = heads["me"]; DOF_SUBJECT[0] = dof_subject(view, heads)
         def shoulder(f, back, side, up, target, lens):
@@ -1578,13 +1624,21 @@ if SCENE:
             if FLOOR_ON: self_floor_line(deg)   # --floor=off: no red reference line either
             ev_ = lambda k: float(os.environ[k]) if os.environ.get(k) else None
             cam_lens_ = ev_("GT_CAM_LENS") or 50.0
-            loc_, tgt_, dn_, res_ = self_body_camera_spec(x, y, yaw, deg, pts_, fl, margin=ev_("GT_CAM_MARGIN") or 1.08, lens=cam_lens_, height=ev_("GT_CAM_HEIGHT"))
-            d_ = Vector(loc_) - Vector(tgt_); u_ = d_.normalized()
-            s0 = max(0.0, max(u_.x * (p_[0] - tgt_[0]) + u_.y * (p_[1] - tgt_[1]) for p_ in pts_)) + 0.05   # start outside her own box: her body isn't a wall
-            hit, hl, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(tgt_) + u_ * s0, u_, distance=max(0.01, d_.length - s0))
-            if hit: loc_ = tuple(Vector(hl) - u_ * 0.15)   # a wall behind: stop in front of it
-            da_ = (Vector(loc_) - Vector(tgt_)).length; lens_ = self_body_lens(dn_, da_, cam_lens_)
-            camera(loc_, tgt_, lens_, res_); log("self floor camera: distance", round(da_, 2), "m (wanted", round(dn_, 2), "), lens", round(lens_, 1), "mm")
+            if view.split(":", 2)[2] == "feet" or os.environ.get("GT_ZOOM") == "feet":   # views=feet / zoom=feet: tight on her lowest contact (its own wall check)
+                loc_, tgt_, dn_, res_, lens_ = contact_closeup(x, y, yaw, deg, fl, cam_lens_, (1024, 640))
+                camera(loc_, tgt_, lens_, res_); log("contact close-up camera at", [round(v, 2) for v in loc_], "lens", round(lens_, 1), "mm")
+            else:
+                loc_, tgt_, dn_, res_ = self_body_camera_spec(x, y, yaw, deg, pts_, fl, margin=ev_("GT_CAM_MARGIN") or 1.08, lens=cam_lens_, height=ev_("GT_CAM_HEIGHT"))
+                d_ = Vector(loc_) - Vector(tgt_); u_ = d_.normalized()
+                s0 = max(0.0, max(u_.x * (p_[0] - tgt_[0]) + u_.y * (p_[1] - tgt_[1]) for p_ in pts_)) + 0.05   # start outside her own box: her body isn't a wall
+                hit, hl, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(tgt_) + u_ * s0, u_, distance=max(0.01, d_.length - s0))
+                if hit: loc_ = tuple(Vector(hl) - u_ * 0.15)   # a wall behind: stop in front of it
+                da_ = (Vector(loc_) - Vector(tgt_)).length; lens_ = self_body_lens(dn_, da_, cam_lens_)
+                camera(loc_, tgt_, lens_, res_); log("self floor camera: distance", round(da_, 2), "m (wanted", round(dn_, 2), "), lens", round(lens_, 1), "mm")
+        elif view == "feet":   # hover check (default): the contact close-up INSTEAD of the wide side view (one render, one image)
+            bpy.context.view_layer.update()
+            loc_, tgt_, dn_, res_, lens_ = contact_closeup(x, y, yaw, 90.0, fl, 50.0, (640, 400))
+            camera(loc_, tgt_, lens_, res_)
         elif view == "side":   # hover check: level side view at the floor contact, close and low-res
             bpy.context.view_layer.update()
             zl = min((ob.matrix_world @ Vector(c)).z for ob in obs for c in ob.bound_box)

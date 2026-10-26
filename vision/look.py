@@ -132,6 +132,7 @@ def env_for(doc, hd, sky=None):
     return llsky.photo_env(doc, sky)
 
 SIDES = ("front", "back", "left", "right")
+VIEW_WORDS = {"side": "left", "contact": "feet"}   # aliases
 def body_views(arg):
     """--views=back,left,45 / all -> GT_BODY_VIEWS for the self body render ("" = the single front view, unchanged).
     A side name or degrees around her vertical axis, counter-clockwise from her front (90 = her left, 180 = her back)."""
@@ -140,10 +141,11 @@ def body_views(arg):
     out = []
     for p in (SIDES if v == "all" else [p.strip() for p in v.split(",") if p.strip()]):
         q = p[:-3] if p.endswith("deg") else p
-        if q not in SIDES:
+        q = VIEW_WORDS.get(q, q)
+        if q not in SIDES and q != "feet":
             try: d = float(q)
             except ValueError: d = None
-            if d is None or d != d or abs(d) > 360: raise ValueError(f"unknown view '{p}' (front, back, left, right, all, or degrees -360..360)")
+            if d is None or d != d or abs(d) > 360: raise ValueError(f"unknown view '{p}' (front, back, left, right, feet, all, or degrees -360..360)")
             q = f"{d:g}"
         out.append(q)
     return ";".join(dict.fromkeys(out))
@@ -636,7 +638,7 @@ def main(a):
     if not vw and opts["views"]: vw = opts["views"]   # a preset's default side list
     try: bviews = body_views(vw)
     except ValueError as e: sys.exit(str(e))
-    if len(a) >= 2 and a[1] == "hovercheck": a = [a[0], "view", *a[2:]]; fast = True; os.environ.update({"GT_HOVER_CHECK": "1", "GT_VIEW_OVERRIDE": "side", "GT_RES": "640x400", "GT_HC_SAMPLES": "32", "GT_EXPOSURE": os.environ.get("GT_EXPOSURE", "0")})
+    if len(a) >= 2 and a[1] == "hovercheck": a = [a[0], "view", *a[2:]]; fast = True; os.environ.update({"GT_HOVER_CHECK": "1", "GT_VIEW_OVERRIDE": look_scope.hovercheck_view(os.environ), "GT_RES": "640x400", "GT_HC_SAMPLES": "32", "GT_EXPOSURE": os.environ.get("GT_EXPOSURE", "0")})
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     if headshot and hd_arg == "": hd_arg = "square"   # headshot default frame (--hd=landscape|portrait still wins)
@@ -787,7 +789,7 @@ def main(a):
             hdr_files = [x for l in lines if l.startswith("GT: hdr master") for x in l.split()[3:5]]   # photo hd: EXR + .hdr masters
             rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
             for l in lines:
-                if l.startswith("GT: hover check"): print(l[4:])   # hovercheck: the measured gap, on stdout for the client
+                if l.startswith(("GT: hover check", "GT: contact close-up")): print(l[4:])   # hovercheck: the measured gap, on stdout for the client
             build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
             if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
         if hd:   # the PNG is the photo (David 2026-10-13: small but lossless); a quality-95 JPG next to it, secondary

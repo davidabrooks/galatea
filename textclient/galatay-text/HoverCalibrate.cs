@@ -93,11 +93,11 @@ public static partial class Program
             double size = SelfAv()?.Scale.Z ?? 0; if (size < 1) return "agent size unknown";
             if (eff is not double hov) return "cannot calibrate: the hover in force is unknown (no AgentPreferences answer, no POST this session)";
             double biasUsed = PoseBiasFor(nums, android, kind, pose);
-            var (g1, img1) = await HoverCheckRender(dir, size, hov, biasUsed);
+            var (g1, img1) = await HoverCheckRender(dir, size, hov, biasUsed, kind);
             if (g1 is not double gap) return $"calibration render gave no gap ({img1})";
             double nb = CalibratedBias(biasUsed, gap, cm);
             PoseBiasSave(key, nb);
-            var (g2, img2) = await HoverCheckRender(dir, size, hov, nb);
+            var (g2, img2) = await HoverCheckRender(dir, size, hov, nb, kind);
             bool good = g2 is double gg && Math.Abs(gg - cm / 100.0) <= 0.005;
             var msg = $"calibrated {key}: at hover {I(hov)} ({src}) the render said {gap:+0.000;-0.000} m, you see {cm / 100.0:+0.000;-0.000;0.000} m -> bias {I(biasUsed)} -> {I(nb)}; re-render gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({(good ? "matches" : "does NOT match")}); {img2}";
             Log("posehover", msg); return msg;

@@ -17,8 +17,10 @@ Options (look.py argv, all `--name=value`; look self / hover check only; photo h
   --small               quick size: half-size frame, 4 samples, 256 px bakes     --scale=<0.1..2> frame scale (wins over --small)
   --size=WxH            exact frame (wins over scale)      --samples=<1..256>   Cycles samples      --jpeg=<1..100> JPEG quality (90)
   --exposure=<stops>    view exposure, -6..6 (quick looks: -1.5)
-  --cam-margin=<0.5..4> camera distance factor (1.08)  --cam-lens=<14..200> mm (50)  --cam-fov=<5..120> deg across the long side (instead of lens)
+  --cam-margin=<0.1..4> camera distance factor (1.08)  --cam-lens=<14..200> mm (50)  --cam-fov=<5..120> deg across the long side (instead of lens)
   --cam-height=<-1..3>  camera height above the floor in metres (default: half her height)
+  --zoom=feet|off       feet = every side view is a tight close-up (about 0.6 m wide) on her LOWEST CONTACT with the floor: the soles standing, the hips
+                        (and thighs / heels that touch) in a ground sit, the shins kneeling. `views=feet` = the same, from her left, as its own view.
 Not exposed: lighting / shadows (one fixed neutral sun, no per-light switches), anti-aliasing filter, sky.
 """
 import math
@@ -28,6 +30,7 @@ SCOPE_ALIASES = {"self-only": "none", "seat-only": "seat"}
 FLOORS = ("auto", "on", "off")
 NEARBY_R = 6.0
 FLAG_ON_OFF = ("on", "off")
+ZOOM_ALIASES = {"contact": "feet", "close": "feet", "closeup": "feet", "none": "off"}
 # SL attachment points (LLViewerJointAttachment ids) by name
 ATTACH_POINTS = {"chest": 1, "skull": 2, "head": 2, "left-shoulder": 3, "right-shoulder": 4, "left-hand": 5, "right-hand": 6, "left-foot": 7, "right-foot": 8,
                  "spine": 9, "back": 9, "pelvis": 10, "mouth": 11, "chin": 12, "left-ear": 13, "right-ear": 14, "left-eye": 15, "right-eye": 16, "nose": 17,
@@ -46,7 +49,7 @@ PHOTO_HD = "photo-hd"   # `photo hd` (the client routes it; look.py never render
 
 DEFAULTS = {"preset": None, "scope": "full", "floor": "auto", "avatars": "auto", "hide_attach": (), "textures": "on", "materials": "on",
             "small": False, "fast": False, "scale": None, "size": None, "samples": None, "jpeg": None, "exposure": None,
-            "cam_margin": None, "cam_lens": None, "cam_fov": None, "cam_height": None, "views": None}
+            "cam_margin": None, "cam_lens": None, "cam_fov": None, "cam_height": None, "views": None, "zoom": "off"}
 
 def _num(name, v, lo, hi):
     try: x = float(v)
@@ -81,7 +84,11 @@ def parse_options(a):
         elif k == "samples": given["samples"] = int(_num("samples", v, 1, 256))
         elif k == "jpeg": given["jpeg"] = int(_num("jpeg", v, 1, 100))
         elif k == "exposure": given["exposure"] = _num("exposure", v, -6, 6)
-        elif k == "cam-margin": given["cam_margin"] = _num("cam-margin", v, 0.5, 4)
+        elif k == "zoom":
+            z = ZOOM_ALIASES.get(v.lower(), v.lower())
+            if z not in ("feet", "off"): raise ValueError(f"unknown zoom '{v}' (feet = close-up on her lowest contact, off)")
+            given["zoom"] = z
+        elif k == "cam-margin": given["cam_margin"] = _num("cam-margin", v, 0.1, 4)
         elif k == "cam-lens": given["cam_lens"] = _num("cam-lens", v, 14, 200)
         elif k == "cam-fov": given["cam_fov"] = _num("cam-fov", v, 5, 120)
         elif k == "cam-height": given["cam_height"] = _num("cam-height", v, -1, 3)
@@ -104,6 +111,12 @@ def is_default(opts):
 
 def floor_on(floor): return floor != "off"
 
+def hovercheck_view(env):
+    """the ONE view the hover check renders (2026-10-26, David: zoom in when checking the hover, but no extra render): the close-up on her lowest
+    contact ("feet": soles / hips / shins) instead of the wide side view; GT_HC_ZOOM=off gives the old wide "side" view back. Always a single
+    view: a hover check never renders two images."""
+    return "side" if (env.get("GT_HC_ZOOM") or "on").lower() == "off" else "feet"
+
 def env_for(opts):
     """-> (env vars for render_mesh / handler, fast): small / scale / samples imply the quick path"""
     e = {}
@@ -116,6 +129,7 @@ def env_for(opts):
     samples = opts["samples"] if opts["samples"] is not None else (4 if opts["small"] else None)
     if samples is not None: e["GT_HC_SAMPLES"] = str(samples)
     if opts["jpeg"] is not None: e["GT_JPEG_QUALITY"] = str(opts["jpeg"])
+    if opts.get("zoom") == "feet": e["GT_ZOOM"] = "feet"
     if opts["exposure"] is not None: e["GT_EXPOSURE"] = f"{opts['exposure']:g}"
     for k, name in (("cam_margin", "GT_CAM_MARGIN"), ("cam_lens", "GT_CAM_LENS"), ("cam_height", "GT_CAM_HEIGHT")):
         if opts[k] is not None: e[name] = f"{opts[k]:g}"

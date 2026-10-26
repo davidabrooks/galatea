@@ -85,9 +85,9 @@ public class HoverVisualCheckTests
     [Fact] public void RequestIsDebounced_NewestWins_AndRunsPoseFirst()
     {
         var ph = Src("PoseHover.cs");
-        var req = ph[ph.IndexOf("internal static void HoverCheckRequest(")..]; req = req[..req.IndexOf("// is she still in that pose?")];
+        var req = ph[ph.IndexOf("internal static Task<string> HoverCheckRequest(")..]; req = req[..req.IndexOf("// is she still in that pose?")];
         Assert.Contains("Interlocked.Increment(ref hoverReqSeq)", req);
-        Assert.Contains("!= id) return;", req);                                  // a newer request replaced this one
+        Assert.Contains("!= id) return \"replaced", req);                                  // a newer request replaced this one
         Assert.True(req.IndexOf("await Task.Delay(delayMs)") < req.IndexOf("await PoseHoverCheck("));   // pose first, hover after
         Assert.Contains("attempt >= HoverCheckMaxTries", req);                   // bounded retries
         Assert.Contains("hoverCheckLastRun = DateTime.Now", req);                // cooldown stamp before the run: a failed check cannot loop

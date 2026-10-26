@@ -12,7 +12,7 @@ namespace GalatayText;
 public static partial class Program
 {
     // render option keys look.py takes as --key=value (look_scope.py validates the values); `small` is the one bare word
-    internal static readonly string[] LookOptKeys = { "preset", "scope", "floor", "avatars", "hide-attach", "textures", "materials", "scale", "size", "samples", "jpeg", "exposure", "cam-margin", "cam-lens", "cam-fov", "cam-height" };
+    internal static readonly string[] LookOptKeys = { "preset", "scope", "floor", "avatars", "hide-attach", "textures", "materials", "scale", "size", "samples", "jpeg", "exposure", "cam-margin", "cam-lens", "cam-fov", "cam-height", "zoom" };
     internal static readonly string[] LookPresets = { "hover-ground", "hover-seat", "photo-fast", "outfit", "photo-hd" };
 
     // pure (test): `look self ... key=value ... small` -> (the words that are not render options, look.py --options, preset or null)
@@ -32,6 +32,29 @@ public static partial class Program
             rest.Add(x);
         }
         return (rest.ToArray(), opts, preset);
+    }
+
+    // pure (test): an MCP tool argument as text, whatever JSON type the caller sent. 2026-10-26 11:57: `look {cam_margin: 0.15, cam_height: 0.3}` (JSON numbers)
+    // failed with the connector's generic "An error occurred invoking look" because those parameters were declared string and the SDK refuses a number
+    // there before the method runs. The tolerant parameters are JsonElement? and go through this: number -> its text, bool -> true/false, null -> ""
+    internal static string McpOpt(JsonElement? e)
+    {
+        if (e is not JsonElement j) return "";
+        return j.ValueKind switch
+        {
+            JsonValueKind.Undefined or JsonValueKind.Null => "",
+            JsonValueKind.String => j.GetString() ?? "",
+            JsonValueKind.Number => j.GetRawText(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => j.GetRawText(),
+        };
+    }
+    // pure (test): an MCP boolean argument sent as true/false, "true"/"yes"/"on"/"1", or 0/1
+    internal static bool McpFlag(JsonElement? e, bool dflt)
+    {
+        var t = McpOpt(e).Trim().ToLowerInvariant();
+        return t.Length == 0 ? dflt : t is "true" or "yes" or "on" or "1";
     }
 
     // pure (test): the MCP `look` arguments -> the client command line. target: self | view | around | <avatar or object name>

@@ -62,7 +62,7 @@ def test_avatars():
     with pytest.raises(ValueError): L.parse_options(["--avatars=on"])   # a self look never draws them: not offered
 
 @pytest.mark.parametrize("bad", ["--scope=huge", "--floor=maybe", "--textures=2", "--scale=0", "--scale=5", "--size=10x10", "--size=abc", "--samples=0", "--jpeg=101",
-                                 "--exposure=9", "--cam-margin=0.1", "--cam-lens=5", "--cam-fov=200", "--cam-height=9", "--preset=nope", "--scale=abc", "--exposure=nan"])
+                                 "--exposure=9", "--cam-margin=0.05", "--cam-lens=5", "--cam-fov=200", "--cam-height=9", "--preset=nope", "--scale=abc", "--exposure=nan"])
 def test_bad_values_are_refused_with_a_message(bad):
     with pytest.raises(ValueError) as e: L.parse_options([bad])
     assert str(e.value)
@@ -213,3 +213,93 @@ def test_hover_check_detail_line_reports_bias_calibration_and_viewer_formula_gap
     assert "viewer-formula gap +0.091 m" in line
     assert "(default)" in ns["hover_check_detail"]({}, 26.0, -0.9, 0.0, 25.0, 0.0)
     assert "viewer-formula gap n/a" in ns["hover_check_detail"]({}, 26.0, None, 0.0, 25.0, 0.0)
+
+
+# ---- the contact close-up (2026-10-26, David: "zooming in closer helps judging the hover"; sits: frame the hips, not the feet) -----------------------
+def _rm():
+    """contact_points / feet_camera_spec lifted out of render_mesh.py (the file needs bpy)"""
+    import ast, math, pathlib
+    import numpy as np
+    src = (pathlib.Path(__file__).resolve().parents[1] / "cloud-render" / "render_mesh.py").read_text()
+    want = {"contact_points", "feet_camera_spec"}; tree = ast.parse(src)
+    body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "CONTACT_BAND" for t in n.targets)] + \
+           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
+    ns = {"np": np, "math": math}; exec(compile(ast.Module(body, []), "render_mesh", "exec"), ns)
+    return ns
+
+def _body(rng, n, x0, x1, z0, z1):
+    import numpy as np
+    return np.column_stack([rng.uniform(x0, x1, n), rng.uniform(-0.1, 0.1, n), rng.uniform(z0, z1, n)])
+
+def test_contact_stand_frames_the_soles_not_the_body():
+    import numpy as np
+    ns = _rm(); rng = np.random.default_rng(1)
+    verts = np.vstack([_body(rng, 400, -0.1, 0.2, 0.0, 0.10), _body(rng, 3000, -0.1, 0.1, 0.1, 1.5)])   # soles + ankles at the floor, the rest above
+    zlow, cp = ns["contact_points"](verts)
+    assert abs(zlow) < 0.01 and cp and max(p[2] for p in cp) <= zlow + 0.1 + 1e-9                         # only the lowest 10 cm: no knees, no head
+    loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, 0.0)
+    assert abs(width - 0.6) < 1e-6                                                                         # about 0.6 m wide
+    assert abs(tgt[2] - loc[2]) < 1e-9 and loc[2] < 0.25                                                   # level and low (frame starts 6 cm under the floor)
+    assert abs(loc[0] - tgt[0]) < 1e-9 and loc[1] > tgt[1]                                                 # from her left (+Y at yaw 0)
+    assert abs(tgt[0] - 0.05) < 0.1                                                                        # centred on the feet (x -0.1..0.2), not on her whole body
+
+def test_contact_ground_sit_frames_the_hips_not_the_feet():
+    import numpy as np
+    ns = _rm(); rng = np.random.default_rng(2)
+    hips = _body(rng, 800, -0.2, 0.2, 0.0, 0.10)          # butt on the floor
+    thighs = _body(rng, 600, 0.2, 0.45, 0.05, 0.12)       # thighs along the floor
+    feet = _body(rng, 300, 0.55, 0.65, 0.30, 0.45)        # V-sit: the feet are in the air
+    torso = _body(rng, 2000, -0.2, 0.0, 0.12, 1.0)
+    zlow, cp = ns["contact_points"](np.vstack([hips, thighs, feet, torso]))
+    xs = [p[0] for p in cp]
+    assert max(xs) < 0.5 and min(xs) < -0.15                                                                # hips and thighs yes, the airborne feet no
+    loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, 0.0)
+    assert width > 0.6 and width <= 1.4                                                                    # wider: hips + thighs, not 0.6
+    assert abs(tgt[0] - 0.12) < 0.15                                                                       # centred on the hips + thighs (x -0.2..0.45), nowhere near the feet (x 0.6)
+    assert abs(tgt[0] - 0.6) > 0.3
+
+def test_contact_kneel_frames_shins_and_knees_not_the_hips():
+    import numpy as np
+    ns = _rm(); rng = np.random.default_rng(3)
+    shins = _body(rng, 700, 0.0, 0.4, 0.0, 0.09)           # shins / knees on the floor
+    toes = _body(rng, 150, -0.3, -0.1, 0.03, 0.09)         # toes touching
+    hips = _body(rng, 800, -0.1, 0.1, 0.30, 0.5); torso = _body(rng, 1500, -0.1, 0.1, 0.5, 1.2)
+    zlow, cp = ns["contact_points"](np.vstack([shins, toes, hips, torso]))
+    assert max(p[2] for p in cp) < 0.15                                                                    # no hips (z >= 0.30)
+    xs = [p[0] for p in cp]; assert min(xs) < -0.2 and max(xs) > 0.3                                       # shins and toes both in the window
+    loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, 0.0)
+    assert width >= 0.6 + 0.3 and loc[2] < 0.3
+
+def test_contact_ignores_a_stray_low_vertex_and_follows_the_floor_when_she_hovers():
+    import numpy as np
+    ns = _rm(); rng = np.random.default_rng(4)
+    verts = np.vstack([_body(rng, 3000, -0.1, 0.2, 0.0, 0.10), _body(rng, 3000, -0.1, 0.1, 0.1, 1.5), [[0.0, 0.0, -1.0]]])
+    zlow, cp = ns["contact_points"](verts); assert zlow > -0.01                                           # the 0.2 % quantile, not the minimum
+    # floating 5 cm above a floor at -0.05: the window starts under the FLOOR so the gap is in the picture
+    loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, -0.05)
+    assert loc[2] - (width * 0.625 / 2) <= -0.05 - 0.05                                                    # frame bottom below the floor
+    assert ns["contact_points"](np.zeros((0, 3))) == (None, [])
+    assert len(ns["contact_points"](verts, cap=100)[1]) <= 100
+
+def test_hovercheck_renders_one_view_the_close_up_instead_of_the_wide_side_view():
+    assert L.hovercheck_view({}) == "feet" and ";" not in L.hovercheck_view({})                           # ONE view = one image = one render
+    assert L.hovercheck_view({"GT_HC_ZOOM": "off"}) == "side"                                              # the old wide view is still available
+    import pathlib
+    lk = (pathlib.Path(__file__).resolve().parents[1] / "look.py").read_text()
+    assert 'look_scope.hovercheck_view(os.environ)' in lk and '"GT_VIEW_OVERRIDE": "side"' not in lk
+
+def test_zoom_option_parses_and_sets_the_env():
+    assert opts("--zoom=feet")["zoom"] == "feet" and opts("--zoom=contact")["zoom"] == "feet" and opts("--zoom=off")["zoom"] == "off"
+    assert L.env_for(opts("--zoom=feet"))[0]["GT_ZOOM"] == "feet" and "GT_ZOOM" not in L.env_for(opts())[0]
+    with pytest.raises(ValueError): L.parse_options(["--zoom=macro"])
+    assert L.is_default(opts("--zoom=off")) and not L.is_default(opts("--zoom=feet"))
+    assert opts("--cam-margin=0.15")["cam_margin"] == 0.15                                                 # the 2026-10-26 11:57 call's value is valid now
+
+def test_body_views_accepts_feet_and_its_aliases():
+    import ast, pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "look.py").read_text(); tree = ast.parse(src)   # look.py imports PIL: lift the pure function
+    body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("SIDES", "VIEW_WORDS") for t in n.targets)] + \
+           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "body_views"]
+    ns = {}; exec(compile(ast.Module(body, []), "look", "exec"), ns); bv = ns["body_views"]
+    assert bv("feet") == "feet" and bv("contact") == "feet" and bv("side,feet") == "left;feet" and bv("all") == "front;back;left;right"
+    with pytest.raises(ValueError): bv("toes")

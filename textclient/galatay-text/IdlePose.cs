@@ -26,26 +26,39 @@ public static partial class Program
         return pool[(int)(Math.Clamp(r01, 0, 0.999999) * pool.Length)];
     }
     // pure (tested): which idle pose: collar pose when the collar or the leash chain can be seen, else the AO ground sit
-    internal static string IdlePoseKind(bool collarVisible, bool leashVisible) => collarVisible || leashVisible ? "collar" : "groundsit";
+    // 2026-10-26 (David): in android form she NEVER uses the collar kneel poses, only AO ground sits (and standing)
+    internal static string IdlePoseKind(bool collarVisible, bool leashVisible, bool android = false) => !android && (collarVisible || leashVisible) ? "collar" : "groundsit";
+    // pure (tested): the kind an idle pose may really be entered as, or null = no idle pose now. android: never a collar kneel (ground sit
+    // instead); leashed: never any new sit/kneel via the AO ground sit; leashHold: she was stood up because of this leash (2026-10-26
+    // 09:54 bug: groundsit -> leash -> stood -> straight into a collar kneel) so nothing starts until the leash is released.
+    internal static string IdleEnterKindFor(string kind, bool android, bool leashed, bool leashHold)
+    {
+        if (kind == null) return null;
+        if (android) kind = "groundsit";
+        if (leashed && (kind == "groundsit" || leashHold)) return null;
+        return kind;
+    }
     // pure (tested): idle threshold with jitter: base * 0.75..1.25 (default base 240 s -> 3-5 min)
     internal static double IdleThresholdSec(double baseSec, double r01) => IdleWaitMin + (IdleWaitMax - IdleWaitMin) * Math.Clamp(r01, 0, 1);   // David 11:26: real variance, fresh each time (base kept for API)
     internal const double IdleWaitMin = 90, IdleWaitMax = 300;
     internal readonly record struct IdleIn(bool enabled, bool leashed, bool walkerDriving, bool following, bool sittingOnObject, bool moving,
-        bool forceSat, bool sitLocked, bool busy, bool dancing, double idleSec, double thresholdSec, bool collarVisible, bool leashVisible, bool groundSitMapped);
+        bool forceSat, bool sitLocked, bool busy, bool dancing, double idleSec, double thresholdSec, bool collarVisible, bool leashVisible, bool groundSitMapped, bool android = false, bool leashHold = false);
     // pure (tested): enter which pose now (null = not now)
     internal static string IdleEnter(IdleIn s)
     {
         if (!s.enabled || s.walkerDriving || s.following || s.sittingOnObject || s.moving || s.forceSat || s.sitLocked || s.busy || s.dancing) return null;   // dancing is never idle
         if (s.idleSec < s.thresholdSec) return null;
-        var k = IdlePoseKind(s.collarVisible, s.leashVisible);
-        if (k == "groundsit" && (s.leashed || !s.groundSitMapped)) return null;   // never the AO ground sit on a leash
+        var k = IdleEnterKindFor(IdlePoseKind(s.collarVisible, s.leashVisible, s.android), s.android, s.leashed, s.leashHold);
+        if (k == "groundsit" && !s.groundSitMapped) return null;
         return k;
     }
     // pure (tested): must the pose be cleared now?
-    internal static string IdleMustExit(string kind, bool following, bool sittingOnObject, bool moving, bool forceSat, bool leashed, bool davidWalkingAway, bool walkerWants)
+    internal static string IdleMustExit(string kind, bool following, bool sittingOnObject, bool moving, bool forceSat, bool leashed, bool davidWalkingAway, bool walkerWants, bool android = false)
         => kind == null ? null
          : following ? "follow" : sittingOnObject || forceSat ? "sit" : moving ? "moving"
-         : walkerWants ? "walker" : null;   // leash on/off alone never ends it (David 11:31)
+         : walkerWants ? "walker"
+         : leashed && (kind == "groundsit" || kind == "collar" && android) ? "leashed"   // 2026-10-26: a leash ends an AO ground sit (and any android collar kneel): stand, never switch into another pose
+         : null;   // a leash alone never ends a human collar kneel (David 11:31)
     // pure (tested): the collar Pose menu's "Playing: <pose>" header -> pose, or null for (none)/unknown
     internal static string CollarPlaying(string menuText)
     {
@@ -199,6 +212,7 @@ public static partial class Program
         try
         {
             var cur = idlePosed; if (cur == null) return "not posed";
+            if (cur.kind == "collar" && IdleAndroidNow()) return "android form: no collar poses";
             if (cur.kind == "groundsit")
             {
                 var beforeAnims = SelfAnims().ToHashSet(); aoSitTransitionUntil = DateTime.Now.AddSeconds(30);
@@ -221,11 +235,12 @@ public static partial class Program
     }
     // pure (tested): switch pose family when visibility changes: collar hidden + no chain -> AO ground sit (if allowed),
     // collar or chain visible while ground sitting -> collar pose. null = keep.
-    internal static string IdleSwitch(string kind, bool collarVisible, bool leashVisible, bool leashed, bool groundSitMapped)
+    internal static string IdleSwitch(string kind, bool collarVisible, bool leashVisible, bool leashed, bool groundSitMapped, bool android = false)
     {
-        var want = IdlePoseKind(collarVisible, leashVisible);
+        var want = IdlePoseKind(collarVisible, leashVisible, android);
         if (kind == null || want == kind) return null;
-        if (want == "groundsit" && (leashed || !groundSitMapped)) return null;   // keep kneeling rather than stand
+        if (leashed) return null;   // 2026-10-26: leashed => a switch may only EXIT (IdleMustExit), never enter another pose
+        if (want == "groundsit" && !groundSitMapped) return null;   // keep kneeling rather than stand
         return want;
     }
     // 2026-10-23 (David): an explicit stand (stand tool, idle_pose stop, logout) blocks the idle sit/kneel for a fixed 30 min
@@ -389,6 +404,9 @@ public static partial class Program
         try
         {
             if (idlePosed != null) return $"already posed ({idlePosed.kind} {idlePosed.pose})";
+            var allowed = IdleEnterKindFor(kind, IdleAndroidNow(), IdleLeashedNow(), idleLeashHold);
+            if (allowed == null) return $"no idle pose ({kind}): {(IdleLeashedNow() ? "leashed: stand only" : "not allowed")}";
+            if (allowed != kind) { Log("idlepose", $"enter {kind} -> {allowed} (android form never uses collar kneel poses)"); kind = allowed; }
             await IdleFaceHim();
             if (kind == "collar")
             {
@@ -500,9 +518,15 @@ public static partial class Program
             }
         });
     }
+    // 2026-10-26: android form (outfit name or worn body); an unsettled form counts as android (never a collar kneel by mistake)
+    static bool IdleAndroidNow() { try { return AndroidFormNow() || !FormCertainNow(); } catch { return true; } }
+    // leashed = the leash object, or the leash chain seen on the collar (it shows up a tick before the leash object), or a walker driving
+    static bool IdleLeashedNow() => leash != null || leashDriving || LeashParticleTarget() != null;
+    static volatile bool idleLeashHold;   // a leash stood her up: no idle pose until it is released
     static async Task IdlePoseTick()
     {
-        var l = leash; var v0 = client.Self.Velocity; float speed = new Vector3(v0.X, v0.Y, 0).Length();
+        var l = leash; bool leashedNow = IdleLeashedNow(), androidNow = IdleAndroidNow();
+        if (!leashedNow) idleLeashHold = false; var v0 = client.Self.Velocity; float speed = new Vector3(v0.X, v0.Y, 0).Length();
         bool following = followId != UUID.Zero, sitObj = client.Self.SittingOn != 0, forceSat = rlvHoldSeat != null;
         bool moving = speed > 0.3f;
         var dav = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId);
@@ -513,17 +537,17 @@ public static partial class Program
         var posed = idlePosed;
         if (posed != null)
         {
-            var why = IdleMustExit(posed.kind, following, sitObj, moving, forceSat, l != null, davidAway, false);
-            if (why != null) await IdlePoseExit(why);
-            else if (IdleSwitch(posed.kind, CollarVisibleNow(), LeashParticleTarget() != null, l != null, AoGroundSitNow() != null) is string sw)
+            var why = IdleMustExit(posed.kind, following, sitObj, moving, forceSat, leashedNow, davidAway, false, androidNow);
+            if (why != null) { if (why == "leashed") idleLeashHold = true; await IdlePoseExit(why); }
+            else if (IdleSwitch(posed.kind, CollarVisibleNow(), LeashParticleTarget() != null, leashedNow, AoGroundSitNow() != null, androidNow) is string sw)
             { await IdlePoseExit("switch to " + sw); Log("idlepose", "switch: " + await IdlePoseEnter(sw, "visibility changed")); }
             else if (IdleShouldRotate(posed.kind, (DateTime.Now - posed.since).TotalSeconds, idleRotate, dancing)) Log("idlepose", "rotate: " + await IdlePoseRotate());
             return;
         }
         if (davidAway) IdleNoteActivity();
-        var kind = IdleEnter(new IdleIn(idlePoseOn, l != null, leashDriving, following, sitObj, moving, forceSat,
+        var kind = IdleEnter(new IdleIn(idlePoseOn, leashedNow, leashDriving, following, sitObj, moving, forceSat,
             rlv.Has("sit") || rlv.Has("unsit") && sitObj, leashForgetBusy != 0 || shuttingDown, dancing,
-            (DateTime.Now - idleActivityAt).TotalSeconds, idleThreshold, CollarVisibleNow(), LeashParticleTarget() != null, AoGroundSitNow() != null));
+            (DateTime.Now - idleActivityAt).TotalSeconds, idleThreshold, CollarVisibleNow(), LeashParticleTarget() != null, AoGroundSitNow() != null, androidNow, idleLeashHold));
         if (kind != null && IdleCooldownActive(DateTime.Now, idleNoSitUntil)) return;   // explicit stand cooldown
         if (kind != null) Log("idlepose", "enter: " + await IdlePoseEnter(kind, $"idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0} s"));
     }
@@ -543,7 +567,7 @@ public static partial class Program
         {
             case "on" when a.Length == 1: idlePoseOn = true; IdleNoteActivity(); return $"idle pose ON (after {idleThreshold:F0} s idle)";
             case "off": idlePoseOn = false; return "idle pose OFF; " + await IdlePoseExit("idle pose off");
-            case "now": { var k = a.Length > 1 ? (a[1] == "collar" || a[1] == "kneel" ? "collar" : "groundsit") : IdlePoseKind(CollarVisibleNow(), LeashParticleTarget() != null); return await IdlePoseEnter(k, "manual"); }
+            case "now": { var k = a.Length > 1 ? (a[1] == "collar" || a[1] == "kneel" ? "collar" : "groundsit") : IdlePoseKind(CollarVisibleNow(), LeashParticleTarget() != null, IdleAndroidNow()); return await IdlePoseEnter(k, "manual"); }   // IdlePoseEnter refuses collar kneels in android form
             case "stop": case "stand": return await IdleExplicitStand("manual stop");
             case "idle" when a.Length > 1 && double.TryParse(a[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sec) && sec >= 30:
                 idleThreshold = sec; return $"idle threshold {sec:F0} s (this round; base GT_IDLE_POSE_SEC={IdleBaseSec():F0})";

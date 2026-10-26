@@ -112,7 +112,7 @@ partial class Program
         m.SendUpdate(true);
     }
     static bool LeashCanMove(LeashState l) =>
-        l != null && !l.anchor && l.holder != UUID.Zero && client.Self.SittingOn == 0 && rlvHoldSeat == null && leashForgetBusy == 0 && followId != l.holder;
+        l != null && !l.anchor && l.holder != UUID.Zero && !leashRelease.Pending && client.Self.SittingOn == 0 && rlvHoldSeat == null && leashForgetBusy == 0 && followId != l.holder;
     static bool leashFwdWas; static float leashPrevVToward;
     static void LeashDrive(bool forward)
     {

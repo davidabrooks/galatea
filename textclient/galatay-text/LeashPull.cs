@@ -41,7 +41,7 @@ public static partial class Program
                 {
                     pullTicks = id == pullId ? pullTicks + 1 : 1; pullId = id; lastPullAt = DateTime.Now;
                     if (pullTicks == 1) RlvLog($"leash-diag: PULL toward {id} (speed {client.Self.Velocity.Length():F1} m/s, no own movement)");
-                    if (pullTicks == 3 && (leash == null || leash.mode != "leash"))
+                    if (pullTicks == 3 && (leash == null || leash.mode != "leash") && LeashPullStartAllowed(DateTime.Now, leashNoPullStartUntil))
                     {
                         var av = Avatars().FirstOrDefault(a => a.av?.ID == id);
                         LeashStart("leash", id, av.av?.Name ?? id.ToString(), false, "collar pull (invisible leash?)");

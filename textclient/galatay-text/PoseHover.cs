@@ -40,41 +40,64 @@ public static partial class Program
     internal static double PoseBiasDefault(string kind) => kind == "stand" ? 0.2315 : -0.055;
     internal static bool PoseGapSane(double gap) => Math.Abs(gap) <= 0.25;
     internal static bool PoseGapConfirmed(double gap) => Math.Abs(gap) <= PoseHoverTol;
-    // ---- hand-supported ground sits (2026-10-27 David, VAMOSITG13: she rests on both hands behind her with her hips on the floor) ----
-    // The check measures the HIPS contact; in these poses the hands then sink into the floor, which looks worse than hips hovering a little (David's eye preferred +0.06 over the
-    // hip-contact -0.012). The render does not report the hands, so the bias is a documented constant: the check aims HandSupportLiftM ABOVE the hip contact (-0.012 + 0.07 = +0.058).
-    // Code-level data keyed by the AO pose name (the VAMOSITG sit); NEVER a saved per-pose hover height (the ground varies by place: the lift is relative to this location's measured contact).
-    internal const double HandSupportLiftM = 0.07;
-    // pose name -> lift above the hip contact. VAMOSITG13: +0.07 (hips -0.012 sank the hands; David's eye: +0.06). VAMOSITG12 is hand-supported too, but in David's viewer it looked right
-    // at about -0.01 (the hip contact) and +0.06 was too HIGH: lift 0, so a hover left over from G13 is measured away and put back to the hip contact (David, Oct 27 10:08)
-    internal static readonly Dictionary<string, double> HandSupportedSits = new(StringComparer.OrdinalIgnoreCase) { ["VAMOSITG13"] = HandSupportLiftM, ["VAMOSITG12"] = 0.0 };
-    // pure (tested): the lift above the hip contact for this posture / pose: the pose's own value for a hand-supported ground sit, else 0 (stands, other sits, seats, unknown names)
-    internal static double HandSupportLift(string kind, string pose) => kind == "sit" && pose != null && HandSupportedSits.TryGetValue(pose.Trim(), out var l) ? l : 0.0;
-    internal static bool IsHandSupported(string kind, string pose) => kind == "sit" && pose != null && HandSupportedSits.ContainsKey(pose.Trim());
+    // ---- ground sits whose floor contact is not (only) the hips (2026-10-27 David: VAMOSITG13 / 11 rest on their hands, VAMOSITG27 on chest / forearms / thighs) ----
+    // David's rule: look at the ground the way he does and adjust to it; the ground types differ, so NO per-pose hover value and NO per-pose offset. The ONE close-up render measures, against the floor
+    // surface drawn in that render, the visible gap under every body part (render_mesh.py `body_part_gaps`: hips, chest, hands, forearms, thighs, shins, feet; `GT: hover check parts: ...`).
+    // The AO pose name only CHOOSES WHICH PARTS SUPPORT HER (data below, never a number). The hover then goes where the LOWEST supporting part rests on the floor or is just above it:
+    // every supporting part is on or above the floor (hands never below it: they aim HandsAimM above), and nothing is lifted more than that. A pose not listed keeps the
+    // whole-body lowest-vertex gap as before. Nothing absolute is saved or hardcoded.
+    internal const double HandsAimM = 0.008;
+    internal static readonly Dictionary<string, string[]> SupportPartsOfPose = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["VAMOSITG13"] = new[] { "hips", "hands" },    // hips on the floor, both hands propped behind her
+        ["VAMOSITG12"] = new[] { "hips", "hands" },    // hand-supported too
+        ["VAMOSITG11"] = new[] { "hips", "hands" },    // leaning back on both hands
+        ["VAMOSITG27"] = new[] { "chest", "forearms", "thighs" },   // belly down: the hips do not count
+    };
+    internal static readonly string[] BodyParts = { "hips", "chest", "hands", "forearms", "thighs", "shins", "feet" };
+    // pure (tested): the body parts that support her in this AO ground sit; null = unlisted pose (the whole-body lowest gap, as before)
+    internal static string[] SupportParts(string kind, string pose) => kind == "sit" && pose != null && SupportPartsOfPose.TryGetValue(pose.Trim(), out var p) ? p : null;
+    // pure (tested): "GT: hover check parts: hips +0.012, hands -0.040, chest +0.150" -> part -> gap above the floor (m); parts the render could not see are absent
+    internal static Dictionary<string, double> HoverCheckPartGaps(string stdout)
+    {
+        var d = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var line = (stdout ?? "").Split('\n').LastOrDefault(l => l.Contains("hover check parts:"));
+        if (line == null) return d;
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(line[(line.IndexOf("hover check parts:") + 18)..], @"([a-z]+) ([+-]\d+\.\d+)"))
+            d[m.Groups[1].Value] = double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+        return d;
+    }
+    // pure (tested): the gap that drives the fix: the LOWEST gap among the supporting parts the render measured (every part on or above the floor once it is zero); null = none measured
+    internal static double? SupportGap(IEnumerable<string> parts, IReadOnlyDictionary<string, double> gaps)
+    {
+        var g = (parts ?? Enumerable.Empty<string>()).Where(p => gaps != null && gaps.ContainsKey(p)).Select(p => gaps[p]).ToList();
+        return g.Count == 0 ? null : g.Min();
+    }
+    // pure (tested): where the lowest supporting part is aimed above the floor: HandsAimM when hands support her (never below the floor), else on it
+    internal static double SupportAim(IEnumerable<string> parts) => parts != null && parts.Contains("hands") ? HandsAimM : 0.0;
+    // pure (tested): is the lowest supporting part where it is aimed? (effective gap = support gap - aim)
+    internal static bool SupportConfirmed(double effGap, double aim) => Math.Abs(effGap) <= (aim > 0 ? aim : PoseHoverTol);
+    // pure (tested): "hips +0.012, hands -0.040" for the log, in the order of the supporting parts
+    internal static string SupportGapsText(IEnumerable<string> parts, IReadOnlyDictionary<string, double> gaps) =>
+        string.Join(", ", (parts ?? Enumerable.Empty<string>()).Select(p => gaps != null && gaps.TryGetValue(p, out var v) ? $"{p} {v:+0.000;-0.000;+0.000}" : $"{p} not seen"));
     // pure (tested): the pose changed since the last finished check (an automatic rotation): the hover in force may be one set for the OTHER pose, by hand or by its check.
     // It is never trusted: this check measures the new pose against its own target (the render at the hover in force) and corrects, it does not inherit "contact" from the old value
     internal static bool PoseChangedSinceCheck(string lastPose, string pose) => lastPose != null && !string.Equals(lastPose.Trim(), (pose ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
     static string hoverLastCheckedPose;
-    // ---- prone ground sits (2026-10-27 David, VAMOSITG27: belly down, chest / forearms / thighs on the floor) ----
-    // The hips are NOT what meets the floor, so the hip-contact gap means nothing: the check set +0.138 and she floated in David's viewer (0.0 slightly too low, +0.02 good). A prone pose
-    // is its own class: NOT driven by the hip contact, a fixed hover (code-level data keyed by AO pose name, never saved to disk). The one render stays (it proves the pose and frames the
-    // close-up) but its gap is only informational; no second render is needed because nothing is computed from it.
-    internal const double ProneHoverTol = PoseHoverTol;
-    internal static readonly Dictionary<string, double> ProneSits = new(StringComparer.OrdinalIgnoreCase) { ["VAMOSITG27"] = 0.02 };
-    // pure (tested): the fixed hover of a prone ground sit, null for every other pose / posture
-    internal static double? ProneHoverTarget(string kind, string pose) => kind == "sit" && pose != null && ProneSits.TryGetValue(pose.Trim(), out var h) ? h : null;
-    // pure (tested): does a prone pose need a hover change? only when the hover in force is more than the tolerance from its fixed value
-    internal static bool ProneHoverNeedsFix(double hoverInForce, double target) => Math.Abs(hoverInForce - target) > ProneHoverTol;
-    // pure (tested): the render gap judged against the intended placement: the hips floating HandSupportLift above the floor ARE contact for a hand-supported sit.
-    // Applying hover - this gap converges (re-checking at the lifted hover reads gap = lift, so effective gap 0, no further change)
-    internal static double HandFirstGap(double gap, double lift) => gap - lift;
+    static volatile Dictionary<string, double> hoverLastPartGaps = new();   // the part gaps of the last HoverCheckRender (every body part the render saw)
     internal static double PoseHoverFromGap(double hov, double gap) => Math.Round(Math.Clamp(hov - gap, -0.4, 0.4), 3);
     // pure (tested): the env that makes the quick render a hover check (hover offset applied, real placement, floor drawn)
-    internal static Dictionary<string, string> HoverCheckEnv(double size, double hover, double bias) => new()
+    // parts = the body parts that support her in this pose (SupportParts): the renderer frames them in the close-up; it reports every part's gap either way
+    internal static Dictionary<string, string> HoverCheckEnv(double size, double hover, double bias, string[] parts = null)
     {
-        ["GT_HOVER_CHECK"] = "1", ["GT_AGENT_SIZE"] = size.ToString("0.000", CultureInfo.InvariantCulture),
-        ["GT_HOVER"] = hover.ToString("0.000", CultureInfo.InvariantCulture), ["GT_HOVER_BIAS"] = bias.ToString("0.0000", CultureInfo.InvariantCulture),
-    };
+        var env = new Dictionary<string, string>
+        {
+            ["GT_HOVER_CHECK"] = "1", ["GT_AGENT_SIZE"] = size.ToString("0.000", CultureInfo.InvariantCulture),
+            ["GT_HOVER"] = hover.ToString("0.000", CultureInfo.InvariantCulture), ["GT_HOVER_BIAS"] = bias.ToString("0.0000", CultureInfo.InvariantCulture),
+        };
+        if (parts is { Length: > 0 }) env["GT_HC_PARTS"] = string.Join(",", parts);
+        return env;
+    }
     internal static double? HoverCheckGap(string stdout)
     {
         var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "", @"hover check gap ([+-]?\d+\.\d+) m");
@@ -184,15 +207,16 @@ public static partial class Program
     }
 
     // ONE render, ONE image. kind (stand|sit) only labels what the close-up frames
-    static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null, bool seat = false)
+    static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null, bool seat = false, string[] parts = null)
     {
         var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add(LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
-        foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, bias)) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
+        foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, bias, parts)) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
         foreach (var kv in ContactEnv(seat ? "seat" : kind)) psi.Environment[kv.Key] = kv.Value;
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
         var text = await o; await e;
+        hoverLastPartGaps = seat ? new() : HoverCheckPartGaps(text);   // read by the check that made this render (under poseGate)
         return (seat ? SeatContactGap(text) : HoverCheckGap(text), text.Split('\n').FirstOrDefault(l => l.EndsWith(".jpg"))?.Trim() ?? "no image");
     }
     // pure (tested): is the form (android/human) known for certain? 2026-10-23 15:19: right after login the worn prims had no
@@ -227,7 +251,7 @@ public static partial class Program
     internal static bool HoverCheckWantedOnPosture(string prev, string now) => now is "sit" or "stand" && prev != now;
     internal const int HoverCheckMaxTries = 6, HoverCheckRetryMs = 8000, HoverCheckSettleSec = 3, HoverCheckCooldownSec = 30;
     // pure (tested): may the check run now? (true, null) = go; (false, reason) = wait and retry; (false, "skip: ...") = never for this request
-    internal static (bool go, string why) HoverCheckReady(string nowKind, float speed, bool leashed, bool following, bool poseBusy, double settledSec, double sinceLastRunSec, bool manual)
+    internal static (bool go, string why) HoverCheckReady(string nowKind, float speed, bool leashed, bool following, bool poseBusy, double settledSec, double sinceLastRunSec, bool manual, bool poseChanged = false)
     {
         if (nowKind == "seat") return (false, "skip: sitting on an object (the normal hover is restored there)");
         if (nowKind == "unknown") return (false, "unclassified AO animation playing (may be a sit): not a stand, no check");
@@ -235,7 +259,7 @@ public static partial class Program
         if (following || speed >= 0.1f) return (false, "moving");
         if (poseBusy) return (false, "a pose is being entered or left");
         if (settledSec < HoverCheckSettleSec) return (false, "posture changed a moment ago");
-        if (!manual && sinceLastRunSec < HoverCheckCooldownSec) return (false, "another check ran a moment ago");
+        if (!manual && !poseChanged && sinceLastRunSec < HoverCheckCooldownSec) return (false, "another check ran a moment ago");   // an automatic pose change is always remeasured, never held back by the cooldown
         return (true, null);
     }
     static long hoverReqSeq; static string hoverPosture; static DateTime hoverPostureAt = DateTime.MinValue, hoverCheckLastRun = DateTime.MinValue;
@@ -271,7 +295,7 @@ public static partial class Program
                     if (!LoggedIn) return "not logged in";
                     var (kind, pose) = PoseNow(); var sitting = client.Self.SittingOn != 0;
                     var (go, block) = HoverCheckReady(sitting ? "seat" : kind, client.Self.Velocity.Length(), IdleLeashedNow(), followId != UUID.Zero, idleLock.CurrentCount == 0,
-                                                      (DateTime.Now - hoverPostureAt).TotalSeconds, (DateTime.Now - hoverCheckLastRun).TotalSeconds, why == "manual");
+                                                      (DateTime.Now - hoverPostureAt).TotalSeconds, (DateTime.Now - hoverCheckLastRun).TotalSeconds, why == "manual", PoseChangedSinceCheck(hoverLastCheckedPose, pose));
                     string retry = block;
                     if (go)
                     {
@@ -294,28 +318,6 @@ public static partial class Program
         : kind == "stand" && idlePosed == null && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false) && AoUnclassifiedNow().Count == 0);
     // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose name)
     static (string kind, string pose) PoseNow() => AoSitReallyOn() ? ("sit", aoSitCurrentName ?? "sit") : AoUnclassifiedNow().Count > 0 ? ("unknown", "unknown") : ("stand", "stand");
-
-    // prone ground sit (ProneSits): the fixed hover, applied only when the hover in force is off it. runs with poseGate held, after the render guard. null = finished
-    static async Task<string> ProneHoverCheck(string kind, string pose, string key, double pt, double hov, string effSrc, double gap, string img1, Stopwatch sw)
-    {
-        string pnote = PoseChangedSinceCheck(hoverLastCheckedPose, pose) ? $"; pose changed from {hoverLastCheckedPose}: the hover in force was set for that pose, not trusted" : "";
-        hoverLastCheckedPose = pose;
-        string head = $"prone pose, not driven by the hip contact (hip gap {gap:+0.000;-0.000} informational): fixed hover {pt:+0.000;-0.000}{pnote}";
-        string how;
-        if (!ProneHoverNeedsFix(hov, pt)) how = $"{head}; hover in force {hov:0.000} ({effSrc}) is there; hover left alone";
-        else
-        {
-            if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed; skipped"); return null; }
-            var (ok, info) = await PostHover(pt, $"visual hover fix: {key} prone fixed hover (applied now, not saved)");
-            var (eff, src) = await EffectiveHoverFresh();
-            bool applied = ok && eff is double e && Math.Abs(e - pt) <= 0.002;
-            how = $"{head}; hover {hov:0.000} -> {pt:0.000} ({(applied ? "applied" : $"NOT verified: the hover in force is {(eff is double q ? q.ToString("0.000") : "unknown")} ({src})")}): {info}";
-        }
-        int renders = 1;   // one render: nothing is computed from it, so no verification render
-        Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {img1}");
-        hoverCheckResult = $"{key}: {how}; renders {renders}; close-up of {HoverContactLabel(kind)}: {img1}";
-        return null;
-    }
 
     // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): ONE render of the hips against the seat;
     // reports the gap and the close-up path; changes nothing (the AO, the hover and the furniture stay as they are)
@@ -364,11 +366,10 @@ public static partial class Program
             bool calibrated = BiasCalibrated(nums, android, kind, pose);
             if (size < 1) { Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
             double bias = PoseBiasFor(nums, android, kind, pose);
-            var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind);   // render 1: the contact close-up (replaces the wide side view)
+            var parts = SupportParts(kind, pose);   // which body parts support her in this pose (data: names only, never numbers); null = unlisted: the whole-body lowest gap
+            var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind, parts: parts);   // render 1: the contact close-up (replaces the wide side view)
             string finalImg = img1;
-            double? proneT = ProneHoverTarget(kind, pose);   // prone pose: the hip-contact gap does not drive anything (an implausible hip gap is not a problem there)
-            double gap = g1 ?? 0.0;
-            if (proneT == null && (g1 is not double || !PoseGapSane(gap)))
+            if (g1 is not double gap || !PoseGapSane(gap))
             {
                 if (g1 is double bg) return await HoverGapOnFurniture(kind, key, bg, img1);   // moved off the furniture (retry reason) or left unresolved (logged, null = finished)
                 var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; Log("posehover", bad); hoverCheckResult = bad; return null;
@@ -391,21 +392,23 @@ public static partial class Program
                 }
             }
             string how; bool fixedHover = false, confirmRender = false;
-            if (proneT is double pt) return await ProneHoverCheck(kind, pose, key, pt, hov, effSrc, gap, img1, sw);
-            // hand-supported sit (VAMOSITG13): aim HandSupportLift above the hip contact so the hands clear the floor; eg = the gap against that intended placement (== gap for every other pose)
-            double lift = HandSupportLift(kind, pose), eg = HandFirstGap(gap, lift);
-            string liftTxt = IsHandSupported(kind, pose) ? (lift > 0 ? $"; hands-first: hips aimed {lift:0.00} m above the floor so the hands show (hand-supported sit, fixed bias)" : "; hand-supported sit: hip contact is right for this pose (no lift)") : "";
-            if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, measured here against this pose's own target"; Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, measuring against this pose"); }
+            // the gap that drives the fix: the lowest SUPPORTING part's gap to the floor drawn in this render (hips, hands, chest, thighs ... as the pose lists them), else the whole-body lowest gap
+            var partGaps1 = hoverLastPartGaps; double? sg1 = parts == null ? null : SupportGap(parts, partGaps1);
+            double basis = sg1 ?? gap, aim = sg1 != null ? SupportAim(parts) : 0.0, eg = basis - aim;
+            string liftTxt = parts == null ? "" : sg1 == null ? $"; supporting parts {string.Join("+", parts)} not seen in the render: whole-body lowest gap used"
+                : $"; supporting parts {SupportGapsText(parts, partGaps1)}: hover aimed so the lowest is {aim:0.000} m above the floor{(aim > 0 ? " (hands never below it)" : "")}; no per-pose hover value, measured on this floor";
+            if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, remeasured here"; Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, remeasuring on this pose"); }
             hoverLastCheckedPose = pose;
             string calTxt = calibrated ? "bias calibrated against David's viewer" : "DEFAULT bias, not yet calibrated against David's viewer (hover calibrate)";
-            if (PoseGapConfirmed(eg)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {gap:+0.000}; {calTxt}{liftTxt}); hover left alone";
+            if (SupportConfirmed(eg, aim)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}); hover left alone";
             else
             {
                 var t = PoseHoverFromGap(hov, eg);
                 if (HoverFixNeedsConfirm(eg))   // a large fix (> 0.12 m): only after a second render at the same hover agrees
                 {
-                    var (gc, imgc) = await HoverCheckRender(dir, size, hov, bias, kind); confirmRender = true;
-                    if (gc is not double gc2 || !HoverFixConfirmed(gap, gc2))
+                    var (gc, imgc) = await HoverCheckRender(dir, size, hov, bias, kind, parts: parts); confirmRender = true;
+                    double? gcBasis = gc is double gcr ? (parts == null ? gcr : SupportGap(parts, hoverLastPartGaps) ?? gcr) : null;
+                    if (gcBasis is not double gc2 || !HoverFixConfirmed(basis, gc2))
                     {
                         var msg = $"{key}: not verified: the render gap {gap:+0.000;-0.000} (a fix of more than {HoverFixMax:0.00} m) was not confirmed by a second render ({(gc is double gq ? gq.ToString("+0.000;-0.000") : "none")}); nothing changed ({img1}, {imgc})";
                         Log("posehover", msg); hoverCheckResult = msg; return "large fix not confirmed by a second render";
@@ -416,11 +419,12 @@ public static partial class Program
                 // verify: the cap must now hold t (fresh GET), and the re-render is drawn at THAT value, not at the value we meant to set
                 var (eff2, src2) = await EffectiveHoverFresh();
                 bool applied = ok && eff2 is double e2 && Math.Abs(e2 - t) <= 0.002;
-                var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias, kind);   // render 2 (only after a fix): the verification at the hover really in force
+                var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias, kind, parts: parts);   // render 2 (only after a fix): the verification at the hover really in force
                 fixedHover = true; finalImg = img2;
-                bool good = applied && g2 is double gg && PoseGapConfirmed(HandFirstGap(gg, lift));
+                double? basis2 = g2 is double g2r ? (parts == null || sg1 == null ? g2r : SupportGap(parts, hoverLastPartGaps) ?? g2r) : null;
+                bool good = applied && basis2 is double gg && SupportConfirmed(gg - aim, aim);
                 string verdict = good ? (calibrated ? "contact confirmed" : "contact in the render; NOT verified against David's viewer (default bias)") : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
-                how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}{liftTxt}): {info}; {img2}";
+                how = $"render gap {basis:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(basis2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}{liftTxt}): {info}; {img2}";
             }
             int renders = HoverCheckRenderCount(fixedHover, confirmRender);
             Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}");

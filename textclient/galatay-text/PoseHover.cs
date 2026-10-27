@@ -6,7 +6,8 @@
 // settled it exports the scene, renders her side view over the real floor (look.py hovercheck) and, if her lowest vertex is not on
 // the floor, POSTs a corrected hover (the problem fix) and re-renders to confirm. The value is only ever applied right then, never
 // remembered. Pose first, hover after: a request waits while she is moving, leashed/following, mid pose-entry/exit or just changed
-// posture. Only ever POSTs the hover: never stands, sits, re-sits or touches the AO (tested).
+// posture. Only ever POSTs the hover: never sits or re-sits, and never presses the AO. The one exception: an implausible render gap while on / next to a furniture
+// footprint (HoverGapOnFurniture) stands her up (idle stop path, ground sit only), steps to clear floor and re-checks; the hover is never changed from an implausible render.
 // pose-hover.json now only holds the renderer's calibration (bias|... keys); any other key in it is ignored.
 using System;
 using System.Collections.Concurrent;
@@ -104,6 +105,56 @@ public static partial class Program
     // pure (tested): renders one hover check costs. Each HoverCheckRender call is ONE blender run of ONE image (the contact close-up, which REPLACES the wide
     // side view: look_scope.hovercheck_view). 1 when the contact is confirmed; 2 when a fix was applied (the re-render at the hover really in force is the verification)
     internal static int HoverCheckRenderCount(bool fixApplied, bool confirmRender = false) => (fixApplied ? 2 : 1) + (confirmRender ? 1 : 0);
+    // ---- 2026-10-27 09:12 / 09:15 (David): she stood / sat at 217.8,74.5 INSIDE the Mirage bed's footprint (the bed's collision hull held her ~0.6 m above the floor);
+    // the check saw gaps of +0.712 / +0.479 ("implausible") and did nothing. An implausible gap with her XY inside (or within HoverFurnitureNearM of) a known footprint
+    // now means "get off the furniture": stand up if ground sitting, step to the nearest clear floor spot, re-run the check there. The hover is NEVER changed from an implausible render.
+    internal enum HoverGapVerdict { Plausible, MoveClear, Unresolved }
+    internal const float HoverFurnitureNearM = 0.5f;
+    internal const double HoverClearAgainSec = 180;
+    // pure (tested): what an implausible render gap means. movedRecently = she already stepped clear for this reason a moment ago (never loop)
+    internal static HoverGapVerdict HoverGapDecision(double gap, Vector3 me, IReadOnlyList<FurnitureBox> boxes, bool movedRecently) =>
+        PoseGapSane(gap) ? HoverGapVerdict.Plausible
+        : !movedRecently && InFurnitureMargin(me, boxes, HoverFurnitureNearM) != null ? HoverGapVerdict.MoveClear : HoverGapVerdict.Unresolved;
+    // pure (tested): the clear floor spot to step to: the footprint helpers of the outfit-change flow (ClearStepPlan: inside a footprint, the seat's own stand_spot else a
+    // computed spot, never across other furniture), else, within 0.5 m of one, the login walk's LoginJoinGoal ring (outside every footprint + body margin, straight line crosses no furniture)
+    internal static (Vector3? to, string why) HoverClearTarget(Vector3 me, IReadOnlyList<FurnitureBox> boxes, IEnumerable<HomeSeatInfo> seats, Func<float, float, bool> blocked)
+    {
+        var plan = ClearStepPlan(me, NearestHomeSeat(me, seats), boxes, blocked);
+        if (plan.Needed) return (plan.To, plan.Why);
+        var g = LoginJoinGoal(me, me, true, UUID.Zero, seats, boxes, blocked);
+        return g.Kind == "spot" ? (g.To, "within 0.5 m of furniture; " + g.Why) : (null, g.Why);
+    }
+    static DateTime hoverClearAt = DateTime.MinValue;
+    // runs with poseGate held. Returns the retry reason when she moved (the request loop re-checks), null when unresolved (logged, hover unchanged)
+    static async Task<string> HoverGapOnFurniture(string kind, string key, double gap, string img)
+    {
+        var boxes = InPeronaut ? HomeFootprints() : new List<FurnitureBox>(); var me = client.Self.SimPosition;
+        bool recent = (DateTime.Now - hoverClearAt).TotalSeconds < HoverClearAgainSec;
+        var v = HoverGapDecision(gap, me, boxes, recent);
+        string Unres(string why) { var m = $"{key}: render gap {gap:+0.000;-0.000} is implausible (the calibration may be off for this pose, see PoseBiasFromPhoto): left UNRESOLVED, hover unchanged: {why} ({img})"; Log("posehover", m); hoverCheckResult = m; return null; }
+        if (v == HoverGapVerdict.Plausible) return null;
+        if (v == HoverGapVerdict.Unresolved) return Unres(recent ? "I already stepped to clear floor a moment ago and the gap is still implausible" : InPeronaut ? $"not on or within {HoverFurnitureNearM:0.0} m of a known furniture footprint (at {P3(me)})" : "not in the mapped home region");
+        var g = NavGridHere();
+        Func<float, float, bool> blocked = g == null ? null : (x, y) => { if (!g.Contains(x, y)) return false; var (i, j) = g.IJ(x, y); return g.At(i, j) != 0; };
+        var (to, why) = HoverClearTarget(me, boxes, LoadHomeSeats(), blocked);
+        if (to is not Vector3 dest) return Unres($"at {P3(me)} on / next to furniture but no clear floor spot found ({why})");
+        Log("posehover", $"{key}: render gap {gap:+0.000;-0.000} is implausible and I am at {P3(me)} on / next to '{InFurnitureMargin(me, boxes, HoverFurnitureNearM)?.Name}': stepping to clear floor {P3(dest)} ({why}) and re-checking there; hover unchanged");
+        if (kind == "sit")
+        {
+            await IdleExplicitStand("hover clear floor");
+            idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec);   // she stays standing: no automatic re-sit
+            if (AoSitReallyOn()) return Unres("could not stand up from the ground sit to step off the furniture");
+        }
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        await standOutLock.WaitAsync(cts.Token);
+        try { await StandOutMoveTo("hover clear floor", client.Self.SimPosition, dest, false, InFurniture(me, boxes), cts.Token); }
+        catch (OperationCanceledException) { Log("posehover", "hover clear floor: walk timed out"); }
+        finally { standOutLock.Release(); }
+        hoverClearAt = DateTime.Now;
+        Log("posehover", $"{key}: now at {P3(client.Self.SimPosition)} after stepping off the furniture; re-checking");
+        return "stepped to clear floor after an implausible gap: re-checking";
+    }
+
     // ONE render, ONE image. kind (stand|sit) only labels what the close-up frames
     static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null, bool seat = false)
     {
@@ -265,7 +316,11 @@ public static partial class Program
             double bias = PoseBiasFor(nums, android, kind, pose);
             var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind);   // render 1: the contact close-up (replaces the wide side view)
             string finalImg = img1;
-            if (g1 is not double gap || !PoseGapSane(gap)) { var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; Log("posehover", bad); hoverCheckResult = bad; return null; }
+            if (g1 is not double gap || !PoseGapSane(gap))
+            {
+                if (g1 is double bg) return await HoverGapOnFurniture(kind, key, bg, img1);   // moved off the furniture (retry reason) or left unresolved (logged, null = finished)
+                var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; Log("posehover", bad); hoverCheckResult = bad; return null;
+            }
             // the guard: a fix is only ever computed from a render that shows the pose the client believes (never post on a standing render for a "sit")
             {
                 double? pz = null; try { pz = MeshPelvisZ(File.ReadAllText(Path.Combine(dir, "mesh.json"))); } catch { }

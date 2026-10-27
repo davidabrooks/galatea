@@ -58,6 +58,22 @@ public static partial class Program
         return appearance && davidPlaced && worn > 0 && sinceLoginS >= LoginLoadMinS && stableS >= LoginLoadStableS ? LoginLoadVerdict.Loaded : LoginLoadVerdict.Wait;
     }
 
+    // ---- 2026-10-27 09:18 (David: "you walked to a good location but you should have fixed your hover first"): the walk started when "loaded in" was
+    // reached, but the first visual hover check (PoseHover.cs; waits for the attachments / form) only finished ~2 min after login, so she walked floating.
+    // Now the walk also waits for ONE hover check to have finished since login (the one a region / stand / sit request already runs; if none is in sight a
+    // "login" request is made), at most LoginHoverMaxS after login, then goes anyway.
+    internal enum LoginHoverVerdict { Wait, Done, GaveUp }
+    internal const double LoginHoverMaxS = 150;
+    // pure (tested): done = a hover check finished since login; never wait past LoginHoverMaxS after login
+    internal static LoginHoverVerdict LoginHoverStep(double sinceLoginS, bool checkDoneSinceLogin) =>
+        checkDoneSinceLogin ? LoginHoverVerdict.Done : sinceLoginS >= LoginHoverMaxS ? LoginHoverVerdict.GaveUp : LoginHoverVerdict.Wait;
+    // pure (tested): a "login" check request that ended without measuring must be asked again (it gave up its tries or errored); "replaced by a newer ..."
+    // means another request is already doing the check, so only wait
+    internal static bool LoginHoverRerequest(string requestResult) =>
+        requestResult != null && !requestResult.StartsWith("replaced") && (requestResult.Contains("gave up after") || requestResult.Contains(": error "));
+    // pure (tested): the request ended with its own "never for this posture" answer (sitting on an object, unclassified animation): nothing more to wait for
+    internal static bool LoginHoverSkipped(string requestResult) => requestResult != null && requestResult.Contains(": skip:");
+
     internal sealed record LoginGoal(string Kind, Vector3? To, string Why);   // Kind: follow (open floor: the follow engine) | spot (walk to To) | none (no clear route)
     internal const float LoginNearFurnitureM = 1.5f;
     // pure (tested): where to walk. On open floor (he is not on / near furniture and the straight line crosses none) = the follow engine as before.
@@ -110,6 +126,24 @@ public static partial class Program
         return "logged out";
     }
 
+    static async Task<string> LoginWaitHover(DateTime t0)
+    {
+        Task<string> req = null;
+        while (LoggedIn)
+        {
+            var since = (DateTime.Now - t0).TotalSeconds;
+            var v = LoginHoverStep(since, hoverCheckDoneAt >= t0);
+            if (v == LoginHoverVerdict.Done) return $"hover check finished {(hoverCheckDoneAt - t0).TotalSeconds:F0} s after login: {hoverCheckResult}";
+            if (v == LoginHoverVerdict.GaveUp) return $"no hover check finished within {LoginHoverMaxS:F0} s of login (going anyway, hover may be off): last request {(req == null ? "none" : req.IsCompleted ? req.Result : "still running")}";
+            if (Env("GT_POSE_HOVER_CHECK", "on") == "off") return "hover check is off";
+            // none requested by me yet (the region / stand request may already be running: it replaces nothing until I ask) or my last one gave up: ask once the form is known
+            if (req != null && req.IsCompleted && LoginHoverSkipped(req.Result)) return $"hover check not applicable: {req.Result}";
+            if ((req == null || req.IsCompleted && LoginHoverRerequest(req.Result)) && FormCertainNow()) req = HoverCheckRequest("login", 1000);
+            await Task.Delay(500);
+        }
+        return "logged out";
+    }
+
     static async Task<string> LoginWalkToSpot(Vector3 goal)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(40));
@@ -149,6 +183,8 @@ public static partial class Program
             Log("login", $"placement: spawn {(me is Vector3 m ? Fmt(m) : "?")}, David {(him is Vector3 h ? Fmt(h) : "not in view")}: {(spawn is float s ? $"{s:F1} m" : "UNKNOWN")}");
             if (!LoginShouldJoin(spawn, him != null, client.Self.SittingOn != 0)) { loginPlacement = new(spawn, spawn == null ? "unknown" : "spawned-near", spawn); return; }
             Log("login", $"placement: waiting until I am fully loaded in before walking over ({spawn:F1} m): {await LoginWaitLoaded(t0)}");
+            if (!LoggedIn) return;
+            Log("login", $"placement: waiting for the first hover check before walking: {await LoginWaitHover(t0)}");
             if (!LoggedIn) return;
             // fresh positions after the wait (he may have moved; I may have been moved by a pose routine)
             var dav2 = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId);

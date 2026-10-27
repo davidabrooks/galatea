@@ -86,3 +86,80 @@ public class LoginJoinTests
         Assert.Contains("did not walk", Program.LoginPlacementText(new Program.LoginPlacement(4.7f, "met", 1.9f)));
     }
 }
+public class LoginHoverWaitTests
+{
+    // 2026-10-27 09:18: the walk started before the first hover check (set -0.076 at ~9:18:14, ~2 min after the 9:16 login): she walked floating
+    [Fact] public void WalkWaitsUntilAHoverCheckFinishedSinceLogin()
+    {
+        var W = Program.LoginHoverVerdict.Wait;
+        Assert.Equal(W, Program.LoginHoverStep(25, false));                                  // loaded in (20 s) but no check finished yet
+        Assert.Equal(W, Program.LoginHoverStep(100, false));                                 // form still unknown (attachments loading)
+        Assert.Equal(Program.LoginHoverVerdict.Done, Program.LoginHoverStep(25, true));      // a check finished: go
+        Assert.Equal(Program.LoginHoverVerdict.Done, Program.LoginHoverStep(200, true));
+    }
+    [Fact] public void NeverWaitsPastTheUpperBound()
+    {
+        Assert.Equal(Program.LoginHoverVerdict.Wait, Program.LoginHoverStep(149.9, false));
+        Assert.Equal(Program.LoginHoverVerdict.GaveUp, Program.LoginHoverStep(150, false));
+        Assert.Equal(150, Program.LoginHoverMaxS);
+    }
+    [Fact] public void GaveUpOrErroredRequestIsAskedAgain_ReplacedOneIsNot()
+    {
+        Assert.True(Program.LoginHoverRerequest("login: gave up after 6 tries (form not known yet (attachments still loading))"));
+        Assert.True(Program.LoginHoverRerequest("login: error boom"));
+        Assert.False(Program.LoginHoverRerequest("replaced by a newer hover check request"));   // another request is doing the check
+        Assert.False(Program.LoginHoverRerequest("android|stand: render confirms contact at -0.076"));
+        Assert.False(Program.LoginHoverRerequest(null));
+    }
+    [Fact] public void SkippedRequestEndsTheWait()
+    {
+        Assert.True(Program.LoginHoverSkipped("login: skip: sitting on an object (the normal hover is restored there)"));
+        Assert.False(Program.LoginHoverSkipped("login: gave up after 6 tries (moving)"));
+        Assert.False(Program.LoginHoverSkipped(null));
+    }
+}
+public class HoverGapOnFurnitureTests
+{
+    // 2026-10-27 09:12 / 09:15: gaps +0.712 / +0.479 at 217.8,74.5, inside the Mirage bed footprint (x 214.46-217.92, y 72.71-76.16)
+    static readonly UUID BedId = UUID.Parse("cdedb159-2e61-e54d-6045-283a58d25015");
+    static readonly Program.FurnitureBox Bed = new("BENTO PHYSICS MIRAGE BED 1.0", BedId.ToString(), 214.46f, 72.71f, 217.92f, 76.16f);
+    static readonly Program.FurnitureBox[] Boxes = { Bed };
+    static readonly Vector3 OnBed = new(217.8f, 74.5f, 29.5f);
+    [Fact] public void ImplausibleGapInsideTheFootprint_MovesClear()
+    {
+        Assert.Equal(Program.HoverGapVerdict.MoveClear, Program.HoverGapDecision(0.712, OnBed, Boxes, false));
+        Assert.Equal(Program.HoverGapVerdict.MoveClear, Program.HoverGapDecision(0.479, OnBed, Boxes, false));
+        Assert.Equal(Program.HoverGapVerdict.MoveClear, Program.HoverGapDecision(-0.4, new Vector3(218.3f, 74.5f, 29f), Boxes, false));   // 0.38 m outside the edge: within 0.5 m
+    }
+    [Fact] public void PlausibleGap_IsNotThisProblem()
+    {
+        Assert.Equal(Program.HoverGapVerdict.Plausible, Program.HoverGapDecision(0.2, OnBed, Boxes, false));
+        Assert.Equal(Program.HoverGapVerdict.Plausible, Program.HoverGapDecision(-0.05, OnBed, Boxes, false));
+    }
+    [Fact] public void ImplausibleGapAwayFromFurniture_StaysUnresolved()
+    {
+        Assert.Equal(Program.HoverGapVerdict.Unresolved, Program.HoverGapDecision(0.712, new Vector3(222f, 66f, 29f), Boxes, false));
+        Assert.Equal(Program.HoverGapVerdict.Unresolved, Program.HoverGapDecision(0.712, new Vector3(218.6f, 74.5f, 29f), Boxes, false));   // 0.68 m away
+        Assert.Equal(Program.HoverGapVerdict.Unresolved, Program.HoverGapDecision(0.712, OnBed, new Program.FurnitureBox[0], false));      // no footprint data
+    }
+    [Fact] public void NeverMovesTwice_WhenTheGapIsStillImplausibleAfterTheStep()
+        => Assert.Equal(Program.HoverGapVerdict.Unresolved, Program.HoverGapDecision(0.712, OnBed, Boxes, true));
+    [Fact] public void ClearTarget_IsOutsideEveryFootprintAndNotAcrossTheBed()
+    {
+        var (to, _) = Program.HoverClearTarget(OnBed, Boxes, new Program.HomeSeatInfo[0], null);
+        Assert.NotNull(to);
+        Assert.Null(Program.InFurnitureMargin(to.Value, Boxes, Program.ClearBodyMargin));
+        Assert.True(to.Value.X > Bed.X1, "stepped out of the near (east) edge, not across the bed");
+    }
+    [Fact] public void ClearTarget_NextToTheBedEdge_AlsoFindsAFloorSpot()
+    {
+        var (to, why) = Program.HoverClearTarget(new Vector3(218.3f, 74.5f, 29f), Boxes, new Program.HomeSeatInfo[0], null);
+        Assert.NotNull(to); Assert.Contains("within 0.5 m", why);
+        Assert.Null(Program.InFurnitureMargin(to.Value, Boxes, Program.ClearBodyMargin));
+    }
+    [Fact] public void ClearTarget_NoneWhenBoxedIn()
+    {
+        var (to, _) = Program.HoverClearTarget(OnBed, Boxes, new Program.HomeSeatInfo[0], (x, y) => true);   // every cell a wall
+        Assert.Null(to);
+    }
+}

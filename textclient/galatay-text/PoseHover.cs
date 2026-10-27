@@ -55,6 +55,16 @@ public static partial class Program
     // It is never trusted: this check measures the new pose against its own target (the render at the hover in force) and corrects, it does not inherit "contact" from the old value
     internal static bool PoseChangedSinceCheck(string lastPose, string pose) => lastPose != null && !string.Equals(lastPose.Trim(), (pose ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
     static string hoverLastCheckedPose;
+    // ---- prone ground sits (2026-10-27 David, VAMOSITG27: belly down, chest / forearms / thighs on the floor) ----
+    // The hips are NOT what meets the floor, so the hip-contact gap means nothing: the check set +0.138 and she floated in David's viewer (0.0 slightly too low, +0.02 good). A prone pose
+    // is its own class: NOT driven by the hip contact, a fixed hover (code-level data keyed by AO pose name, never saved to disk). The one render stays (it proves the pose and frames the
+    // close-up) but its gap is only informational; no second render is needed because nothing is computed from it.
+    internal const double ProneHoverTol = PoseHoverTol;
+    internal static readonly Dictionary<string, double> ProneSits = new(StringComparer.OrdinalIgnoreCase) { ["VAMOSITG27"] = 0.02 };
+    // pure (tested): the fixed hover of a prone ground sit, null for every other pose / posture
+    internal static double? ProneHoverTarget(string kind, string pose) => kind == "sit" && pose != null && ProneSits.TryGetValue(pose.Trim(), out var h) ? h : null;
+    // pure (tested): does a prone pose need a hover change? only when the hover in force is more than the tolerance from its fixed value
+    internal static bool ProneHoverNeedsFix(double hoverInForce, double target) => Math.Abs(hoverInForce - target) > ProneHoverTol;
     // pure (tested): the render gap judged against the intended placement: the hips floating HandSupportLift above the floor ARE contact for a hand-supported sit.
     // Applying hover - this gap converges (re-checking at the lifted hover reads gap = lift, so effective gap 0, no further change)
     internal static double HandFirstGap(double gap, double lift) => gap - lift;
@@ -285,6 +295,28 @@ public static partial class Program
     // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose name)
     static (string kind, string pose) PoseNow() => AoSitReallyOn() ? ("sit", aoSitCurrentName ?? "sit") : AoUnclassifiedNow().Count > 0 ? ("unknown", "unknown") : ("stand", "stand");
 
+    // prone ground sit (ProneSits): the fixed hover, applied only when the hover in force is off it. runs with poseGate held, after the render guard. null = finished
+    static async Task<string> ProneHoverCheck(string kind, string pose, string key, double pt, double hov, string effSrc, double gap, string img1, Stopwatch sw)
+    {
+        string pnote = PoseChangedSinceCheck(hoverLastCheckedPose, pose) ? $"; pose changed from {hoverLastCheckedPose}: the hover in force was set for that pose, not trusted" : "";
+        hoverLastCheckedPose = pose;
+        string head = $"prone pose, not driven by the hip contact (hip gap {gap:+0.000;-0.000} informational): fixed hover {pt:+0.000;-0.000}{pnote}";
+        string how;
+        if (!ProneHoverNeedsFix(hov, pt)) how = $"{head}; hover in force {hov:0.000} ({effSrc}) is there; hover left alone";
+        else
+        {
+            if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed; skipped"); return null; }
+            var (ok, info) = await PostHover(pt, $"visual hover fix: {key} prone fixed hover (applied now, not saved)");
+            var (eff, src) = await EffectiveHoverFresh();
+            bool applied = ok && eff is double e && Math.Abs(e - pt) <= 0.002;
+            how = $"{head}; hover {hov:0.000} -> {pt:0.000} ({(applied ? "applied" : $"NOT verified: the hover in force is {(eff is double q ? q.ToString("0.000") : "unknown")} ({src})")}): {info}";
+        }
+        int renders = 1;   // one render: nothing is computed from it, so no verification render
+        Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {img1}");
+        hoverCheckResult = $"{key}: {how}; renders {renders}; close-up of {HoverContactLabel(kind)}: {img1}";
+        return null;
+    }
+
     // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): ONE render of the hips against the seat;
     // reports the gap and the close-up path; changes nothing (the AO, the hover and the furniture stay as they are)
     static async Task<string> SeatContactCheck()
@@ -334,7 +366,9 @@ public static partial class Program
             double bias = PoseBiasFor(nums, android, kind, pose);
             var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind);   // render 1: the contact close-up (replaces the wide side view)
             string finalImg = img1;
-            if (g1 is not double gap || !PoseGapSane(gap))
+            double? proneT = ProneHoverTarget(kind, pose);   // prone pose: the hip-contact gap does not drive anything (an implausible hip gap is not a problem there)
+            double gap = g1 ?? 0.0;
+            if (proneT == null && (g1 is not double || !PoseGapSane(gap)))
             {
                 if (g1 is double bg) return await HoverGapOnFurniture(kind, key, bg, img1);   // moved off the furniture (retry reason) or left unresolved (logged, null = finished)
                 var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; Log("posehover", bad); hoverCheckResult = bad; return null;
@@ -357,6 +391,7 @@ public static partial class Program
                 }
             }
             string how; bool fixedHover = false, confirmRender = false;
+            if (proneT is double pt) return await ProneHoverCheck(kind, pose, key, pt, hov, effSrc, gap, img1, sw);
             // hand-supported sit (VAMOSITG13): aim HandSupportLift above the hip contact so the hands clear the floor; eg = the gap against that intended placement (== gap for every other pose)
             double lift = HandSupportLift(kind, pose), eg = HandFirstGap(gap, lift);
             string liftTxt = IsHandSupported(kind, pose) ? (lift > 0 ? $"; hands-first: hips aimed {lift:0.00} m above the floor so the hands show (hand-supported sit, fixed bias)" : "; hand-supported sit: hip contact is right for this pose (no lift)") : "";

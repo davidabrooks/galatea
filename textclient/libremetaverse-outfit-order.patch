@@ -1,0 +1,25 @@
+diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
+--- a/LibreMetaverse/Appearance/AppearanceManager.cs
++++ b/LibreMetaverse/Appearance/AppearanceManager.cs
+@@ -2776,6 +2776,8 @@
+                 skipped = blocks.Count(b => have.Contains(b.ItemID));
+                 blocks = blocks.Where(b => !have.Contains(b.ItemID)).ToList();
+             }
++            var rank = Client.Settings.Agent.OutfitSendRank;
++            if (rank != null) blocks = blocks.OrderBy(b => rank(Utils.BytesToString(b.Name))).ToList();   // stable: same rank keeps COF order
+             Logger.Info($"Outfit send: {blocks.Count} attachment(s) to add ({dupes} duplicate(s) removed, {skipped} already attached skipped, kept off: {(excluded.Count == 0 ? "none" : string.Join("; ", excluded))}): " +
+                 string.Join("; ", blocks.Select(b => Utils.BytesToString(b.Name))) + $"; FirstDetachAll={Client.Settings.Agent.OutfitSendDetachAll}", Client);
+             if (blocks.Count == 0 && !Client.Settings.Agent.OutfitSendDetachAll) return;
+diff --git a/LibreMetaverse/Settings/AgentSettings.cs b/LibreMetaverse/Settings/AgentSettings.cs
+--- a/LibreMetaverse/Settings/AgentSettings.cs
++++ b/LibreMetaverse/Settings/AgentSettings.cs
+@@ -15,6 +15,9 @@
+         public int OutfitSendSkipAttachedSettleMs = 0;
+         /// <summary>(galatay 2026-09-26) COF objects (item id, name) never to (re)attach in the outfit send, e.g. the Firestorm LSL Bridge.</summary>
+         public System.Func<UUID, string, bool>? OutfitSendExclude = null;
++        /// <summary>(galatay 2026-10-27) Order of the objects in the outfit send: lower rank first (stable), so the body that covers the
++        /// system avatar is requested before accessories. null = COF order.</summary>
++        public System.Func<string, int>? OutfitSendRank = null;
+         public bool SendThrottle = true;
+         public bool DisableUpdateDuplicateCheck = true;
+         public bool MultipleSims = false;

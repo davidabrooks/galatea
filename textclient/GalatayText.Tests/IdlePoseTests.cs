@@ -411,7 +411,7 @@ public class IdlePoseTests
         // the hover is checked/fixed by the requested visual check, a few seconds AFTER the pose started
         var ph = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
         Assert.Contains("int delayMs = 4000", ph);
-        Assert.True(ph.IndexOf("await Task.Delay(delayMs)") < ph.IndexOf("await PoseHoverCheck(kind, pose)"));
+        Assert.True(ph.IndexOf("await Task.Delay(delayMs)") < ph.IndexOf("await PoseHoverCheck(kind, pose, why)"));
         // the collar's own @adjustheight (sent while the pose starts) is not applied
         var rlv = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/RlvAdjustHeight.cs"));
         Assert.True(rlv.IndexOf("RlvAdjustHeightApplies(") < rlv.IndexOf("PostHover(v"));

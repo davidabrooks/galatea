@@ -248,7 +248,7 @@ public static partial class Program
                     if (go)
                     {
                         hoverCheckLastRun = DateTime.Now;
-                        retry = await PoseHoverCheck(kind, pose);
+                        retry = await PoseHoverCheck(kind, pose, why);
                         if (retry == null) { hoverCheckDoneAt = DateTime.Now; return hoverCheckResult; }
                     }
                     else if (block.StartsWith("skip:")) { Log("posehover", $"{why}: {block}"); return $"{why}: {block}"; }
@@ -287,7 +287,7 @@ public static partial class Program
     }
 
     // the visual check: null = finished (checked, or nothing to do); a string = not now, retry (the reason)
-    static async Task<string> PoseHoverCheck(string kind, string pose)
+    static async Task<string> PoseHoverCheck(string kind, string pose, string requestWhy = null)
     {
         if (!LoggedIn || !PoseStill(kind, pose)) return "not in that pose";
         if (!FormCertainNow()) return "form not known yet (attachments still loading)";
@@ -329,7 +329,13 @@ public static partial class Program
                 if (why != null)
                 {
                     var msg = $"{key}: not verified: pose not rendered ({why}); render gap {gap:+0.000;-0.000} ignored, nothing changed, wait and retry ({img1})";
-                    Log("posehover", msg); hoverCheckResult = msg; return "pose not rendered: " + why;
+                    Log("posehover", msg); hoverCheckResult = msg;
+                    // 2026-10-27 09:34: the AO came back from a relog holding its force sit while the client believed she stood: the check retried against a sitting render for
+                    // minutes. Press the AO force sit ONCE (never repeatedly), wait, and let the request loop re-run the check; after that one press: log and give up.
+                    if (StuckSitReleaseOk(kind, why, requestWhy, (DateTime.Now - stuckSitLoginAt).TotalSeconds, stuckSitPresses))
+                    { try { await StuckSitRelease(why); } catch (Exception rex) { Log("idlepose", "stuck AO sit release error " + rex.GetBaseException().Message); } }
+                    else if (kind == "stand" && why.Contains("sitting, not standing") && stuckSitPresses > 0) Log("posehover", StuckSitReleaseText(stuckSitPresses, true));
+                    return "pose not rendered: " + why;
                 }
             }
             string how; bool fixedHover = false, confirmRender = false;

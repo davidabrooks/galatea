@@ -20,7 +20,10 @@ public static partial class Program
     // 2026-10-26 11:28: after `idle_pose stop` from a ground sit the AO kept playing 2941ee1d (a kneel / sit-back-on-heels) while the status said
     // "standing (no AO sit playing)": the id was in neither list. It is a SIT. Seeded here so it is a sit from the first login, whatever the
     // learned file says; it can never be learned as a stand.
-    internal static readonly UUID[] AoSitSeed = { UUID.Parse("2941ee1d-94c1-a56f-0d90-fe0e2e0918dc") };
+    // 2026-10-27 09:34 (login, force sit held ON by the AO): 985d3be4 (a VAMOSITG ground-sit animation, it also replaced 7c8e8863 in the 11:21 sit) was learned as a STAND on an
+    // earlier login, because the AO starts the held sit right after login while she is "plainly standing"; from then on the status said "standing (only classified AO stands)"
+    // on a sit and the login hover check retried against a sitting render. Seeded as a sit: the load re-asserts the seed over the learned file.
+    internal static readonly UUID[] AoSitSeed = { UUID.Parse("2941ee1d-94c1-a56f-0d90-fe0e2e0918dc"), UUID.Parse("985d3be4-2b64-1123-c503-8dfa2eb083c6") };
     // 2026-10-26 13:20 (live test after #316): the N° 9 collar (worn at the chin) starts these four animations right after every login (RLV ready) and again at
     // random; they were "learned" as AO sit animations because they appeared while a ground-sit entry was running, so from then on a plain STAND counted as "AO sit
     // playing", the hover check ran as `sit VAMOSITG12` on a standing avatar and posted a -0.229 fix. They come from the collar attachment (anim-events.log: "from att @Chin"),
@@ -114,6 +117,44 @@ public static partial class Program
         if (moves >= 6) return AoStandStep.GiveUp;
         bool toggleTurn = moves is 2 or 4;
         return toggleTurn && mayToggle ? AoStandStep.Toggle : AoStandStep.Stand;
+    }
+    // ---- login: the AO came back holding its force sit (2026-10-27 09:34) ----
+    internal const double StuckSitWindowS = 300, StuckSitWaitMs = 11000;
+    // pure (tested): may the login hover check release a held AO sit itself? Only when the render says she sits ("pose not rendered: ... sitting, not standing") while the
+    // client believes she stands, in a login / stand request shortly after login, and never a second press in the same login (the toggle turns force sit ON when it is off)
+    internal static bool StuckSitReleaseOk(string kind, string mismatchWhy, string requestWhy, double sinceLoginS, int pressesThisLogin)
+        => kind == "stand" && mismatchWhy != null && mismatchWhy.Contains("sitting, not standing") && requestWhy is "login" or "stand"
+           && sinceLoginS >= 0 && sinceLoginS <= StuckSitWindowS && pressesThisLogin == 0;
+    // pure (tested): what a release taught us: exactly ONE non-built-in AO animation was playing before the press, it is gone after it and a classified AO stand
+    // plays now -> it was the held sit (learn it; the caller also drops it from the stands). With several candidates nothing is learned (a rotating stand must never become a sit)
+    internal static List<UUID> StuckSitLearn(IReadOnlyCollection<UUID> aoBefore, IEnumerable<UUID> playingAfter, IEnumerable<UUID> standIds)
+        => aoBefore != null && aoBefore.Count == 1 ? AoLearnAfterToggle(aoBefore, playingAfter, standIds) : new();
+    // pure (tested): the log / result line of the release
+    internal static string StuckSitReleaseText(int pressesThisLogin, bool stillSitting) =>
+        pressesThisLogin == 0 ? "no release pressed yet"
+        : stillSitting ? "force sit pressed ONCE this login and she still sits: giving up (never pressed again, no stop_animations)"
+        : "force sit pressed ONCE this login: the held AO sit is released";
+    static int stuckSitPresses; static DateTime stuckSitLoginAt = DateTime.Now;
+    // login (LoginJoinStart): a new login, a fresh single press
+    static void StuckSitNewLogin() { stuckSitPresses = 0; stuckSitLoginAt = DateTime.Now; }
+    // the ONE release: press the AO force-sit toggle once, wait ~11 s, re-read the animation list, learn the held sit. Never stop_animations, never a second press.
+    static async Task<string> StuckSitRelease(string reason)
+    {
+        stuckSitPresses++;
+        aoSitTransitionUntil = DateTime.Now.AddSeconds(60);   // nothing started during the release is learned as a stand
+        Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = new(ownAnims);
+        var before = SelfAnims().Where(u => !BuiltinAnims.ContainsKey(u) && cur.TryGetValue(u, out var e) && IsAoHudSource(e.src)).Distinct().ToList();
+        Log("idlepose", $"stuck AO sit at login ({reason}): pressing force sit ONCE (AO animations playing: {(before.Count == 0 ? "none" : string.Join(",", before.Select(x => x.ToString()[..8])))})");
+        var r = await AoGroundSitToggle("login release: " + reason);
+        await Task.Delay((int)StuckSitWaitMs);
+        var after = SelfAnims().ToList();
+        var learn = StuckSitLearn(before, after, AoStandIdsNow());
+        if (learn.Count > 0) { AoClassEnsureLoaded(); lock (aoClassLock) foreach (var u in learn) { aoSitIds.Add(u); aoStandIds.Remove(u); } AoClassSave(); }
+        bool still = AoSitReallyOn();
+        aoSitTransitionUntil = DateTime.Now.AddSeconds(20);
+        var msg = $"{StuckSitReleaseText(stuckSitPresses, still)} ({r}){(learn.Count > 0 ? "; learned as AO sit: " + string.Join(",", learn.Select(x => x.ToString()[..8])) : "")}";
+        Log("idlepose", "stuck AO sit release: " + msg);
+        return msg;
     }
     // pure (tested): the real sit/stand state for `idlepose status`; the sim's own opinion is shown beside it
     internal static string AoRealState(bool aoSitPlaying, IReadOnlyCollection<string> playingSitIds, bool simSittingOnObject, bool simSaysGround, IReadOnlyCollection<string> unclassifiedIds = null)

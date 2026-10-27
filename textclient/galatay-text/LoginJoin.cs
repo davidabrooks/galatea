@@ -27,6 +27,9 @@ public static partial class Program
             ? " PLACEMENT: my distance to him at login is UNKNOWN (positions not received yet); check 'nearby' and do NOT claim I appeared by his side."
             : $" PLACEMENT: I spawned {p.spawnDist:F1} m from him" +
               (p.how == "walked" ? $" and walked over to him myself (now {p.finalDist?.ToString("F1") ?? "?"} m)" :
+               p.how == "spot-walked" ? $" and, once fully loaded in, walked over to him myself and stopped on the floor beside the furniture he is on or next to (now {p.finalDist?.ToString("F1") ?? "?"} m), never onto it" :
+               p.how == "no-route" ? " and could not find a clear floor route to him around the furniture, so I stayed where I was (I did NOT walk over)" :
+               p.how == "met" ? $" and he was already beside me (now {p.finalDist?.ToString("F1") ?? "?"} m) by the time I was fully loaded in, so I did not walk" :
                p.how == "walk-failed" ? $" and tried to walk over but am still {p.finalDist?.ToString("F1") ?? "?"} m away" : "") +
               (p.spawnDist > LoginJoinWithin ? ". I did NOT appear by his side: say I came over to him, never that I logged in right next to him." : ".");
 
@@ -38,6 +41,92 @@ public static partial class Program
         if (s.Count == 0 || s[0].ageS < LoginStallS) return false;
         var then = s.Where(x => x.ageS >= LoginStallS).Last().d;
         return then - s[^1].d < 0.3f;
+    }
+
+    // ---- 2026-10-27 08:43 (David on the bed, 4.7 m away): the walk started 1 s after login, before my outfit / attachments / the room had
+    // loaded, planned on a static nav grid that has no bed (moved Oct 9, grid built Oct 4), and aimed 1.2 m from him = onto the mattress.
+    // Now: (a) wait until I am loaded in, (b) never route to or across furniture: use the curated footprints (_graph-Peronaut.json) and the
+    // seat's own clear floor spot (stand_spot), else a computed floor spot beside the furniture he is on or next to.
+    internal enum LoginLoadVerdict { Wait, Loaded, GaveUp }
+    internal const double LoginLoadMinS = 20, LoginLoadStableS = 8, LoginLoadMaxS = 75;
+    // pure (tested): loaded = my own appearance arrived, his position resolved (his seat prim is in), I wear something, and the worn-attachment
+    // count and the root prims near me have not changed for LoginLoadStableS, no sooner than LoginLoadMinS after login (the library re-sends
+    // the outfit ~8-15 s in); after LoginLoadMaxS go anyway (the furniture rule below still protects the route)
+    internal static LoginLoadVerdict LoginLoadStep(double sinceLoginS, double stableS, bool appearance, int worn, bool davidPlaced)
+    {
+        if (sinceLoginS >= LoginLoadMaxS) return LoginLoadVerdict.GaveUp;
+        return appearance && davidPlaced && worn > 0 && sinceLoginS >= LoginLoadMinS && stableS >= LoginLoadStableS ? LoginLoadVerdict.Loaded : LoginLoadVerdict.Wait;
+    }
+
+    internal sealed record LoginGoal(string Kind, Vector3? To, string Why);   // Kind: follow (open floor: the follow engine) | spot (walk to To) | none (no clear route)
+    internal const float LoginNearFurnitureM = 1.5f;
+    // pure (tested): where to walk. On open floor (he is not on / near furniture and the straight line crosses none) = the follow engine as before.
+    // Otherwise a floor spot: the seat's own stand_spot / approach when he is on that seat, else the nearest ring point around him (1.2-3.5 m)
+    // that is outside every footprint (+0.35 m body margin) and reachable from me in a straight line that crosses no furniture or wall.
+    internal static LoginGoal LoginJoinGoal(Vector3 me, Vector3 him, bool davidSeated, UUID seatRoot, IEnumerable<HomeSeatInfo> seats,
+                                            IReadOnlyList<FurnitureBox> boxes, Func<float, float, bool> blocked = null)
+    {
+        boxes ??= new List<FurnitureBox>(); blocked ??= (_, _) => false;
+        bool onFurniture = davidSeated || InFurnitureMargin(him, boxes, ClearBodyMargin) != null;
+        bool nearFurniture = InFurnitureMargin(him, boxes, LoginNearFurnitureM) != null || !ClearLine(me, him, boxes, (_, _) => false);
+        if (!onFurniture && !nearFurniture) return new LoginGoal("follow", null, "open floor");
+        var cands = new List<Vector3>();
+        var seat = seats?.FirstOrDefault(x => seatRoot != UUID.Zero && x.Id == seatRoot) ?? (onFurniture ? NearestHomeSeat(him, seats) : null);
+        var spot = seat?.StandSpot ?? seat?.Approach;
+        if (onFurniture && spot != null) cands.Add(new Vector3(spot.Value.X, spot.Value.Y, me.Z));
+        var ring = new List<(Vector3 c, float score)>();
+        foreach (var r in new[] { 1.2f, 1.6f, 2.0f, 2.5f, 3.0f, 3.5f })
+            for (int k = 0; k < 24; k++)
+            {
+                float a = k * MathF.PI / 12; var c = new Vector3(him.X + MathF.Cos(a) * r, him.Y + MathF.Sin(a) * r, me.Z);
+                ring.Add((c, r + 0.05f * HDist(me, c)));
+            }
+        cands.AddRange(ring.OrderBy(x => x.score).Select(x => x.c));
+        foreach (var c in cands)
+            if (InFurnitureMargin(c, boxes, ClearBodyMargin) == null && !blocked(c.X, c.Y) && ClearLine(me, c, boxes, blocked))
+                return new LoginGoal("spot", c, onFurniture ? "he is on furniture" : "furniture beside him or on the way");
+        return new LoginGoal("none", null, "no clear floor spot reachable without crossing furniture or a wall");
+    }
+
+    static (int worn, int near) LoginLoadCounts(Vector3 me)
+    {
+        var sim = client.Network.CurrentSim; if (sim == null) return (0, 0);
+        return (WornPrims().Count, sim.ObjectsPrimitives.Values.Count(p => p != null && p.ParentID == 0 && HDist(p.Position, me) < 25f));
+    }
+    static async Task<string> LoginWaitLoaded(DateTime t0)
+    {
+        var last = (worn: -1, near: -1); var stableSince = DateTime.Now;
+        while (LoggedIn)
+        {
+            var cnt = LoginLoadCounts(client.Self.SimPosition);
+            if (cnt != last) { last = cnt; stableSince = DateTime.Now; }
+            bool app = SelfAv()?.VisualParameters?.Length > 0;
+            var dav = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId);
+            var v = LoginLoadStep((DateTime.Now - t0).TotalSeconds, (DateTime.Now - stableSince).TotalSeconds, app, cnt.worn, dav.av != null && dav.pos != Vector3.Zero);
+            if (v != LoginLoadVerdict.Wait)
+                return $"{(v == LoginLoadVerdict.Loaded ? "loaded in" : $"gave up waiting after {LoginLoadMaxS:F0} s (going anyway)")}: appearance {(app ? "yes" : "no")}, {cnt.worn} worn prims, {cnt.near} root prims within 25 m, {(DateTime.Now - t0).TotalSeconds:F0} s after login";
+            await Task.Delay(500);
+        }
+        return "logged out";
+    }
+
+    static async Task<string> LoginWalkToSpot(Vector3 goal)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        var t1 = DateTime.Now; var best = new System.Collections.Generic.List<(DateTime t, float d)>();
+        var walk = WalkLeg(goal, 0.6f, "login join", cts.Token, navMode: true);
+        string why = null;
+        while (!walk.IsCompleted && LoggedIn)
+        {
+            await Task.Delay(500);
+            best.Add((DateTime.Now, HDist(client.Self.SimPosition, goal)));
+            if (LoginJoinStalled(best.Select(b => ((DateTime.Now - b.t).TotalSeconds, b.d)).ToList()))
+            { why = $"approach blocked (no progress in {LoginStallS:F0} s): stopping, staying put"; cts.Cancel(); break; }
+        }
+        bool ok = false;
+        try { ok = await walk; } catch (OperationCanceledException) { why ??= "walk cancelled or timed out"; } catch (Exception ex) { why = ex.GetBaseException().Message; }
+        try { client.Self.AutoPilotCancel(); } catch { }
+        return ok ? null : why ?? "did not arrive";
     }
     static void LoginJoinStart() { loginJoinDone = new(TaskCreationOptions.RunContinuationsAsynchronously); loginPlacement = null; _ = Task.Run(LoginJoinDavid); }
     static async Task LoginJoinDavid()
@@ -59,9 +148,36 @@ public static partial class Program
             var spawn = LoginSpawnDistance(me, him);
             Log("login", $"placement: spawn {(me is Vector3 m ? Fmt(m) : "?")}, David {(him is Vector3 h ? Fmt(h) : "not in view")}: {(spawn is float s ? $"{s:F1} m" : "UNKNOWN")}");
             if (!LoginShouldJoin(spawn, him != null, client.Self.SittingOn != 0)) { loginPlacement = new(spawn, spawn == null ? "unknown" : "spawned-near", spawn); return; }
-            Log("login", $"placement: walking over to David ({spawn:F1} m){(leash != null ? " (leashed: walking myself, not dragged)" : "")}");
+            Log("login", $"placement: waiting until I am fully loaded in before walking over ({spawn:F1} m): {await LoginWaitLoaded(t0)}");
+            if (!LoggedIn) return;
+            // fresh positions after the wait (he may have moved; I may have been moved by a pose routine)
+            var dav2 = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId);
+            if (dav2.av == null || dav2.pos == Vector3.Zero) { loginPlacement = new(spawn, "walk-failed", null); Log("login", "placement: David is no longer in view after loading in; not walking"); return; }
+            var me2 = client.Self.SimPosition; float d0 = HDist(me2, dav2.pos);
+            if (!LoginShouldJoin(d0, true, client.Self.SittingOn != 0)) { loginPlacement = new(spawn, "met", d0); Log("login", $"placement: David is already {d0:F1} m from me: no walk needed"); return; }
+            var sim2 = client.Network.CurrentSim;
+            var boxes = InPeronaut ? HomeFootprints() : new List<FurnitureBox>();
+            var g = NavGridHere();
+            Func<float, float, bool> blocked = g == null ? null : (x, y) => { if (!g.Contains(x, y)) return false; var (i, j) = g.IJ(x, y); return g.At(i, j) != 0; };
+            uint par = dav2.av.ParentID; var rootId = UUID.Zero;
+            if (par != 0 && sim2 != null && sim2.ObjectsPrimitives.TryGetValue(par, out var pp) && pp != null)
+            { if (pp.ParentID != 0 && sim2.ObjectsPrimitives.TryGetValue(pp.ParentID, out var rp) && rp != null) pp = rp; rootId = pp.ID; }
+            var goal = LoginJoinGoal(me2, dav2.pos, par != 0, rootId, LoadHomeSeats(), boxes, blocked);
+            Log("login", $"placement: {goal.Kind} ({goal.Why}){(goal.To is Vector3 gt ? $" -> {P3(gt)}" : "")}; David {P3(dav2.pos)}{(par != 0 ? $" on seat {(rootId == UUID.Zero ? "(prim unknown)" : rootId.ToString())}" : "")}, me {P3(me2)}, {d0:F1} m");
+            float d = d0;
+            if (goal.Kind == "none") { loginPlacement = new(spawn, "no-route", d0); return; }
+            if (goal.Kind == "spot")
+            {
+                var fail = await LoginWalkToSpot(goal.To.Value);
+                var dv = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId); d = dv.av != null ? dv.dist : d0;
+                if (fail != null) Log("login", $"placement: {fail} ({HDist(client.Self.SimPosition, goal.To.Value):F1} m from the spot)");
+                loginPlacement = new(spawn, fail == null ? "spot-walked" : "walk-failed", d);
+                Log("login", $"placement: {(fail == null ? "beside the furniture, on the floor" : "could not reach the spot")}, {d:F1} m from David");
+                return;
+            }
+            Log("login", $"placement: walking over to David ({d0:F1} m){(leash != null ? " (leashed: walking myself, not dragged)" : "")}");
             followDistThis = 1.2f; followName = DavidName; followId = DavidId;
-            var t1 = DateTime.Now; float d = spawn.Value; var best = new System.Collections.Generic.List<(DateTime t, float d)>();
+            var t1 = DateTime.Now; var best = new System.Collections.Generic.List<(DateTime t, float d)>();
             while ((DateTime.Now - t1).TotalSeconds < 40 && LoggedIn)
             {
                 await Task.Delay(500);

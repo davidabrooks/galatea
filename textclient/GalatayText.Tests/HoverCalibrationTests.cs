@@ -35,8 +35,8 @@ public class HoverCalibrationTests
         var chk = Src("PoseHover.cs"); chk = chk[chk.IndexOf("static async Task<string> PoseHoverCheck(")..];
         Assert.Contains("var (eff2, src2) = await EffectiveHoverFresh();", chk);
         Assert.Contains("Math.Abs(e2 - t) <= 0.002", chk);                                // the cap must now hold the target
-        Assert.Contains("HoverCheckRender(dir, size, eff2 ?? t, bias, kind)", chk);             // the re-render is drawn at the hover really in force
-        Assert.DoesNotContain("HoverCheckRender(dir, size, t, bias, kind)", chk);
+        Assert.Contains("HoverCheckRender(dir, size, eff2 ?? t, bias, kind, parts: parts)", chk);             // the re-render is drawn at the hover really in force
+        Assert.DoesNotContain("HoverCheckRender(dir, size, t, bias, kind", chk);
         Assert.Contains("NOT verified: the hover in force is", chk);
         Assert.Contains("NOT verified against David's viewer (default bias)", chk);       // a default (uncalibrated) bias is never called "confirmed"
         Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(chk, @"PostHover\(").Count);

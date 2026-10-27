@@ -1354,6 +1354,32 @@ def ground_sit_contact(verts, pelvis, r=SIT_HIPS_R, min_verts=20):
     zlow, cp = contact_points(sel)
     return (zlow, cp) if cp else None
 
+# hover check, per body part (2026-10-27, David: "look at the ground the way I do and adjust to it"): mesh.json "bones" = 25 posed-skeleton segments (scene-mesher order: 0-4 spine
+# and head, 5-9 / 10-14 the two arms [collar, shoulder, upper arm, forearm, hand], 15-19 / 20-24 the two legs [hip link, thigh, shin, foot, toes]). Every vertex of what she wears belongs to the
+# part of its nearest segment; each part's gap = its lowest vertex above the floor drawn in the render. The client chooses which parts SUPPORT her (by pose name, names only) and moves the hover
+# so the lowest of them touches the floor; no hover value or offset per pose exists anywhere.
+BONE_PART_SEGS = {"hips": (0, 15, 20), "chest": (1, 2), "forearms": (8, 13), "hands": (9, 14), "thighs": (16, 21), "shins": (17, 22), "feet": (18, 19, 23, 24)}
+PART_MIN_VERTS = 20
+
+def assign_body_parts(verts, segs, chunk=40000):
+    """verts (n, 3) world, segs (k, 2, 3) world bone segments (k = 25) -> {part: (m, 3) vertices whose nearest segment belongs to that part}; empty when the skeleton is not the 25-segment one"""
+    v = np.asarray(verts, dtype=np.float64).reshape(-1, 3); S = np.asarray(segs, dtype=np.float64).reshape(-1, 2, 3)
+    if len(v) == 0 or len(S) != 25: return {}
+    A, D = S[:, 0], S[:, 1] - S[:, 0]; DD = np.maximum((D * D).sum(1), 1e-12); near = np.empty(len(v), np.int64)
+    for i in range(0, len(v), chunk):
+        P = v[i:i + chunk]; t = np.clip(((P[:, None, :] - A[None]) * D[None]).sum(2) / DD[None], 0.0, 1.0)
+        near[i:i + chunk] = np.linalg.norm(P[:, None, :] - (A[None] + t[..., None] * D[None]), axis=2).argmin(1)
+    return {part: v[np.isin(near, idx)] for part, idx in BONE_PART_SEGS.items() if np.isin(near, idx).sum() >= PART_MIN_VERTS}
+
+def body_part_gaps(parts, floor, quantile=0.002):
+    """{part: gap of its lowest vertex (0.2 % quantile: a stray vertex does not count) above `floor`, + above / - sunk in}"""
+    return {k: float(np.quantile(p[:, 2], quantile)) - float(floor) for k, p in parts.items() if len(p)}
+
+def hover_parts_line(gaps):
+    """the line the client parses (PoseHover.cs HoverCheckPartGaps): "GT: hover check parts: hips +0.012, hands -0.040" in a fixed order"""
+    order = list(BONE_PART_SEGS)
+    return "GT: hover check parts: " + ", ".join(f"{k} {gaps[k]:+.3f}" for k in order if k in gaps)
+
 def feet_camera_spec(x, y, yaw_deg, deg, cpts, zlow, floor_z, lens=50.0, res=(1024, 640), min_width=0.6, pad=0.3, max_width=1.4, sink=0.06):
     """the contact close-up camera: level, from `deg` degrees counter-clockwise from her front (90 = her left), looking at the contact area
     (cpts from contact_points). The frame is `width` wide (the contact's extent along the view + pad, at least min_width = 0.6 m, at most max_width),
@@ -1681,6 +1707,16 @@ if SCENE:
             chunks.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
         allv = np.concatenate(chunks) if chunks else np.zeros((0, 3))
         sc_ = None
+        want_parts = [q for q in os.environ.get("GT_HC_PARTS", "").split(",") if q]; part_cp = None
+        if HC and not mst and M.get("bones") and len(M["bones"]) == 25:   # the hover check: the gap under every body part, against the floor drawn here (the client picks the supporting ones)
+            segs_w = [[tuple(to_world(b[:3], (x, y, z0), yaw)), tuple(to_world(b[3:], (x, y, z0), yaw))] for b in M["bones"]]
+            pv_ = assign_body_parts(allv, segs_w)
+            if pv_:
+                print(hover_parts_line(body_part_gaps(pv_, floor)), flush=True)
+                zs_, cps_ = [], []
+                for q in want_parts:
+                    if q in pv_: zq_, cq_ = contact_points(pv_[q]); zs_.append(zq_); cps_ += cq_
+                if cps_: part_cp = (min(zs_), cps_)   # frame the supporting parts' own contacts (hips AND hands, chest AND thighs ...)
         if mst:   # seated on an object: the contact is her HIPS against the SEAT, never her dangling feet over the terrain (2026-10-26, David)
             pm = M.get("pelvis"); pel = to_world(pm, (x, y, z0), yaw) if pm else Vector((px, py, g[2]))
             def seat_cast(qx, qy, qz):   # first surface under (qx, qy) from qz down that is not her body (a slat, a cushion, a rail)
@@ -1701,12 +1737,12 @@ if SCENE:
             print("GT: seat contact gap " + (f"{gap:+.3f} m (hips above the seat +, sunk into it -)" if gap is not None else "unknown (seat surface not found)"), flush=True)
             cut_corridor(seat_cutaway(tgt, loc, cp, width, min(floor, zlow) - 0.06, res))   # nothing of the seat between the camera and her hips
         else:
-            gs_ = None
-            if os.environ.get("GT_HC_KIND") == "sit" and M.get("pelvis"):   # AO ground sit (the client says so): the hips-to-floor contact, not heels and hands
+            gs_ = part_cp
+            if gs_ is None and os.environ.get("GT_HC_KIND") == "sit" and M.get("pelvis"):   # AO ground sit (the client says so): the hips-to-floor contact, not heels and hands
                 pg_ = to_world(M["pelvis"], (x, y, z0), yaw); gs_ = ground_sit_contact(allv, (pg_.x, pg_.y, pg_.z))
             zlow, cp = gs_ if gs_ else contact_points(allv)
             if not cp: cp = [(px, py, floor)]; zlow = floor
-            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, max_width=0.9 if gs_ else 1.4)   # a ground sit: at most 0.9 m
+            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, max_width=(1.4 if part_cp else 0.9) if gs_ else 1.4)   # a ground sit: at most 0.9 m (the supporting parts: up to 1.4 m)
             print(f"GT: contact close-up: {os.environ.get('GT_HC_POSTURE') or 'lowest contact'}, {len(cp)} vertices within {CONTACT_BAND:g} m of her lowest point (z {zlow:.3f}, floor {floor:.3f}), "
                   f"frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
         # a wall behind the camera: stop in front of it and widen the lens in proportion so the contact still fits (as `look self` does)

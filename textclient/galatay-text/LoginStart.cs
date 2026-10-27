@@ -66,4 +66,18 @@ public static partial class Program
         }
         catch (Exception ex) { Log("login", "quick relog step-out: " + ex.GetBaseException().Message); }
     }
+
+    // 2026-10-27 David (08:43 login: "your skin was the first thing to load ... you stood there naked for a long time"): on a cold login the sim
+    // restores one object per attach point itself and the library's outfit send adds the rest (Kay Body, hands, feet, head, hair sit on shared points)
+    // one by one, in COF order. Order that send so what covers the system avatar goes first: body, then skeleton / head / hands / feet, then hair,
+    // then everything else, with HUDs / AO / collar / bridge last. (Lower first; same rank keeps COF order.)
+    internal static int OutfitSendRank(string name)
+    {
+        var n = name ?? "";
+        if (System.Text.RegularExpressions.Regex.IsMatch(n, @"\b(HUD|AO|Collar|Bridge|Authorizer)\b|Premium Collar|ANIMATIONS", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return 8;
+        if (n.Contains("Body", StringComparison.OrdinalIgnoreCase) && !n.Contains("Add-on", StringComparison.OrdinalIgnoreCase)) return 0;
+        if (System.Text.RegularExpressions.Regex.IsMatch(n, @"\bHEAD\b|Skeleton|\b(Hand|Palm|Foot|Hip)[LR]?\b|Bare Foot|Kay HP")) return 1;
+        if (n.Contains("hair", StringComparison.OrdinalIgnoreCase)) return 2;
+        return 3;
+    }
 }

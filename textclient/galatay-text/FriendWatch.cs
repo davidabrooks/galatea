@@ -62,7 +62,7 @@ public static partial class Program
         if (gen != loginGen || !LoggedIn) return;
         if (!On()) { Log("friendwatch", $"galatea_login: {DavidName} is offline, no wake"); return; }
         davidOnline = true; if (davidOnlineAt == DateTime.MinValue) davidOnlineAt = DateTime.UtcNow;
-        await Task.WhenAny(loginJoinDone.Task, Task.Delay(45000));   // the real placement first (LoginJoin.cs)
+        await Task.WhenAny(loginJoinDone.Task, Task.Delay(100000));   // the real placement first (LoginJoin.cs: waits for loaded-in (<= 75 s), then walks)
         if (gen != loginGen || !LoggedIn) return;
         Log("friendwatch", $"galatea_login: {DavidName} is already online; wake now");
         Wake("galatea_login (I just logged in and he was already online)", false, true, TimeSpan.Zero);

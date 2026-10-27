@@ -173,6 +173,8 @@ public static partial class Program
     // schedule ONE check (why: sit, stand, region or manual). A newer request replaces an older pending one; blocked states retry a few times, then give up.
     // returns the task that ends with the check's one-line result (what a manual `hover check` waits for and returns)
     static volatile string hoverCheckResult = "";
+    // when a check last FINISHED (measured and fixed / confirmed, or ended with its own final "nothing to do" result); the login walk waits for one after login (LoginJoin.cs)
+    static DateTime hoverCheckDoneAt = DateTime.MinValue;
     internal static Task<string> HoverCheckRequest(string why, int delayMs = 4000)
     {
         if (Env("GT_POSE_HOVER_CHECK", "on") == "off") return Task.FromResult("hover check is off (GT_POSE_HOVER_CHECK=off)");
@@ -196,7 +198,7 @@ public static partial class Program
                     {
                         hoverCheckLastRun = DateTime.Now;
                         retry = await PoseHoverCheck(kind, pose);
-                        if (retry == null) return hoverCheckResult;
+                        if (retry == null) { hoverCheckDoneAt = DateTime.Now; return hoverCheckResult; }
                     }
                     else if (block.StartsWith("skip:")) { Log("posehover", $"{why}: {block}"); return $"{why}: {block}"; }
                     if (attempt >= HoverCheckMaxTries) { Log("posehover", $"{why}: gave up after {attempt} tries ({retry})"); return $"{why}: gave up after {attempt} tries ({retry})"; }

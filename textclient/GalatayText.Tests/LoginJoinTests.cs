@@ -86,3 +86,35 @@ public class LoginJoinTests
         Assert.Contains("did not walk", Program.LoginPlacementText(new Program.LoginPlacement(4.7f, "met", 1.9f)));
     }
 }
+public class LoginHoverWaitTests
+{
+    // 2026-10-27 09:18: the walk started before the first hover check (set -0.076 at ~9:18:14, ~2 min after the 9:16 login): she walked floating
+    [Fact] public void WalkWaitsUntilAHoverCheckFinishedSinceLogin()
+    {
+        var W = Program.LoginHoverVerdict.Wait;
+        Assert.Equal(W, Program.LoginHoverStep(25, false));                                  // loaded in (20 s) but no check finished yet
+        Assert.Equal(W, Program.LoginHoverStep(100, false));                                 // form still unknown (attachments loading)
+        Assert.Equal(Program.LoginHoverVerdict.Done, Program.LoginHoverStep(25, true));      // a check finished: go
+        Assert.Equal(Program.LoginHoverVerdict.Done, Program.LoginHoverStep(200, true));
+    }
+    [Fact] public void NeverWaitsPastTheUpperBound()
+    {
+        Assert.Equal(Program.LoginHoverVerdict.Wait, Program.LoginHoverStep(149.9, false));
+        Assert.Equal(Program.LoginHoverVerdict.GaveUp, Program.LoginHoverStep(150, false));
+        Assert.Equal(150, Program.LoginHoverMaxS);
+    }
+    [Fact] public void GaveUpOrErroredRequestIsAskedAgain_ReplacedOneIsNot()
+    {
+        Assert.True(Program.LoginHoverRerequest("login: gave up after 6 tries (form not known yet (attachments still loading))"));
+        Assert.True(Program.LoginHoverRerequest("login: error boom"));
+        Assert.False(Program.LoginHoverRerequest("replaced by a newer hover check request"));   // another request is doing the check
+        Assert.False(Program.LoginHoverRerequest("android|stand: render confirms contact at -0.076"));
+        Assert.False(Program.LoginHoverRerequest(null));
+    }
+    [Fact] public void SkippedRequestEndsTheWait()
+    {
+        Assert.True(Program.LoginHoverSkipped("login: skip: sitting on an object (the normal hover is restored there)"));
+        Assert.False(Program.LoginHoverSkipped("login: gave up after 6 tries (moving)"));
+        Assert.False(Program.LoginHoverSkipped(null));
+    }
+}

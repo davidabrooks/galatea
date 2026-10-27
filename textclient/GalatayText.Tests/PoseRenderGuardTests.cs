@@ -96,7 +96,7 @@ public class PoseRenderGuardTests
         int guard = chk.IndexOf("PoseRenderMismatch(kind, size, pz, exAnims, AoSitIdsNow())"), post = chk.IndexOf("await PostHover(");
         Assert.True(guard > 0 && guard < post);                                                   // the guard runs on render 1, before anything can be POSTed
         var g = chk[guard..post]; Assert.Contains("not verified: pose not rendered", g); Assert.Contains("nothing changed", g); Assert.Contains("return \"pose not rendered: \" + why;", g);   // a non-null return = the request retries
-        Assert.Contains("HoverFixNeedsConfirm(gap)", chk[guard..post]);
-        Assert.True(chk.IndexOf("HoverFixNeedsConfirm(gap)") < post);
+        Assert.Contains("HoverFixNeedsConfirm(eg)", chk[guard..post]);
+        Assert.True(chk.IndexOf("HoverFixNeedsConfirm(eg)") < post);
     }
 }

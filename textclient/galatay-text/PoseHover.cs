@@ -40,6 +40,24 @@ public static partial class Program
     internal static double PoseBiasDefault(string kind) => kind == "stand" ? 0.2315 : -0.055;
     internal static bool PoseGapSane(double gap) => Math.Abs(gap) <= 0.25;
     internal static bool PoseGapConfirmed(double gap) => Math.Abs(gap) <= PoseHoverTol;
+    // ---- hand-supported ground sits (2026-10-27 David, VAMOSITG13: she rests on both hands behind her with her hips on the floor) ----
+    // The check measures the HIPS contact; in these poses the hands then sink into the floor, which looks worse than hips hovering a little (David's eye preferred +0.06 over the
+    // hip-contact -0.012). The render does not report the hands, so the bias is a documented constant: the check aims HandSupportLiftM ABOVE the hip contact (-0.012 + 0.07 = +0.058).
+    // Code-level data keyed by the AO pose name (the VAMOSITG sit); NEVER a saved per-pose hover height (the ground varies by place: the lift is relative to this location's measured contact).
+    internal const double HandSupportLiftM = 0.07;
+    // pose name -> lift above the hip contact. VAMOSITG13: +0.07 (hips -0.012 sank the hands; David's eye: +0.06). VAMOSITG12 is hand-supported too, but in David's viewer it looked right
+    // at about -0.01 (the hip contact) and +0.06 was too HIGH: lift 0, so a hover left over from G13 is measured away and put back to the hip contact (David, Oct 27 10:08)
+    internal static readonly Dictionary<string, double> HandSupportedSits = new(StringComparer.OrdinalIgnoreCase) { ["VAMOSITG13"] = HandSupportLiftM, ["VAMOSITG12"] = 0.0 };
+    // pure (tested): the lift above the hip contact for this posture / pose: the pose's own value for a hand-supported ground sit, else 0 (stands, other sits, seats, unknown names)
+    internal static double HandSupportLift(string kind, string pose) => kind == "sit" && pose != null && HandSupportedSits.TryGetValue(pose.Trim(), out var l) ? l : 0.0;
+    internal static bool IsHandSupported(string kind, string pose) => kind == "sit" && pose != null && HandSupportedSits.ContainsKey(pose.Trim());
+    // pure (tested): the pose changed since the last finished check (an automatic rotation): the hover in force may be one set for the OTHER pose, by hand or by its check.
+    // It is never trusted: this check measures the new pose against its own target (the render at the hover in force) and corrects, it does not inherit "contact" from the old value
+    internal static bool PoseChangedSinceCheck(string lastPose, string pose) => lastPose != null && !string.Equals(lastPose.Trim(), (pose ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
+    static string hoverLastCheckedPose;
+    // pure (tested): the render gap judged against the intended placement: the hips floating HandSupportLift above the floor ARE contact for a hand-supported sit.
+    // Applying hover - this gap converges (re-checking at the lifted hover reads gap = lift, so effective gap 0, no further change)
+    internal static double HandFirstGap(double gap, double lift) => gap - lift;
     internal static double PoseHoverFromGap(double hov, double gap) => Math.Round(Math.Clamp(hov - gap, -0.4, 0.4), 3);
     // pure (tested): the env that makes the quick render a hover check (hover offset applied, real placement, floor drawn)
     internal static Dictionary<string, string> HoverCheckEnv(double size, double hover, double bias) => new()
@@ -339,12 +357,17 @@ public static partial class Program
                 }
             }
             string how; bool fixedHover = false, confirmRender = false;
+            // hand-supported sit (VAMOSITG13): aim HandSupportLift above the hip contact so the hands clear the floor; eg = the gap against that intended placement (== gap for every other pose)
+            double lift = HandSupportLift(kind, pose), eg = HandFirstGap(gap, lift);
+            string liftTxt = IsHandSupported(kind, pose) ? (lift > 0 ? $"; hands-first: hips aimed {lift:0.00} m above the floor so the hands show (hand-supported sit, fixed bias)" : "; hand-supported sit: hip contact is right for this pose (no lift)") : "";
+            if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, measured here against this pose's own target"; Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, measuring against this pose"); }
+            hoverLastCheckedPose = pose;
             string calTxt = calibrated ? "bias calibrated against David's viewer" : "DEFAULT bias, not yet calibrated against David's viewer (hover calibrate)";
-            if (PoseGapConfirmed(gap)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {gap:+0.000}; {calTxt}); hover left alone";
+            if (PoseGapConfirmed(eg)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {gap:+0.000}; {calTxt}{liftTxt}); hover left alone";
             else
             {
-                var t = PoseHoverFromGap(hov, gap);
-                if (HoverFixNeedsConfirm(gap))   // a large fix (> 0.12 m): only after a second render at the same hover agrees
+                var t = PoseHoverFromGap(hov, eg);
+                if (HoverFixNeedsConfirm(eg))   // a large fix (> 0.12 m): only after a second render at the same hover agrees
                 {
                     var (gc, imgc) = await HoverCheckRender(dir, size, hov, bias, kind); confirmRender = true;
                     if (gc is not double gc2 || !HoverFixConfirmed(gap, gc2))
@@ -360,9 +383,9 @@ public static partial class Program
                 bool applied = ok && eff2 is double e2 && Math.Abs(e2 - t) <= 0.002;
                 var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias, kind);   // render 2 (only after a fix): the verification at the hover really in force
                 fixedHover = true; finalImg = img2;
-                bool good = applied && g2 is double gg && PoseGapConfirmed(gg);
+                bool good = applied && g2 is double gg && PoseGapConfirmed(HandFirstGap(gg, lift));
                 string verdict = good ? (calibrated ? "contact confirmed" : "contact in the render; NOT verified against David's viewer (default bias)") : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
-                how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}): {info}; {img2}";
+                how = $"render gap {gap:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}{liftTxt}): {info}; {img2}";
             }
             int renders = HoverCheckRenderCount(fixedHover, confirmRender);
             Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}");

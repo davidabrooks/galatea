@@ -19,7 +19,27 @@ public class HandSupportedSitTests
         Assert.Equal(0.0, Program.HandSupportLift("sit", null));
         Assert.Equal(0.0, Program.HandSupportLift("stand", "VAMOSITG13"));         // only a ground sit
         Assert.Equal(0.0, Program.HandSupportLift("seat", "VAMOSITG13"));
-        Assert.Contains("VAMOSITG13", Program.HandSupportedSits);
+        Assert.Contains("VAMOSITG13", Program.HandSupportedSits.Keys);
+    }
+    [Fact] public void VAMOSITG12_IsHandSupported_ButItsHipContactIsRight_NoLift()
+    {
+        Assert.True(Program.IsHandSupported("sit", "VAMOSITG12")); Assert.True(Program.IsHandSupported("sit", "VAMOSITG13")); Assert.False(Program.IsHandSupported("sit", "VAMOSITG23")); Assert.False(Program.IsHandSupported("stand", "VAMOSITG12"));
+        Assert.Equal(0.0, Program.HandSupportLift("sit", "VAMOSITG12"));
+        // hover left at +0.06 by hand for G13, then the AO rotates to G12: the render reads the hips 0.07 up (gap +0.07) -> not contact, the fix goes back to about -0.01
+        Assert.False(Program.PoseGapConfirmed(Program.HandFirstGap(0.072, Program.HandSupportLift("sit", "VAMOSITG12"))));
+        Assert.Equal(-0.012, Program.PoseHoverFromGap(0.06, Program.HandFirstGap(0.072, Program.HandSupportLift("sit", "VAMOSITG12"))), 3);
+        // and the other way: hover -0.01 from G12, rotate to G13 (hips on the floor, gap 0) -> +0.06
+        Assert.Equal(0.06, Program.PoseHoverFromGap(-0.01, Program.HandFirstGap(0.0, Program.HandSupportLift("sit", "VAMOSITG13"))), 3);
+    }
+    [Fact] public void APoseChange_IsNotTrustedToTheHoverLeftForTheOtherPose()
+    {
+        Assert.True(Program.PoseChangedSinceCheck("VAMOSITG13", "VAMOSITG12")); Assert.True(Program.PoseChangedSinceCheck("VAMOSITG12", "stand"));
+        Assert.False(Program.PoseChangedSinceCheck("VAMOSITG12", " vamositg12 ")); Assert.False(Program.PoseChangedSinceCheck(null, "VAMOSITG12"));
+        var chk = Src("PoseHover.cs"); chk = chk[chk.IndexOf("static async Task<string> PoseHoverCheck(")..];
+        Assert.Contains("PoseChangedSinceCheck(hoverLastCheckedPose, pose)", chk); Assert.Contains("hoverLastCheckedPose = pose;", chk);
+        // the hover is never taken from the previous check: it is read fresh (EffectiveHoverFresh) and judged by the render before any "left alone"
+        Assert.True(chk.IndexOf("EffectiveHoverFresh()") < chk.IndexOf("PoseChangedSinceCheck(")); Assert.True(chk.IndexOf("PoseChangedSinceCheck(") < chk.IndexOf("hover left alone"));
+        Assert.Equal(3, Program.HoverCheckRenderCount(true, true)); Assert.Equal(1, Program.HoverCheckRenderCount(false));   // still one render when nothing needs fixing, two with a fix
     }
     [Fact] public void VAMOSITG13_LandsAboutPlus006_AfterTheHipContactResultOfMinus0012()
     {

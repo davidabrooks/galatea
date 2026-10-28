@@ -65,7 +65,10 @@ internal sealed class FeetAuto
     /// A new or re-attached body has a new attachment object id. The child prim count is NOT part of it: prims streaming in and out made the signature flap every poll
     /// (2026-10-28 13:30 live loop: "worn body changed" every ~2 s, f3 re-pressed every 12 s).</summary>
     internal static string FeetBodySignature(IEnumerable<(UUID item, string name, UUID objectId)> worn) =>
-        string.Join(",", (worn ?? Array.Empty<(UUID, string, UUID)>()).Where(w => Program.BodyFamily(w.name) == "larax" && !(w.name ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase) && !(w.name ?? "").Contains("Add-on", StringComparison.OrdinalIgnoreCase)).Select(w => $"{w.item}/{w.objectId}").OrderBy(x => x, StringComparer.Ordinal));
+        string.Join(",", (worn ?? Array.Empty<(UUID, string, UUID)>()).Where(w => IsFeetBody(w.name)).Select(w => $"{w.item}/{w.objectId}").OrderBy(x => x, StringComparer.Ordinal));
+
+    /// <summary>Pure: is this worn attachment the LaraX body itself (not its HUD or an add-on)?</summary>
+    internal static bool IsFeetBody(string name) => Program.BodyFamily(name) == "larax" && !(name ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase) && !(name ?? "").Contains("Add-on", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Pure: the body changed when a previous signature exists (not the first poll) and differs.</summary>
     internal static bool FeetBodyChanged(string previousSig, string sig) => previousSig != null && previousSig != sig;
@@ -97,15 +100,21 @@ internal sealed class FeetAuto
     // ---- 2026-10-28 (David: the feet fit is judged on the FOOT, not the boot; never finished while a bare foot shows) ----
     // Live failure: feet-state.txt kept "f3" across logout/login, the login press landed mid outfit swap and did not take, a later press landed as she sat and was never
     // checked: toes poked out of the boots. Now: the state is cleared at every login; a press waits for a stable outfit, a settled posture and standing; and EVERY press is
-    // verified from evidence (the heel-foot animations + a `look self feet` close-up analysed for bare skin), never from feet-state.txt or the press log.
+    // verified from evidence (which foot mesh pair of the worn body is visible, read from the body's own face alpha), never from feet-state.txt or the press log.
+// 2026-10-28 (root cause): the page-open touch hit the ALPHA tab (u 0.1) so the foot press did nothing; it now touches the HANDS/FEET tab (u 0.70). The two
+// 'heel-foot animations' once used as proof are hand-finger animations, and a skin-colour check on the close-up counted wood heels and suede as skin: both are gone.
+// The close-up is kept only as an informational picture; it never decides a fit.
     // 2026-10-28 11:42 relog (David: the body showed under the shirt and shorts before the clothes rendered): the feet code attached / detached the Maitreya HUD (an item the sim had
     // already restored, worn and in the COF) four times within 30 s of login. No HUD round trip until the login has settled.
     internal const double FeetOutfitStableSec = 8, FeetPoseSettleSec = 5, FeetRetryCooldownSec = 90, FeetLoginGraceSec = 40;
     internal const int FeetPressAttempts = 3, FeetRetakes = 3, FeetGiveUpRounds = 3;
-    internal const double FeetMinLuma = 0.10, FeetMinP95Luma = 0.25, FeetSkinMaxFrac = 0.004;
+    internal const double FeetMinLuma = 0.10, FeetMinP95Luma = 0.25;
     internal static readonly double[] FeetRetakeExposure = { 0.5, 2.5, 4.5 };   // each retake of an unusable (near-black) close-up is brighter
-    // the heel-foot animations the Maitreya body restarts (from its childprim object) when a heeled foot pose is on
-    internal static readonly UUID[] HeelFeetAnims = { new("08630d35-8417-803b-d9f9-946af813af65"), new("08d66d19-29ca-f6b3-492d-932e5e19c5f5") };
+    // 2026-10-28: the LaraX HUD page with the f1-f5 buttons is the HANDS/FEET tab; on the 'tabs' prim (face 4) it sits at u ~0.70 (u 0.1 = the ALPHA tab: the press did nothing)
+    internal const float FeetTabU = 0.70f, FeetTabV = 0.5f; internal const int FeetTabFace = 4;
+    internal static Vector3 FeetTabSt => new(FeetTabU, FeetTabV, 0);
+    // foot mesh prims on 'Maitreya Mesh Body - LaraX V1.1': f1 = b46/b47 (flat), f2 = b48/b49, f3 = b50/b51, f4 = b52/b53, f5 = b54/b55; exactly one pair is visible (alpha > 0)
+    internal static readonly (string feet, string a, string b)[] FootMeshPairs = { ("f1", "b46", "b47"), ("f2", "b48", "b49"), ("f3", "b50", "b51"), ("f4", "b52", "b53"), ("f5", "b54", "b55") };
 
     /// <summary>Pure: signature of everything worn (sorted item ids): a change means an outfit change is (or just was) in progress.</summary>
     internal static string FeetWornSignature(IEnumerable<UUID> worn) => string.Join(",", (worn ?? Array.Empty<UUID>()).Where(u => u != UUID.Zero).Select(u => u.ToString()).OrderBy(x => x, StringComparer.Ordinal));
@@ -128,7 +137,7 @@ internal sealed class FeetAuto
     internal static bool FeetRetryAllowed(int failedRounds, double sinceFailSec) => failedRounds < FeetGiveUpRounds && (failedRounds == 0 || sinceFailSec >= FeetRetryCooldownSec);
 
     /// <summary>What a `look self feet` close-up showed (vision/feet_fit.py): Readable=false or near-black = unusable.</summary>
-    internal sealed record FeetImage(bool Readable, double MeanLuma, double P95Luma, double SkinFootFrac, string Path, string Why);
+    internal sealed record FeetImage(bool Readable, double MeanLuma, double P95Luma, string Path, string Why);
 
     /// <summary>Pure: parse feet_fit.py's json line; null / garbage = an unreadable image (never a pass).</summary>
     internal static FeetImage ParseFeetImage(string json)
@@ -137,27 +146,39 @@ internal sealed class FeetAuto
         {
             using var d = JsonDocument.Parse(json ?? ""); var r = d.RootElement;
             double N(string k) => r.TryGetProperty(k, out var e) && e.ValueKind == JsonValueKind.Number ? e.GetDouble() : 0;
-            return new FeetImage(r.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True, N("mean_luma"), N("p95_luma"), N("skin_foot_frac"),
+            return new FeetImage(r.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True, N("mean_luma"), N("p95_luma"),
                 r.TryGetProperty("image", out var im) ? im.GetString() : null, r.TryGetProperty("why", out var w) ? w.GetString() : null);
         }
-        catch { return new FeetImage(false, 0, 0, 0, null, "no / unreadable analysis"); }
+        catch { return new FeetImage(false, 0, 0, null, "no / unreadable analysis"); }
     }
-    /// <summary>Pure: a close-up is unusable (must be retaken, never judged) when it is unreadable or near-black.</summary>
+    /// <summary>Pure: a close-up is unusable (retaken, never described as a picture of the feet) when it is unreadable or near-black.</summary>
     internal static bool FeetImageInvalid(FeetImage i) => i == null || !i.Readable || i.MeanLuma < FeetMinLuma || i.P95Luma < FeetMinP95Luma;
 
     internal enum FeetKind { Verified, Failed, Invalid }
     internal sealed record FeetVerdict(FeetKind Kind, string Why);
 
-    /// <summary>Pure: is the foot fit proven? Evidence only: the heel-foot animations and the close-up. A heeled shoe wanted with no heel-foot animation = a flat foot beside heeled boots (FAIL);
-    /// a flat foot wanted with the heel animations playing = FAIL; skin-coloured foot pixels in the close-up = a bare foot / toes outside the shoe (FAIL, never explained away as "inside the
-    /// opening"); an unusable (near-black) or missing close-up = INVALID: retake, and without a valid one it is not verified. Neither feet-state.txt nor the press log is an input.</summary>
-    internal static FeetVerdict FeetFit(bool heelWanted, bool heelAnimsPlaying, FeetImage img)
+    /// <summary>Pure: which foot pose the body shows, from the alpha of its foot mesh prims (name, alpha): exactly one of the pairs b46/47 (f1) .. b54/55 (f5) is visible (both prims alpha > 0.5)
+    /// and all ten prims were read. Anything else (body not found, a prim missing, none or several pairs visible) = null with the reason: the proof is missing.</summary>
+    internal static (string feet, string why) FeetShownFromMesh(IEnumerable<(string name, float alpha)> prims)
     {
-        if (heelWanted && !heelAnimsPlaying) return new(FeetKind.Failed, "a heeled shoe is worn but the heel-foot animations are not playing: the foot is flat beside heeled boots");
-        if (!heelWanted && heelAnimsPlaying) return new(FeetKind.Failed, "no heeled shoe is worn but the heel-foot animations are playing: heeled feet in a flat shoe");
-        if (FeetImageInvalid(img)) return new(FeetKind.Invalid, $"the feet close-up is unusable ({img?.Why ?? "no image"}): retake");
-        if (img.SkinFootFrac > FeetSkinMaxFrac) return new(FeetKind.Failed, $"bare foot / toes visible outside the shoe in the close-up ({img.SkinFootFrac * 100:0.00}% of the foot zone is skin-coloured, limit {FeetSkinMaxFrac * 100:0.0}%): {img.Path}");
-        return new(FeetKind.Verified, $"no bare foot in the close-up ({img.SkinFootFrac * 100:0.00}% skin in the foot zone) and the heel-foot animations {(heelWanted ? "play" : "are off")}: {img.Path}");
+        if (prims == null) return (null, "the worn body's foot mesh prims could not be read");
+        var al = new Dictionary<string, float>(); foreach (var (n, a) in prims) if (n != null) al[n] = a;
+        var missing = FootMeshPairs.SelectMany(p => new[] { p.a, p.b }).Where(n => !al.ContainsKey(n)).ToList();
+        if (missing.Count > 0) return (null, $"foot mesh prims missing on the body: {string.Join(", ", missing)}");
+        var shown = FootMeshPairs.Where(p => al[p.a] > 0.5f && al[p.b] > 0.5f).Select(p => p.feet).ToList();
+        if (shown.Count == 0) return (null, "no foot mesh pair is visible");
+        if (shown.Count > 1) return (null, $"several foot mesh pairs are visible ({string.Join(", ", shown)})");
+        return (shown[0], "ok");
+    }
+
+    /// <summary>Pure: is the foot fit proven? The ONLY proof is the body's own foot mesh: the pair showing must be the wanted one. A missing / unreadable proof is a failure, never a pass.
+    /// The close-up is informational (its path goes in the text); it neither passes nor fails a fit. Neither feet-state.txt nor the press log is an input.</summary>
+    internal static FeetVerdict FeetFit(string wanted, string shown, string meshWhy, FeetImage img)
+    {
+        if (shown == null) return new(FeetKind.Failed, $"no proof of the foot pose: {meshWhy}");
+        if (shown != wanted) return new(FeetKind.Failed, $"the body shows foot {shown} but {wanted} is wanted for the worn footwear");
+        var pic = img == null || FeetImageInvalid(img) ? "no usable close-up (informational only)" : $"close-up (informational only, not a proof): {img.Path}";
+        return new(FeetKind.Verified, $"the body's foot mesh pair for {wanted} is the one visible; {pic}");
     }
 
     // ---- state of the loop ----
@@ -238,20 +259,20 @@ internal sealed class FeetAuto
         return LastFitText;
     }
 
-    /// <summary>Evidence of the fit now: animations + a close-up, retaking an unusable (near-black) close-up brighter, bounded.</summary>
+    /// <summary>Evidence of the fit now: the visible foot mesh pair (the proof), plus one informational close-up (retaken brighter when near-black, bounded).</summary>
     async Task<FeetVerdict> VerifyFit(string feet, FeetRules rules)
     {
-        bool heel = feet != rules.Default; FeetVerdict v = null;
+        List<(string name, float alpha)> mesh = null;
+        try { mesh = await h.FootMeshAlphas(); } catch (Exception ex) { h.Log("feet", "foot mesh read failed: " + ex.GetBaseException().Message); }
+        var (shown, meshWhy) = FeetShownFromMesh(mesh);
+        FeetImage img = null;
         for (int take = 0; take < FeetRetakes; take++)
         {
-            bool heelAnims = h.SelfAnims().Any(HeelFeetAnims.Contains);
-            var img = ParseFeetImage(await SafeCloseup(FeetRetakeExposure[Math.Min(take, FeetRetakeExposure.Length - 1)]));
-            v = FeetFit(heel, heelAnims, img);
-            if (v.Kind != FeetKind.Invalid) return v;
-            h.Log("feet", $"close-up {take + 1}/{FeetRetakes} invalid: {v.Why}");
-            await Delay(2000);
+            img = ParseFeetImage(await SafeCloseup(FeetRetakeExposure[Math.Min(take, FeetRetakeExposure.Length - 1)]));
+            if (!FeetImageInvalid(img)) break;
+            if (take + 1 < FeetRetakes) await Delay(2000);
         }
-        return new(FeetKind.Failed, $"no usable close-up after {FeetRetakes} takes ({v?.Why}): the fit cannot be proven");
+        return FeetFit(feet, shown, meshWhy, img);
     }
     async Task<string> SafeCloseup(double exposure) { try { return await h.FeetCloseupJson(exposure); } catch (Exception ex) { h.Log("feet", "close-up failed: " + ex.GetBaseException().Message); return null; } }
 
@@ -315,11 +336,11 @@ internal sealed class FeetAuto
                 var prims = h.LinkPrims(hudRoot); await h.EnsureProperties(h.Sim, prims);
                 var btn = prims.FirstOrDefault(p => p.Properties?.Name == feet);
                 int ti = btn == null ? -1 : FeetPageTabIndex(prims.Select(p => (p.Properties?.Name ?? "", p.Position.Z)).ToList(), btn.Position.Z);
+                if (ti < 0) h.Log("feet", $"no 'tabs' prim found above button {feet}: the feet page could not be opened");
                 if (ti >= 0)
                 {
-                    var none = AgentManager.TOUCH_INVALID_VECTOR; var st = new Vector3(0.1f, 0.5f, 0);
-                    h.Client.Self.Grab(prims[ti].LocalID, Vector3.Zero, st, st, 4, none, none, none); await Delay(150);
-                    h.Client.Self.DeGrab(prims[ti].LocalID, st, st, 4, none, none, none); await Delay(1500);
+                    await h.TouchPrim(prims[ti], FeetTabSt, FeetTabFace); await Delay(1500);   // the HANDS/FEET tab (u 0.70); u 0.1 is the ALPHA tab
+                    h.Log("feet", $"opened the HANDS/FEET tab on '{prims[ti].Properties?.Name}' local {prims[ti].LocalID} at st {FeetTabU:0.00},{FeetTabV:0.00} face {FeetTabFace}");
                 }
             }
         }

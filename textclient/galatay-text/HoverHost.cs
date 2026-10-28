@@ -31,12 +31,15 @@ internal interface IFeetHost
     Task EnsureProperties(Simulator sim, List<Primitive> prims);
     Task<string> TouchAttachment(string rest);
     // 2026-10-28: when a press may happen, and the evidence that the foot fits the shoe
-    List<UUID> SelfAnims();
     bool PoseBusy { get; }            // a pose / sit transition is in progress (idle pose entry or exit, AO sit settling)
     double PoseSettledSec { get; }    // seconds since the posture last changed
     bool Sitting { get; }             // sitting on an object or an AO ground sit
     /// <summary>One `look self feet` close-up at the given exposure (stops), analysed by vision/feet_fit.py: its one json line, or null when no image came out.</summary>
     Task<string> FeetCloseupJson(double exposure);
+    /// <summary>The worn Maitreya LaraX body's foot mesh prims (b46-b55) with their face alpha (the proof of which foot pose shows); null when the body or its textures cannot be read.</summary>
+    Task<List<(string name, float alpha)>> FootMeshAlphas();
+    /// <summary>Touch one prim at a texture coordinate on a face (Grab + DeGrab).</summary>
+    Task TouchPrim(Primitive prim, Vector3 st, int face);
 }
 
 /// <summary>What the hover code needs: the session, hover state in force, the pose state, a few pose actions, the scene export and the paths.</summary>
@@ -143,6 +146,27 @@ public static partial class Program
         public bool PoseBusy => Program.idleLock.CurrentCount == 0 || DateTime.Now < Program.aoSitTransitionUntil;
         public double PoseSettledSec => (DateTime.Now - Program.hoverSvc.PostureChangedAt).TotalSeconds;
         public bool Sitting => Program.client.Self.SittingOn != 0 || Program.AoSitReallyOn();
+        public async Task<List<(string name, float alpha)>> FootMeshAlphas()
+        {
+            var roots = Program.WornPrims(); await Program.EnsureProperties(Program.Sim, roots);
+            var body = roots.Where(r => FeetAuto.IsFeetBody(r.Properties?.Name)).ToList();
+            if (body.Count != 1) return null;
+            var prims = Program.LinkPrims(body[0]); await Program.EnsureProperties(Program.Sim, prims);
+            var l = new List<(string, float)>();
+            foreach (var p in prims)
+            {
+                var n = p.Properties?.Name; if (n == null || p.Textures == null) continue;
+                var fa = p.Textures.FaceTextures.Where(f => f != null).Select(f => f.RGBA.A).ToList();
+                l.Add((n, fa.Count > 0 ? fa.Max() : p.Textures.DefaultTexture?.RGBA.A ?? 0f));
+            }
+            return l;
+        }
+        public async Task TouchPrim(Primitive prim, Vector3 st, int face)
+        {
+            var none = AgentManager.TOUCH_INVALID_VECTOR;
+            Program.client.Self.Grab(prim.LocalID, Vector3.Zero, st, st, face, none, none, none); await Task.Delay(150);
+            Program.client.Self.DeGrab(prim.LocalID, st, st, face, none, none, none);
+        }
         public async Task<string> FeetCloseupJson(double exposure)
         {
             var r = await Program.LookCmd(new[] { "self", "feet", "fast", "zoom=feet", "exposure=" + exposure.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) });

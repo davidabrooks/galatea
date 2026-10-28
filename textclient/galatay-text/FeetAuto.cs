@@ -1,3 +1,4 @@
+// 2026-10-28: `FeetAuto` is its own class; everything it uses from the rest of the client goes through IFeetHost (HoverHost.cs).
 // FeetAuto (2026-10-11, David): Maitreya foot pose follows the worn footwear. Every 4 s she compares her worn
 // attachments with routes/_feet-rules.json: a listed heeled shoe worn -> its pose (f3 for the Moca boots), none -> the
 // default (f1, flat). When the wanted pose has been the same for two polls and differs from the last pose pressed
@@ -10,14 +11,16 @@ using LibreMetaverse;
 
 namespace GalatayText;
 
-public static partial class Program
+internal sealed class FeetAuto
 {
+    readonly IFeetHost h;
+    internal FeetAuto(IFeetHost host) { h = host; }
     internal sealed record FeetRules(UUID Hud, string Default, Dictionary<UUID, (string name, string feet)> Footwear);
 
-    static string FeetRulesPath => Path.Combine(RouteDir, "_feet-rules.json");
+    string FeetRulesPath => Path.Combine(h.RouteDir, "_feet-rules.json");
     static string FeetStatePath => Path.Combine(AppContext.BaseDirectory, "..", "run", "feet-state.txt");
     static readonly UUID MaitreyaHudItem = new("961d2d4b-4948-3bac-ab88-0a7ba3b99302");
-    static readonly SemaphoreSlim feetGate = new(1, 1);
+    readonly SemaphoreSlim feetGate = new(1, 1);
 
     /// <summary>Pure: parse _feet-rules.json text (bad/missing parts -> defaults: f1, the LaraX HUD, no footwear).</summary>
     internal static FeetRules ParseFeetRules(string json)
@@ -61,7 +64,7 @@ public static partial class Program
     /// <summary>Pure: signature of the worn Maitreya/LaraX body = sorted "itemId/primCount" of its attachment roots (name-matched via BodyFamily);
     /// a new, re-attached or changed body (new item/attachment id, or its prims arriving/changing) gives a different string.</summary>
     internal static string FeetBodySignature(IEnumerable<(UUID item, string name, int childPrims)> worn) =>
-        string.Join(",", (worn ?? Array.Empty<(UUID, string, int)>()).Where(w => BodyFamily(w.name) == "larax").Select(w => $"{w.item}/{w.childPrims}").OrderBy(x => x, StringComparer.Ordinal));
+        string.Join(",", (worn ?? Array.Empty<(UUID, string, int)>()).Where(w => Program.BodyFamily(w.name) == "larax").Select(w => $"{w.item}/{w.childPrims}").OrderBy(x => x, StringComparer.Ordinal));
 
     /// <summary>Pure: the body changed when a previous signature exists (not the first poll) and differs.</summary>
     internal static bool FeetBodyChanged(string previousSig, string sig) => previousSig != null && previousSig != sig;
@@ -74,22 +77,22 @@ public static partial class Program
         return (FeetShouldPress(wanted, previousPoll, lastPressed), lastPressed);
     }
 
-    static string FeetBodySigNow()
+    string FeetBodySigNow()
     {
-        var worn = WornPrims();
-        return FeetBodySignature(worn.Select(p => (AttachItemId(p), p.Properties?.Name, Sim?.ObjectsPrimitives.Values.Count(c => c != null && c.ParentID == p.LocalID) ?? 0)));
+        var worn = h.WornPrims();
+        return FeetBodySignature(worn.Select(p => (h.AttachItemId(p), p.Properties?.Name, h.Sim?.ObjectsPrimitives.Values.Count(c => c != null && c.ParentID == p.LocalID) ?? 0)));
     }
 
     static string ReadFeetState() { try { return File.Exists(FeetStatePath) ? File.ReadAllText(FeetStatePath).Trim() : null; } catch { return null; } }
 
-    static (string feet, string why, FeetRules rules) FeetNow()
+    (string feet, string why, FeetRules rules) FeetNow()
     {
         var rules = ParseFeetRules(File.Exists(FeetRulesPath) ? File.ReadAllText(FeetRulesPath) : "{}");
-        var (f, why) = FeetWanted(WornPrims().Select(AttachItemId).Where(u => u != UUID.Zero), rules);
+        var (f, why) = FeetWanted(h.WornPrims().Select(h.AttachItemId).Where(u => u != UUID.Zero), rules);
         return (f, why, rules);
     }
 
-    static async Task FeetLoop()
+    internal async Task FeetLoop()
     {
         await Task.Delay(45000); // let login attachments arrive
         string prevPoll = null, prevSig = null;
@@ -97,65 +100,65 @@ public static partial class Program
         {
             try
             {
-                if (client?.Network?.Connected == true && WornPrims().Count > 3)
+                if (h.Client?.Network?.Connected == true && h.WornPrims().Count > 3)
                 {
                     var (f, why, rules) = FeetNow();
                     var sig = FeetBodySigNow(); bool bodyChanged = FeetBodyChanged(prevSig, sig); prevSig = sig;
                     var (press, last) = FeetDecide(f, prevPoll, ReadFeetState(), bodyChanged);
-                    if (bodyChanged) { try { File.Delete(FeetStatePath); } catch { } Log("feet", "worn body changed: last pressed pose cleared"); }
+                    if (bodyChanged) { try { File.Delete(FeetStatePath); } catch { } h.Log("feet", "worn body changed: last pressed pose cleared"); }
                     if (press) await PressFeet(f, why, rules);
                     prevPoll = f;
                 }
             }
-            catch (Exception ex) { Log("feet", "loop error: " + ex.GetBaseException().Message); }
+            catch (Exception ex) { h.Log("feet", "loop error: " + ex.GetBaseException().Message); }
             await Task.Delay(4000);
         }
     }
 
-    static async Task<string> PressFeet(string feet, string why, FeetRules rules)
+    async Task<string> PressFeet(string feet, string why, FeetRules rules)
     {
         if (!await feetGate.WaitAsync(0)) return "feet: a press is already running";
         try
         {
-            bool wasWorn = WornPrims().Any(p => AttachItemId(p) == rules.Hud);
+            bool wasWorn = h.WornPrims().Any(p => h.AttachItemId(p) == rules.Hud);
             if (!wasWorn)
             {
-                await AttachItem(rules.Hud, "");
-                for (int i = 0; i < 30 && !WornPrims().Any(p => AttachItemId(p) == rules.Hud); i++) await Task.Delay(1000);
-                if (!WornPrims().Any(p => AttachItemId(p) == rules.Hud)) { Log("feet", "body HUD did not attach in 30 s"); return "feet: body HUD did not attach"; }
+                await h.AttachItem(rules.Hud, "");
+                for (int i = 0; i < 30 && !h.WornPrims().Any(p => h.AttachItemId(p) == rules.Hud); i++) await Task.Delay(1000);
+                if (!h.WornPrims().Any(p => h.AttachItemId(p) == rules.Hud)) { h.Log("feet", "body HUD did not attach in 30 s"); return "feet: body HUD did not attach"; }
                 await Task.Delay(5000); // HUD script + link names
             }
             // the LaraX HUD only reacts on the page it SHOWS (2026-10-21 11:38 bug: f3 pressed on a hidden page, feet stayed flat):
             // open the feet page by touching that page's own tab bar first (the 'tabs' prim just above the f-buttons)
             try
             {
-                var hudRoot = WornPrims().FirstOrDefault(p => AttachItemId(p) == rules.Hud);
+                var hudRoot = h.WornPrims().FirstOrDefault(p => h.AttachItemId(p) == rules.Hud);
                 if (hudRoot != null)
                 {
-                    var prims = LinkPrims(hudRoot); await EnsureProperties(Sim, prims);
+                    var prims = h.LinkPrims(hudRoot); await h.EnsureProperties(h.Sim, prims);
                     var btn = prims.FirstOrDefault(p => p.Properties?.Name == feet);
                     int ti = btn == null ? -1 : FeetPageTabIndex(prims.Select(p => (p.Properties?.Name ?? "", p.Position.Z)).ToList(), btn.Position.Z);
                     if (ti >= 0)
                     {
                         var none = AgentManager.TOUCH_INVALID_VECTOR; var st = new Vector3(0.1f, 0.5f, 0);
-                        client.Self.Grab(prims[ti].LocalID, Vector3.Zero, st, st, 4, none, none, none); await Task.Delay(150);
-                        client.Self.DeGrab(prims[ti].LocalID, st, st, 4, none, none, none); await Task.Delay(1500);
+                        h.Client.Self.Grab(prims[ti].LocalID, Vector3.Zero, st, st, 4, none, none, none); await Task.Delay(150);
+                        h.Client.Self.DeGrab(prims[ti].LocalID, st, st, 4, none, none, none); await Task.Delay(1500);
                     }
                 }
             }
-            catch (Exception ex) { Log("feet", "feet page open failed: " + ex.GetBaseException().Message); }
-            var r = await TouchAttachment($"{rules.Hud} {feet} 4 st=0.5,0.5");
+            catch (Exception ex) { h.Log("feet", "feet page open failed: " + ex.GetBaseException().Message); }
+            var r = await h.TouchAttachment($"{rules.Hud} {feet} 4 st=0.5,0.5");
             await Task.Delay(2500);
-            if (!wasWorn) await DetachItemAsync(rules.Hud, "feet hud");
+            if (!wasWorn) await h.DetachItemAsync(rules.Hud, "feet hud");
             bool ok = r != null && !r.StartsWith("no ", StringComparison.Ordinal) && !r.Contains(" matches ");
             if (ok) { Directory.CreateDirectory(Path.GetDirectoryName(FeetStatePath)); File.WriteAllText(FeetStatePath, feet); }
-            Log("feet", $"{feet} ({why}): {r}");
+            h.Log("feet", $"{feet} ({why}): {r}");
             return $"feet {feet} ({why}): {r}";
         }
         finally { feetGate.Release(); }
     }
 
-    static async Task<string> FeetCmd(string[] a)
+    internal async Task<string> FeetCmd(string[] a)
     {
         var (f, why, rules) = FeetNow();
         if (a.Length > 1 && a[1] == "apply") return await PressFeet(f, why, rules);

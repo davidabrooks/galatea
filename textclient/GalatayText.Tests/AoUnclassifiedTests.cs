@@ -76,17 +76,17 @@ public class AoUnclassifiedTests
     // ---- the hover check does not run on it ----
     [Fact] public void HoverCheck_NeverRunsOnAnUnclassifiedState()
     {
-        Assert.Equal("unknown", Program.HoverPostureKind(false, false, true));
-        Assert.Equal("sit", Program.HoverPostureKind(true, false, true));                         // a known sit wins
-        Assert.Equal("seat", Program.HoverPostureKind(false, true, true));
-        Assert.Equal("stand", Program.HoverPostureKind(false, false, false));
-        Assert.False(Program.HoverCheckWantedOnPosture("sit", "unknown"));                        // no request when it turns unknown
-        Assert.True(Program.HoverCheckWantedOnPosture("unknown", "stand"));                       // a verified stand afterwards asks for one
-        var r = Program.HoverCheckReady("unknown", 0f, false, false, false, 10, 100, true);
+        Assert.Equal("unknown", Hover.HoverPostureKind(false, false, true));
+        Assert.Equal("sit", Hover.HoverPostureKind(true, false, true));                         // a known sit wins
+        Assert.Equal("seat", Hover.HoverPostureKind(false, true, true));
+        Assert.Equal("stand", Hover.HoverPostureKind(false, false, false));
+        Assert.False(Hover.HoverCheckWantedOnPosture("sit", "unknown"));                        // no request when it turns unknown
+        Assert.True(Hover.HoverCheckWantedOnPosture("unknown", "stand"));                       // a verified stand afterwards asks for one
+        var r = Hover.HoverCheckReady("unknown", 0f, false, false, false, 10, 100, true);
         Assert.False(r.go); Assert.StartsWith("skip:", r.why.Length > 0 && r.why.StartsWith("skip") ? r.why : "skip:" + r.why);
         var ph = Src("PoseHover.cs");
         Assert.Contains("\"unknown\", \"unknown\"", ph);                                          // PoseNow
-        var still = ph[ph.IndexOf("static bool PoseStill(")..]; still = still[..still.IndexOf("static (string kind, string pose) PoseNow")];
+        var still = ph[ph.IndexOf("bool PoseStill(")..]; still = still[..still.IndexOf("internal (string kind, string pose) PoseNow")];
         Assert.Contains("kind == \"stand\" &&", still); Assert.Contains("AoUnclassifiedNow().Count == 0", still);
     }
 }

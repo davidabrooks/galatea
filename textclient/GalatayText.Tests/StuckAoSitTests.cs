@@ -56,9 +56,9 @@ public class StuckAoSitTests
         Assert.DoesNotContain("while", rel); Assert.DoesNotContain("for (", rel); Assert.DoesNotContain("StopAnim", rel); Assert.DoesNotContain("stop_animations", rel);
         Assert.Contains("Task.Delay((int)StuckSitWaitMs)", rel); Assert.Equal(11000, Program.StuckSitWaitMs);
         Assert.Contains("StuckSitNewLogin();", Src("LoginJoin.cs"));                                       // a new login re-arms the single press
-        var ph = Src("PoseHover.cs"); var chk = ph[ph.IndexOf("static async Task<string> PoseHoverCheck(")..];
+        var ph = Src("PoseHover.cs"); var chk = ph[ph.IndexOf("async Task<string> PoseHoverCheck(")..];
         Assert.Contains("StuckSitReleaseOk(kind, why, requestWhy,", chk);
         Assert.Contains("PoseHoverCheck(kind, pose, why)", ph);                                          // the request's reason reaches the check
-        Assert.True(chk.IndexOf("StuckSitReleaseOk(") < chk.IndexOf("return \"pose not rendered: \""));  // the retry reason still goes back to the request loop (it re-runs the check)
+        Assert.True(chk.IndexOf("Program.StuckSitReleaseOk(") < chk.IndexOf("return \"pose not rendered: \""));  // the retry reason still goes back to the request loop (it re-runs the check)
     }
 }

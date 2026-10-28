@@ -132,13 +132,13 @@ public static partial class Program
         while (LoggedIn)
         {
             var since = (DateTime.Now - t0).TotalSeconds;
-            var v = LoginHoverStep(since, hoverCheckDoneAt >= t0);
-            if (v == LoginHoverVerdict.Done) return $"hover check finished {(hoverCheckDoneAt - t0).TotalSeconds:F0} s after login: {hoverCheckResult}";
+            var v = LoginHoverStep(since, hoverSvc.hoverCheckDoneAt >= t0);
+            if (v == LoginHoverVerdict.Done) return $"hover check finished {(hoverSvc.hoverCheckDoneAt - t0).TotalSeconds:F0} s after login: {hoverSvc.hoverCheckResult}";
             if (v == LoginHoverVerdict.GaveUp) return $"no hover check finished within {LoginHoverMaxS:F0} s of login (going anyway, hover may be off): last request {(req == null ? "none" : req.IsCompleted ? req.Result : "still running")}";
             if (Env("GT_POSE_HOVER_CHECK", "on") == "off") return "hover check is off";
             // none requested by me yet (the region / stand request may already be running: it replaces nothing until I ask) or my last one gave up: ask once the form is known
             if (req != null && req.IsCompleted && LoginHoverSkipped(req.Result)) return $"hover check not applicable: {req.Result}";
-            if ((req == null || req.IsCompleted && LoginHoverRerequest(req.Result)) && FormCertainNow()) req = HoverCheckRequest("login", 1000);
+            if ((req == null || req.IsCompleted && LoginHoverRerequest(req.Result)) && hoverSvc.FormCertainNow()) req = hoverSvc.HoverCheckRequest("login", 1000);
             await Task.Delay(500);
         }
         return "logged out";

@@ -51,15 +51,15 @@ public class LookFeetTests
     // ---- one render per hover check ----
     [Fact] public void HoverCheck_CostsOneRender_TwoOnlyToVerifyAFix()
     {
-        Assert.Equal(1, Program.HoverCheckRenderCount(false)); Assert.Equal(2, Program.HoverCheckRenderCount(true));
+        Assert.Equal(1, Hover.HoverCheckRenderCount(false)); Assert.Equal(2, Hover.HoverCheckRenderCount(true));
         var ph = Src("PoseHover.cs");
         // exactly one blender launch per HoverCheckRender, one view (look_scope.hovercheck_view: the close-up INSTEAD of the wide side view)
-        var rend = ph[ph.IndexOf("static async Task<(double? gap, string img)> HoverCheckRender(")..]; rend = rend[..rend.IndexOf("internal static bool FormCertain")];
+        var rend = ph[ph.IndexOf("async Task<(double? gap, string img)> HoverCheckRender(")..]; rend = rend[..rend.IndexOf("internal static bool FormCertain")];
         Assert.Equal(1, Regex.Matches(rend, @"Process\.Start\(").Count); Assert.DoesNotContain("GT_VIEW", rend);
         // the check: one render always, a second only inside the fix branch, after the POST, to verify; the close-up is never a third
-        var chk = ph[ph.IndexOf("static async Task<string> PoseHoverCheck(")..];
+        var chk = ph[ph.IndexOf("async Task<string> PoseHoverCheck(")..];
         Assert.Equal(3, Regex.Matches(chk, @"await HoverCheckRender\(").Count);      // render 1, the confirm render of a LARGE fix only (> 0.12 m), the verification after the fix
-        int fixAt = chk.IndexOf("await PostHover(t,"), second = chk.IndexOf("await HoverCheckRender(", fixAt);
+        int fixAt = chk.IndexOf("await h.PostHover(t,"), second = chk.IndexOf("await HoverCheckRender(", fixAt);
         Assert.True(fixAt > 0 && second > fixAt); Assert.Equal(2, Regex.Matches(chk[..fixAt], @"await HoverCheckRender\(").Count);
         var big = chk[chk.IndexOf("if (HoverFixNeedsConfirm(eg))")..fixAt]; Assert.Equal(1, Regex.Matches(big, @"await HoverCheckRender\(").Count);   // the extra render sits only inside the large-fix branch
         Assert.Contains("HoverCheckRenderCount(fixedHover, confirmRender)", chk);
@@ -69,14 +69,14 @@ public class LookFeetTests
     [Fact] public void ManualHoverCheck_WaitsAndReturnsTheCloseUpPathAndTheRenderCount()
     {
         var hg = Src("HeightGuard.cs"); var chk = hg[hg.IndexOf("if (a[0] == \"check\")")..];
-        Assert.Contains("var t = HoverCheckRequest(\"manual\", 500);", chk); Assert.Contains("await t", chk);
+        Assert.Contains("var t = hoverSvc.HoverCheckRequest(\"manual\", 500);", chk); Assert.Contains("await t", chk);
         var ph = Src("PoseHover.cs");
         Assert.Contains("renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}", ph);    // the result line names the render count and the image path
         Assert.Contains("hoverCheckResult = ", ph);
     }
     [Fact] public void ContactLabel_NamesWhatTheCloseUpFrames()
     {
-        Assert.Contains("feet", Program.HoverContactLabel("stand")); Assert.Contains("hips", Program.HoverContactLabel("sit")); Assert.Equal("lowest contact", Program.HoverContactLabel("unknown"));
+        Assert.Contains("feet", Hover.HoverContactLabel("stand")); Assert.Contains("hips", Hover.HoverContactLabel("sit")); Assert.Equal("lowest contact", Hover.HoverContactLabel("unknown"));
         Assert.Contains("ContactEnv(kind)", Src("Look.cs"));
     }
 }

@@ -256,12 +256,12 @@ public class IdlePoseTests
     }
     [Fact] public void PoseHover_NothingSavedUntilFormKnown()   // 2026-10-23 15:19 human|stand misread after login
     {
-        Assert.False(Program.FormCertain(false, 12, 3));    // names still arriving: unknown
-        Assert.False(Program.FormCertain(false, 0, 0));     // nothing worn seen yet
-        Assert.True(Program.FormCertain(false, 12, 12));
-        Assert.True(Program.FormCertain(true, 12, 0));      // the outfit name already says android
+        Assert.False(Hover.FormCertain(false, 12, 3));    // names still arriving: unknown
+        Assert.False(Hover.FormCertain(false, 0, 0));     // nothing worn seen yet
+        Assert.True(Hover.FormCertain(false, 12, 12));
+        Assert.True(Hover.FormCertain(true, 12, 0));      // the outfit name already says android
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
-        var body = src[src.IndexOf("static async Task<string> PoseHoverCheck(")..];
+        var body = src[src.IndexOf("async Task<string> PoseHoverCheck(")..];
         Assert.True(body.IndexOf("FormCertainNow()") < body.IndexOf("PostHover"));
     }
     [Fact] public void UnexpectedDisconnect_InMcpConnector_RelogsInProcess()   // 2026-10-23 15:34 offline 23 min
@@ -291,12 +291,12 @@ public class IdlePoseTests
     }
     [Fact] public void HoverCheckRender_AppliesHoverAndDrawsFloor()   // 2026-10-23 17:15 David "Fix it"
     {
-        var env = Program.HoverCheckEnv(1.566, -0.11, -0.055);
+        var env = Hover.HoverCheckEnv(1.566, -0.11, -0.055);
         Assert.Equal("1", env["GT_HOVER_CHECK"]); Assert.Equal("-0.110", env["GT_HOVER"]); Assert.Equal("1.566", env["GT_AGENT_SIZE"]);
-        Assert.Equal(-0.003, Program.HoverCheckGap("hover check gap -0.003 m (hover -0.110, size 1.566, floor 28.033)\n/x.jpg").Value, 3);
-        Assert.Null(Program.HoverCheckGap("look failed"));
-        Assert.Equal(-0.107, Program.PoseHoverFromGap(0.02, 0.127), 3);   // VAMOSITG27 17:20: floating 12.7 cm
-        Assert.False(Program.PoseGapSane(3.3)); Assert.True(Program.PoseGapConfirmed(-0.003));
+        Assert.Equal(-0.003, Hover.HoverCheckGap("hover check gap -0.003 m (hover -0.110, size 1.566, floor 28.033)\n/x.jpg").Value, 3);
+        Assert.Null(Hover.HoverCheckGap("look failed"));
+        Assert.Equal(-0.107, Hover.PoseHoverFromGap(0.02, 0.127), 3);   // VAMOSITG27 17:20: floating 12.7 cm
+        Assert.False(Hover.PoseGapSane(3.3)); Assert.True(Hover.PoseGapConfirmed(-0.003));
         var root = Root();
         var rm = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "vision/cloud-render/render_mesh.py"));
         Assert.Contains("z0 = agent_z - size / 2 + hov", rm);                      // the hover offset is applied
@@ -308,12 +308,12 @@ public class IdlePoseTests
     [Fact] public void PoseHover_PerPoseBias_PhotoIsTruth()   // 2026-10-23 17:33 VAMOSITG22 floated ~7 cm while the render said contact
     {
         var n = new System.Collections.Generic.Dictionary<string, double> { ["bias|android|sit"] = -0.055, ["bias|android|VAMOSITG22"] = 0.137 };
-        Assert.Equal(0.137, Program.PoseBiasFor(n, true, "sit", "VAMOSITG22"), 3);     // its own bias wins
-        Assert.Equal(-0.055, Program.PoseBiasFor(n, true, "sit", "VAMOSITG27"), 3);    // else the (form, kind) bias
-        Assert.Equal(0.2315, Program.PoseBiasFor(n, true, "stand", "stand:x"), 4);     // else the default
-        Assert.Equal(0.137, Program.PoseBiasFor(new System.Collections.Generic.Dictionary<string, double>(), false, "sit", "q") + 0.192, 3);
+        Assert.Equal(0.137, Hover.PoseBiasFor(n, true, "sit", "VAMOSITG22"), 3);     // its own bias wins
+        Assert.Equal(-0.055, Hover.PoseBiasFor(n, true, "sit", "VAMOSITG27"), 3);    // else the (form, kind) bias
+        Assert.Equal(0.2315, Hover.PoseBiasFor(n, true, "stand", "stand:x"), 4);     // else the default
+        Assert.Equal(0.137, Hover.PoseBiasFor(new System.Collections.Generic.Dictionary<string, double>(), false, "sit", "q") + 0.192, 3);
         // render said gap +0.267 at bias -0.055; the photo shows ~0.075 really: bias must rise by 0.192
-        Assert.Equal(0.137, Program.PoseBiasFromPhoto(-0.055, 0.267, 0.075), 3);
+        Assert.Equal(0.137, Hover.PoseBiasFromPhoto(-0.055, 0.267, 0.075), 3);
         // with the lowest body point (hand/back/thigh) the gap is already the minimum over every avatar vertex
         var py = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "vision/cloud-render/render_mesh.py"));
         Assert.Contains("z0 + lo_z - floor_z", py);
@@ -425,8 +425,8 @@ public class IdlePoseTests
         Assert.DoesNotContain("rlvHoverOverride", ign); Assert.DoesNotContain("hoverManualAt", ign); Assert.DoesNotContain("PostHover", ign);
         // so the pin stays the file value and the 10-min "manual hover wins" window never opens
         Assert.Equal(0.0, Program.PinnedHoverFrom(null, null, "0"), 3);
-        Assert.Null(Program.AutoHoverDecide("groundsit", false, null, 0.0, 0.0, 1e9));   // no per-pose offset any more
-        Assert.Equal(0.105, Program.AutoHoverDecide("stand", false, -0.045, 0.06, 0.0, 1e9)!.Value, 3);   // sinking into the floor: the problem-fix path still works
+        Assert.Null(Hover.AutoHoverDecide("groundsit", false, null, 0.0, 0.0, 1e9));   // no per-pose offset any more
+        Assert.Equal(0.105, Hover.AutoHoverDecide("stand", false, -0.045, 0.06, 0.0, 1e9)!.Value, 3);   // sinking into the floor: the problem-fix path still works
     }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }

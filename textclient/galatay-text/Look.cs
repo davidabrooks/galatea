@@ -162,13 +162,13 @@ public static partial class Program
     // the hover in force (AgentPreferences), read fresh: a look after a fix must show the fix (2026-10-26: the render used our own appearance value, which stayed 0)
     static async Task<Dictionary<string, string>> LookHoverEnv()
     {
-        if (client.Self.SittingOn != 0) return SeatLookEnv();   // on furniture: hips against the seat, the sim's seated placement, no hover model
+        if (client.Self.SittingOn != 0) return Hover.SeatLookEnv();   // on furniture: hips against the seat, the sim's seated placement, no hover model
         double size = SelfAv()?.Scale.Z ?? 0; if (size < 1) return new();
-        var (kind, pose) = PoseNow(); bool android = AndroidFormNow(); var nums = PoseNums();
+        var (kind, pose) = hoverSvc.PoseNow(); bool android = AndroidFormNow(); var nums = hoverSvc.PoseNums();
         var (hov, _) = await EffectiveHoverFresh();
-        var env = HoverCheckEnv(size, hov ?? PinnedHover(), PoseBiasFor(nums, android, kind, pose ?? ""), SupportParts(kind, pose));
-        foreach (var kv in ContactEnv(kind)) env[kv.Key] = kv.Value;
-        env["GT_HOVER_CAL"] = BiasCalibrated(nums, android, kind, pose) ? "calibrated" : "default";
+        var env = Hover.HoverCheckEnv(size, hov ?? PinnedHover(), Hover.PoseBiasFor(nums, android, kind, pose ?? ""), Hover.SupportParts(kind, pose));
+        foreach (var kv in Hover.ContactEnv(kind)) env[kv.Key] = kv.Value;
+        env["GT_HOVER_CAL"] = Hover.BiasCalibrated(nums, android, kind, pose) ? "calibrated" : "default";
         return env;
     }
 

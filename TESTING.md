@@ -102,3 +102,9 @@ a base type is not followed). Tests for the mapper: `textclient/tests/test_impac
 ## On the box (Galatea live client)
 
 Deploy is unchanged: build with `textclient/build-all.sh` (or the viewers copy), then cp+mv dlls into `app/` and `text-galatay.sh` stop/start. Tests do not touch the live session.
+
+## Connector proxy (restart without remove + re-add)
+
+`textclient/tests/test_mcp_proxy.py` drives `galatay-mcp-proxy.py` over stdio against a stub MCP child and, when
+`textclient/mcp-app-staging` is built, against the real connector (isolated run dir, TMP and log paths; no login):
+`cd textclient && python3 -m pytest tests/test_mcp_proxy.py`.

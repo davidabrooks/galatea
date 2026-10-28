@@ -490,6 +490,7 @@ public static partial class Program
             var src = e.SourceType == ChatSourceType.Agent ? "" : e.SourceType == ChatSourceType.Object ? " (object)" : " (system)";
             var t = e.Type == ChatType.Normal ? "" : $" {e.Type.ToString().ToLowerInvariant()}";
             Log("chat", $"{e.FromName}{src}{t}: {e.Message}");
+            LoginOrderNoteChat(e.SourceType, e.FromName, e.Message);   // LoginOrder.cs
             if (e.SourceType == ChatSourceType.Agent && e.SourceID != UUID.Zero && e.SourceID != client.Self.AgentID
                 && e.Type is ChatType.Normal or ChatType.Whisper or ChatType.Shout && !string.IsNullOrWhiteSpace(e.Message))
             {

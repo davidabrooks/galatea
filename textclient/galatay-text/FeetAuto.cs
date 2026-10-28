@@ -58,6 +58,28 @@ public static partial class Program
     internal static bool FeetShouldPress(string wanted, string previousPoll, string lastPressed) =>
         wanted != null && wanted == previousPoll && wanted != lastPressed;
 
+    /// <summary>Pure: signature of the worn Maitreya/LaraX body = sorted "itemId/primCount" of its attachment roots (name-matched via BodyFamily);
+    /// a new, re-attached or changed body (new item/attachment id, or its prims arriving/changing) gives a different string.</summary>
+    internal static string FeetBodySignature(IEnumerable<(UUID item, string name, int childPrims)> worn) =>
+        string.Join(",", (worn ?? Array.Empty<(UUID, string, int)>()).Where(w => BodyFamily(w.name) == "larax").Select(w => $"{w.item}/{w.childPrims}").OrderBy(x => x, StringComparer.Ordinal));
+
+    /// <summary>Pure: the body changed when a previous signature exists (not the first poll) and differs.</summary>
+    internal static bool FeetBodyChanged(string previousSig, string sig) => previousSig != null && previousSig != sig;
+
+    /// <summary>Pure decision per poll: a body change makes the last-pressed pose unknown (the body reset its feet to flat), then the normal rule applies.
+    /// Returns whether to press and the last-pressed value to use (null = cleared).</summary>
+    internal static (bool press, string lastPressed) FeetDecide(string wanted, string previousPoll, string lastPressed, bool bodyChanged)
+    {
+        if (bodyChanged) lastPressed = null;
+        return (FeetShouldPress(wanted, previousPoll, lastPressed), lastPressed);
+    }
+
+    static string FeetBodySigNow()
+    {
+        var worn = WornPrims();
+        return FeetBodySignature(worn.Select(p => (AttachItemId(p), p.Properties?.Name, Sim?.ObjectsPrimitives.Values.Count(c => c != null && c.ParentID == p.LocalID) ?? 0)));
+    }
+
     static string ReadFeetState() { try { return File.Exists(FeetStatePath) ? File.ReadAllText(FeetStatePath).Trim() : null; } catch { return null; } }
 
     static (string feet, string why, FeetRules rules) FeetNow()
@@ -70,7 +92,7 @@ public static partial class Program
     static async Task FeetLoop()
     {
         await Task.Delay(45000); // let login attachments arrive
-        string prevPoll = null;
+        string prevPoll = null, prevSig = null;
         while (true)
         {
             try
@@ -78,7 +100,10 @@ public static partial class Program
                 if (client?.Network?.Connected == true && WornPrims().Count > 3)
                 {
                     var (f, why, rules) = FeetNow();
-                    if (FeetShouldPress(f, prevPoll, ReadFeetState())) await PressFeet(f, why, rules);
+                    var sig = FeetBodySigNow(); bool bodyChanged = FeetBodyChanged(prevSig, sig); prevSig = sig;
+                    var (press, last) = FeetDecide(f, prevPoll, ReadFeetState(), bodyChanged);
+                    if (bodyChanged) { try { File.Delete(FeetStatePath); } catch { } Log("feet", "worn body changed: last pressed pose cleared"); }
+                    if (press) await PressFeet(f, why, rules);
                     prevPoll = f;
                 }
             }

@@ -29,4 +29,38 @@ public class FeetAutoTests
     [InlineData("f1", "f1", "f1", false)]  // already flat
     [InlineData("f1", "f1", null, true)]   // unknown state -> press once
     public void PressRule(string w, string prev, string last, bool press) => Assert.Equal(press, Program.FeetShouldPress(w, prev, last));
+
+    static (UUID, string, int) Body(UUID id, int kids, string name = "Maitreya Mesh Body - Lara X") => (id, name, kids);
+
+    [Fact] public void BodySignature_ChangesOnNewItemOrPrims_IgnoresOtherAttachments()
+    {
+        var a = UUID.Random(); var b = UUID.Random();
+        var s1 = Program.FeetBodySignature(new[] { Body(a, 40), (UUID.Random(), "Moca boots", 3) });
+        Assert.Equal(s1, Program.FeetBodySignature(new[] { (UUID.Random(), "Other hat", 1), Body(a, 40) })); // other attachments do not matter
+        Assert.NotEqual(s1, Program.FeetBodySignature(new[] { Body(b, 40) }));                               // re-attached = new attachment id
+        Assert.NotEqual(s1, Program.FeetBodySignature(new[] { Body(a, 12) }));                               // prims changed after the poll
+        Assert.NotEqual(s1, Program.FeetBodySignature(new (UUID, string, int)[0]));                          // body removed
+        Assert.Equal("", Program.FeetBodySignature(new[] { (UUID.Random(), "MISAKI - Kay", 5) }));           // android body is not the LaraX body
+    }
+
+    [Fact] public void BodyChanged_NotOnFirstPoll()
+    {
+        Assert.False(Program.FeetBodyChanged(null, "x")); Assert.False(Program.FeetBodyChanged("x", "x")); Assert.True(Program.FeetBodyChanged("x", "y"));
+    }
+
+    [Fact] public void BodyChange_WithUnchangedWantedPose_PressesAgain()
+    {
+        // 22:13 bug: f3 pressed and recorded, then the body was re-attached (feet reset to flat); wanted stays f3
+        Assert.False(Program.FeetShouldPress("f3", "f3", "f3"));                       // old rule: never again
+        var (press, last) = Program.FeetDecide("f3", "f3", "f3", bodyChanged: true);
+        Assert.True(press); Assert.Null(last);
+        Assert.False(Program.FeetDecide("f3", "f3", "f3", bodyChanged: false).press);  // no body change: still quiet
+    }
+
+    [Fact] public void BodyChange_StillNeedsTwoStablePolls()
+    {
+        Assert.False(Program.FeetDecide("f3", "f1", "f3", true).press);                // wanted just changed: wait a poll
+        Assert.True(Program.FeetDecide("f3", "f3", null, false).press);                // next poll, state was cleared
+        Assert.True(Program.FeetDecide("f1", "f1", "f3", true).press);                 // flat default also re-pressed after a body change
+    }
 }

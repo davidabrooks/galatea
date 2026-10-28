@@ -54,7 +54,8 @@ public class StuckAoSitTests
         var ao = Src("AoSit.cs"); var rel = ao[ao.IndexOf("static async Task<string> StuckSitRelease(")..]; rel = rel[..rel.IndexOf("// pure (tested): the real sit/stand state")];
         Assert.Single(System.Text.RegularExpressions.Regex.Matches(rel, @"AoGroundSitToggle\("));      // one press, no loop
         Assert.DoesNotContain("while", rel); Assert.DoesNotContain("for (", rel); Assert.DoesNotContain("StopAnim", rel); Assert.DoesNotContain("stop_animations", rel);
-        Assert.Contains("Task.Delay((int)StuckSitWaitMs)", rel); Assert.Equal(11000, Program.StuckSitWaitMs);
+        var ip = Src("IdlePose.cs"); var tog = ip[ip.IndexOf("static async Task<string> AoGroundSitToggle(")..]; tog = tog[..tog.IndexOf("// 2026-10-23 (David): before a kneel")];
+        Assert.Contains("Task.Delay((int)StuckSitWaitMs)", tog); Assert.Equal(11000, Program.StuckSitWaitMs);   // the toggle itself waits ~11 s and re-reads the animations (2026-10-28)
         Assert.Contains("StuckSitNewLogin();", Src("LoginJoin.cs"));                                       // a new login re-arms the single press
         var ph = Src("PoseHover.cs"); var chk = ph[ph.IndexOf("async Task<string> PoseHoverCheck(")..];
         Assert.Contains("StuckSitReleaseOk(kind, why, requestWhy,", chk);

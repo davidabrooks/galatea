@@ -70,7 +70,7 @@ public class AoUnclassifiedTests
     [Fact] public void StatusAndAutoHover_NeverCallAnUnclassifiedStateStanding()
     {
         var ip = Src("IdlePose.cs");
-        Assert.Contains("IdleStandingWord()", ip); Assert.Contains("UNKNOWN (unclassified AO animation)", ip);
+        Assert.Contains("IdleStandingWord(real.State)", ip); Assert.Contains("UNKNOWN (unclassified AO animation)", ip);
         Assert.Contains("\"unknown\" : \"stand\"", Src("AutoHover.cs"));
     }
     // ---- the hover check does not run on it ----

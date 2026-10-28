@@ -347,12 +347,30 @@ public static partial class Program
         return (false, "STOP pressed twice but the pose animation is still playing");
     }
     // ---- AO ground sit ----
+    // 2026-10-28: ONE press, then wait ~11 s, re-read the animation list and say whether force sit is now on or off from the AO animations that started (never from a
+    // stored flag: the button is a toggle and its state survives a relog). A second press is refused until this read-back is done (the 11:30 press turned force sit ON
+    // while the status said off; only the second press turned it off).
+    static int aoPressBusy;
+    static ForceSitState aoForceSitInferred = ForceSitState.Unknown; static string aoLastPressReport = null; static DateTime aoLastPressAt = DateTime.MinValue;
     static async Task<string> AoGroundSitToggle(string why)
     {
         if (AoGroundSitNow() is not { } spot) return "AO 'force sitg' button not mapped (run/ao-groundsit.txt)";
-        var r = await Exec($"touch-attachment \"ao\" \"{spot.link}\" {spot.face} st={spot.st}");
-        Log("idlepose", $"AO force sitg toggled ({why}): {r}");
-        return r;
+        if (!PoseEvidence.ForcePressAllowed(Interlocked.CompareExchange(ref aoPressBusy, 1, 0) == 0))
+        { Log("idlepose", $"AO force sitg press REFUSED ({why}): the previous press has not been read back yet"); return "force sit press REFUSED: the previous press is still being read back (never pressed twice without re-reading the animations)"; }
+        try
+        {
+            var before = SelfAnims().ToList();
+            var r = await Exec($"touch-attachment \"ao\" \"{spot.link}\" {spot.face} st={spot.st}");
+            Log("idlepose", $"AO force sitg toggled ({why}): {r}");
+            aoLastPressAt = DateTime.Now; aoSitTransitionUntil = DateTime.Now.AddSeconds(StuckSitWaitMs / 1000.0 + 20);
+            await Task.Delay((int)StuckSitWaitMs);
+            var after = SelfAnims().ToList();
+            aoForceSitInferred = PoseEvidence.ForceSitAfterPress(after, client.Self.SittingOn != 0, AoSitIdsNow(), AoStandIdsNow(), AoUnclassifiedNow(after).Count);
+            aoLastPressReport = PoseEvidence.ForceSitReport(aoForceSitInferred, before, after);
+            Log("idlepose", $"AO force sitg press read back ({why}): {aoLastPressReport}");
+            return $"{r}; {aoLastPressReport}";
+        }
+        finally { Interlocked.Exchange(ref aoPressBusy, 0); }
     }
 
     // 2026-10-23 (David): before a kneel or ground sit, turn to face the leash holder (else David) when he is nearby.
@@ -532,7 +550,18 @@ public static partial class Program
     }
 
     // "standing" only when no unclassified AO animation plays (2026-10-26: it may be a sit)
-    static string IdleStandingWord() => AoUnclassifiedNow().Count > 0 && !AoSitReallyOn() ? "not posed by me, but an AO animation is unclassified (may be a sit)" : "standing";
+    static string IdleStandingWord(PoseCall? real = null) => real == PoseCall.Sitting ? "NOT posed by me, but she is SITTING (see the real state)"
+        : AoUnclassifiedNow().Count > 0 && !AoSitReallyOn() ? "not posed by me, but an AO animation is unclassified (may be a sit)" : "standing";
+    // 2026-10-28: the real sit/stand state from the animations AND the fresh render's pelvis (PoseEvidence.cs); the render wins
+    static PoseEvidence.RealPose IdleRealPose()
+    {
+        var playing = SelfAnims(); bool onObj = client.Self.SittingOn != 0;
+        var unk = AoUnclassifiedNow(playing); bool sit = AoForceSitOn(playing, onObj);
+        var sitIds = AoSitIdsNow(); var ids = playing.Where(sitIds.Contains).Select(x => x.ToString()[..8]).ToList();
+        string detail = onObj ? "sitting on an object" : sit ? "AO sit " + (ids.Count == 0 ? "built-in ground sit" : string.Join(",", ids)) : unk.Count > 0 ? "unclassified AO " + string.Join(",", unk.Select(x => x.ToString()[..8])) : "only classified AO stands / none";
+        var (rc, rd) = hoverSvc.RenderEvidenceNow();
+        return PoseEvidence.Resolve(PoseEvidence.FromAnims(onObj, sit, unk.Count), detail, rc, rd);
+    }
     static string IdleRealStateText()
     {
         var sit = AoSitIdsNow(); var playing = SelfAnims();
@@ -555,11 +584,15 @@ public static partial class Program
             case "idle" when a.Length > 1 && double.TryParse(a[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sec) && sec >= 30:
                 idleThreshold = sec; return $"idle threshold {sec:F0} s (this round; base GT_IDLE_POSE_SEC={IdleBaseSec():F0})";
             case "aomap" when a.Length is 3 or 4: { var t = string.Join(" ", a.Skip(1)); if (AoGroundSitSpot(t) is not { } sp) return "usage: idlepose aomap [link] <face> <u,v>"; File.WriteAllText(AoGroundSitFile, t + "\n"); return $"AO 'force sitg' mapped: link {sp.link} face {sp.face} st {sp.st}"; }
+            case "verify": { var pr = await hoverSvc.PoseProbe(); Log("idlepose", "verify: " + pr); goto default; }   // one scene export for a fresh render pelvis, then the status
             default:
             {
                 var p = idlePosed;
-                return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; {(p == null ? IdleStandingWord() : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; {(IdleCooldownActive(DateTime.Now, idleNoSitUntil) ? $"stand cooldown until {idleNoSitUntil:HH:mm}; " : "")}AO force sit {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "ON" : AoUnclassifiedNow().Count > 0 ? "UNKNOWN (unclassified AO animation)" : "off")}; {IdleRealStateText()}; " +
-                       $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
+                if (hoverSvc.RenderEvidenceNow().call == null && sub == "status") try { await Task.WhenAny(hoverSvc.PoseProbe(), Task.Delay(20000)); } catch { }   // status wants a render, not only the animation list
+                var real = IdleRealPose();
+                string gu = hoverSvc.HoverGaveUp is string g && (DateTime.Now - hoverSvc.HoverGaveUpAt).TotalMinutes < 30 ? $"; {g}" : "";
+                return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; REAL STATE: {real.Text}; {(p == null ? IdleStandingWord(real.State) : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; {(IdleCooldownActive(DateTime.Now, idleNoSitUntil) ? $"stand cooldown until {idleNoSitUntil:HH:mm}; " : "")}AO force sit {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "ON" : AoUnclassifiedNow().Count > 0 ? "UNKNOWN (unclassified AO animation)" : "off")} (from the animations, not a stored flag){(aoLastPressReport != null ? $"; last press {aoLastPressAt:HH:mm:ss}: {aoLastPressReport}" : "")}; {IdleRealStateText()}{gu}; " +
+                       $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; {feetSvc.LastFitText}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
             }
         }
     }

@@ -30,17 +30,18 @@ public class FeetAutoTests
     [InlineData("f1", "f1", null, true)]   // unknown state -> press once
     public void PressRule(string w, string prev, string last, bool press) => Assert.Equal(press, FeetAuto.FeetShouldPress(w, prev, last));
 
-    static (UUID, string, int) Body(UUID id, int kids, string name = "Maitreya Mesh Body - Lara X") => (id, name, kids);
+    static (UUID, string, UUID) Body(UUID obj, string name = "Maitreya Mesh Body - Lara X") => (ItemOf(name), name, obj);
+    static readonly UUID BodyItem = UUID.Random(); static UUID ItemOf(string name) => BodyItem;
 
     [Fact] public void BodySignature_ChangesOnNewItemOrPrims_IgnoresOtherAttachments()
     {
         var a = UUID.Random(); var b = UUID.Random();
-        var s1 = FeetAuto.FeetBodySignature(new[] { Body(a, 40), (UUID.Random(), "Moca boots", 3) });
-        Assert.Equal(s1, FeetAuto.FeetBodySignature(new[] { (UUID.Random(), "Other hat", 1), Body(a, 40) })); // other attachments do not matter
-        Assert.NotEqual(s1, FeetAuto.FeetBodySignature(new[] { Body(b, 40) }));                               // re-attached = new attachment id
-        Assert.NotEqual(s1, FeetAuto.FeetBodySignature(new[] { Body(a, 12) }));                               // prims changed after the poll
-        Assert.NotEqual(s1, FeetAuto.FeetBodySignature(new (UUID, string, int)[0]));                          // body removed
-        Assert.Equal("", FeetAuto.FeetBodySignature(new[] { (UUID.Random(), "MISAKI - Kay", 5) }));           // android body is not the LaraX body
+        var s1 = FeetAuto.FeetBodySignature(new[] { Body(a), (UUID.Random(), "Moca boots", UUID.Random()) });
+        Assert.Equal(s1, FeetAuto.FeetBodySignature(new[] { (UUID.Random(), "Other hat", UUID.Random()), Body(a) })); // other attachments do not matter
+        Assert.NotEqual(s1, FeetAuto.FeetBodySignature(new[] { Body(b) }));                               // re-attached = new attachment id
+        Assert.Equal(s1, FeetAuto.FeetBodySignature(new[] { Body(a) }));                                      // same attachment: child prim counts are not part of it any more
+        Assert.NotEqual(s1, FeetAuto.FeetBodySignature(new (UUID, string, UUID)[0]));                          // body removed
+        Assert.Equal("", FeetAuto.FeetBodySignature(new[] { (UUID.Random(), "MISAKI - Kay", UUID.Random()) }));           // android body is not the LaraX body
     }
 
     [Fact] public void BodyChanged_NotOnFirstPoll()

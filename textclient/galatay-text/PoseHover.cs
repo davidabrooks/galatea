@@ -236,6 +236,45 @@ internal sealed partial class Hover
     }
     readonly SemaphoreSlim poseGate = new(1, 1);
 
+    // ---- 2026-10-28: the render's pelvis height is evidence of sit vs stand (PoseEvidence.cs). Every scene export a check makes records it; `idle_pose verify` / status make one on purpose ----
+    internal sealed record RenderPose(DateTime At, double? PelvisZ, double Size);
+    volatile RenderPose lastRender;
+    internal DateTime PostureChangedAt => hoverPostureAt;
+    internal void NoteRender(double? pelvisZ, double size) => lastRender = new RenderPose(DateTime.Now, pelvisZ, size);
+    // the fresh, decisive render call (sitting / standing) with a one-line description, else (null, why not)
+    internal (PoseCall? call, string detail) RenderEvidenceNow()
+    {
+        var r = lastRender;
+        if (r == null) return (null, "no render yet");
+        if (!PoseEvidence.RenderFresh(r.At, DateTime.Now, hoverPostureAt)) return (null, $"last render {(DateTime.Now - r.At).TotalSeconds:F0} s ago is stale");
+        var c = PoseEvidence.FromRender(r.PelvisZ, r.Size);
+        return (c, r.PelvisZ is double pz ? $"render: pelvis {pz:0.00} m of {r.Size:0.00} m, {(DateTime.Now - r.At).TotalSeconds:F0} s ago" : "render: pelvis unreadable");
+    }
+    // one scene export (the mesher; no Blender run) just to read the posed pelvis; skipped when a hover check holds the gate (its export records the pelvis too)
+    internal async Task<string> PoseProbe()
+    {
+        if (!h.LoggedIn) return "not logged in";
+        if (!await poseGate.WaitAsync(0)) return "a hover check is running (it records the pelvis too)";
+        try
+        {
+            var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
+            var scene = ex.Split('\n').Last();
+            if (!scene.EndsWith("scene.json")) { h.Log("posehover", "pose probe: export failed: " + ex); return "export failed"; }
+            double size = h.SelfAv()?.Scale.Z ?? 0; double? pz = null;
+            try { pz = MeshPelvisZ(File.ReadAllText(Path.Combine(Path.GetDirectoryName(scene)!, "mesh.json"))); } catch { }
+            NoteRender(pz, size);
+            return $"pelvis {(pz is double v ? v.ToString("0.00") : "?")} m";
+        }
+        catch (Exception ex) { return "probe error: " + ex.GetBaseException().Message; }
+        finally { poseGate.Release(); }
+    }
+    // pure (tested): the loud line when a hover check gives up; a pose that is not rendered as expected must never end as a silent stop
+    internal static string HoverGiveUpText(string why, int attempts, string lastRetry) =>
+        lastRetry != null && lastRetry.StartsWith("pose not rendered", StringComparison.Ordinal)
+            ? $"HOVER CHECK GAVE UP, hover NOT verified: {why}: after {attempts} tries the render does not show the pose I think she is in ({lastRetry}); nothing was changed; look at her and say what you see"
+            : $"{why}: gave up after {attempts} tries ({lastRetry})";
+    internal volatile string HoverGaveUp = null; internal DateTime HoverGaveUpAt = DateTime.MinValue;
+
     // pure (tested): only the renderer's calibration is read from pose-hover.json; a saved hover height under any other key
     // ("android|VAMOSITG24", "android|stand", ...) is ignored, never applied
     internal static Dictionary<string, double> PoseBiasNums(IReadOnlyDictionary<string, double> all)
@@ -307,10 +346,15 @@ internal sealed partial class Hover
                     {
                         hoverCheckLastRun = DateTime.Now;
                         retry = await PoseHoverCheck(kind, pose, why);
-                        if (retry == null) { hoverCheckDoneAt = DateTime.Now; return hoverCheckResult; }
+                        if (retry == null) { hoverCheckDoneAt = DateTime.Now; HoverGaveUp = null; return hoverCheckResult; }
                     }
                     else if (block.StartsWith("skip:")) { h.Log("posehover", $"{why}: {block}"); return $"{why}: {block}"; }
-                    if (attempt >= HoverCheckMaxTries) { h.Log("posehover", $"{why}: gave up after {attempt} tries ({retry})"); return $"{why}: gave up after {attempt} tries ({retry})"; }
+                    if (attempt >= HoverCheckMaxTries)
+                    {
+                        var gu = HoverGiveUpText(why, attempt, retry); h.Log("posehover", gu);
+                        if (retry != null && retry.StartsWith("pose not rendered", StringComparison.Ordinal)) { hoverCheckResult = gu; HoverGaveUp = gu; HoverGaveUpAt = DateTime.Now; }
+                        return gu;
+                    }
                     h.Log("posehover", $"{why}: waiting ({retry}); try {attempt + 1}/{HoverCheckMaxTries} in {HoverCheckRetryMs / 1000} s");
                     await Task.Delay(HoverCheckRetryMs);
                 }
@@ -384,6 +428,7 @@ internal sealed partial class Hover
             {
                 double? pz = null; try { pz = MeshPelvisZ(File.ReadAllText(Path.Combine(dir, "mesh.json"))); } catch { }
                 List<UUID> exAnims = new(); try { using var sj = JsonDocument.Parse(File.ReadAllText(scene)); if (sj.RootElement.GetProperty("me").TryGetProperty("anims", out var an)) exAnims = ExportAnimIds(an.GetString()); } catch { }
+                NoteRender(pz, size);   // the render's pelvis is evidence of sit vs stand for the status too (PoseEvidence.cs)
                 var why = PoseRenderMismatch(kind, size, pz, exAnims, h.AoSitIdsNow());
                 if (why != null)
                 {

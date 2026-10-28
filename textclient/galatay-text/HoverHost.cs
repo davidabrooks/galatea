@@ -30,6 +30,13 @@ internal interface IFeetHost
     List<Primitive> LinkPrims(Primitive root);
     Task EnsureProperties(Simulator sim, List<Primitive> prims);
     Task<string> TouchAttachment(string rest);
+    // 2026-10-28: when a press may happen, and the evidence that the foot fits the shoe
+    List<UUID> SelfAnims();
+    bool PoseBusy { get; }            // a pose / sit transition is in progress (idle pose entry or exit, AO sit settling)
+    double PoseSettledSec { get; }    // seconds since the posture last changed
+    bool Sitting { get; }             // sitting on an object or an AO ground sit
+    /// <summary>One `look self feet` close-up at the given exposure (stops), analysed by vision/feet_fit.py: its one json line, or null when no image came out.</summary>
+    Task<string> FeetCloseupJson(double exposure);
 }
 
 /// <summary>What the hover code needs: the session, hover state in force, the pose state, a few pose actions, the scene export and the paths.</summary>
@@ -133,5 +140,20 @@ public static partial class Program
         public List<Primitive> LinkPrims(Primitive root) => Program.LinkPrims(root);
         public Task EnsureProperties(Simulator sim, List<Primitive> prims) => Program.EnsureProperties(sim, prims);
         public Task<string> TouchAttachment(string rest) => Program.TouchAttachment(rest);
+        public bool PoseBusy => Program.idleLock.CurrentCount == 0 || DateTime.Now < Program.aoSitTransitionUntil;
+        public double PoseSettledSec => (DateTime.Now - Program.hoverSvc.PostureChangedAt).TotalSeconds;
+        public bool Sitting => Program.client.Self.SittingOn != 0 || Program.AoSitReallyOn();
+        public async Task<string> FeetCloseupJson(double exposure)
+        {
+            var r = await Program.LookCmd(new[] { "self", "feet", "fast", "zoom=feet", "exposure=" + exposure.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) });
+            var m = System.Text.RegularExpressions.Regex.Matches(r ?? "", @"(/[^\s]+\.jpg)"); if (m.Count == 0) return null;
+            var jpg = m[^1].Value; var py = Path.Combine(Path.GetDirectoryName(Program.LookPy) ?? ".", "feet_fit.py");
+            if (!File.Exists(py) || !File.Exists(jpg)) return null;
+            var psi = new System.Diagnostics.ProcessStartInfo(Program.LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            psi.ArgumentList.Add(py); psi.ArgumentList.Add(jpg);
+            using var pr = System.Diagnostics.Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); _ = pr.StandardError.ReadToEndAsync();
+            if (!await Task.Run(() => pr.WaitForExit(30000))) { try { pr.Kill(); } catch { } return null; }
+            var line = (await o).Trim().Split('\n').LastOrDefault(); return line == null ? null : line.TrimEnd('}') + $", \"image\": \"{jpg}\"}}";
+        }
     }
 }

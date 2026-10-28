@@ -64,6 +64,7 @@
     <Compile Include="../galatay-text/HoverHost.cs" Link="Core/HoverHost.cs" />
     <Compile Include="../galatay-text/HoverFeetWiring.cs" Link="Core/HoverFeetWiring.cs" />
     <Compile Include="../galatay-text/AoSit.cs" Link="Core/AoSit.cs" />
+    <Compile Include="../galatay-text/PoseEvidence.cs" Link="Core/PoseEvidence.cs" />
     <Compile Include="../galatay-text/OutfitCollarLinks.cs" Link="Core/OutfitCollarLinks.cs" />
     <Compile Include="../galatay-text/AttFaces.cs" Link="Core/AttFaces.cs" />
     <Compile Include="../galatay-text/ForceRebake.cs" Link="Core/ForceRebake.cs" />

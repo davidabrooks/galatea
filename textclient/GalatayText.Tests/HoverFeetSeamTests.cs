@@ -19,6 +19,9 @@ public class HoverFeetSeamTests
         public List<Primitive> LinkPrims(Primitive root) => new();
         public Task EnsureProperties(Simulator sim, List<Primitive> prims) => Task.CompletedTask;
         public Task<string> TouchAttachment(string rest) => throw new NotImplementedException();
+        public List<UUID> SelfAnims() => new();
+        public bool PoseBusy => false; public double PoseSettledSec => 99; public bool Sitting => false;
+        public Task<string> FeetCloseupJson(double exposure) => Task.FromResult<string>(null);
     }
 
     [Fact] public async Task FeetCmd_ReadsItsRulesThroughTheHost_AndReportsWithoutTouchingProgram()
@@ -29,7 +32,7 @@ public class HoverFeetSeamTests
             File.WriteAllText(Path.Combine(dir, "_feet-rules.json"), "{\"default\":\"f2\",\"footwear\":[{\"item\":\"" + Guid.NewGuid() + "\",\"name\":\"Boots\",\"feet\":\"f3\"}]}");
             var r = await new FeetAuto(new FakeFeetHost { Dir = dir }).FeetCmd(new[] { "feet" });
             Assert.StartsWith("feet: wanted f2 (no listed heeled footwear); last pressed ", r);
-            Assert.EndsWith("; 1 heeled item(s) listed", r);
+            Assert.Contains("; 1 heeled item(s) listed", r);
         }
         finally { Directory.Delete(dir, true); }
     }

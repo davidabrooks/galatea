@@ -145,8 +145,7 @@ public static partial class Program
         Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = new(ownAnims);
         var before = SelfAnims().Where(u => !BuiltinAnims.ContainsKey(u) && cur.TryGetValue(u, out var e) && IsAoHudSource(e.src)).Distinct().ToList();
         Log("idlepose", $"stuck AO sit at login ({reason}): pressing force sit ONCE (AO animations playing: {(before.Count == 0 ? "none" : string.Join(",", before.Select(x => x.ToString()[..8])))})");
-        var r = await AoGroundSitToggle("login release: " + reason);
-        await Task.Delay((int)StuckSitWaitMs);
+        var r = await AoGroundSitToggle("login release: " + reason);   // waits ~11 s and re-reads the animations itself
         var after = SelfAnims().ToList();
         var learn = StuckSitLearn(before, after, AoStandIdsNow());
         if (learn.Count > 0) { AoClassEnsureLoaded(); lock (aoClassLock) foreach (var u in learn) { aoSitIds.Add(u); aoStandIds.Remove(u); } AoClassSave(); }
@@ -219,7 +218,19 @@ public static partial class Program
     {
         aoSitTransitionUntil = DateTime.Now.AddSeconds(60);
         var unk0 = AoUnclassifiedNow();
-        if (!AoSitReallyOn() && unk0.Count == 0) return "AO force sit already off (no AO sit animation playing, only classified AO stands)";
+        if (!AoSitReallyOn() && unk0.Count == 0)
+        {
+            // 2026-10-28: "already off" came from the animation list alone while the render showed her sitting on the ground. The render is evidence too: ask it (one scene export,
+            // not at logout) and when it says sitting, that is NOT "already off": say MISMATCH, stand once through the sim, never press the AO toggle on a guess (it turns force sit ON when off)
+            if (why != "logout" && hoverSvc.RenderEvidenceNow().call == null) try { await Task.WhenAny(hoverSvc.PoseProbe(), Task.Delay(20000)); } catch { }
+            if (hoverSvc.RenderEvidenceNow() is { call: PoseCall.Sitting } rr)
+            {
+                try { client.Self.Stand(); } catch { }
+                var mm = $"NOT VERIFIED standing: MISMATCH: render says sitting ({rr.detail}), the animation list shows no AO sit; sim stand sent once, force-sit button NOT pressed (a press on a guess can turn force sit ON); run `idle_pose verify` and look at her";
+                Log("idlepose", $"verified stand ({why}): {mm}"); return mm;
+            }
+            return "AO force sit already off (no AO sit animation playing, only classified AO stands" + (hoverSvc.RenderEvidenceNow().call == PoseCall.Standing ? "; the render shows her standing)" : "; no fresh render)");
+        }
         bool believed = AoBelievedSitting(idlePosed?.kind, aoSitSeenAt, DateTime.Now);
         bool mayToggle = idlePosed?.kind == "groundsit" || SelfAnims().Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED);
         int stands = 0, toggles = 0; string trail = "";

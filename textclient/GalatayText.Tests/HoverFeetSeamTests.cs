@@ -19,7 +19,8 @@ public class HoverFeetSeamTests
         public List<Primitive> LinkPrims(Primitive root) => new();
         public Task EnsureProperties(Simulator sim, List<Primitive> prims) => Task.CompletedTask;
         public Task<string> TouchAttachment(string rest) => throw new NotImplementedException();
-        public List<UUID> SelfAnims() => new();
+        public Task<List<(string name, float alpha)>> FootMeshAlphas() => Task.FromResult<List<(string name, float alpha)>>(null);
+        public Task TouchPrim(Primitive prim, Vector3 st, int face) => Task.CompletedTask;
         public bool PoseBusy => false; public double PoseSettledSec => 99; public bool Sitting => false;
         public Task<string> FeetCloseupJson(double exposure) => Task.FromResult<string>(null);
     }

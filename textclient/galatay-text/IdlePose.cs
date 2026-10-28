@@ -134,7 +134,7 @@ public static partial class Program
         aoSitHookedClient = client;
         client.Self.ChatFromSimulator += (s, e) =>
         {
-            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } HoverCheckRequest("sit"); } } catch { }
+            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } hoverSvc.HoverCheckRequest("sit"); } } catch { }
         };
     }
     static async Task<ScriptDialogEventArgs> AoDialogAfter(ScriptDialogEventArgs prev, int ms)
@@ -206,7 +206,7 @@ public static partial class Program
             idleRotate = IdleRotateSec(Random.Shared.NextDouble());
             if (!ok) return info;
             idleLastPose = pose; idlePosed = new("collar", pose, anims ?? new(), DateTime.Now); IdleSave();
-            try { AutoHoverKick("pose change"); } catch { }
+            try { hoverSvc.AutoHoverKick("pose change"); } catch { }
             return $"{cur.pose} -> {pose}: {info}";
         }
         finally { idleLock.Release(); }
@@ -392,7 +392,7 @@ public static partial class Program
                 var (ok, info, anims) = await CollarPosePlay(pose);
                 Log("idlepose", $"collar pose {pose} ({why}): {info}");
                 if (!ok) return info;
-                idleLastPose = pose; idlePosed = new("collar", pose, anims ?? new(), DateTime.Now); IdleSave(); AutoHoverKick("kneel");
+                idleLastPose = pose; idlePosed = new("collar", pose, anims ?? new(), DateTime.Now); IdleSave(); hoverSvc.AutoHoverKick("kneel");
                 return $"collar pose '{pose}': {info}";
             }
             var before = SelfAnims().ToHashSet();
@@ -412,7 +412,7 @@ public static partial class Program
             // 2026-10-23 (David): android ground sit ~4 cm too high: auto-hover owns that offset (GroundSitHoverOffset)
             var added = SelfAnims().Where(a => !before.Contains(a)).Select(a => a.ToString()).ToList();
             AoLearnSits(added, before);
-            idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave(); AutoHoverKick("ground sit");
+            idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave(); hoverSvc.AutoHoverKick("ground sit");
             return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")})";
         }
         finally { idleLock.Release(); }
@@ -434,7 +434,7 @@ public static partial class Program
                 if (GroundSitStandNeeded(SelfAnims(), client.Self.SittingOn != 0)) { try { client.Self.Stand(); } catch { } info += "; stood up (SitOnGround cleared)"; }
                 try { if (EffectiveHoverNow() is double hv && Math.Abs(hv - PinnedHover()) > 0.005) await PostHover(PinnedHover(), "ground sit ended: back to normal hover"); } catch { }
             }
-            idlePosed = null; IdleSave(); IdleNoteActivity(); AutoHoverKick("pose cleared");
+            idlePosed = null; IdleSave(); IdleNoteActivity(); hoverSvc.AutoHoverKick("pose cleared");
             idleThreshold = IdleThresholdSec(IdleBaseSec(), Random.Shared.NextDouble());
             Log("idlepose", $"cleared {s.kind} {s.pose} before {why}: {info}");
             return $"cleared {s.kind} {s.pose}: {info}";
@@ -497,7 +497,7 @@ public static partial class Program
         });
     }
     // 2026-10-26: android form (outfit name or worn body); an unsettled form counts as android (never a collar kneel by mistake)
-    static bool IdleAndroidNow() { try { return AndroidFormNow() || !FormCertainNow(); } catch { return true; } }
+    static bool IdleAndroidNow() { try { return AndroidFormNow() || !hoverSvc.FormCertainNow(); } catch { return true; } }
     // leashed = the leash object, or the leash chain seen on the collar (it shows up a tick before the leash object), or a walker driving
     static bool IdleLeashedNow() => leash != null || leashDriving || LeashParticleTarget() != null;
     static volatile bool idleLeashHold;   // a leash stood her up: no idle pose until it is released
@@ -510,8 +510,8 @@ public static partial class Program
         var dav = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId);
         bool davidAway = dav.av != null && dav.dist < 15 && LeashMovingAway(dav.pos, dav.av.Velocity, client.Self.SimPosition);
         bool dancing = IdleDancingNow();
-        if (Env("GT_AUTO_HOVER", "observe") != "off") _ = AutoHoverCheck("idle tick");
-        try { HoverPostureNote(SelfAnims(), client.Self.SittingOn != 0); } catch { }   // PoseHover.cs: a sit/stand the anim packets missed
+        if (Env("GT_AUTO_HOVER", "observe") != "off") _ = hoverSvc.AutoHoverCheck("idle tick");
+        try { hoverSvc.HoverPostureNote(SelfAnims(), client.Self.SittingOn != 0); } catch { }   // PoseHover.cs: a sit/stand the anim packets missed
         if (moving || following || sitObj || leashDriving || dancing) IdleNoteActivity();   // the timer restarts after a dance
         var posed = idlePosed;
         if (posed != null)

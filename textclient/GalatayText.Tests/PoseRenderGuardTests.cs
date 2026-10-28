@@ -45,55 +45,55 @@ public class PoseRenderGuardTests
     }
     [Fact] public void StandingWithCollarAnimations_IsNotAnAoSit_OnceTheListIsClean()
     {
-        var playing = Program.ExportAnimIds(BadExportAnims);
+        var playing = Hover.ExportAnimIds(BadExportAnims);
         Assert.False(Program.AoSitPlaying(playing, false, TrueSits));                             // the 13:20 stand
         Assert.True(Program.AoSitPlaying(playing, false, Contaminated));                          // what the old build believed
-        Assert.True(Program.AoSitPlaying(Program.ExportAnimIds(GoodSitAnims), false, TrueSits));  // the 13:08 ground sit is still a sit (af45c937)
+        Assert.True(Program.AoSitPlaying(Hover.ExportAnimIds(GoodSitAnims), false, TrueSits));  // the 13:08 ground sit is still a sit (af45c937)
     }
 
     // ---- the guard: a fix is only computed from a render that shows the believed pose ----
     [Fact] public void TheRealThirteenTwentyCase_IsRefusedEvenWithTheContaminatedList()
     {
-        var ex = Program.ExportAnimIds(BadExportAnims);
-        Assert.Contains("no AO sit animation", Program.PoseRenderMismatch("sit", Size, 1.0917479, ex, TrueSits));        // clean list: the anims say stand
-        Assert.Contains("standing, not sitting", Program.PoseRenderMismatch("sit", Size, 1.0917479, ex, Contaminated)); // contaminated list: the pelvis (1.09 m) still says stand
-        Assert.Contains("no AO sit animation", Program.PoseRenderMismatch("sit", Size, null, ex, TrueSits));            // no mesh.json: the animations alone refuse
+        var ex = Hover.ExportAnimIds(BadExportAnims);
+        Assert.Contains("no AO sit animation", Hover.PoseRenderMismatch("sit", Size, 1.0917479, ex, TrueSits));        // clean list: the anims say stand
+        Assert.Contains("standing, not sitting", Hover.PoseRenderMismatch("sit", Size, 1.0917479, ex, Contaminated)); // contaminated list: the pelvis (1.09 m) still says stand
+        Assert.Contains("no AO sit animation", Hover.PoseRenderMismatch("sit", Size, null, ex, TrueSits));            // no mesh.json: the animations alone refuse
     }
     [Fact] public void ARealGroundSit_AndARealStand_PassTheGuard()
     {
-        Assert.Null(Program.PoseRenderMismatch("sit", Size, 0.10209572, Program.ExportAnimIds(GoodSitAnims), TrueSits));      // 13:08 VAMOSITG26, pelvis 0.10 m
-        Assert.Null(Program.PoseRenderMismatch("stand", Size, 1.0803777, Program.ExportAnimIds(BadExportAnims), TrueSits));   // a stand (12:19 export pelvis 1.08 m)
-        Assert.Null(Program.PoseRenderMismatch("sit", Size, null, Program.ExportAnimIds(GoodSitAnims), TrueSits));            // unknown pelvis: the animations decide
+        Assert.Null(Hover.PoseRenderMismatch("sit", Size, 0.10209572, Hover.ExportAnimIds(GoodSitAnims), TrueSits));      // 13:08 VAMOSITG26, pelvis 0.10 m
+        Assert.Null(Hover.PoseRenderMismatch("stand", Size, 1.0803777, Hover.ExportAnimIds(BadExportAnims), TrueSits));   // a stand (12:19 export pelvis 1.08 m)
+        Assert.Null(Hover.PoseRenderMismatch("sit", Size, null, Hover.ExportAnimIds(GoodSitAnims), TrueSits));            // unknown pelvis: the animations decide
     }
     [Fact] public void AStandCheck_IsRefusedOnASittingRender_AndOnASitAnimation()
     {
-        Assert.Contains("sitting, not standing", Program.PoseRenderMismatch("stand", Size, 0.10, Program.ExportAnimIds(BadExportAnims), TrueSits));
-        Assert.Contains("AO sit animation", Program.PoseRenderMismatch("stand", Size, 1.08, Program.ExportAnimIds(GoodSitAnims), TrueSits));
+        Assert.Contains("sitting, not standing", Hover.PoseRenderMismatch("stand", Size, 0.10, Hover.ExportAnimIds(BadExportAnims), TrueSits));
+        Assert.Contains("AO sit animation", Hover.PoseRenderMismatch("stand", Size, 1.08, Hover.ExportAnimIds(GoodSitAnims), TrueSits));
     }
     [Theory] [InlineData("sit", 0.70, true)] [InlineData("sit", 0.71, false)] [InlineData("stand", 0.87, true)] [InlineData("stand", 0.85, false)]
     public void PelvisBounds_AreFractionsOfHerHeight(string kind, double pelvis, bool ok)
     {
-        var anims = kind == "sit" ? Program.ExportAnimIds(GoodSitAnims) : Program.ExportAnimIds(BadExportAnims);
-        Assert.Equal(ok, Program.PoseRenderMismatch(kind, Size, pelvis, anims, TrueSits) == null);
+        var anims = kind == "sit" ? Hover.ExportAnimIds(GoodSitAnims) : Hover.ExportAnimIds(BadExportAnims);
+        Assert.Equal(ok, Hover.PoseRenderMismatch(kind, Size, pelvis, anims, TrueSits) == null);
     }
     [Fact] public void MeshPelvisZ_ReadsTheExportsMeshJson()
     {
-        Assert.Equal(0.10209572, Program.MeshPelvisZ("{\"pelvis\":[-0.001,0.006,0.10209572],\"head\":[0,0,1]}")!.Value, 6);
-        Assert.Null(Program.MeshPelvisZ("{\"pelvis\":null}")); Assert.Null(Program.MeshPelvisZ("{}")); Assert.Null(Program.MeshPelvisZ("not json")); Assert.Null(Program.MeshPelvisZ("{\"pelvis\":[1,2]}"));
-        Assert.Empty(Program.ExportAnimIds(null)); Assert.Equal(2, Program.ExportAnimIds("a@1,947dd903-cd66-158b-13ae-79a72ee7c947@2,201d84aa-63e9-5cb0-ac55-6c6c4ddd334e@3").Count);
+        Assert.Equal(0.10209572, Hover.MeshPelvisZ("{\"pelvis\":[-0.001,0.006,0.10209572],\"head\":[0,0,1]}")!.Value, 6);
+        Assert.Null(Hover.MeshPelvisZ("{\"pelvis\":null}")); Assert.Null(Hover.MeshPelvisZ("{}")); Assert.Null(Hover.MeshPelvisZ("not json")); Assert.Null(Hover.MeshPelvisZ("{\"pelvis\":[1,2]}"));
+        Assert.Empty(Hover.ExportAnimIds(null)); Assert.Equal(2, Hover.ExportAnimIds("a@1,947dd903-cd66-158b-13ae-79a72ee7c947@2,201d84aa-63e9-5cb0-ac55-6c6c4ddd334e@3").Count);
     }
 
     // ---- a large fix needs a second consistent render ----
     [Fact] public void LargeFixes_NeedConfirmation_SmallOnesDoNot()
     {
-        Assert.True(Program.HoverFixNeedsConfirm(0.229)); Assert.True(Program.HoverFixNeedsConfirm(-0.13)); Assert.False(Program.HoverFixNeedsConfirm(0.12)); Assert.False(Program.HoverFixNeedsConfirm(0.098)); Assert.False(Program.HoverFixNeedsConfirm(-0.069));
-        Assert.True(Program.HoverFixConfirmed(0.229, 0.2315)); Assert.False(Program.HoverFixConfirmed(0.229, 0.0));
-        Assert.Equal(3, Program.HoverCheckRenderCount(true, true)); Assert.Equal(2, Program.HoverCheckRenderCount(false, true)); Assert.Equal(2, Program.HoverCheckRenderCount(true)); Assert.Equal(1, Program.HoverCheckRenderCount(false));
+        Assert.True(Hover.HoverFixNeedsConfirm(0.229)); Assert.True(Hover.HoverFixNeedsConfirm(-0.13)); Assert.False(Hover.HoverFixNeedsConfirm(0.12)); Assert.False(Hover.HoverFixNeedsConfirm(0.098)); Assert.False(Hover.HoverFixNeedsConfirm(-0.069));
+        Assert.True(Hover.HoverFixConfirmed(0.229, 0.2315)); Assert.False(Hover.HoverFixConfirmed(0.229, 0.0));
+        Assert.Equal(3, Hover.HoverCheckRenderCount(true, true)); Assert.Equal(2, Hover.HoverCheckRenderCount(false, true)); Assert.Equal(2, Hover.HoverCheckRenderCount(true)); Assert.Equal(1, Hover.HoverCheckRenderCount(false));
     }
     [Fact] public void TheCheck_RefusesBeforeAnyPost_AndAsksForARetry()
     {
-        var ph = Src("PoseHover.cs"); var chk = ph[ph.IndexOf("static async Task<string> PoseHoverCheck(")..];
-        int guard = chk.IndexOf("PoseRenderMismatch(kind, size, pz, exAnims, AoSitIdsNow())"), post = chk.IndexOf("await PostHover(");
+        var ph = Src("PoseHover.cs"); var chk = ph[ph.IndexOf("async Task<string> PoseHoverCheck(")..];
+        int guard = chk.IndexOf("PoseRenderMismatch(kind, size, pz, exAnims, h.AoSitIdsNow())"), post = chk.IndexOf("await h.PostHover(");
         Assert.True(guard > 0 && guard < post);                                                   // the guard runs on render 1, before anything can be POSTed
         var g = chk[guard..post]; Assert.Contains("not verified: pose not rendered", g); Assert.Contains("nothing changed", g); Assert.Contains("return \"pose not rendered: \" + why;", g);   // a non-null return = the request retries
         Assert.Contains("HoverFixNeedsConfirm(eg)", chk[guard..post]);

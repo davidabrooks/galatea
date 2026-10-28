@@ -16,24 +16,24 @@ public class SupportPartsTests
     // what the check does: one render at the hover in force, then the target
     static double Target(string pose, Dictionary<string, double> gaps, double hov)
     {
-        var parts = Program.SupportParts("sit", pose); double basis = Program.SupportGap(parts, gaps)!.Value, aim = Program.SupportAim(parts);
-        return Program.PoseHoverFromGap(hov, basis - aim);
+        var parts = Hover.SupportParts("sit", pose); double basis = Hover.SupportGap(parts, gaps)!.Value, aim = Hover.SupportAim(parts);
+        return Hover.PoseHoverFromGap(hov, basis - aim);
     }
 
     [Fact] public void TheRenderLineIsParsed_AndTheLowestSupportingPartDrivesTheFix()
     {
-        var g = Program.HoverCheckPartGaps("noise\nGT: hover check parts: hips +0.012, chest +0.315, forearms +0.140, hands -0.040, thighs +0.233\n/x.jpg");
+        var g = Hover.HoverCheckPartGaps("noise\nGT: hover check parts: hips +0.012, chest +0.315, forearms +0.140, hands -0.040, thighs +0.233\n/x.jpg");
         Assert.Equal(5, g.Count); Assert.Equal(-0.040, g["hands"]); Assert.Equal(0.012, g["hips"]);
-        Assert.Equal(-0.040, Program.SupportGap(new[] { "hips", "hands" }, g));            // hands sunk 4 cm: they drive, the hips float 5 cm
-        Assert.Equal(0.233, Program.SupportGap(new[] { "thighs" }, g)); Assert.Null(Program.SupportGap(new[] { "shins" }, g)); Assert.Null(Program.SupportGap(null, g));
-        Assert.Empty(Program.HoverCheckPartGaps("GT: hover check gap +0.1 m")); Assert.Empty(Program.HoverCheckPartGaps(null));
+        Assert.Equal(-0.040, Hover.SupportGap(new[] { "hips", "hands" }, g));            // hands sunk 4 cm: they drive, the hips float 5 cm
+        Assert.Equal(0.233, Hover.SupportGap(new[] { "thighs" }, g)); Assert.Null(Hover.SupportGap(new[] { "shins" }, g)); Assert.Null(Hover.SupportGap(null, g));
+        Assert.Empty(Hover.HoverCheckPartGaps("GT: hover check gap +0.1 m")); Assert.Empty(Hover.HoverCheckPartGaps(null));
     }
     [Fact] public void PoseNames_OnlyChooseWhichPartsSupport_NeverNumbers()
     {
-        Assert.Equal(new[] { "hips", "hands" }, Program.SupportParts("sit", "VAMOSITG13")); Assert.Equal(new[] { "hips", "hands" }, Program.SupportParts("sit", " vamositg11 "));
-        Assert.Equal(new[] { "hips", "hands" }, Program.SupportParts("sit", "VAMOSITG12")); Assert.Equal(new[] { "chest", "forearms", "thighs" }, Program.SupportParts("sit", "VAMOSITG27"));
-        Assert.Null(Program.SupportParts("sit", "VAMOSITG23")); Assert.Null(Program.SupportParts("sit", null)); Assert.Null(Program.SupportParts("stand", "VAMOSITG13")); Assert.Null(Program.SupportParts("seat", "VAMOSITG27"));
-        Assert.All(Program.SupportPartsOfPose.Values.SelectMany(v => v), p => Assert.Contains(p, Program.BodyParts));   // part names only
+        Assert.Equal(new[] { "hips", "hands" }, Hover.SupportParts("sit", "VAMOSITG13")); Assert.Equal(new[] { "hips", "hands" }, Hover.SupportParts("sit", " vamositg11 "));
+        Assert.Equal(new[] { "hips", "hands" }, Hover.SupportParts("sit", "VAMOSITG12")); Assert.Equal(new[] { "chest", "forearms", "thighs" }, Hover.SupportParts("sit", "VAMOSITG27"));
+        Assert.Null(Hover.SupportParts("sit", "VAMOSITG23")); Assert.Null(Hover.SupportParts("sit", null)); Assert.Null(Hover.SupportParts("stand", "VAMOSITG13")); Assert.Null(Hover.SupportParts("seat", "VAMOSITG27"));
+        Assert.All(Hover.SupportPartsOfPose.Values.SelectMany(v => v), p => Assert.Contains(p, Hover.BodyParts));   // part names only
         var ph = Src("PoseHover.cs"); var table = ph[ph.IndexOf("SupportPartsOfPose = new")..]; table = table[..table.IndexOf("};")];
         Assert.DoesNotMatch(@"[+-]?\d+\.\d+", table.Replace("VAMOSITG", ""));   // no hover number anywhere in the table
         foreach (var gone in new[] { "HandSupportLiftM", "ContactClass", "FixedHover", "ProneSits", "HandSupportLift(" }) Assert.DoesNotContain(gone, ph);
@@ -43,23 +43,23 @@ public class SupportPartsTests
         // G13-like: the hips touch (0) while the hands are 5 cm sunk at the old hover: the hover rises 5 cm + the aim so the hands show, the hips float the same amount
         var g = Gaps(0, 0, 0.0, -0.05);
         double t = Target("VAMOSITG13", g, 0);
-        Assert.Equal(0.05 + Program.HandsAimM, t, 3);
+        Assert.Equal(0.05 + Hover.HandsAimM, t, 3);
         var after = Gaps(t, 0, 0.0, -0.05);
-        Assert.True(after["hands"] >= 0); Assert.Equal(Program.HandsAimM, after["hands"], 3); Assert.Equal(0.05 + Program.HandsAimM, after["hips"], 3);
-        Assert.True(Program.SupportConfirmed(Program.SupportGap(new[] { "hips", "hands" }, after)!.Value - Program.HandsAimM, Program.HandsAimM));
+        Assert.True(after["hands"] >= 0); Assert.Equal(Hover.HandsAimM, after["hands"], 3); Assert.Equal(0.05 + Hover.HandsAimM, after["hips"], 3);
+        Assert.True(Hover.SupportConfirmed(Hover.SupportGap(new[] { "hips", "hands" }, after)!.Value - Hover.HandsAimM, Hover.HandsAimM));
         // G11-like: the hands are LOWER than the hips' contact the other way round: hips float 0.119 above the floor, the hands touch: the hands drive (the lowest supporting part), the hips are never lifted to meet them
         var g11 = Gaps(0, 0, 0.119, 0.0); double t11 = Target("VAMOSITG11", g11, 0);
-        Assert.Equal(Program.HandsAimM, t11, 3);   // the hands touch (gap 0) and aim 8 mm above the floor; the hips (+0.119) are not lifted at all for them
+        Assert.Equal(Hover.HandsAimM, t11, 3);   // the hands touch (gap 0) and aim 8 mm above the floor; the hips (+0.119) are not lifted at all for them
     }
     [Fact] public void BellyDown_UsesChestForearmsThighs_NotTheHips()
     {
         // hips float 0.138 above the floor while chest / forearms / thighs rest on it: the hips do not count
         var g = new Dictionary<string, double> { ["hips"] = 0.138, ["hands"] = 0.2, ["chest"] = 0.0, ["thighs"] = 0.0, ["forearms"] = 0.0 };
-        Assert.Equal(0.0, Program.SupportGap(Program.SupportParts("sit", "VAMOSITG27"), g)!.Value, 3);
+        Assert.Equal(0.0, Hover.SupportGap(Hover.SupportParts("sit", "VAMOSITG27"), g)!.Value, 3);
         Assert.Equal(0.138, Target("VAMOSITG27", g, 0.138), 3);                                  // already touching: nothing to fix
         var floating = new Dictionary<string, double> { ["hips"] = 0.30, ["hands"] = 0.3, ["chest"] = 0.12, ["thighs"] = 0.118, ["forearms"] = 0.15 };   // the lowest supporting part is 11.8 cm up: lower by that
         Assert.Equal(0.138 - 0.118, Target("VAMOSITG27", floating, 0.138), 3);
-        Assert.True(Program.SupportConfirmed(0.004, 0.0)); Assert.False(Program.SupportConfirmed(0.03, 0.0));
+        Assert.True(Hover.SupportConfirmed(0.004, 0.0)); Assert.False(Hover.SupportConfirmed(0.03, 0.0));
     }
     [Fact] public void TheSameRuleOnAnotherFloor_NoAbsoluteNumbers()
     {
@@ -69,23 +69,23 @@ public class SupportPartsTests
             var low = Gaps(0, 0, 0.02, 0.0, chest: 0.0, thighs: 0.01, forearms: 0.02); var high = Gaps(0, 0.20, 0.02, 0.0, chest: 0.0, thighs: 0.01, forearms: 0.02);
             Assert.Equal(Target(pose, low, 0) + 0.20, Target(pose, high, 0), 3);
         }
-        Assert.Equal(0.0, Program.SupportAim(new[] { "chest", "thighs" })); Assert.Equal(Program.HandsAimM, Program.SupportAim(new[] { "hips", "hands" })); Assert.Equal(0.0, Program.SupportAim(null));
+        Assert.Equal(0.0, Hover.SupportAim(new[] { "chest", "thighs" })); Assert.Equal(Hover.HandsAimM, Hover.SupportAim(new[] { "hips", "hands" })); Assert.Equal(0.0, Hover.SupportAim(null));
     }
     [Fact] public void AnAutomaticPoseChange_IsAlwaysRemeasured_NeverTrustsTheOtherPosesHover()
     {
-        Assert.True(Program.PoseChangedSinceCheck("VAMOSITG13", "VAMOSITG12")); Assert.False(Program.PoseChangedSinceCheck("VAMOSITG12", " vamositg12 ")); Assert.False(Program.PoseChangedSinceCheck(null, "VAMOSITG12"));
-        Assert.False(Program.HoverCheckReady("sit", 0f, false, false, false, 99, 5, false).go);                          // 5 s after the last check: the cooldown holds
-        Assert.True(Program.HoverCheckReady("sit", 0f, false, false, false, 99, 5, false, poseChanged: true).go);       // ... unless the pose changed: remeasured at once
-        var chk = Src("PoseHover.cs"); chk = chk[chk.IndexOf("static async Task<string> PoseHoverCheck(")..];
-        Assert.True(chk.IndexOf("EffectiveHoverFresh()") < chk.IndexOf("SupportConfirmed(eg, aim)"));                   // the hover in force is read fresh, then judged by what the render measures
+        Assert.True(Hover.PoseChangedSinceCheck("VAMOSITG13", "VAMOSITG12")); Assert.False(Hover.PoseChangedSinceCheck("VAMOSITG12", " vamositg12 ")); Assert.False(Hover.PoseChangedSinceCheck(null, "VAMOSITG12"));
+        Assert.False(Hover.HoverCheckReady("sit", 0f, false, false, false, 99, 5, false).go);                          // 5 s after the last check: the cooldown holds
+        Assert.True(Hover.HoverCheckReady("sit", 0f, false, false, false, 99, 5, false, poseChanged: true).go);       // ... unless the pose changed: remeasured at once
+        var chk = Src("PoseHover.cs"); chk = chk[chk.IndexOf("async Task<string> PoseHoverCheck(")..];
+        Assert.True(chk.IndexOf("h.EffectiveHoverFresh()") < chk.IndexOf("SupportConfirmed(eg, aim)"));                   // the hover in force is read fresh, then judged by what the render measures
         Assert.Contains("PoseChangedSinceCheck(hoverLastCheckedPose, pose)", chk); Assert.Contains("PoseChangedSinceCheck(hoverLastCheckedPose, pose));", Src("PoseHover.cs"));
     }
     [Fact] public void Wiring_OneRender_PartsReachTheRenderer_NothingSaved_RenderCountReported()
     {
-        var env = Program.HoverCheckEnv(1.6, 0.0, -0.055, new[] { "hips", "hands" }); Assert.Equal("hips,hands", env["GT_HC_PARTS"]); Assert.DoesNotContain("GT_HC_PARTS", Program.HoverCheckEnv(1.6, 0.0, -0.055).Keys);
-        var chk = Src("PoseHover.cs"); chk = chk[chk.IndexOf("static async Task<string> PoseHoverCheck(")..];
+        var env = Hover.HoverCheckEnv(1.6, 0.0, -0.055, new[] { "hips", "hands" }); Assert.Equal("hips,hands", env["GT_HC_PARTS"]); Assert.DoesNotContain("GT_HC_PARTS", Hover.HoverCheckEnv(1.6, 0.0, -0.055).Keys);
+        var chk = Src("PoseHover.cs"); chk = chk[chk.IndexOf("async Task<string> PoseHoverCheck(")..];
         Assert.Contains("HoverCheckRender(dir, size, hov, bias, kind, parts: parts)", chk); Assert.Contains("HoverCheckRender(dir, size, eff2 ?? t, bias, kind, parts: parts)", chk);
-        Assert.Contains("renders {renders}", chk); Assert.Equal(1, Program.HoverCheckRenderCount(false)); Assert.Equal(2, Program.HoverCheckRenderCount(true));
+        Assert.Contains("renders {renders}", chk); Assert.Equal(1, Hover.HoverCheckRenderCount(false)); Assert.Equal(2, Hover.HoverCheckRenderCount(true));
         Assert.Contains("SupportParts(kind, pose)", Src("Look.cs"));
         Assert.DoesNotContain("File.Write", chk);
     }

@@ -15,7 +15,7 @@ using LibreMetaverse;
 
 namespace GalatayText;
 
-public static partial class Program
+internal sealed partial class Hover
 {
     internal const double CalibMaxCm = 30;
     // pure (tested): parse the words after "hover calibrate" -> (action show|set|reset, target stand|sit|here, cm) or an error
@@ -30,7 +30,7 @@ public static partial class Program
         {
             var num = Regex.Replace(w[1], "cm$", "");
             if (!double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var cm) || double.IsNaN(cm)) return (false, null, null, 0, usage);
-            if (Math.Abs(cm) > CalibMaxCm) return (false, null, null, 0, $"{I(cm)} cm is implausible (max +-{CalibMaxCm:0} cm): give what you see, in centimetres");
+            if (Math.Abs(cm) > CalibMaxCm) return (false, null, null, 0, $"{Program.I(cm)} cm is implausible (max +-{CalibMaxCm:0} cm): give what you see, in centimetres");
             return (true, "set", w[0], cm, null);
         }
         return (false, null, null, 0, usage);
@@ -54,43 +54,43 @@ public static partial class Program
         if (value is double v) d[key] = Math.Round(v, 4); else d.Remove(key);
         return d;
     }
-    static void PoseBiasSave(string key, double? value)
+    void PoseBiasSave(string key, double? value)
     {
         Dictionary<string, double> raw;
         try { raw = File.Exists(PoseHoverFile) ? JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(PoseHoverFile)) ?? new() : new(); } catch { raw = new(); }
         File.WriteAllText(PoseHoverFile, JsonSerializer.Serialize(PoseBiasMerge(raw, key, value), new JsonSerializerOptions { WriteIndented = true }));
     }
 
-    static async Task<string> HoverCalibrate(string[] a)
+    internal async Task<string> HoverCalibrate(string[] a)
     {
         var (ok, action, target, cm, err) = HoverCalibrateParse(a);
         if (!ok) return err;
-        bool android = AndroidFormNow(); var nums = PoseNums();
+        bool android = h.AndroidFormNow(); var nums = PoseNums();
         if (action == "show")
-            return nums.Count == 0 ? "no calibrated biases (defaults: stand " + I(PoseBiasDefault("stand")) + ", sit " + I(PoseBiasDefault("sit")) + ")"
-                : string.Join("; ", nums.OrderBy(k => k.Key).Select(k => $"{k.Key} {I(k.Value)}")) + $"; defaults for the rest: stand {I(PoseBiasDefault("stand"))}, sit {I(PoseBiasDefault("sit"))}";
-        if (!LoggedIn) return "not logged in";
+            return nums.Count == 0 ? "no calibrated biases (defaults: stand " + Program.I(PoseBiasDefault("stand")) + ", sit " + Program.I(PoseBiasDefault("sit")) + ")"
+                : string.Join("; ", nums.OrderBy(k => k.Key).Select(k => $"{k.Key} {Program.I(k.Value)}")) + $"; defaults for the rest: stand {Program.I(PoseBiasDefault("stand"))}, sit {Program.I(PoseBiasDefault("sit"))}";
+        if (!h.LoggedIn) return "not logged in";
         var (kind, pose) = PoseNow();
         if (action == "reset")
         {
             var rk = target == "here" ? PoseBiasPoseKey(android, pose ?? kind) : PoseBiasKey(android, target);
-            if (!nums.ContainsKey(rk)) return $"{rk} was not set (default {I(PoseBiasDefault(target == "here" ? kind : target))} applies)";
-            PoseBiasSave(rk, null); Log("posehover", $"calibration: {rk} reset to the default"); return $"{rk} reset to the default {I(PoseBiasDefault(target == "here" ? kind : target))}";
+            if (!nums.ContainsKey(rk)) return $"{rk} was not set (default {Program.I(PoseBiasDefault(target == "here" ? kind : target))} applies)";
+            PoseBiasSave(rk, null); h.Log("posehover", $"calibration: {rk} reset to the default"); return $"{rk} reset to the default {Program.I(PoseBiasDefault(target == "here" ? kind : target))}";
         }
         var (key, kerr) = CalibrationKey(target, android, kind, pose, nums);
         if (key == null) return kerr;
-        var (go, why) = HoverCheckReady(client.Self.SittingOn != 0 ? "seat" : kind, client.Self.Velocity.Length(), IdleLeashedNow(), followId != UUID.Zero, idleLock.CurrentCount == 0, 999, 999, true);
+        var (go, why) = HoverCheckReady(h.Client.Self.SittingOn != 0 ? "seat" : kind, h.Client.Self.Velocity.Length(), h.IdleLeashedNow(), h.Following, h.IdleBusy, 999, 999, true);
         if (!go) return "cannot calibrate now: " + why;
         if (!await poseGate.WaitAsync(0)) return "a hover check or calibration is already running";
         try
         {
-            var ex = await SceneExport(new[] { "export", "4", "noenv" });
+            var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) return "calibration export failed: " + ex;
             var dir = Path.GetDirectoryName(scene)!;
             if (!PoseStill(kind, pose)) return "calibration aborted: the pose changed while exporting";
-            var (eff, src) = await EffectiveHoverFresh();
-            double size = SelfAv()?.Scale.Z ?? 0; if (size < 1) return "agent size unknown";
+            var (eff, src) = await h.EffectiveHoverFresh();
+            double size = h.SelfAv()?.Scale.Z ?? 0; if (size < 1) return "agent size unknown";
             if (eff is not double hov) return "cannot calibrate: the hover in force is unknown (no AgentPreferences answer, no POST this session)";
             double biasUsed = PoseBiasFor(nums, android, kind, pose);
             var (g1, img1) = await HoverCheckRender(dir, size, hov, biasUsed, kind);
@@ -99,8 +99,8 @@ public static partial class Program
             PoseBiasSave(key, nb);
             var (g2, img2) = await HoverCheckRender(dir, size, hov, nb, kind);
             bool good = g2 is double gg && Math.Abs(gg - cm / 100.0) <= 0.005;
-            var msg = $"calibrated {key}: at hover {I(hov)} ({src}) the render said {gap:+0.000;-0.000} m, you see {cm / 100.0:+0.000;-0.000;0.000} m -> bias {I(biasUsed)} -> {I(nb)}; re-render gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({(good ? "matches" : "does NOT match")}); {img2}";
-            Log("posehover", msg); return msg;
+            var msg = $"calibrated {key}: at hover {Program.I(hov)} ({src}) the render said {gap:+0.000;-0.000} m, you see {cm / 100.0:+0.000;-0.000;0.000} m -> bias {Program.I(biasUsed)} -> {Program.I(nb)}; re-render gap {(g2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({(good ? "matches" : "does NOT match")}); {img2}";
+            h.Log("posehover", msg); return msg;
         }
         finally { poseGate.Release(); }
     }

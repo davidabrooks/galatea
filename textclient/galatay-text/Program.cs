@@ -18,7 +18,7 @@ namespace GalatayText;
 
 public static partial class Program
 {
-    static string Env(string k, string d) => string.IsNullOrEmpty(Environment.GetEnvironmentVariable(k)) ? d : Environment.GetEnvironmentVariable(k)!;
+    internal static string Env(string k, string d) => string.IsNullOrEmpty(Environment.GetEnvironmentVariable(k)) ? d : Environment.GetEnvironmentVariable(k)!;
 
     static readonly string First = Env("GT_FIRST", "Galatay");
     static readonly string Last = Env("GT_LAST", "Resident");
@@ -332,7 +332,7 @@ public static partial class Program
         client.Throttle.Land = 200000; client.Throttle.Task = 1338000; // task = object updates; LMV max. Warehouse 21 (2026-10-05): 1000 -> 1338 kbps took 49 -> 89 objects/s
         client.Throttle.Texture = 50000; client.Throttle.Asset = 100000;
         Hook();
-        _ = Task.Run(FeetLoop); // foot pose follows worn heels (FeetAuto.cs)
+        _ = Task.Run(feetSvc.FeetLoop); // foot pose follows worn heels (FeetAuto.cs)
         HookAttachWatch(); // own AvatarAnimation watch with sources (AttachWatch.cs)
         HookExperiences(); // Experience perms + temp attaches (Experiences.cs)
         HookGroups(); // current-groups cache + JoinGroupReply log (GroupPicks.cs)
@@ -607,7 +607,7 @@ public static partial class Program
         client.Self.AvatarSitResponse += (s, e) => { Log("sit", $"sit response for object {e.ObjectID} (autopilot={e.Autopilot})"); NoteSitForWash(e.ObjectID); NotePoseSitResponse(e.ObjectID); };
         client.Objects.AvatarSitChanged += (s, e) => { try { if (e.Avatar != null && e.Avatar.ID == client.Self.AgentID) NotePoseSitChanged(e.SittingOn); } catch { } };
         PoseSitDefaultLoad();
-        client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = RecoverAfterRegionChange(); _ = Ensure360ForCurrentRegion("region change"); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); HoverCheckRequest("region", 12000); } };
+        client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = RecoverAfterRegionChange(); _ = Ensure360ForCurrentRegion("region change"); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); hoverSvc.HoverCheckRequest("region", 12000); } };
         client.Network.Disconnected += (s, e) =>
         {
             Log("disconnect", $"{e.Reason}: {e.Message}");
@@ -2062,7 +2062,7 @@ public static partial class Program
             case "thev": return await TheVCmd(rest);
             case "wear": case "rez": case "take": case "return": case "delete": case "offer": return await WearOpsCmd(cmd, a);
             case "inv": return a.Length >= 2 && a[0] == "find" ? await InvFind(rest.Substring(rest.IndexOf("find") + 4).Trim()) : "usage: inv find <text>[|text2...] | inv trash <exact name|uuid|folder uuid>[, ...] | inv mkdir <parent uuid> <name> | inv move <uuid> <dest folder uuid> | inv move undo";
-            case "feet": return await FeetCmd(a);
+            case "feet": return await feetSvc.FeetCmd(a);
             case "kiss": return KissCmd(rest);
             case "hands": return await HandsCmd(a);
             case "outfit" when a.Length >= 2 && a[0] == "wear":

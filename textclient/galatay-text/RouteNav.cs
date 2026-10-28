@@ -93,7 +93,7 @@ public static partial class Program
 
     static bool InNaberrie => string.Equals(client.Network.CurrentSim?.Name, HomeSeatRegion, StringComparison.OrdinalIgnoreCase);
     static bool ZendoHit(Vector3 p) => InNaberrie && InZendo(p);
-    static string P3(Vector3 v) => string.Format(IC, "{0:F1},{1:F1},{2:F1}", v.X, v.Y, v.Z);
+    internal static string P3(Vector3 v) => string.Format(IC, "{0:F1},{1:F1},{2:F1}", v.X, v.Y, v.Z);
     static void RLogR(string m) => Log("route", m);
 
     // ---- files ------------------------------------------------------------------------------------

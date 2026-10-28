@@ -156,7 +156,7 @@ public static partial class Program
             // the value in hover.txt for every later login and region change, which David's rule (no saved hover) forbids
             case "hover" when rest is ["apply", _] && double.TryParse(rest[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hv) && Math.Abs(hv) <= HoverApplyMax:
                 return (true, "hover apply " + rest[1], null);
-            case "hover" when rest.Length > 0 && rest[0] == "calibrate" && HoverCalibrateParse(rest[1..]).ok: return (true, "hover calibrate " + string.Join(" ", rest[1..]), null);
+            case "hover" when rest.Length > 0 && rest[0] == "calibrate" && Hover.HoverCalibrateParse(rest[1..]).ok: return (true, "hover calibrate " + string.Join(" ", rest[1..]), null);
             case "height" or "diag" when rest.Length == 0: return (true, cmd, null);
             case "posehover" when rest is ["check"]: return (true, "hover check", null);
             case "posehover" when rest is ["status"] or []: return (true, "posehover status", null);

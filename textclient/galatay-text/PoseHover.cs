@@ -1,3 +1,4 @@
+// 2026-10-28: `Hover` (this file, HoverCalibrate.cs, AutoHover.cs) is its own class; everything it uses from the rest of the client goes through IHoverHost (HoverHost.cs).
 // PoseHover.cs (2026-10-26 David: "I don't think you should try to save the hover heights for each pose, because the ground can
 // change based on your location. When you sit, stand, or enter a new region you should visually check your hover height and fix
 // it at that time.")
@@ -20,9 +21,14 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using LibreMetaverse;
+using FurnitureBox = GalatayText.Program.FurnitureBox;
+using HomeSeatInfo = GalatayText.Program.HomeSeatInfo;
+using NavGrid = GalatayText.Program.NavGrid;
 namespace GalatayText;
-public static partial class Program
+internal sealed partial class Hover
 {
+    readonly IHoverHost h;
+    internal Hover(IHoverHost host) { h = host; }
     internal const double PoseHoverTol = 0.01;
     // pure (tested): per-pose bias first (2026-10-23 17:33 VAMOSITG22: the sit bias tuned in VAMOSITG26 left her ~7 cm above the
     // floor while the render said contact: the model's body-root error differs per animation), then the (form, kind) bias, then the default
@@ -83,8 +89,8 @@ public static partial class Program
     // pure (tested): the pose changed since the last finished check (an automatic rotation): the hover in force may be one set for the OTHER pose, by hand or by its check.
     // It is never trusted: this check measures the new pose against its own target (the render at the hover in force) and corrects, it does not inherit "contact" from the old value
     internal static bool PoseChangedSinceCheck(string lastPose, string pose) => lastPose != null && !string.Equals(lastPose.Trim(), (pose ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
-    static string hoverLastCheckedPose;
-    static volatile Dictionary<string, double> hoverLastPartGaps = new();   // the part gaps of the last HoverCheckRender (every body part the render saw)
+    string hoverLastCheckedPose;
+    volatile Dictionary<string, double> hoverLastPartGaps = new();   // the part gaps of the last HoverCheckRender (every body part the render saw)
     internal static double PoseHoverFromGap(double hov, double gap) => Math.Round(Math.Clamp(hov - gap, -0.4, 0.4), 3);
     // pure (tested): the env that makes the quick render a hover check (hover offset applied, real placement, floor drawn)
     // parts = the body parts that support her in this pose (SupportParts): the renderer frames them in the close-up; it reports every part's gap either way
@@ -132,7 +138,7 @@ public static partial class Program
     // animation, and the posed pelvis (mesh.json, metres above her feet level) must be low (sit: <= 0.45 x her height) or high (stand: >= 0.55 x her height). Unknown pelvis: only the animations count
     internal static string PoseRenderMismatch(string kind, double size, double? pelvisZ, IEnumerable<UUID> exportAnims, IEnumerable<UUID> sitIds)
     {
-        bool sitInExport = AoSitPlaying(exportAnims, false, sitIds);
+        bool sitInExport = Program.AoSitPlaying(exportAnims, false, sitIds);
         if (kind == "sit")
         {
             if (!sitInExport) return "the export holds no AO sit animation (the sit has not started playing, or it is not the one I think)";
@@ -165,52 +171,52 @@ public static partial class Program
     // pure (tested): what an implausible render gap means. movedRecently = she already stepped clear for this reason a moment ago (never loop)
     internal static HoverGapVerdict HoverGapDecision(double gap, Vector3 me, IReadOnlyList<FurnitureBox> boxes, bool movedRecently) =>
         PoseGapSane(gap) ? HoverGapVerdict.Plausible
-        : !movedRecently && InFurnitureMargin(me, boxes, HoverFurnitureNearM) != null ? HoverGapVerdict.MoveClear : HoverGapVerdict.Unresolved;
+        : !movedRecently && Program.InFurnitureMargin(me, boxes, HoverFurnitureNearM) != null ? HoverGapVerdict.MoveClear : HoverGapVerdict.Unresolved;
     // pure (tested): the clear floor spot to step to: the footprint helpers of the outfit-change flow (ClearStepPlan: inside a footprint, the seat's own stand_spot else a
     // computed spot, never across other furniture), else, within 0.5 m of one, the login walk's LoginJoinGoal ring (outside every footprint + body margin, straight line crosses no furniture)
     internal static (Vector3? to, string why) HoverClearTarget(Vector3 me, IReadOnlyList<FurnitureBox> boxes, IEnumerable<HomeSeatInfo> seats, Func<float, float, bool> blocked)
     {
-        var plan = ClearStepPlan(me, NearestHomeSeat(me, seats), boxes, blocked);
+        var plan = Program.ClearStepPlan(me, Program.NearestHomeSeat(me, seats), boxes, blocked);
         if (plan.Needed) return (plan.To, plan.Why);
-        var g = LoginJoinGoal(me, me, true, UUID.Zero, seats, boxes, blocked);
+        var g = Program.LoginJoinGoal(me, me, true, UUID.Zero, seats, boxes, blocked);
         return g.Kind == "spot" ? (g.To, "within 0.5 m of furniture; " + g.Why) : (null, g.Why);
     }
-    static DateTime hoverClearAt = DateTime.MinValue;
+    DateTime hoverClearAt = DateTime.MinValue;
     // runs with poseGate held. Returns the retry reason when she moved (the request loop re-checks), null when unresolved (logged, hover unchanged)
-    static async Task<string> HoverGapOnFurniture(string kind, string key, double gap, string img)
+    async Task<string> HoverGapOnFurniture(string kind, string key, double gap, string img)
     {
-        var boxes = InPeronaut ? HomeFootprints() : new List<FurnitureBox>(); var me = client.Self.SimPosition;
+        var boxes = h.InPeronaut ? h.HomeFootprints() : new List<FurnitureBox>(); var me = h.Client.Self.SimPosition;
         bool recent = (DateTime.Now - hoverClearAt).TotalSeconds < HoverClearAgainSec;
         var v = HoverGapDecision(gap, me, boxes, recent);
-        string Unres(string why) { var m = $"{key}: render gap {gap:+0.000;-0.000} is implausible (the calibration may be off for this pose, see PoseBiasFromPhoto): left UNRESOLVED, hover unchanged: {why} ({img})"; Log("posehover", m); hoverCheckResult = m; return null; }
+        string Unres(string why) { var m = $"{key}: render gap {gap:+0.000;-0.000} is implausible (the calibration may be off for this pose, see PoseBiasFromPhoto): left UNRESOLVED, hover unchanged: {why} ({img})"; h.Log("posehover", m); hoverCheckResult = m; return null; }
         if (v == HoverGapVerdict.Plausible) return null;
-        if (v == HoverGapVerdict.Unresolved) return Unres(recent ? "I already stepped to clear floor a moment ago and the gap is still implausible" : InPeronaut ? $"not on or within {HoverFurnitureNearM:0.0} m of a known furniture footprint (at {P3(me)})" : "not in the mapped home region");
-        var g = NavGridHere();
+        if (v == HoverGapVerdict.Unresolved) return Unres(recent ? "I already stepped to clear floor a moment ago and the gap is still implausible" : h.InPeronaut ? $"not on or within {HoverFurnitureNearM:0.0} m of a known furniture footprint (at {Program.P3(me)})" : "not in the mapped home region");
+        var g = h.NavGridHere();
         Func<float, float, bool> blocked = g == null ? null : (x, y) => { if (!g.Contains(x, y)) return false; var (i, j) = g.IJ(x, y); return g.At(i, j) != 0; };
-        var (to, why) = HoverClearTarget(me, boxes, LoadHomeSeats(), blocked);
-        if (to is not Vector3 dest) return Unres($"at {P3(me)} on / next to furniture but no clear floor spot found ({why})");
-        Log("posehover", $"{key}: render gap {gap:+0.000;-0.000} is implausible and I am at {P3(me)} on / next to '{InFurnitureMargin(me, boxes, HoverFurnitureNearM)?.Name}': stepping to clear floor {P3(dest)} ({why}) and re-checking there; hover unchanged");
+        var (to, why) = HoverClearTarget(me, boxes, h.LoadHomeSeats(), blocked);
+        if (to is not Vector3 dest) return Unres($"at {Program.P3(me)} on / next to furniture but no clear floor spot found ({why})");
+        h.Log("posehover", $"{key}: render gap {gap:+0.000;-0.000} is implausible and I am at {Program.P3(me)} on / next to '{Program.InFurnitureMargin(me, boxes, HoverFurnitureNearM)?.Name}': stepping to clear floor {Program.P3(dest)} ({why}) and re-checking there; hover unchanged");
         if (kind == "sit")
         {
-            await IdleExplicitStand("hover clear floor");
-            idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec);   // she stays standing: no automatic re-sit
-            if (AoSitReallyOn()) return Unres("could not stand up from the ground sit to step off the furniture");
+            await h.IdleExplicitStand("hover clear floor");
+            h.SuppressAutoSit(Program.IdleStandCooldownSec);   // she stays standing: no automatic re-sit
+            if (h.AoSitReallyOn()) return Unres("could not stand up from the ground sit to step off the furniture");
         }
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(40));
-        await standOutLock.WaitAsync(cts.Token);
-        try { await StandOutMoveTo("hover clear floor", client.Self.SimPosition, dest, false, InFurniture(me, boxes), cts.Token); }
-        catch (OperationCanceledException) { Log("posehover", "hover clear floor: walk timed out"); }
-        finally { standOutLock.Release(); }
+        await h.StandOutLock.WaitAsync(cts.Token);
+        try { await h.StandOutMoveTo("hover clear floor", h.Client.Self.SimPosition, dest, false, Program.InFurniture(me, boxes), cts.Token); }
+        catch (OperationCanceledException) { h.Log("posehover", "hover clear floor: walk timed out"); }
+        finally { h.StandOutLock.Release(); }
         hoverClearAt = DateTime.Now;
-        Log("posehover", $"{key}: now at {P3(client.Self.SimPosition)} after stepping off the furniture; re-checking");
+        h.Log("posehover", $"{key}: now at {Program.P3(h.Client.Self.SimPosition)} after stepping off the furniture; re-checking");
         return "stepped to clear floor after an implausible gap: re-checking";
     }
 
     // ONE render, ONE image. kind (stand|sit) only labels what the close-up frames
-    static async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null, bool seat = false, string[] parts = null)
+    async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null, bool seat = false, string[] parts = null)
     {
-        var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        psi.ArgumentList.Add(LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
+        var psi = new ProcessStartInfo(h.LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        psi.ArgumentList.Add(h.LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
         foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, bias, parts)) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
         foreach (var kv in ContactEnv(seat ? "seat" : kind)) psi.Environment[kv.Key] = kv.Value;
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
@@ -223,23 +229,23 @@ public static partial class Program
     // names yet, AndroidWorn() read false and an android stand was saved as human|stand (and seeded ref|human|stand).
     // Certain = the outfit name says android, or every worn attachment's name has arrived (then AndroidWorn is real).
     internal static bool FormCertain(bool outfitSaysAndroid, int wornCount, int wornNamed) => outfitSaysAndroid || (wornCount > 0 && wornNamed == wornCount);
-    static bool FormCertainNow()
+    internal bool FormCertainNow()
     {
-        if (IsAndroidOutfit(currentOutfit)) return true;
-        try { var w = WornPrims().Where(p => p.ParentID == client.Self.LocalID).ToList(); return FormCertain(false, w.Count, w.Count(p => !string.IsNullOrEmpty(p.Properties?.Name))); } catch { return false; }
+        if (Program.IsAndroidOutfit(h.CurrentOutfit)) return true;
+        try { var w = h.WornPrims().Where(p => p.ParentID == h.Client.Self.LocalID).ToList(); return FormCertain(false, w.Count, w.Count(p => !string.IsNullOrEmpty(p.Properties?.Name))); } catch { return false; }
     }
-    static readonly SemaphoreSlim poseGate = new(1, 1);
+    readonly SemaphoreSlim poseGate = new(1, 1);
 
     // pure (tested): only the renderer's calibration is read from pose-hover.json; a saved hover height under any other key
     // ("android|VAMOSITG24", "android|stand", ...) is ignored, never applied
     internal static Dictionary<string, double> PoseBiasNums(IReadOnlyDictionary<string, double> all)
         => (all ?? new Dictionary<string, double>()).Where(kv => kv.Key.StartsWith("bias|", StringComparison.OrdinalIgnoreCase)).ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
-    static Dictionary<string, double> PoseNums()
+    internal Dictionary<string, double> PoseNums()
     {
         try { return PoseBiasNums(JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(PoseHoverFile))); }
         catch { return new(); }
     }
-    static string PoseHoverFile => Env("GT_POSE_HOVER", Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "pose-hover.json"));
+    string PoseHoverFile => Program.Env("GT_POSE_HOVER", Path.Combine(Path.GetDirectoryName(h.LogPath) ?? ".", "pose-hover.json"));
     internal static string PoseHoverKey(bool android, string anim) => (android ? "android|" : "human|") + (anim ?? "").Trim();
 
     // ---- when a visual hover check is requested ----
@@ -262,12 +268,12 @@ public static partial class Program
         if (!manual && !poseChanged && sinceLastRunSec < HoverCheckCooldownSec) return (false, "another check ran a moment ago");   // an automatic pose change is always remeasured, never held back by the cooldown
         return (true, null);
     }
-    static long hoverReqSeq; static string hoverPosture; static DateTime hoverPostureAt = DateTime.MinValue, hoverCheckLastRun = DateTime.MinValue;
+    long hoverReqSeq; string hoverPosture; DateTime hoverPostureAt = DateTime.MinValue, hoverCheckLastRun = DateTime.MinValue;
     // from every own-animation packet and the idle tick: note the posture; a sit or stand after another posture requests ONE check
-    static void HoverPostureNote(IEnumerable<UUID> playing, bool seatedOnObject)
+    internal void HoverPostureNote(IEnumerable<UUID> playing, bool seatedOnObject)
     {
         playing = playing.ToList();
-        var now = HoverPostureKind(AoForceSitOn(playing, seatedOnObject), seatedOnObject, !seatedOnObject && AoUnclassifiedNow(playing).Count > 0);
+        var now = HoverPostureKind(h.AoForceSitOn(playing, seatedOnObject), seatedOnObject, !seatedOnObject && h.AoUnclassifiedNow(playing).Count > 0);
         var prev = Interlocked.Exchange(ref hoverPosture, now);
         if (prev == now) return;
         hoverPostureAt = DateTime.Now;
@@ -275,26 +281,26 @@ public static partial class Program
     }
     // schedule ONE check (why: sit, stand, region or manual). A newer request replaces an older pending one; blocked states retry a few times, then give up.
     // returns the task that ends with the check's one-line result (what a manual `hover check` waits for and returns)
-    static volatile string hoverCheckResult = "";
+    internal volatile string hoverCheckResult = "";
     // when a check last FINISHED (measured and fixed / confirmed, or ended with its own final "nothing to do" result); the login walk waits for one after login (LoginJoin.cs)
-    static DateTime hoverCheckDoneAt = DateTime.MinValue;
-    internal static Task<string> HoverCheckRequest(string why, int delayMs = 4000)
+    internal DateTime hoverCheckDoneAt = DateTime.MinValue;
+    internal Task<string> HoverCheckRequest(string why, int delayMs = 4000)
     {
-        if (Env("GT_POSE_HOVER_CHECK", "on") == "off") return Task.FromResult("hover check is off (GT_POSE_HOVER_CHECK=off)");
+        if (Program.Env("GT_POSE_HOVER_CHECK", "on") == "off") return Task.FromResult("hover check is off (GT_POSE_HOVER_CHECK=off)");
         long id = Interlocked.Increment(ref hoverReqSeq);
-        Log("posehover", $"visual hover check requested ({why}), in {delayMs / 1000.0:0.#} s");
+        h.Log("posehover", $"visual hover check requested ({why}), in {delayMs / 1000.0:0.#} s");
         return Task.Run(async () =>
         {
             try
             {
                 await Task.Delay(delayMs);
-                if (why == "manual" && client.Self.SittingOn != 0) return await SeatContactCheck();   // on furniture: report the hips-to-seat gap, leave the hover alone
+                if (why == "manual" && h.Client.Self.SittingOn != 0) return await SeatContactCheck();   // on furniture: report the hips-to-seat gap, leave the hover alone
                 for (int attempt = 1; ; attempt++)
                 {
                     if (Interlocked.Read(ref hoverReqSeq) != id) return "replaced by a newer hover check request";   // a newer request replaced this one
-                    if (!LoggedIn) return "not logged in";
-                    var (kind, pose) = PoseNow(); var sitting = client.Self.SittingOn != 0;
-                    var (go, block) = HoverCheckReady(sitting ? "seat" : kind, client.Self.Velocity.Length(), IdleLeashedNow(), followId != UUID.Zero, idleLock.CurrentCount == 0,
+                    if (!h.LoggedIn) return "not logged in";
+                    var (kind, pose) = PoseNow(); var sitting = h.Client.Self.SittingOn != 0;
+                    var (go, block) = HoverCheckReady(sitting ? "seat" : kind, h.Client.Self.Velocity.Length(), h.IdleLeashedNow(), h.Following, h.IdleBusy,
                                                       (DateTime.Now - hoverPostureAt).TotalSeconds, (DateTime.Now - hoverCheckLastRun).TotalSeconds, why == "manual", PoseChangedSinceCheck(hoverLastCheckedPose, pose));
                     string retry = block;
                     if (go)
@@ -303,68 +309,68 @@ public static partial class Program
                         retry = await PoseHoverCheck(kind, pose, why);
                         if (retry == null) { hoverCheckDoneAt = DateTime.Now; return hoverCheckResult; }
                     }
-                    else if (block.StartsWith("skip:")) { Log("posehover", $"{why}: {block}"); return $"{why}: {block}"; }
-                    if (attempt >= HoverCheckMaxTries) { Log("posehover", $"{why}: gave up after {attempt} tries ({retry})"); return $"{why}: gave up after {attempt} tries ({retry})"; }
-                    Log("posehover", $"{why}: waiting ({retry}); try {attempt + 1}/{HoverCheckMaxTries} in {HoverCheckRetryMs / 1000} s");
+                    else if (block.StartsWith("skip:")) { h.Log("posehover", $"{why}: {block}"); return $"{why}: {block}"; }
+                    if (attempt >= HoverCheckMaxTries) { h.Log("posehover", $"{why}: gave up after {attempt} tries ({retry})"); return $"{why}: gave up after {attempt} tries ({retry})"; }
+                    h.Log("posehover", $"{why}: waiting ({retry}); try {attempt + 1}/{HoverCheckMaxTries} in {HoverCheckRetryMs / 1000} s");
                     await Task.Delay(HoverCheckRetryMs);
                 }
             }
-            catch (Exception ex) { Log("posehover", $"{why}: {ex.GetBaseException().Message}"); return $"{why}: error {ex.GetBaseException().Message}"; }
+            catch (Exception ex) { h.Log("posehover", $"{why}: {ex.GetBaseException().Message}"); return $"{why}: error {ex.GetBaseException().Message}"; }
         });
     }
     // is she still in that pose? (a check must never act on a pose she has left). The AO's anim_list decides sit vs stand, never the sim.
-    static bool PoseStill(string kind, string pose) => client.Self.SittingOn == 0 && (kind == "sit"
-        ? AoSitReallyOn() && (pose == "sit" || string.Equals(aoSitCurrentName, pose, StringComparison.OrdinalIgnoreCase))
-        : kind == "stand" && idlePosed == null && client.Self.Velocity.Length() < 0.1f && leash == null && !AoForceSitOn(SelfAnims(), false) && AoUnclassifiedNow().Count == 0);
+    bool PoseStill(string kind, string pose) => h.Client.Self.SittingOn == 0 && (kind == "sit"
+        ? h.AoSitReallyOn() && (pose == "sit" || string.Equals(h.AoSitCurrentName, pose, StringComparison.OrdinalIgnoreCase))
+        : kind == "stand" && h.IdlePosed == null && h.Client.Self.Velocity.Length() < 0.1f && !h.LeashActive && !h.AoForceSitOn(h.SelfAnims(), false) && h.AoUnclassifiedNow().Count == 0);
     // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose name)
-    static (string kind, string pose) PoseNow() => AoSitReallyOn() ? ("sit", aoSitCurrentName ?? "sit") : AoUnclassifiedNow().Count > 0 ? ("unknown", "unknown") : ("stand", "stand");
+    internal (string kind, string pose) PoseNow() => h.AoSitReallyOn() ? ("sit", h.AoSitCurrentName ?? "sit") : h.AoUnclassifiedNow().Count > 0 ? ("unknown", "unknown") : ("stand", "stand");
 
     // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): ONE render of the hips against the seat;
     // reports the gap and the close-up path; changes nothing (the AO, the hover and the furniture stay as they are)
-    static async Task<string> SeatContactCheck()
+    async Task<string> SeatContactCheck()
     {
-        if (!LoggedIn || client.Self.SittingOn == 0) return "seat check: not sitting on an object";
+        if (!h.LoggedIn || h.Client.Self.SittingOn == 0) return "seat check: not sitting on an object";
         if (!await poseGate.WaitAsync(0)) return "seat check: a check is already running";
         try
         {
-            var ex = await SceneExport(new[] { "export", "4", "noenv" });
+            var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
             var scene = ex.Split('\n').Last();
-            if (!scene.EndsWith("scene.json")) { Log("posehover", $"seat check: export failed: {ex}"); return "seat check: export failed"; }
-            if (client.Self.SittingOn == 0) return "seat check: she is no longer sitting on an object";
+            if (!scene.EndsWith("scene.json")) { h.Log("posehover", $"seat check: export failed: {ex}"); return "seat check: export failed"; }
+            if (h.Client.Self.SittingOn == 0) return "seat check: she is no longer sitting on an object";
             var (gap, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, 0, "seat", seat: true);
             var r = $"seat: {SeatCheckVerdict(gap)}; hover left alone; renders 1; close-up of {HoverContactLabel("seat")}: {img}";
-            Log("posehover", r); hoverCheckResult = r; return r;
+            h.Log("posehover", r); hoverCheckResult = r; return r;
         }
         finally { poseGate.Release(); }
     }
 
     // the visual check: null = finished (checked, or nothing to do); a string = not now, retry (the reason)
-    static async Task<string> PoseHoverCheck(string kind, string pose, string requestWhy = null)
+    async Task<string> PoseHoverCheck(string kind, string pose, string requestWhy = null)
     {
-        if (!LoggedIn || !PoseStill(kind, pose)) return "not in that pose";
+        if (!h.LoggedIn || !PoseStill(kind, pose)) return "not in that pose";
         if (!FormCertainNow()) return "form not known yet (attachments still loading)";
-        bool android = AndroidFormNow(); var key = PoseHoverKey(android, pose);
+        bool android = h.AndroidFormNow(); var key = PoseHoverKey(android, pose);
         var nums = PoseNums();
-        double pin = PinnedHover();
+        double pin = h.PinnedHover();
         if (!await poseGate.WaitAsync(0)) return "a check is already running";
         try
         {
             var sw = Stopwatch.StartNew();
-            var ex = await SceneExport(new[] { "export", "4", "noenv" });
+            var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
             var scene = ex.Split('\n').Last();
-            if (!scene.EndsWith("scene.json")) { Log("posehover", $"{key}: export failed: {ex}"); return null; }
+            if (!scene.EndsWith("scene.json")) { h.Log("posehover", $"{key}: export failed: {ex}"); return null; }
             var dir = Path.GetDirectoryName(scene)!;
             // 2026-10-23 17:15 (David "Fix it"): the check is the hover-check RENDER: look.py hovercheck = her real placement
             // (agent z - size/2 + hover - posture bias, never snapped to the floor) over the scene's own floor, seen level from
             // her side at the contact; it prints the gap of her lowest vertex above that floor. Nudge by the gap, then render
             // again to confirm. Private: the images are never sent to David. The result is applied now and NOT remembered.
-            if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed while exporting; skipped"); return null; }
+            if (!PoseStill(kind, pose)) { h.Log("posehover", $"{key}: pose changed while exporting; skipped"); return null; }
             // 2026-10-26: the hover IN FORCE (AgentPreferences, what David's viewer applies), read fresh. Our own appearance value stayed 0 after a
             // POST, so every re-render drew her at 0 and "contact confirmed" was arithmetic (David: sunk below the ground at the "confirmed" -0.186)
-            var (effHov, effSrc) = await EffectiveHoverFresh();
-            double hov = effHov ?? pin, size = SelfAv()?.Scale.Z ?? 0;
+            var (effHov, effSrc) = await h.EffectiveHoverFresh();
+            double hov = effHov ?? pin, size = h.SelfAv()?.Scale.Z ?? 0;
             bool calibrated = BiasCalibrated(nums, android, kind, pose);
-            if (size < 1) { Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
+            if (size < 1) { h.Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
             double bias = PoseBiasFor(nums, android, kind, pose);
             var parts = SupportParts(kind, pose);   // which body parts support her in this pose (data: names only, never numbers); null = unlisted: the whole-body lowest gap
             var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind, parts: parts);   // render 1: the contact close-up (replaces the wide side view)
@@ -372,22 +378,22 @@ public static partial class Program
             if (g1 is not double gap || !PoseGapSane(gap))
             {
                 if (g1 is double bg) return await HoverGapOnFurniture(kind, key, bg, img1);   // moved off the furniture (retry reason) or left unresolved (logged, null = finished)
-                var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; Log("posehover", bad); hoverCheckResult = bad; return null;
+                var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; h.Log("posehover", bad); hoverCheckResult = bad; return null;
             }
             // the guard: a fix is only ever computed from a render that shows the pose the client believes (never post on a standing render for a "sit")
             {
                 double? pz = null; try { pz = MeshPelvisZ(File.ReadAllText(Path.Combine(dir, "mesh.json"))); } catch { }
                 List<UUID> exAnims = new(); try { using var sj = JsonDocument.Parse(File.ReadAllText(scene)); if (sj.RootElement.GetProperty("me").TryGetProperty("anims", out var an)) exAnims = ExportAnimIds(an.GetString()); } catch { }
-                var why = PoseRenderMismatch(kind, size, pz, exAnims, AoSitIdsNow());
+                var why = PoseRenderMismatch(kind, size, pz, exAnims, h.AoSitIdsNow());
                 if (why != null)
                 {
                     var msg = $"{key}: not verified: pose not rendered ({why}); render gap {gap:+0.000;-0.000} ignored, nothing changed, wait and retry ({img1})";
-                    Log("posehover", msg); hoverCheckResult = msg;
+                    h.Log("posehover", msg); hoverCheckResult = msg;
                     // 2026-10-27 09:34: the AO came back from a relog holding its force sit while the client believed she stood: the check retried against a sitting render for
                     // minutes. Press the AO force sit ONCE (never repeatedly), wait, and let the request loop re-run the check; after that one press: log and give up.
-                    if (StuckSitReleaseOk(kind, why, requestWhy, (DateTime.Now - stuckSitLoginAt).TotalSeconds, stuckSitPresses))
-                    { try { await StuckSitRelease(why); } catch (Exception rex) { Log("idlepose", "stuck AO sit release error " + rex.GetBaseException().Message); } }
-                    else if (kind == "stand" && why.Contains("sitting, not standing") && stuckSitPresses > 0) Log("posehover", StuckSitReleaseText(stuckSitPresses, true));
+                    if (Program.StuckSitReleaseOk(kind, why, requestWhy, (DateTime.Now - h.StuckSitLoginAt).TotalSeconds, h.StuckSitPresses))
+                    { try { await h.StuckSitRelease(why); } catch (Exception rex) { h.Log("idlepose", "stuck AO sit release error " + rex.GetBaseException().Message); } }
+                    else if (kind == "stand" && why.Contains("sitting, not standing") && h.StuckSitPresses > 0) h.Log("posehover", Program.StuckSitReleaseText(h.StuckSitPresses, true));
                     return "pose not rendered: " + why;
                 }
             }
@@ -397,7 +403,7 @@ public static partial class Program
             double basis = sg1 ?? gap, aim = sg1 != null ? SupportAim(parts) : 0.0, eg = basis - aim;
             string liftTxt = parts == null ? "" : sg1 == null ? $"; supporting parts {string.Join("+", parts)} not seen in the render: whole-body lowest gap used"
                 : $"; supporting parts {SupportGapsText(parts, partGaps1)}: hover aimed so the lowest is {aim:0.000} m above the floor{(aim > 0 ? " (hands never below it)" : "")}; no per-pose hover value, measured on this floor";
-            if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, remeasured here"; Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, remeasuring on this pose"); }
+            if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, remeasured here"; h.Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, remeasuring on this pose"); }
             hoverLastCheckedPose = pose;
             string calTxt = calibrated ? "bias calibrated against David's viewer" : "DEFAULT bias, not yet calibrated against David's viewer (hover calibrate)";
             if (SupportConfirmed(eg, aim)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}); hover left alone";
@@ -411,13 +417,13 @@ public static partial class Program
                     if (gcBasis is not double gc2 || !HoverFixConfirmed(basis, gc2))
                     {
                         var msg = $"{key}: not verified: the render gap {gap:+0.000;-0.000} (a fix of more than {HoverFixMax:0.00} m) was not confirmed by a second render ({(gc is double gq ? gq.ToString("+0.000;-0.000") : "none")}); nothing changed ({img1}, {imgc})";
-                        Log("posehover", msg); hoverCheckResult = msg; return "large fix not confirmed by a second render";
+                        h.Log("posehover", msg); hoverCheckResult = msg; return "large fix not confirmed by a second render";
                     }
                 }
-                if (!PoseStill(kind, pose)) { Log("posehover", $"{key}: pose changed; skipped"); return null; }
-                var (ok, info) = await PostHover(t, $"visual hover fix: {key} (applied now, not saved)");
+                if (!PoseStill(kind, pose)) { h.Log("posehover", $"{key}: pose changed; skipped"); return null; }
+                var (ok, info) = await h.PostHover(t, $"visual hover fix: {key} (applied now, not saved)");
                 // verify: the cap must now hold t (fresh GET), and the re-render is drawn at THAT value, not at the value we meant to set
-                var (eff2, src2) = await EffectiveHoverFresh();
+                var (eff2, src2) = await h.EffectiveHoverFresh();
                 bool applied = ok && eff2 is double e2 && Math.Abs(e2 - t) <= 0.002;
                 var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias, kind, parts: parts);   // render 2 (only after a fix): the verification at the hover really in force
                 fixedHover = true; finalImg = img2;
@@ -427,7 +433,7 @@ public static partial class Program
                 how = $"render gap {basis:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(basis2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}{liftTxt}): {info}; {img2}";
             }
             int renders = HoverCheckRenderCount(fixedHover, confirmRender);
-            Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}");
+            h.Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}");
             hoverCheckResult = $"{key}: {how}; renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}" + (fixedHover ? $" (before the fix: {img1})" : "");
             return null;
         }

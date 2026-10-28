@@ -61,10 +61,11 @@ internal sealed class FeetAuto
     internal static bool FeetShouldPress(string wanted, string previousPoll, string lastPressed) =>
         wanted != null && wanted == previousPoll && wanted != lastPressed;
 
-    /// <summary>Pure: signature of the worn Maitreya/LaraX body = sorted "itemId/primCount" of its attachment roots (name-matched via BodyFamily);
-    /// a new, re-attached or changed body (new item/attachment id, or its prims arriving/changing) gives a different string.</summary>
-    internal static string FeetBodySignature(IEnumerable<(UUID item, string name, int childPrims)> worn) =>
-        string.Join(",", (worn ?? Array.Empty<(UUID, string, int)>()).Where(w => Program.BodyFamily(w.name) == "larax" && !(w.name ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase)).Select(w => $"{w.item}/{w.childPrims}").OrderBy(x => x, StringComparer.Ordinal));
+    /// <summary>Pure: signature of the worn Maitreya/LaraX body = sorted "itemId/objectId" of its attachment roots (name-matched via BodyFamily; the HUD and add-ons are not the body).
+    /// A new or re-attached body has a new attachment object id. The child prim count is NOT part of it: prims streaming in and out made the signature flap every poll
+    /// (2026-10-28 13:30 live loop: "worn body changed" every ~2 s, f3 re-pressed every 12 s).</summary>
+    internal static string FeetBodySignature(IEnumerable<(UUID item, string name, UUID objectId)> worn) =>
+        string.Join(",", (worn ?? Array.Empty<(UUID, string, UUID)>()).Where(w => Program.BodyFamily(w.name) == "larax" && !(w.name ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase) && !(w.name ?? "").Contains("Add-on", StringComparison.OrdinalIgnoreCase)).Select(w => $"{w.item}/{w.objectId}").OrderBy(x => x, StringComparer.Ordinal));
 
     /// <summary>Pure: the body changed when a previous signature exists (not the first poll) and differs.</summary>
     internal static bool FeetBodyChanged(string previousSig, string sig) => previousSig != null && previousSig != sig;
@@ -80,7 +81,7 @@ internal sealed class FeetAuto
     string FeetBodySigNow()
     {
         var worn = h.WornPrims();
-        return FeetBodySignature(worn.Select(p => (h.AttachItemId(p), p.Properties?.Name, h.Sim?.ObjectsPrimitives.Values.Count(c => c != null && c.ParentID == p.LocalID) ?? 0)));
+        return FeetBodySignature(worn.Select(p => (h.AttachItemId(p), p.Properties?.Name, p.ID)));
     }
 
     string ReadFeetState() { try { return File.Exists(StatePath) ? File.ReadAllText(StatePath).Trim() : null; } catch { return null; } }
@@ -181,8 +182,18 @@ internal sealed class FeetAuto
         return FeetPressReady((Now() - wornChangedAt).TotalSeconds, h.PoseBusy, h.PoseSettledSec, h.Sitting, (Now() - loginAt).TotalSeconds);
     }
 
+    int loopClaimed;
+    /// <summary>The loop is started from LoginAsync, i.e. once per login of the same process: only the first start may run (2026-10-28: one loop per login multiplied the polls and the presses).</summary>
+    internal bool ClaimLoop() => Interlocked.Exchange(ref loopClaimed, 1) == 0;
+
+    /// <summary>Pure: the same wanted pose is not pressed again within FeetMinPressIntervalSec (a failed verification has its own bounded rounds).</summary>
+    internal const double FeetMinPressIntervalSec = 60;
+    internal static bool FeetPressRateOk(string lastPressedWanted, string wanted, double sinceLastPressSec) => lastPressedWanted != wanted || sinceLastPressSec >= FeetMinPressIntervalSec;
+    string lastPressWanted; DateTime lastPressAt = DateTime.MinValue;
+
     internal async Task FeetLoop()
     {
+        if (!ClaimLoop()) { h.Log("feet", "feet loop already running: this start is ignored"); return; }
         await Task.Delay(45000); // let login attachments arrive
         ClearFeetState();        // a fresh process is a fresh login: the stored pose is not trusted
         while (true)
@@ -200,11 +211,12 @@ internal sealed class FeetAuto
         var (f, why, rules) = FeetNow();
         var sig = FeetBodySigNow(); bool bodyChanged = FeetBodyChanged(prevSig, sig); prevSig = sig;
         var (press, _) = FeetDecide(f, prevPoll, ReadFeetState(), bodyChanged);
-        if (bodyChanged) { ClearFeetState(); failedRounds = 0; needsVerify = true; h.Log("feet", "worn body changed: last pressed pose cleared, the fit will be verified"); }
+        if (bodyChanged) { ClearFeetState(); failedRounds = 0; needsVerify = true; h.Log("feet", $"worn body changed (item/attachment id): last pressed pose cleared, the fit will be verified; signature {sig}"); }
         if (prevPoll != null && f != prevPoll) { failedRounds = 0; needsVerify = true; }
         prevPoll = f;
         if (failedWanted != f) { failedWanted = f; failedRounds = 0; }
         if (!press && !needsVerify) return "nothing to do";
+        if (press && failedRounds == 0 && !FeetPressRateOk(lastPressWanted, f, (Now() - lastPressAt).TotalSeconds)) return $"press rate-limited: {f} was pressed {(Now() - lastPressAt).TotalSeconds:F0} s ago";
         if (!FeetRetryAllowed(failedRounds, (Now() - lastFailAt).TotalSeconds)) return $"feet NOT verified: {(failedRounds >= FeetGiveUpRounds ? "gave up (use `feet apply`)" : "cooling down before the next round")}";
         var (ok, wait) = FeetReadyNow();
         if (!ok) { if (wait != lastWaitReason) { lastWaitReason = wait; h.Log("feet", "feet check / press waits: " + wait); } return "waiting: " + wait; }
@@ -215,6 +227,7 @@ internal sealed class FeetAuto
             if (v.Kind == FeetKind.Verified) return LogFit(true, f, v.Why);
             h.Log("feet", "feet NOT verified before any press: " + v.Why + "; pressing"); 
         }
+        lastPressWanted = f; lastPressAt = Now();
         return await PressFeet(f, why, rules);
     }
 

@@ -79,7 +79,7 @@ public class FeetFitTests
         public List<UUID> SelfAnims() => new(Anims);
         public bool PoseBusy => Busy; public double PoseSettledSec => Settled; bool IFeetHost.Sitting => Sitting;
         public Task<string> FeetCloseupJson(double exposure) { Exposures.Add(exposure); return Task.FromResult(Closeups.Count > 0 ? Closeups.Dequeue() : DefaultCloseup); }
-        public void Wear(UUID item) { var p = new Primitive(); Worn.Add(p); Ids[p] = item; }
+        public Primitive Wear(UUID item, string name = null) { var p = new Primitive { ID = UUID.Random() }; if (name != null) p.Properties = new Primitive.ObjectProperties { Name = name }; Worn.Add(p); Ids[p] = item; return p; }
     }
     static (FeetAuto feet, Host host, string state) Make(bool bootsWorn = true)
     {
@@ -124,9 +124,9 @@ public class FeetFitTests
     }
     [Fact] public void TheHudIsNotTheBody_AttachingOrDetachingItIsNotABodyChange()
     {
-        var body = UUID.Random(); var hud = UUID.Random();
-        var a = FeetAuto.FeetBodySignature(new[] { (body, "Maitreya Mesh Body - LaraX V1.1", 40) });
-        var b = FeetAuto.FeetBodySignature(new[] { (body, "Maitreya Mesh Body - LaraX V1.1", 40), (hud, "Maitreya Mesh Body - LaraX HUD V1.1", 60) });
+        var body = UUID.Random(); var hud = UUID.Random(); var obj = UUID.Random();
+        var a = FeetAuto.FeetBodySignature(new[] { (body, "Maitreya Mesh Body - LaraX V1.1", obj) });
+        var b = FeetAuto.FeetBodySignature(new[] { (body, "Maitreya Mesh Body - LaraX V1.1", obj), (hud, "Maitreya Mesh Body - LaraX HUD V1.1", UUID.Random()) });
         Assert.NotEqual("", a); Assert.Equal(a, b);
     }
     [Fact] public async Task TheSimRestoredHud_WornAllAlong_IsNeverDetachedAfterAPress()
@@ -202,5 +202,44 @@ public class FeetFitTests
         var (f, h, _) = Make();
         Assert.Contains("not checked yet", await f.FeetCmd(new[] { "feet" }));
         await Task.CompletedTask;
+    }
+
+    // ---- 2026-10-28 13:30 live loop: the signature flapped every poll, "worn body changed" every ~2 s, f3 re-pressed every 12 s ----
+    [Fact] public void FlappingChildPrimCounts_AreNotABodyChange()
+    {
+        var item = UUID.Random(); var obj = UUID.Random(); var sigs = new HashSet<string>();
+        foreach (var kids in new[] { 12, 40, 7, 63, 0, 41, 5 })   // prims streaming in and out; the old signature had the count in it
+            sigs.Add(FeetAuto.FeetBodySignature(new[] { (item, "Maitreya Mesh Body - LaraX V1.1", obj), (UUID.Random(), "Maitreya Mesh Body - LaraX HUD V1.1", UUID.Random()) }));
+        Assert.Single(sigs);
+    }
+    [Fact] public async Task VerifiedFit_SurvivesHudAttachDetachChurn_NoClearNoPress()
+    {
+        var (f, h, state) = Make(); var body = h.Wear(UUID.Random(), "Maitreya Mesh Body - LaraX V1.1");
+        h.DefaultCloseup = Img(); h.OnTouch = () => { h.Anims.Clear(); h.Anims.AddRange(FeetAuto.HeelFeetAnims); };
+        await Settle(f, h); await f.FeetTick(); Advance(f, h, 4); await f.FeetTick();
+        Assert.Equal("f3", File.ReadAllText(state)); int presses = h.Touches.Count; h.Logs.Clear();
+        var hud = h.Worn.First(p => h.Ids[p] == Hud);
+        for (int i = 0; i < 20; i++)   // the HUD (and other prims) come and go every poll
+        {
+            if (i % 2 == 0) h.Worn.Remove(hud); else h.Worn.Add(hud);
+            Advance(f, h, 4); await f.FeetTick();
+        }
+        Assert.Equal(presses, h.Touches.Count); Assert.Equal("f3", File.ReadAllText(state));
+        Assert.DoesNotContain(h.Logs, l => l.Contains("worn body changed"));
+    }
+    [Fact] public async Task ARealBodySwap_IsOneChange_AndTheFitIsVerifiedAgain()
+    {
+        var (f, h, state) = Make(); var body = h.Wear(UUID.Random(), "Maitreya Mesh Body - LaraX V1.1");
+        h.DefaultCloseup = Img(); h.OnTouch = () => { h.Anims.Clear(); h.Anims.AddRange(FeetAuto.HeelFeetAnims); };
+        await Settle(f, h); await f.FeetTick(); Advance(f, h, 4); await f.FeetTick(); h.Logs.Clear();
+        body.ID = UUID.Random();   // re-attached: a new attachment object id
+        Advance(f, h, 4); await f.FeetTick(); Advance(f, h, 4); await f.FeetTick();
+        Assert.Single(h.Logs, l => l.Contains("worn body changed"));
+    }
+    [Theory] [InlineData("f3", "f3", 10, false)] [InlineData("f3", "f3", 59, false)] [InlineData("f3", "f3", 61, true)] [InlineData("f3", "f1", 5, true)] [InlineData(null, "f3", 5, true)]
+    public void SamePoseIsNotPressedAgainWithinTheInterval(string last, string wanted, double since, bool ok) => Assert.Equal(ok, FeetAuto.FeetPressRateOk(last, wanted, since));
+    [Fact] public void OnlyTheFirstLoopStartRuns_LoginAsyncStartsOnePerLogin()
+    {
+        var (f, _, _) = Make(); Assert.True(f.ClaimLoop()); Assert.False(f.ClaimLoop()); Assert.False(f.ClaimLoop());
     }
 }

@@ -64,7 +64,7 @@ internal sealed class FeetAuto
     /// <summary>Pure: signature of the worn Maitreya/LaraX body = sorted "itemId/primCount" of its attachment roots (name-matched via BodyFamily);
     /// a new, re-attached or changed body (new item/attachment id, or its prims arriving/changing) gives a different string.</summary>
     internal static string FeetBodySignature(IEnumerable<(UUID item, string name, int childPrims)> worn) =>
-        string.Join(",", (worn ?? Array.Empty<(UUID, string, int)>()).Where(w => Program.BodyFamily(w.name) == "larax").Select(w => $"{w.item}/{w.childPrims}").OrderBy(x => x, StringComparer.Ordinal));
+        string.Join(",", (worn ?? Array.Empty<(UUID, string, int)>()).Where(w => Program.BodyFamily(w.name) == "larax" && !(w.name ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase)).Select(w => $"{w.item}/{w.childPrims}").OrderBy(x => x, StringComparer.Ordinal));
 
     /// <summary>Pure: the body changed when a previous signature exists (not the first poll) and differs.</summary>
     internal static bool FeetBodyChanged(string previousSig, string sig) => previousSig != null && previousSig != sig;
@@ -97,7 +97,9 @@ internal sealed class FeetAuto
     // Live failure: feet-state.txt kept "f3" across logout/login, the login press landed mid outfit swap and did not take, a later press landed as she sat and was never
     // checked: toes poked out of the boots. Now: the state is cleared at every login; a press waits for a stable outfit, a settled posture and standing; and EVERY press is
     // verified from evidence (the heel-foot animations + a `look self feet` close-up analysed for bare skin), never from feet-state.txt or the press log.
-    internal const double FeetOutfitStableSec = 8, FeetPoseSettleSec = 5, FeetRetryCooldownSec = 90;
+    // 2026-10-28 11:42 relog (David: the body showed under the shirt and shorts before the clothes rendered): the feet code attached / detached the Maitreya HUD (an item the sim had
+    // already restored, worn and in the COF) four times within 30 s of login. No HUD round trip until the login has settled.
+    internal const double FeetOutfitStableSec = 8, FeetPoseSettleSec = 5, FeetRetryCooldownSec = 90, FeetLoginGraceSec = 40;
     internal const int FeetPressAttempts = 3, FeetRetakes = 3, FeetGiveUpRounds = 3;
     internal const double FeetMinLuma = 0.10, FeetMinP95Luma = 0.25, FeetSkinMaxFrac = 0.004;
     internal static readonly double[] FeetRetakeExposure = { 0.5, 2.5, 4.5 };   // each retake of an unusable (near-black) close-up is brighter
@@ -108,14 +110,18 @@ internal sealed class FeetAuto
     internal static string FeetWornSignature(IEnumerable<UUID> worn) => string.Join(",", (worn ?? Array.Empty<UUID>()).Where(u => u != UUID.Zero).Select(u => u.ToString()).OrderBy(x => x, StringComparer.Ordinal));
 
     /// <summary>Pure: may a feet press happen now? Not while the outfit is changing, a pose / sit transition runs, the posture just changed, or she sits (a press must be verifiable standing).</summary>
-    internal static (bool ok, string why) FeetPressReady(double outfitStableSec, bool poseBusy, double poseSettledSec, bool sitting)
+    internal static (bool ok, string why) FeetPressReady(double outfitStableSec, bool poseBusy, double poseSettledSec, bool sitting, double sinceLoginSec = double.MaxValue)
     {
+        if (sinceLoginSec < FeetLoginGraceSec) return (false, $"login settling ({sinceLoginSec:F0} s since login, no HUD round trip before {FeetLoginGraceSec:F0} s)");
         if (outfitStableSec < FeetOutfitStableSec) return (false, $"outfit change in progress (worn attachments changed {outfitStableSec:F0} s ago, need {FeetOutfitStableSec:F0} s stable)");
         if (poseBusy) return (false, "a pose / sit transition is in progress");
         if (poseSettledSec < FeetPoseSettleSec) return (false, "the posture changed a moment ago");
         if (sitting) return (false, "sitting: the feet are pressed and verified only while standing");
         return (true, null);
     }
+
+    /// <summary>Pure: did AttachItem report the item as already worn (the sim restored it at login and it is part of the outfit)? Then it must never be detached afterwards.</summary>
+    internal static bool AttachResultAlreadyWorn(string r) => r != null && r.Contains("already worn", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Pure: automatic attempts are bounded: after FeetGiveUpRounds failed rounds stop (until the wanted pose, the body or the login changes); between rounds cool down.</summary>
     internal static bool FeetRetryAllowed(int failedRounds, double sinceFailSec) => failedRounds < FeetGiveUpRounds && (failedRounds == 0 || sinceFailSec >= FeetRetryCooldownSec);
@@ -157,13 +163,13 @@ internal sealed class FeetAuto
     internal Func<DateTime> Now = () => DateTime.Now;
     internal Func<int, Task> Delay = ms => Task.Delay(ms);
     string prevPoll, prevSig, prevWornSig, lastWaitReason, failedWanted; DateTime wornChangedAt = DateTime.MinValue, lastFailAt = DateTime.MinValue;
-    int failedRounds; bool needsVerify = true;
+    int failedRounds; bool needsVerify = true; DateTime loginAt = DateTime.MinValue;
     internal string LastFitText = "feet fit: not checked yet since login";
 
     /// <summary>A new login: the last pressed pose is not valid across a relog, so it is cleared and everything restarts (the first stable poll verifies the fit from evidence).</summary>
     internal void NewLogin()
     {
-        ClearFeetState(); prevPoll = prevSig = prevWornSig = lastWaitReason = failedWanted = null; failedRounds = 0; needsVerify = true; wornChangedAt = Now();
+        ClearFeetState(); prevPoll = prevSig = prevWornSig = lastWaitReason = failedWanted = null; failedRounds = 0; needsVerify = true; wornChangedAt = loginAt = Now();
         LastFitText = "feet fit: not checked yet since login";
         h.Log("feet", "new login: last pressed feet pose cleared (it is not valid across a relog); the fit will be verified from evidence");
     }
@@ -172,7 +178,7 @@ internal sealed class FeetAuto
     {
         var wornSig = FeetWornSignature(h.WornPrims().Select(h.AttachItemId));
         if (wornSig != prevWornSig) { prevWornSig = wornSig; wornChangedAt = Now(); }
-        return FeetPressReady((Now() - wornChangedAt).TotalSeconds, h.PoseBusy, h.PoseSettledSec, h.Sitting);
+        return FeetPressReady((Now() - wornChangedAt).TotalSeconds, h.PoseBusy, h.PoseSettledSec, h.Sitting, (Now() - loginAt).TotalSeconds);
     }
 
     internal async Task FeetLoop()
@@ -269,16 +275,17 @@ internal sealed class FeetAuto
     /// <summary>One HUD round trip: (touched, text). touched=false when it was not ready or the HUD would not attach (nothing pressed).</summary>
     async Task<(bool touched, string text)> PressFeetOnce(string feet, string why, FeetRules rules)
     {
-        bool wasWorn = h.WornPrims().Any(p => h.AttachItemId(p) == rules.Hud);
+        bool wasWorn = h.WornPrims().Any(p => h.AttachItemId(p) == rules.Hud), hudRoundTrip = !wasWorn;
         if (!wasWorn)
         {
-            await h.AttachItem(rules.Hud, "");
+            var ar = await h.AttachItem(rules.Hud, "");
+            if (AttachResultAlreadyWorn(ar)) wasWorn = true;   // worn all along (restored by the sim, in the COF): ours to use, never to detach
             for (int i = 0; i < 30 && !h.WornPrims().Any(p => h.AttachItemId(p) == rules.Hud); i++) await Delay(1000);
             if (!h.WornPrims().Any(p => h.AttachItemId(p) == rules.Hud)) { h.Log("feet", "body HUD did not attach in 30 s"); return (false, "feet: body HUD did not attach"); }
             await Delay(5000); // HUD script + link names
         }
         // our own HUD attach / detach is not an outfit change: re-baseline the worn signature around it
-        if (!wasWorn) prevWornSig = FeetWornSignature(h.WornPrims().Select(h.AttachItemId));
+        if (hudRoundTrip) prevWornSig = FeetWornSignature(h.WornPrims().Select(h.AttachItemId));
         var rd = FeetReadyNow();
         if (!rd.ok)
         {

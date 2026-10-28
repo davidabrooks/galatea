@@ -68,10 +68,11 @@ public class FeetFitTests
         public GridClient Client => null; public Simulator Sim => null;
         public void Log(string k, string m) => Logs.Add(k + ": " + m);
         public string RouteDir => Dir;
-        public List<Primitive> WornPrims() => new(Worn);
+        public List<Primitive> WornPrims() => HudHiddenAtFirst ? Worn.Where(p => Ids[p] != Hud).ToList() : new(Worn);   // the sim's list is not complete yet right after login
         public UUID AttachItemId(Primitive p) => Ids.TryGetValue(p, out var u) ? u : UUID.Zero;
-        public Task<string> AttachItem(UUID item, string pointArg) => throw new InvalidOperationException("HUD is already worn in these tests");
-        public Task<string> DetachItemAsync(UUID item, string why) => Task.FromResult("ok");
+        public Task<string> AttachItem(UUID item, string pointArg) { if (!HudHiddenAtFirst) throw new InvalidOperationException("HUD is already worn in these tests"); HudHiddenAtFirst = false; return Task.FromResult("already worn: item " + item + " (found after re-requesting objects; nothing attached)"); }
+        public List<string> DetachLog; public bool HudHiddenAtFirst;
+        public Task<string> DetachItemAsync(UUID item, string why) { DetachLog?.Add(why); return Task.FromResult("ok"); }
         public List<Primitive> LinkPrims(Primitive root) => new();
         public Task EnsureProperties(Simulator sim, List<Primitive> prims) => Task.CompletedTask;
         public Task<string> TouchAttachment(string rest) { Touches.Add(rest); OnTouch?.Invoke(); return Task.FromResult("touched f3"); }
@@ -91,12 +92,13 @@ public class FeetFitTests
         f.NewLogin();
         return (f, h, f.StatePath);
     }
-    static async Task Settle(FeetAuto f, Host h) { await f.FeetTick(); Advance(f, h, 20); }   // the first poll after login sees the worn set; 20 s later it is stable
+    static async Task Settle(FeetAuto f, Host h) { await f.FeetTick(); Advance(f, h, 50); }   // the first poll after login sees the worn set; 50 s later it is stable and the login has settled
     static void Advance(FeetAuto f, Host h, double sec) { h.T = h.T.AddSeconds(sec); var t = h.T; f.Now = () => t; }
 
     [Fact] public async Task NoPressWhileTheOutfitIsChanging_ThenItPressesOnceStable()
     {
         var (f, h, _) = Make(); h.Anims.AddRange(FeetAuto.HeelFeetAnims); h.DefaultCloseup = Img();
+        Assert.StartsWith("waiting: login settling", await f.FeetTick()); Advance(f, h, 45); h.Wear(UUID.Random());   // past the login grace; an item arrives
         Assert.StartsWith("waiting: outfit change in progress", await f.FeetTick());
         h.Wear(UUID.Random()); Advance(f, h, 4);                       // another item arrives mid swap
         Assert.StartsWith("waiting: outfit change in progress", await f.FeetTick());
@@ -112,6 +114,28 @@ public class FeetFitTests
         h.Busy = false; h.Settled = 1; Assert.Contains("posture changed a moment ago", await f.FeetTick());
         h.Settled = 60; h.Sitting = true; Assert.Contains("sitting", await f.FeetTick());
         Assert.Empty(h.Touches);
+    }
+    [Theory] [InlineData(5, false)] [InlineData(39, false)] [InlineData(41, true)]
+    public void NoHudRoundTripBeforeTheLoginHasSettled(double sinceLogin, bool ok) => Assert.Equal(ok, FeetAuto.FeetPressReady(60, false, 60, false, sinceLogin).ok);
+    [Fact] public void AnAlreadyWornHud_IsRecognisedFromTheAttachResult()
+    {
+        Assert.True(FeetAuto.AttachResultAlreadyWorn("already worn: item 961d2d4b (found after re-requesting objects; nothing attached)"));
+        Assert.False(FeetAuto.AttachResultAlreadyWorn("attached 961d2d4b to HUD Top Left")); Assert.False(FeetAuto.AttachResultAlreadyWorn(null));
+    }
+    [Fact] public void TheHudIsNotTheBody_AttachingOrDetachingItIsNotABodyChange()
+    {
+        var body = UUID.Random(); var hud = UUID.Random();
+        var a = FeetAuto.FeetBodySignature(new[] { (body, "Maitreya Mesh Body - LaraX V1.1", 40) });
+        var b = FeetAuto.FeetBodySignature(new[] { (body, "Maitreya Mesh Body - LaraX V1.1", 40), (hud, "Maitreya Mesh Body - LaraX HUD V1.1", 60) });
+        Assert.NotEqual("", a); Assert.Equal(a, b);
+    }
+    [Fact] public async Task TheSimRestoredHud_WornAllAlong_IsNeverDetachedAfterAPress()
+    {
+        var (f, h, _) = Make(); var detached = new List<string>(); h.DetachLog = detached; h.HudHiddenAtFirst = true;
+        h.DefaultCloseup = Img(); h.OnTouch = () => { h.Anims.Clear(); h.Anims.AddRange(FeetAuto.HeelFeetAnims); };
+        await Settle(f, h); await f.FeetTick(); Advance(f, h, 4); await f.FeetTick();
+        Assert.Empty(detached);   // AttachItem answered "already worn": the HUD belongs to the outfit
+        Assert.StartsWith("feet fit verified", f.LastFitText);
     }
     [Fact] public async Task LoginClearsTheStaleState()
     {

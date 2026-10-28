@@ -162,7 +162,7 @@ public static partial class Program
         try { client.Self.AutoPilotCancel(); } catch { }
         return ok ? null : why ?? "did not arrive";
     }
-    static void LoginJoinStart() { StuckSitNewLogin(); feetSvc.NewLogin(); loginJoinDone = new(TaskCreationOptions.RunContinuationsAsynchronously); loginPlacement = null; _ = Task.Run(LoginJoinDavid); }
+    static void LoginJoinStart() { StuckSitNewLogin(); feetSvc.NewLogin(); LoginOrderStart(); loginJoinDone = new(TaskCreationOptions.RunContinuationsAsynchronously); loginPlacement = null; _ = Task.Run(LoginJoinDavid); }
     static async Task LoginJoinDavid()
     {
         try

@@ -169,6 +169,7 @@ public static partial class Program
         {
             Log("attach", string.Format(CultureInfo.InvariantCulture, "seen local {0} {1} point #{2} state 0x{3:X2} item {4} via {5}", local, full, AttachPointFromState(state), state, r.Item, src));
             try { NotePossibleTempAttach(full, local, r.Item, src); } catch { } // Experiences.cs: llAttachToAvatarTemp props
+            LoginOrderNoteSeen(r.Item);   // LoginOrder.cs
         }
     }
 

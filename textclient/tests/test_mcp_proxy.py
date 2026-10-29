@@ -333,3 +333,27 @@ def test_launcher_runs_proxy_with_hooks_neutralised(tmp_path, stub):
     assert r["result"]["serverInfo"]["name"] == "stub"
     p.stdin.close(); p.wait(30)
     assert p.returncode == 0
+
+
+@pytest.mark.skipif(not (STAGING / "galatay-mcp").exists(), reason="textclient/mcp-app-staging not built (build-all.sh)")
+def test_real_connector_survives_cancelled_inflight_calls_behind_the_proxy(tmp_path):
+    """2026-10-28 (David: was it the proxy?): the host's notifications/cancelled on in-flight tool calls, a burst of calls and a
+    mid-call cancel storm must neither kill the child nor make the proxy respawn it (no login is ever called)."""
+    tcd = tmp_path / "tcd"; shutil.copytree(STAGING, tcd / "mcp-app", symlinks=True)
+    c = Client(tmp_path, str(CHILD_SH), extra_env={"GT_CHILD_PROC_NAME": "galatay-mcp-pytest-none"})
+    try:
+        c.handshake()
+        pid = c.state()["child_pid"]
+        ids = [c.start_req("tools/call", {"name": "status", "arguments": {}}) for _ in range(40)]
+        for rid in ids[::2]:   # cancel every other call while they are in flight
+            c.send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": rid, "reason": "User cancelled"}})
+        for rid in ids[1::2]: assert "result" in c.wait_resp(rid)
+        for _ in range(3):
+            assert "not logged in" in json.dumps(c.call("tools/call", {"name": "nearby", "arguments": {}}))
+        time.sleep(2)
+        s = c.state()
+        assert s["child_pid"] == pid and alive(pid) and s["restarts"] == 0 and s["last_result"] == "started", s
+        assert "exited unexpectedly" not in c.err()
+        assert c.garbage == []
+    finally:
+        assert c.close() == 0

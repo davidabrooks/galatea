@@ -63,6 +63,7 @@
     <Compile Include="../galatay-text/AutoHover.cs" Link="Core/AutoHover.cs" />
     <Compile Include="../galatay-text/HoverHost.cs" Link="Core/HoverHost.cs" />
     <Compile Include="../galatay-text/CrashGuard.cs" Link="Core/CrashGuard.cs" />
+    <Compile Include="../galatay-text/LoginCover.cs" Link="Core/LoginCover.cs" />
     <Compile Include="../galatay-text/HoverFeetWiring.cs" Link="Core/HoverFeetWiring.cs" />
     <Compile Include="../galatay-text/AoSit.cs" Link="Core/AoSit.cs" />
     <Compile Include="../galatay-text/PoseEvidence.cs" Link="Core/PoseEvidence.cs" />

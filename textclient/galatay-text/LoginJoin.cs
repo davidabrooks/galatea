@@ -119,6 +119,7 @@ public static partial class Program
             bool app = SelfAv()?.VisualParameters?.Length > 0;
             var dav = Avatars().FirstOrDefault(a => a.av != null && a.av.ID == DavidId);
             var v = LoginLoadStep((DateTime.Now - t0).TotalSeconds, (DateTime.Now - stableSince).TotalSeconds, app, cnt.worn, dav.av != null && dav.pos != Vector3.Zero);
+            if (v == LoginLoadVerdict.Loaded && loginCoverBusy) { await Task.Delay(500); continue; }   // LoginCover.cs: head / body not on yet; the pass is bounded (~45 s) and LoginLoadMaxS still ends the wait
             if (v != LoginLoadVerdict.Wait)
                 return $"{(v == LoginLoadVerdict.Loaded ? "loaded in" : $"gave up waiting after {LoginLoadMaxS:F0} s (going anyway)")}: appearance {(app ? "yes" : "no")}, {cnt.worn} worn prims, {cnt.near} root prims within 25 m, {(DateTime.Now - t0).TotalSeconds:F0} s after login";
             await Task.Delay(500);
@@ -162,7 +163,7 @@ public static partial class Program
         try { client.Self.AutoPilotCancel(); } catch { }
         return ok ? null : why ?? "did not arrive";
     }
-    static void LoginJoinStart() { StuckSitNewLogin(); feetSvc.NewLogin(); LoginOrderStart(); loginJoinDone = new(TaskCreationOptions.RunContinuationsAsynchronously); loginPlacement = null; _ = Task.Run(LoginJoinDavid); }
+    static void LoginJoinStart() { StuckSitNewLogin(); feetSvc.NewLogin(); LoginOrderStart(); LoginCoverStart(); loginJoinDone = new(TaskCreationOptions.RunContinuationsAsynchronously); loginPlacement = null; _ = Task.Run(LoginJoinDavid); }
     static async Task LoginJoinDavid()
     {
         try

@@ -369,23 +369,41 @@ public static partial class Program
     static ForceSitState aoForceSitInferred = ForceSitState.Unknown; static string aoLastPressReport = null; static DateTime aoLastPressAt = DateTime.MinValue;
     static async Task<string> AoGroundSitToggle(string why)
     {
-        if (AoGroundSitNow() is not { } spot) return "AO 'force sitg' button not mapped (run/ao-groundsit.txt)";
+        var (r, readback) = await AoGroundSitPress(why);
+        return readback == null ? r : $"{r}; {await readback}";
+    }
+    // 2026-10-29 (David: "it's reasonable to wait a few seconds but 11 is too long"): the press itself returns at once; the ~11 s read-back of the force-sit
+    // state runs on in the background (still holding the press lock, so no second press before it) and never delays the ground sit's hover measurement.
+    // readback == null = nothing was pressed (r says why).
+    static async Task<(string r, Task<string> readback)> AoGroundSitPress(string why)
+    {
+        if (AoGroundSitNow() is not { } spot) return ("AO 'force sitg' button not mapped (run/ao-groundsit.txt)", null);
         if (!PoseEvidence.ForcePressAllowed(Interlocked.CompareExchange(ref aoPressBusy, 1, 0) == 0))
-        { Log("idlepose", $"AO force sitg press REFUSED ({why}): the previous press has not been read back yet"); return "force sit press REFUSED: the previous press is still being read back (never pressed twice without re-reading the animations)"; }
+        { Log("idlepose", $"AO force sitg press REFUSED ({why}): the previous press has not been read back yet"); return ("force sit press REFUSED: the previous press is still being read back (never pressed twice without re-reading the animations)", null); }
+        string r; List<UUID> before;
         try
         {
-            var before = SelfAnims().ToList();
-            var r = await Exec($"touch-attachment \"ao\" \"{spot.link}\" {spot.face} st={spot.st}");
+            before = SelfAnims().ToList();
+            r = await Exec($"touch-attachment \"ao\" \"{spot.link}\" {spot.face} st={spot.st}");
             Log("idlepose", $"AO force sitg toggled ({why}): {r}");
             aoLastPressAt = DateTime.Now; aoSitTransitionUntil = DateTime.Now.AddSeconds(StuckSitWaitMs / 1000.0 + 20);
-            await Task.Delay((int)StuckSitWaitMs);
-            var after = SelfAnims().ToList();
-            aoForceSitInferred = PoseEvidence.ForceSitAfterPress(after, client.Self.SittingOn != 0, AoSitIdsNow(), AoStandIdsNow(), AoUnclassifiedNow(after).Count);
-            aoLastPressReport = PoseEvidence.ForceSitReport(aoForceSitInferred, before, after);
-            Log("idlepose", $"AO force sitg press read back ({why}): {aoLastPressReport}");
-            return $"{r}; {aoLastPressReport}";
         }
-        finally { Interlocked.Exchange(ref aoPressBusy, 0); }
+        catch { Interlocked.Exchange(ref aoPressBusy, 0); throw; }
+        var readback = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay((int)StuckSitWaitMs);
+                var after = SelfAnims().ToList();
+                aoForceSitInferred = PoseEvidence.ForceSitAfterPress(after, client.Self.SittingOn != 0, AoSitIdsNow(), AoStandIdsNow(), AoUnclassifiedNow(after).Count);
+                aoLastPressReport = PoseEvidence.ForceSitReport(aoForceSitInferred, before, after);
+                Log("idlepose", $"AO force sitg press read back ({why}): {aoLastPressReport}");
+                return aoLastPressReport;
+            }
+            catch (Exception ex) { return "read-back error " + ex.GetBaseException().Message; }
+            finally { Interlocked.Exchange(ref aoPressBusy, 0); }
+        });
+        return (r, readback);
     }
 
     // 2026-10-23 (David): before a kneel or ground sit, turn to face the leash holder (else David) when he is nearby.
@@ -435,12 +453,23 @@ public static partial class Program
             while (!GroundSitPressReady(seen, sw.Elapsed.TotalMilliseconds)) { await Task.Delay(100); seen = AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0); }
             return seen ? $"sim ground sit playing after {sw.ElapsedMilliseconds} ms" : "sim ground sit not seen after 2.5 s";
         }
-        public Task<string> PressForceSit() => AoGroundSitToggle("enter: " + why);
+        List<UUID> beforePress = new(); bool simSitSeen;
+        public async Task<(string press, Task<string> readback)> PressForceSit()
+        {
+            beforePress = SelfAnims().ToList(); simSitSeen = AoForceSitOn(beforePress, client.Self.SittingOn != 0);
+            return await AoGroundSitPress("enter: " + why);
+        }
+        public bool ChosenPosePlaying()
+        {
+            var now = SelfAnims().ToList(); var b = new HashSet<UUID>(beforePress);
+            var started = now.Where(a => !b.Contains(a)).ToList();
+            return PoseEvidence.ChosenGroundSitPlaying(started, AoSitIdsNow(), AoUnclassifiedNow(started).Count, simSitSeen || AoForceSitOn(now, false), client.Self.SittingOn != 0);
+        }
     }
     static async Task<string> IdlePoseEnter(string kind, string why)
     {
         if (!await idleLock.WaitAsync(0)) return "idle pose busy";
-        bool hoverAfter = false;
+        bool hoverAfter = false; int hoverDelayMs = 1000;
         try
         {
             if (idlePosed != null) return $"already posed ({idlePosed.kind} {idlePosed.pose})";
@@ -462,18 +491,21 @@ public static partial class Program
             // 2026-10-28 (David: "You should only sit once, not three times. ... choose the pose first"): the old order was SitOnGround (generic cross-legged sit) ->
             // force sitg (the AO's LAST pose) -> pick a new pose (a third pose, then a re-measured hover). Now (GroundSitEntry): 1. the AO chooser picks the pose while she
             // still STANDS (nothing plays), 2. ONE SitOnGround, 3. ONE force-sitg press the moment the sim's ground sit plays (the AO then shows the chosen pose; the
-            // generic sit is only on screen for that moment), 4. read back ~11 s later, 5. ONE hover check once the pose has settled. A failed pick = she stays standing.
+            // generic sit is only on screen for that moment), 4. ONE hover check as soon as the chosen pose's animation is seen playing (polled every 250 ms, cap 8 s)
+            // + a ~1.75 s settle (2026-10-29: was after the ~11 s read-back, which still runs in the background); cap hit = after the read-back, as before.
+            // A failed pick = she stays standing.
             var entry = await GroundSitEntry.Run(new GroundSitSteps(why));
             Log("idlepose", $"ground sit pose chosen BEFORE sitting: {entry.pick}");
             if (!entry.entered) { IdleNoteActivity(); return $"ground sit NOT entered, she stays standing: {entry.pick}"; }
-            Log("idlepose", $"ground sit: sat once ({entry.sit}); {entry.press}");
+            Log("idlepose", $"ground sit: sat once ({entry.sit}); {entry.press}; {entry.poseWait}");
+            hoverDelayMs = GroundSitEntry.HoverDelayMs(entry.poseSeen, (DateTime.Now - hoverSvc.PostureChangedAt).TotalMilliseconds);
             var added = SelfAnims().Where(a => !before.Contains(a)).Select(a => a.ToString()).ToList();
             AoLearnSits(added, before);
             idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave(); hoverSvc.AutoHoverKick("ground sit");
             hoverAfter = true;   // requested after the lock is released (a request made inside it waits for the 8 s retry)
             return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")}; pose {aoSitCurrentName ?? "?"})";
         }
-        finally { idleLock.Release(); if (hoverAfter) hoverSvc.HoverCheckRequest("ground sit", 1000); }   // the ONE hover check of this sit
+        finally { idleLock.Release(); if (hoverAfter) hoverSvc.HoverCheckRequest("ground sit", hoverDelayMs); }   // the ONE hover check of this sit
     }
     static async Task<string> IdlePoseExit(string why)
     {
@@ -644,16 +676,40 @@ internal interface IGroundSitSteps
 {
     Task<(bool ok, string info)> PreSelectPose();   // standing: the AO chooser picks the sit (nothing plays yet)
     Task<string> SitDown();                         // ONE SitOnGround; returns when the sim's ground sit plays
-    Task<string> PressForceSit();                   // ONE toggle press + ~11 s read-back of the animations
+    Task<(string press, Task<string> readback)> PressForceSit();   // ONE toggle press; returns at once, the ~11 s read-back runs on (readback null = not pressed)
+    bool ChosenPosePlaying();                       // evidence: the chosen AO sit animation started after the press, with the sim sit
 }
 internal static class GroundSitEntry
 {
-    internal static async Task<(bool entered, string pick, string sit, string press)> Run(IGroundSitSteps s)
+    // 2026-10-29 (David: "There is an animation when you sit, so it's reasonable to wait a few seconds but 11 is too long")
+    internal const int PosePollMs = 250, PoseWaitCapMs = 8000, HoverSettleMs = 1750, FallbackHoverDelayMs = 1000;
+    internal sealed record Result(bool entered, string pick, string sit, string press, bool poseSeen, int poseWaitMs, string poseWait);
+    /// <summary>Polls the evidence every pollMs until the chosen pose plays or capMs passes. delay is injected (a fake clock in tests).</summary>
+    internal static async Task<(bool seen, int waitedMs)> WaitChosenPose(Func<bool> playing, Func<int, Task> delay, int pollMs = PosePollMs, int capMs = PoseWaitCapMs)
     {
+        int waited = 0;
+        while (true)
+        {
+            if (playing()) return (true, waited);
+            if (waited >= capMs) return (false, waited);
+            await delay(pollMs); waited += pollMs;
+        }
+    }
+    /// <summary>Pure: the hover check's delay after the entry returns: pose seen = the settle, stretched so the hover check's own posture settle
+    /// (Hover.HoverCheckSettleSec since the sit) is already met when it runs (else it would wait a whole 8 s retry); not seen = the old short delay after the read-back.</summary>
+    internal static int HoverDelayMs(bool poseSeen, double msSincePostureChange) =>
+        !poseSeen ? FallbackHoverDelayMs : Math.Max(HoverSettleMs, (int)Math.Ceiling(Hover.HoverCheckSettleSec * 1000 + 200 - msSincePostureChange));
+    internal static async Task<Result> Run(IGroundSitSteps s, Func<int, Task> delay = null)
+    {
+        delay ??= ms => Task.Delay(ms);
         var (ok, pick) = await s.PreSelectPose();
-        if (!ok) return (false, pick, null, null);
+        if (!ok) return new(false, pick, null, null, false, 0, null);
         var sit = await s.SitDown();
-        var press = await s.PressForceSit();
-        return (true, pick, sit, press);
+        var (press, readback) = await s.PressForceSit();
+        if (readback == null) return new(true, pick, sit, press, false, 0, "force sit not pressed");
+        var (seen, waited) = await WaitChosenPose(s.ChosenPosePlaying, delay);
+        if (seen) return new(true, pick, sit, press, true, waited, $"chosen pose playing {waited} ms after the press (hover check after a {HoverSettleMs} ms settle; force-sit read-back continues in the background)");
+        var rb = await readback;   // cap hit: the old path, measure only after the read-back
+        return new(true, pick, sit, $"{press}; {rb}", false, waited, $"chosen pose NOT seen within {PoseWaitCapMs} ms: hover check after the force-sit read-back");
     }
 }

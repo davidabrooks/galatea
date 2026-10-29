@@ -17,6 +17,7 @@ public static class McpProgram
         Core.StderrLog = true;
         if (args.Contains("--webhook-selftest")) return await Webhook.SelfTest();
         Core.ExitOnLogout = false;
+        Core.InstallCrashHandlers(); Core.GhostSessionAtStart();   // CrashGuard.cs: log unhandled exceptions; a dead predecessor's ghost session
         LibreMetaverse.Settings.LogLevel = LogLevel.Warning;
         // library logs -> stderr only
         LibreMetaverse.Logger.SetLoggerFactory(LoggerFactory.Create(b =>
@@ -59,11 +60,14 @@ public sealed class SlTools
     }
     static string Clean(string s) => (s ?? "").Replace('\n', ' ').Replace('\r', ' ').Trim();
 
+    // login / logout finish their set-up on their own task: a cancelled or dropped MCP call (the host's notifications/cancelled) never stops them half way
+    static Task<string> Detached(string line) => Core.RunDetached(() => R(line), line, m => Json(new { ok = false, result = m }));
+
     [McpServerTool(Name = "login"), Description("Log Galatay Resident into Second Life (start location 'last'). Refuses if Firestorm or another Galatay client is logged in. Password is read internally from the box secret store.")]
-    public static Task<string> Login() => R("login");
+    public static Task<string> Login() => Detached("login");
 
     [McpServerTool(Name = "logout"), Description("Log out of Second Life cleanly (the MCP server keeps running).")]
-    public static Task<string> Logout() => R("logout");
+    public static Task<string> Logout() => Detached("logout");
 
     [McpServerTool(Name = "status"), Description("Connection state, region, position, seat, follow target, pending teleport offer, memory use.")]
     public static string Status() => Json(Core.StatusObj());

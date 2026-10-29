@@ -9,7 +9,7 @@
 # Options: --check-only   only the source-list check
 #          --stage-mcp    after a good build, copy mcp-app-staging to mcp-app-next (+READY) for galatay-mcp.sh to swap in
 #                         at the connector's next launch (the running connector is never touched)
-# Exit: 0 ok, 3 source-list mismatch, 4 text client build failed, 5 MCP build failed.
+# Exit: 0 ok, 3 source-list mismatch, 4 text client build failed, 5 MCP build failed, 6 a staged LibreMetaverse.dll is unpatched (check-lmv-patches.sh).
 set -uo pipefail
 # GT_TEXTCLIENT_ROOT overrides; otherwise the directory containing this script (repo or /home/box/viewers/textclient).
 TC="${GT_TEXTCLIENT_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
@@ -48,6 +48,7 @@ build() {  # dir outdir label
 }
 build galatay-text app-staging "text client" || exit 4
 build galatay-mcp mcp-app-staging "MCP connector" || exit 5
+"$TC/check-lmv-patches.sh" "$TC/app-staging" "$TC/mcp-app-staging" || { echo "refusing: a staged LibreMetaverse.dll lacks the galatea patches (run scripts/ci-setup-libremetaverse.sh)"; exit 6; }
 if (( STAGE )); then
   rm -rf "$TC/mcp-app-next.tmp" && cp -a "$TC/mcp-app-staging" "$TC/mcp-app-next.tmp" \
     && (cd "$TC/mcp-app-next.tmp" && sha256sum galatay-mcp.dll > READY && echo "staged $(date '+%F %T %Z') by build-all.sh" >> READY) \

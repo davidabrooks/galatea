@@ -15,6 +15,10 @@ internal static class LoginOrder
     internal static bool IsBody(string name) => name != null && name.StartsWith("Maitreya Mesh Body - Lara", StringComparison.OrdinalIgnoreCase)
         && !name.Contains("HUD", StringComparison.OrdinalIgnoreCase) && !name.Contains("Add-on", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Pure: the real (Lelutka) head: a "HEAD" attachment that is not the Real Kisser add-on.</summary>
+    internal static bool IsRealHead(string name) => name != null && System.Text.RegularExpressions.Regex.IsMatch(name, @"\bHEAD\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+        && !name.Contains("Kisser", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Pure: clothing that cuts the body (it announces "Ready" itself): a LaraX-fitted garment, not the body, head, hair, jewelry or HUDs.</summary>
     internal static bool IsBodyCuttingGarment(string name) => name != null && name.Contains("LaraX", StringComparison.OrdinalIgnoreCase) && !IsBody(name)
         && !name.Contains("HUD", StringComparison.OrdinalIgnoreCase) && !name.Contains("Add-on", StringComparison.OrdinalIgnoreCase);
@@ -23,8 +27,11 @@ internal static class LoginOrder
     internal static List<string> Findings(IEnumerable<Worn> worn)
     {
         var w = (worn ?? Array.Empty<Worn>()).ToList(); var res = new List<string>();
+        var head = w.FirstOrDefault(x => IsRealHead(x.Name));
+        var headLine = head == null ? null : head.SeenSec is not double hs ? $"the real head '{head.Name}' was not seen: the base face stayed visible"
+            : hs > 2 ? $"real head arrived at +{hs:F0} s: the base face showed for about {hs:F0} s" : $"real head arrived at +{hs:F0} s";
         var body = w.FirstOrDefault(x => IsBody(x.Name) && x.SeenSec != null);
-        if (body == null) { res.Add("the body was not seen in this login's attachments"); return res; }
+        if (body == null) { res.Add("the body was not seen in this login's attachments"); if (headLine != null) res.Add(headLine); return res; }
         double bodyAt = body.SeenSec!.Value; double uncutUntil = bodyAt;
         foreach (var g in w.Where(x => IsBodyCuttingGarment(x.Name)).OrderBy(x => x.SeenSec ?? 1e9))
         {
@@ -34,6 +41,7 @@ internal static class LoginOrder
         }
         res.Insert(0, uncutUntil == double.MaxValue ? $"body arrived at +{bodyAt:F0} s; at least one garment's cut of it is not confirmed"
             : $"body arrived at +{bodyAt:F0} s; every garment was Ready by +{uncutUntil:F0} s (the body showed uncut for up to {uncutUntil - bodyAt:F0} s)");
+        if (headLine != null) res.Add(headLine);
         return res;
     }
 }

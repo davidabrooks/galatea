@@ -70,4 +70,14 @@ internal static class PoseEvidence
 
     /// <summary>Pure: may the AO force-sit button be pressed now? Never while the previous press has not been read back (~11 s later, anim list re-read).</summary>
     internal static bool ForcePressAllowed(bool previousPressReadBack) => previousPressReadBack;
+
+    /// <summary>Pure (2026-10-29): is the CHOSEN AO ground-sit pose playing? An animation that started after the force-sit press and is a known AO sit (or an
+    /// AO animation not yet classified), other than the sim's built-in ground sits, AND the sim sit is on; never on an object.</summary>
+    internal static bool ChosenGroundSitPlaying(IEnumerable<UUID> startedSincePress, IEnumerable<UUID> aoSitIds, int unclassifiedAoStarted, bool simGroundSit, bool onObject)
+    {
+        if (onObject || !simGroundSit) return false;
+        var sits = new HashSet<UUID>(aoSitIds ?? Enumerable.Empty<UUID>());
+        var st = (startedSincePress ?? Enumerable.Empty<UUID>()).Where(a => a != Animations.SIT_GROUND && a != Animations.SIT_GROUND_staticRAINED).ToList();
+        return st.Any(sits.Contains) || unclassifiedAoStarted > 0 && st.Count > 0;
+    }
 }

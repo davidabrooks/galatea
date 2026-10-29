@@ -157,7 +157,7 @@ public class IdlePoseTests
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
         var body = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..];
         int face = body.IndexOf("await IdleFaceHim();");
-        Assert.True(face > 0 && face < body.IndexOf("CollarPosePlay(") && face < body.IndexOf("AoGroundSitToggle("));
+        Assert.True(face > 0 && face < body.IndexOf("CollarPosePlay(") && face < body.IndexOf("GroundSitEntry.Run("));
     }
     [Fact] public void AoGroundSitChooser_ParseAndPick()
     {
@@ -219,25 +219,13 @@ public class IdlePoseTests
         Assert.Null(Program.OutfitGuardResolve("Beach", "Beach"));
         Assert.True(Program.IsVTechOutfit("Android")); Assert.False(Program.IsVTechOutfit("Android Base"));
     }
-    [Fact] public void GroundSitStart_RandomPickAndAndroidHover()   // 2026-10-23: first sit was always the last one; android sits too high
+    [Fact] public void GroundSitStart_RandomPickAndAndroidHover()   // 2026-10-23: first sit was always the last one; 2026-10-28: and the pick comes BEFORE the sit
     {
-        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
-        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release(); }")];
-        int sit = enter.IndexOf("SitOnGround()"), pick = enter.IndexOf("AoGroundSitSwitch()");
-        Assert.True(sit > 0 && pick > sit, "start pick right after the sit");
-        Assert.DoesNotContain("Stand()", enter[sit..]);                                          // no stand in between
         var all = new System.Collections.Generic.List<(int, string)> { (1, "VAMOSITG11"), (8, "VAMOSITG25") };
         Assert.NotEqual(8, Program.AoSitPick(10, Program.AoSitCurrentNumber(all, "VAMOSITG25", 0), 0.99));   // last used (saved) is never the start pick
-    }
-    [Fact] public void GroundSitEnter_SitsOnce_NoStandResit_HoverNeverStands()   // 2026-10-23 14:30/14:47 regression
-    {
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
-        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release(); }")];
-        int sit = enter.IndexOf("SitOnGround()"), tog = enter.IndexOf("AoGroundSitToggle(");
-        Assert.True(sit > 0 && tog > sit, "sit down first, then force sitg (one transition)");
-        Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(enter, @"SitOnGround\(\)").Count);
-        var hov = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/AutoHover.cs"));
-        Assert.DoesNotContain("Stand()", hov); Assert.DoesNotContain("SitOnGround", hov); Assert.DoesNotContain("AoGroundSitToggle", hov);
+        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release();")];
+        Assert.DoesNotContain("AoGroundSitSwitch", enter);   // 2026-10-28: no pick after the sit any more (it is GroundSitEntry's first step)
     }
     [Fact] public void BlockedApproach_GivesUp_DoorUnknown_StaysPut()   // 2026-10-23 14:57 corner grind after login
     {
@@ -401,11 +389,10 @@ public class IdlePoseTests
     [Fact] public void PoseEntryNeverTouchesHoverBeforeThePose()
     {
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
-        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release(); }")];
+        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..]; enter = enter[..enter.IndexOf("finally { idleLock.Release();")];
         Assert.DoesNotContain("PostHover(", enter); Assert.DoesNotContain("hover set", enter);
         Assert.True(enter.IndexOf("CollarPosePlay(") < enter.IndexOf("AutoHoverKick(\"kneel\")"));
-        Assert.True(enter.IndexOf("SitOnGround()") < enter.IndexOf("AutoHoverKick(\"ground sit\")"));
-        Assert.True(enter.IndexOf("AoGroundSitToggle(") < enter.IndexOf("AutoHoverKick(\"ground sit\")"));
+        Assert.True(enter.IndexOf("GroundSitEntry.Run(") < enter.IndexOf("AutoHoverKick(\"ground sit\")"));   // sit (pose chosen first, ONE sit, ONE press) before any hover work
         var exit = src[src.IndexOf("static async Task<string> IdlePoseExit(")..]; exit = exit[..exit.IndexOf("finally { idleLock.Release(); }")];
         Assert.True(exit.IndexOf("client.Self.Stand()") < exit.IndexOf("PostHover("));   // stand first, hover afterwards
         // the hover is checked/fixed by the requested visual check, a few seconds AFTER the pose started

@@ -127,6 +127,10 @@ public static partial class Program
     internal static int AoSitCurrentNumber(List<(int n, string name)> all, string confirmedName, int remembered) =>
         confirmedName != null && all.FirstOrDefault(a => a.name == confirmedName) is { n: > 0 } hit ? hit.n : remembered;
     static readonly string AoSitLastFile = Env("GT_AO_SITLAST_FILE", "/home/box/viewers/textclient/run/ao-groundsit-last.txt");
+    // 2026-10-28 (David: choose the pose FIRST, sit once): the pick made while she still STANDS (GroundSitPreSelect) must not ask for a hover check (nothing is on the floor yet);
+    // a pick while a sit plays (a rotation) still does: the new pose is remeasured. pure (tested)
+    static volatile bool aoSitPrePick;
+    internal static bool AoSitPickWantsHoverCheck(bool prePick, bool sitPlaying) => !prePick && sitPlaying;
     static void AoSitHook()
     {
         try { if (aoSitCurrentName == null && File.Exists(AoSitLastFile)) aoSitCurrentName = File.ReadAllText(AoSitLastFile).Trim(); } catch { }   // the AO keeps its pick across relogs
@@ -134,7 +138,7 @@ public static partial class Program
         aoSitHookedClient = client;
         client.Self.ChatFromSimulator += (s, e) =>
         {
-            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } hoverSvc.HoverCheckRequest("sit"); } } catch { }
+            try { if (e.Type == ChatType.OwnerSay && AoSitConfirmName(e.Message) is string n) { aoSitCurrentName = n; try { File.WriteAllText(AoSitLastFile, n); } catch { } if (AoSitPickWantsHoverCheck(aoSitPrePick, AoSitReallyOn())) hoverSvc.HoverCheckRequest("sit"); } } catch { }
         };
     }
     static async Task<ScriptDialogEventArgs> AoDialogAfter(ScriptDialogEventArgs prev, int ms)
@@ -243,9 +247,20 @@ public static partial class Program
         if (cool) idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec); IdleNoteActivity();
         string a = idlePosed != null ? await IdlePoseExit(why) : "not posed";
         string b = await AoGroundSitEnsureOff(why);
+        string c = ""; try { c = await IdleRepinAfterStand(why); } catch { }
         if (cool) idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec);
-        Log("idlepose", $"stand ({why}): {a}; {b}; {(cool ? $"no idle sit until {idleNoSitUntil:HH:mm}" : "no cooldown (internal stand)")}");
-        return cool ? $"{a}; {b}; no idle sit/kneel for 30 min" : $"{a}; {b}";
+        Log("idlepose", $"stand ({why}): {a}; {b}{c}; {(cool ? $"no idle sit until {idleNoSitUntil:HH:mm}" : "no cooldown (internal stand)")}");
+        return cool ? $"{a}; {b}{c}; no idle sit/kneel for 30 min" : $"{a}; {b}{c}";
+    }
+    // 2026-10-28: after ANY stand (also one that found no idle pose to clear, e.g. an AO sit the client did not start) the hover goes back to the pinned stand value, so a
+    // sit hover never lingers on a standing avatar; the stand check that follows measures the floor. Never at logout, never while still sitting. pure (tested)
+    internal static bool IdleRepinNeeded(string why, bool stillSitting, double? inForce, double pinned) => why != "logout" && !stillSitting && inForce is double hv && Math.Abs(hv - pinned) > 0.005;
+    static async Task<string> IdleRepinAfterStand(string why)
+    {
+        bool still = client.Self.SittingOn != 0 || AoSitReallyOn();
+        if (!IdleRepinNeeded(why, still, EffectiveHoverNow(), PinnedHover())) return "";
+        var (ok, info) = await PostHover(PinnedHover(), "stood up: back to normal hover");
+        return $"; hover repinned to {PinnedHover():0.000} ({(ok ? "ok" : info)})";
     }
     internal sealed record IdlePoseState(string kind, string pose, List<string> anims, DateTime since);
     static volatile IdlePoseState idlePosed;
@@ -394,9 +409,38 @@ public static partial class Program
         }
         catch (Exception ex) { Log("idlepose", "face-him error " + ex.GetBaseException().Message); }
     }
+    // ---- ground sit entry (2026-10-28): pose first, then sit once ----
+    // pure (tested): did the pre-pick land? Only the AO's own confirmation line counts ("ground sit 7 -> 5 NAME (of 10)"); the failure texts of AoGroundSitSwitch
+    // ("... pressed but the AO did not confirm", "could not reach ...", "chooser did not open") also start with "ground sit", so the text is checked whole.
+    // A single available sit is nothing to choose: accepted.
+    internal static bool GroundSitPickConfirmed(string switchResult) => switchResult != null
+        && (System.Text.RegularExpressions.Regex.IsMatch(switchResult, @"^ground sit (\d+ -> )?\d+ \S+ \(of \d+\)$") || switchResult.StartsWith("only 1 ground sit", StringComparison.Ordinal));
+    // pure (tested): press force sitg once the sim's own ground sit plays (and 0.5 s after the sit request, so the AO sees a settled sit), else after 2.5 s regardless
+    internal static bool GroundSitPressReady(bool simGroundSitSeen, double msSinceSit) => msSinceSit >= 2500 || simGroundSitSeen && msSinceSit >= 500;
+    sealed class GroundSitSteps : IGroundSitSteps
+    {
+        readonly string why; internal GroundSitSteps(string why) { this.why = why; }
+        public async Task<(bool ok, string info)> PreSelectPose()
+        {
+            aoSitPrePick = true;
+            try { var r = await AoGroundSitSwitch(); return (GroundSitPickConfirmed(r), r); }
+            catch (Exception ex) { return (false, "pre-pick error " + ex.GetBaseException().Message); }
+            finally { aoSitPrePick = false; }
+        }
+        public async Task<string> SitDown()
+        {
+            aoSitTransitionUntil = DateTime.Now.AddSeconds(60);
+            try { client.Self.SitOnGround(); } catch { }
+            var sw = System.Diagnostics.Stopwatch.StartNew(); bool seen = false;
+            while (!GroundSitPressReady(seen, sw.Elapsed.TotalMilliseconds)) { await Task.Delay(100); seen = AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0); }
+            return seen ? $"sim ground sit playing after {sw.ElapsedMilliseconds} ms" : "sim ground sit not seen after 2.5 s";
+        }
+        public Task<string> PressForceSit() => AoGroundSitToggle("enter: " + why);
+    }
     static async Task<string> IdlePoseEnter(string kind, string why)
     {
         if (!await idleLock.WaitAsync(0)) return "idle pose busy";
+        bool hoverAfter = false;
         try
         {
             if (idlePosed != null) return $"already posed ({idlePosed.kind} {idlePosed.pose})";
@@ -415,25 +459,21 @@ public static partial class Program
             }
             var before = SelfAnims().ToHashSet();
             if (AoGroundSitNow() == null) return "AO 'force sitg' button not mapped (run/ao-groundsit.txt)";
-            // 2026-10-23 14:30/14:47 (David: "stood up and sat back down in the same pose"): touching force sitg first made the
-            // AO start its sit while standing, then SitOnGround 0.8 s later sat her again (two transitions). Now: sit down
-            // first, then turn force sitg on, so the AO only swaps the sit animation in place.
-            aoSitTransitionUntil = DateTime.Now.AddSeconds(60);
-            try { client.Self.SitOnGround(); } catch { }
-            await Task.Delay(1500);
-            var r = await AoGroundSitToggle("enter: " + why);
-            await Task.Delay(2000);
-            // 2026-10-23 (David): the first ground sit was always the last one used: pick a different one right away
-            // through the AO's SELECT chooser (swaps the playing sit in place, no stand in between)
-            string pickInfo; try { pickInfo = IdleStartSitPick(await AoGroundSitSwitch()); } catch (Exception ex) { pickInfo = "start pick error " + ex.GetBaseException().Message; }
-            Log("idlepose", "ground sit start pick: " + pickInfo);
-            // 2026-10-23 (David): android ground sit ~4 cm too high: auto-hover owns that offset (GroundSitHoverOffset)
+            // 2026-10-28 (David: "You should only sit once, not three times. ... choose the pose first"): the old order was SitOnGround (generic cross-legged sit) ->
+            // force sitg (the AO's LAST pose) -> pick a new pose (a third pose, then a re-measured hover). Now (GroundSitEntry): 1. the AO chooser picks the pose while she
+            // still STANDS (nothing plays), 2. ONE SitOnGround, 3. ONE force-sitg press the moment the sim's ground sit plays (the AO then shows the chosen pose; the
+            // generic sit is only on screen for that moment), 4. read back ~11 s later, 5. ONE hover check once the pose has settled. A failed pick = she stays standing.
+            var entry = await GroundSitEntry.Run(new GroundSitSteps(why));
+            Log("idlepose", $"ground sit pose chosen BEFORE sitting: {entry.pick}");
+            if (!entry.entered) { IdleNoteActivity(); return $"ground sit NOT entered, she stays standing: {entry.pick}"; }
+            Log("idlepose", $"ground sit: sat once ({entry.sit}); {entry.press}");
             var added = SelfAnims().Where(a => !before.Contains(a)).Select(a => a.ToString()).ToList();
             AoLearnSits(added, before);
             idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave(); hoverSvc.AutoHoverKick("ground sit");
-            return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")})";
+            hoverAfter = true;   // requested after the lock is released (a request made inside it waits for the 8 s retry)
+            return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")}; pose {aoSitCurrentName ?? "?"})";
         }
-        finally { idleLock.Release(); }
+        finally { idleLock.Release(); if (hoverAfter) hoverSvc.HoverCheckRequest("ground sit", 1000); }   // the ONE hover check of this sit
     }
     static async Task<string> IdlePoseExit(string why)
     {
@@ -595,5 +635,25 @@ public static partial class Program
                        $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; {feetSvc.LastFitText}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
             }
         }
+    }
+}
+
+// GroundSitEntry (2026-10-28, David: "choose the pose first, sit once"): the order of an AO ground-sit entry, separate from the live calls so a test can run it
+// against a fake. Pose chosen while standing -> ONE sit -> ONE force-sit press (read back inside it). A failed pick enters nothing: she stays standing.
+internal interface IGroundSitSteps
+{
+    Task<(bool ok, string info)> PreSelectPose();   // standing: the AO chooser picks the sit (nothing plays yet)
+    Task<string> SitDown();                         // ONE SitOnGround; returns when the sim's ground sit plays
+    Task<string> PressForceSit();                   // ONE toggle press + ~11 s read-back of the animations
+}
+internal static class GroundSitEntry
+{
+    internal static async Task<(bool entered, string pick, string sit, string press)> Run(IGroundSitSteps s)
+    {
+        var (ok, pick) = await s.PreSelectPose();
+        if (!ok) return (false, pick, null, null);
+        var sit = await s.SitDown();
+        var press = await s.PressForceSit();
+        return (true, pick, sit, press);
     }
 }

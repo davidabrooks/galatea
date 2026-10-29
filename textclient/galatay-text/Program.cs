@@ -136,7 +136,7 @@ public static partial class Program
     // ---- session guard (never kick Firestorm or another galatay client) ----
     static bool ProcAlive(int pid)
     {
-        try { return File.ReadAllText($"/proc/{pid}/comm").Trim().StartsWith("galatay"); } catch { return false; }
+        try { return File.ReadAllText($"/proc/{pid}/comm").Trim().StartsWith("galatay") && ProcStatAlive(File.ReadAllText($"/proc/{pid}/stat")); } catch { return false; }   // a zombie (died, not yet reaped) is not a live session
     }
     public static string SessionGuard()
     {
@@ -212,6 +212,7 @@ public static partial class Program
         Settings.LogLevel = Microsoft.Extensions.Logging.LogLevel.Warning;
         Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
         Directory.CreateDirectory(Path.GetDirectoryName(SockPath)!);
+        InstallCrashHandlers(); GhostSessionAtStart();   // CrashGuard.cs
 
         if (args.Length > 0 && args[0] == "--fastchat-test")   // FastChat.cs: offline dry run (no login, nothing sent)
         {
@@ -295,6 +296,8 @@ public static partial class Program
     public static async Task<string> LoginAsync()
     {
         if (LoggedIn) return "OK already logged in";
+        var lmvGuard = LmvPatchGuard();   // CrashGuard.cs: an unpatched LibreMetaverse crashes the process right after login
+        if (lmvGuard != null) { Log("login", "refused: " + lmvGuard); return "REFUSED: " + lmvGuard; }
         var guard = SessionGuard();
         if (guard != null) { Log("login", "refused: " + guard); return "REFUSED: " + guard; }
         shuttingDown = false;
@@ -359,8 +362,15 @@ public static partial class Program
         Log("login", $"logging in {First} {Last} to '{lp.Start}' via {LoginUri} (channel {Channel} {Version})");
         var sw = Stopwatch.StartNew();
         bool ok;
-        try { ok = await client.Network.LoginAsync(lp); }
-        catch (Exception ex) { var b = ex.GetBaseException(); Log("error", $"login exception: {ex.Message} / {b.GetType().Name}: {b.Message}"); return "FAILED: " + b.Message; }
+        bool ghostPending = File.Exists(GhostMarkerPath);   // CrashGuard.cs: the previous connector died logged in
+        for (int attempt = 1; ; attempt++)
+        {
+            try { ok = await client.Network.LoginAsync(lp); }
+            catch (Exception ex) { var b = ex.GetBaseException(); Log("error", $"login exception: {ex.Message} / {b.GetType().Name}: {b.Message}"); return "FAILED: " + b.Message; }
+            if (ok || !ShouldRetryGhostLogin(client.Network.LoginMessage, ghostPending, attempt)) break;
+            Log("ghost", $"login refused while the ghost session of the dead connector is still on the grid ({client.Network.LoginMessage}); retrying in 20 s (attempt {attempt + 1}/3)");
+            await Task.Delay(20000);
+        }
         lp.Password = "";
         if (!ok)
         {
@@ -368,6 +378,7 @@ public static partial class Program
             return "FAILED: " + client.Network.LoginMessage;
         }
         try { File.WriteAllText(LockPath, Environment.ProcessId.ToString()); } catch { }
+        GhostSessionReplaced();
         await Set360(); _ = Ensure360ForCurrentRegion("login");
         var msg = $"OK in {sw.Elapsed.TotalSeconds:F1}s: region {client.Network.CurrentSim?.Name} pos {Fmt(client.Self.SimPosition)} agent {client.Self.AgentID}";
         Log("login", msg);

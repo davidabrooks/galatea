@@ -96,9 +96,23 @@ internal static class LoginVeil
         if (LoginOrder.IsBody(name) || LoginCover.IsBodyPart(name)) return false;
         int r = Program.OutfitSendRank(name);
         if (r == 0 || r >= 8) return false;
-        if (r == 1) return IsHeadPart(name);
+        if (r == 1) return false;   // 15:16:48 relog (David): base face for ~4 s. The real head (and the lips on it) is NEVER stashed: see HeadGate
         return true;
     }
+
+    /// <summary>Pure (tested): the base face must never show. 2026-10-30 15:16:48 relog: the stashed real head was sent with the veil-off burst at
+    /// +9.0 s, the bake without the veil landed at +17.2 s, the head only rezzed at +21 s: the system head was visible ~4 s. The veil now never comes
+    /// off while a real head of the outfit (COF links or stash) is not attached; past the stash hold it STAYS on (KEEP), never a bare base face.</summary>
+    internal static (bool release, string why) ReleaseWithHead(IEnumerable<Garment> garments, double nowSec, bool stashed, IEnumerable<string> headsNotAttached)
+    {
+        var miss = (headsNotAttached ?? Array.Empty<string>()).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        if (miss.Count == 0) return Release(garments, nowSec, stashed);
+        if (nowSec >= MaxHoldStashedSec) return (false, $"KEEP: real head not attached after {MaxHoldStashedSec:F0} s ({string.Join("; ", miss)}); the veil stays on (never the base face)");
+        return (false, "waiting for the real head: " + string.Join("; ", miss) + " (not attached)");
+    }
+    /// <summary>Pure (tested): the real heads expected (by item) that are not worn yet.</summary>
+    internal static List<string> HeadsNotAttached(IEnumerable<(UUID Item, string Name)> expected, ISet<UUID> worn)
+        => (expected ?? Enumerable.Empty<(UUID, string)>()).Where(x => LoginOrder.IsRealHead(x.Name) && !(worn?.Contains(x.Item) ?? false)).Select(x => x.Name).Distinct().ToList();
 
     /// <summary>Pure (tested): the logout detach waves. 2026-10-30 14:56:49 and 14:59:14 logouts (David): hair and teeth floated by themselves after
     /// everything else vanished; all 9 detaches went out in one burst, in worn order (head before hair at 14:56:49), and the logout followed in the same
@@ -422,7 +436,8 @@ public static partial class Program
                     var garments = (src ?? new()).Select(l => new LoginVeil.Garment(l.Name,
                         worn.Contains(l.Item) ? (loginSeenAt.TryGetValue(l.Item, out var s) ? (s - t0).TotalSeconds : 0) : null,
                         loginReadyAt.TryGetValue(l.Name, out var r) ? (r - t0).TotalSeconds : null)).ToList();
-                    var (rel, w) = src == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.Release(garments, now, stash.Count > 0);
+                    var heads = LoginVeil.HeadsNotAttached((links?.Select(l => (l.AssetUUID, l.Name)) ?? Enumerable.Empty<(UUID, string)>()).Concat(stash.Select(x => (x.Item, x.Name))), worn);
+                    var (rel, w) = src == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.ReleaseWithHead(garments, now, stash.Count > 0, heads);
                     why = w; if (rel) break;
                     if (w.StartsWith("KEEP")) { off = false; break; }
                     await Task.Delay(200, ct);
@@ -437,7 +452,7 @@ public static partial class Program
             catch (Exception ex)
             {   // never nude: with a stash, the veil only comes off once its clothes are attached
                 why = "error: " + ex.GetBaseException().Message; var w = WornPrims().Select(AttachItemId).ToHashSet();
-                if (gen == loginVeilGen && id != UUID.Zero && early.Where(x => LoginVeil.Waits(x.Name)).All(x => w.Contains(x.Item))) { var c = await LoginVeilOff(id, t0, why, null); await LoginVeilReveal(late, t0, c, CancellationToken.None, null); }
+                if (gen == loginVeilGen && id != UUID.Zero && early.Where(x => LoginVeil.Waits(x.Name)).All(x => w.Contains(x.Item)) && LoginVeil.HeadsNotAttached(stash.Select(x => (x.Item, x.Name)), w).Count == 0) { var c = await LoginVeilOff(id, t0, why, null); await LoginVeilReveal(late, t0, c, CancellationToken.None, null); }
                 else Log("login-veil", $"veil KEPT ON ({why}): stashed clothes not back");
             }
             finally

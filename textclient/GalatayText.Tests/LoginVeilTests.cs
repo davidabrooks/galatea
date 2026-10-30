@@ -90,9 +90,11 @@ public class LoginVeilTests
     // are a non-BOM face of the Lelutka head (the nails of the Maitreya body), which the full alpha cannot hide. The head and lips are stashed now.
     const string EvoxHead = "/ HEAD / lel evox / AVALON 4.0", Eyes = "/ EYES / lel evox 4.0", Gums = "/ GUMS / TEETH / lel evox 4.0", AddOn = "Maitreya Mesh Body - LaraX Petite Add-on V1.1",
                  Bracelet = ".Heol Star Bracelet Gold", Bridge = "#Firestorm LSL Bridge v2.29", Ao = "VISTA ANIMATIONS *HUD 6.3*MARTHA STS BENTO AO-V1.7", N9 = ":: No 9 :: Premium Collar";
-    [Fact] public void Stash_IsGeneric_HeadAndLipsIncluded_BodyAddonCollarHudBridgeNot()
+    [Fact] public void Stash_IsGeneric_HeadAndLipsNeverStashed_BodyAddonCollarHudBridgeNot()
     {
-        foreach (var (n, p) in new[] { (EvoxHead, 2), (Head, 12), (Kisser, 12), (Eyes, 15), (Gums, 47), (Bracelet, 6), ("Some Brand Lashes", 17), ("Some Brand Nails", 6), ("Unknown Necklace", 39) })
+        // 15:16:48 relog (David): base face for a few seconds. The real head and the lips stay on through logout.
+        Assert.False(LoginVeil.ShouldStash(EvoxHead, 2)); Assert.False(LoginVeil.ShouldStash(EvoxHead, 12)); Assert.False(LoginVeil.ShouldStash(Head, 12));
+        foreach (var (n, p) in new[] { (Eyes, 15), (Gums, 47), (Bracelet, 6), ("Some Brand Lashes", 17), ("Some Brand Nails", 6), ("Unknown Necklace", 39) })
             Assert.True(LoginVeil.ShouldStash(n, p), n);
         foreach (var (n, p) in new[] { (Body, 40), (AddOn, 1), (N9, 39), (Bridge, 30), (Ao, 35), ("Authorizer", 39), ("Maitreya Mesh Body - LaraX HUD V1.1", 34), ("Skeleton fix", 1), ("Bento HandL", 5) })
             Assert.False(LoginVeil.ShouldStash(n, p), n);
@@ -177,4 +179,26 @@ public class LoginVeilLayerDropTests
     }
     [Fact] public void LayerRecord_PrefersTheFetchedWearable()
     { var f = new InventoryWearable(UUID.Random()) { WearableType = WearableType.Alpha }; Assert.Same(f, LoginVeil.LayerRecord(f.UUID, f, WearableType.Tattoo)); }
+
+    const string EvoxHead15 = "/ HEAD / lel evox / AVALON 4.0", Kisser15 = "-Pretty Liars- Real Kisser V7.0 [FEMALE HEAD]";
+    // 2026-10-30 15:16:48 relog (David): "your base face was visible for a few seconds". Veil link removed +9.2 s, bake landed +17.2 s,
+    // the stashed head only rezzed at +21 s. The veil must never come off while the real head is not attached.
+    [Fact] public void Veil_StaysOn_UntilTheRealHeadIsAttached()
+    {
+        var ready = new[] { new LoginVeil.Garment("TETRA - Chill T-Shirt - LaraX Petite", 5, 7.3) };
+        var held = LoginVeil.ReleaseWithHead(ready, 9.0, true, new[] { EvoxHead15 });
+        Assert.False(held.release); Assert.Contains("real head", held.why);
+        Assert.True(LoginVeil.ReleaseWithHead(ready, 9.0, true, new string[0]).release);
+        var k = LoginVeil.ReleaseWithHead(ready, LoginVeil.MaxHoldStashedSec + 1, true, new[] { EvoxHead15 });
+        Assert.False(k.release); Assert.StartsWith("KEEP", k.why);   // never a timed release onto the base face
+        var k2 = LoginVeil.ReleaseWithHead(ready, LoginVeil.MaxHoldSec + 1, false, new[] { EvoxHead15 });
+        Assert.False(k2.release);                                     // no 25 s max-hold release either
+    }
+    [Fact] public void HeadsNotAttached_OnlyRealHeadsNotWorn()
+    {
+        var h = new UUID("00000000-0000-0000-0000-0000000000a1"); var l = new UUID("00000000-0000-0000-0000-0000000000a2");
+        var exp = new (UUID, string)[] { (h, EvoxHead15), (l, Kisser15), (h, EvoxHead15) };
+        Assert.Equal(new[] { EvoxHead15 }, LoginVeil.HeadsNotAttached(exp, new HashSet<UUID>()));
+        Assert.Empty(LoginVeil.HeadsNotAttached(exp, new HashSet<UUID> { h }));
+    }
 }

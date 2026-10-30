@@ -432,6 +432,7 @@ public static partial class Program
         // 2026-09-26: a signal without a stop request (hang monitor's TERM, a stray kill) exits 75 so the supervisor relaunches
         ExitCode = ShutdownExitCode(why, deliberate, ExitCode);
         try { WanderOnShutdown(deliberate); } catch { }
+        try { if (LoggedIn) await LoginVeilOnForLogout(); } catch { }   // LoginVeil.cs: the next login starts with the body hidden
         try { ObjectDiskCache.SaveAll(); } catch { }
         try { await VoiceShutdown(); } catch { } // leave voice (Voice.cs); the sidecar finishes its transcript on its own
         if (deliberate && ExitOnLogout) MarkDeliberateStop(why); // daemon only: a logout command also keeps her down across a reboot

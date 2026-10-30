@@ -24,4 +24,15 @@ public class LoginOrderTests
     public void IsBody(string n, bool b) => Assert.Equal(b, LoginOrder.IsBody(n));
     [Theory] [InlineData("TETRA - Chill T-Shirt - LaraX Petite", true)] [InlineData("TETRA - Moca Ankle Boots (Suede) - Maitreya Mid", false)] [InlineData("Maitreya Mesh Body - LaraX HUD V1.1", false)] [InlineData("DOUX - Oasis Hairstyle [M/Long]", false)]
     public void Garments(string n, bool g) => Assert.Equal(g, LoginOrder.IsBodyCuttingGarment(n));
+    // 2026-10-30 10:19 login: bikini top Ready +4 s, body +11 s; the daily swap put the T-shirt on at +62 s (Ready +62) and took the bikini top off before the
+    // +60 s check, which then said "every garment was Ready". The bikini top (seen at login, gone since) must be judged; the T-shirt is a later change.
+    [Fact] public void DailySwapAfterLogin_DoesNotHideTheLoginGarment()
+    {
+        const string Top = "TETRA - Spicy Bikini Top - LaraX Petite";
+        var f = LoginOrder.Findings(new[] { new LoginOrder.Worn(Body, 11, null), new LoginOrder.Worn(Top, 2, 4), new LoginOrder.Worn(Shirt, 62, 62), new LoginOrder.Worn(Shorts, 62, 62) });
+        Assert.Contains("not confirmed", f[0]);
+        Assert.Contains(f, l => l.Contains(Top) && l.Contains("BEFORE the body"));
+        Assert.Contains(f, l => l.Contains(Shirt) && l.Contains("after login"));
+        Assert.DoesNotContain(f, l => l.Contains("every garment was Ready"));
+    }
 }

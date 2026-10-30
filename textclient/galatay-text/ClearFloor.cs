@@ -18,20 +18,23 @@ public static partial class Program
     internal sealed record ClearStep(bool Needed, Vector3? To, string Why, bool FromData);
 
     // pure: should she step away before changing outfit, and to where? `blocked(x, y)` = wall / blocked cell on the nav grid (null = none known).
-    internal static ClearStep ClearStepPlan(Vector3 me, HomeSeatInfo seat, IReadOnlyList<FurnitureBox> boxes, Func<float, float, bool> blocked, float maxR = ClearMaxRadiusM)
+    internal static ClearStep ClearStepPlan(Vector3 me, HomeSeatInfo seat, IReadOnlyList<FurnitureBox> boxes, Func<float, float, bool> blocked, float maxR = ClearMaxRadiusM, float? standMargin = null)
     {
+        // standMargin (StandStepOff.cs): she must end at least this far outside every footprint; a seat spot closer than that is not used
         boxes ??= new List<FurnitureBox>(); blocked ??= (_, _) => false;
         if (seat != null && HDist(me, seat.Pos) > ClearSeatNearM) seat = null;   // a seat she is not next to says nothing about this spot
-        var spot = seat?.StandSpot ?? seat?.Approach ?? seat?.ChangeSpot;
-        var inBox = InFurniture(me, boxes);
-        bool above = spot != null && seat != null && me.Z - spot.Value.Z > ClearAboveFloorM;
+        var spot = seat?.StandSpot ?? seat?.Approach ?? seat?.ChangeSpot; var floorSpot = spot;   // floor height even when the spot itself is too close
+        var inBox = standMargin is float sm0 ? InFurnitureMargin(me, boxes, sm0) : InFurniture(me, boxes);
+        if (standMargin is float sm1 && spot != null && InFurnitureMargin(spot.Value, boxes, sm1) != null) spot = null;
+        bool above = floorSpot != null && seat != null && me.Z - floorSpot.Value.Z > ClearAboveFloorM;
         if (inBox == null && !above) return new ClearStep(false, null, "already on clear floor", false);
-        var on = inBox != null ? $"inside '{inBox.Name}'" : $"{me.Z - spot.Value.Z:F1} m above the floor beside '{seat.Name}'";
+        var on = inBox != null ? (standMargin != null && InFurniture(me, boxes) == null ? $"within {standMargin:F1} m of '{inBox.Name}'" : $"inside '{inBox.Name}'")  : $"{me.Z - floorSpot.Value.Z:F1} m above the floor beside '{seat.Name}'";
         if (spot != null && HDist(me, spot.Value) > StandOutNearTol) return new ClearStep(true, spot, $"standing {on}; the seat's clear spot", true);
         var origin = inBox != null ? new Vector3((inBox.X0 + inBox.X1) / 2, (inBox.Y0 + inBox.Y1) / 2, me.Z) : seat?.Pos ?? me;
         float ox = me.X - origin.X, oy = me.Y - origin.Y, ol = MathF.Sqrt(ox * ox + oy * oy);
         float outA = ol > 0.05f ? MathF.Atan2(oy, ox) : 0f;
         var others = boxes.Where(b => b != inBox).ToList();
+        float margin = MathF.Max(ClearBodyMargin, standMargin ?? 0f);
         Vector3? best = null; float bestScore = float.MaxValue;
         foreach (var r in new[] { 0.8f, 1.2f, 1.6f, 2.0f })
         {
@@ -39,8 +42,8 @@ public static partial class Program
             for (int k = 0; k < 16; k++)
             {
                 float a = k * MathF.PI / 8, cx = me.X + MathF.Cos(a) * r, cy = me.Y + MathF.Sin(a) * r;
-                var c = new Vector3(cx, cy, above ? spot.Value.Z : me.Z);   // up on a seat: aim at the floor, not seat height
-                if (InFurnitureMargin(c, boxes, ClearBodyMargin) != null || blocked(cx, cy) || !ClearLine(me, c, others, blocked)) continue;
+                var c = new Vector3(cx, cy, above ? floorSpot.Value.Z : me.Z);   // up on a seat: aim at the floor, not seat height
+                if (InFurnitureMargin(c, boxes, margin) != null || blocked(cx, cy) || !ClearLine(me, c, others, blocked)) continue;
                 float d = MathF.Abs(a - outA) % (2 * MathF.PI); if (d > MathF.PI) d = 2 * MathF.PI - d;
                 float score = r + (ol > 0.05f ? 0.8f * d / MathF.PI : 0f);
                 if (score < bestScore) { bestScore = score; best = c; }

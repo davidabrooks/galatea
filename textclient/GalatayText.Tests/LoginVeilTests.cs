@@ -136,3 +136,45 @@ public class LoginVeilTests
         Assert.Equal(new[] { "veil" }, steps);   // a hung collar menu is capped; veil not verified: nothing comes off
     }
 }
+
+// 2026-10-30 14:38:27 relog: FetchInventory2 not available at login, every stash fetch hung ~10 s: the clothes came on at +10.5 s (the library's
+// outfit send, not the stash) and the 4 head parts were "not prefetched yet" at veil-off. The stash now attaches from its own ids, no fetch.
+public class LoginVeilNoFetchTests
+{
+    [Fact] public void AttachRecord_NeedsNoFetch_ItemIdAndNameFromTheStashFile()
+    {
+        var x = new LoginVeil.Stashed(UUID.Random(), 55, "TETRA - Chill T-Shirt - LaraX Petite"); var me = UUID.Random();
+        var r = LoginVeil.AttachRecord(x, me, null);
+        Assert.Equal(x.Item, r.UUID); Assert.Equal(x.Item, r.ResolvedItemID); Assert.Equal(x.Name, r.Name); Assert.Equal(me, r.OwnerID); Assert.False(r.IsLink());
+    }
+    [Fact] public void AttachRecord_PrefersACachedRealItem_NeverALinkOrAnotherItem()
+    {
+        var x = new LoginVeil.Stashed(UUID.Random(), 2, "DOUX - Oasis Hairstyle [M/Long]");
+        var real = new InventoryObject(x.Item) { Name = "real", OwnerID = UUID.Random() };
+        Assert.Same(real, LoginVeil.AttachRecord(x, UUID.Random(), real));
+        var other = new InventoryObject(UUID.Random()) { Name = "other" };
+        Assert.Equal(x.Item, LoginVeil.AttachRecord(x, UUID.Random(), other).UUID);
+    }
+    [Fact] public void WaitSource_UsesTheStashClothes_UntilTheCofIsRead()
+    {
+        var shirt = (UUID.Random(), "TETRA - Chill T-Shirt - LaraX Petite"); var boots = (UUID.Random(), "TETRA - Moca Ankle Boots (Suede) - Maitreya Mid");
+        Assert.Equal(new List<(UUID, string)> { shirt, boots }, LoginVeil.WaitSource(null, new() { shirt, boots }));
+        Assert.Null(LoginVeil.WaitSource(null, new() { boots }));        // nothing body-cutting stashed: wait for the COF as before
+        var cof = new List<(UUID, string)> { shirt };
+        Assert.Same(cof, LoginVeil.WaitSource(cof, new() { shirt, boots }));
+        // a stash shirt that is not attached yet keeps the veil on (never nude)
+        var g = LoginVeil.WaitSource(null, new() { shirt })!.Select(l => new LoginVeil.Garment(l.Name, null, null));
+        Assert.False(LoginVeil.Release(g, 3, stashed: true).release);
+    }
+}
+public class LoginVeilLayerDropTests
+{
+    [Fact] public void LayerRecord_WithoutAFetch_StillDropsTheWornAlpha()
+    {
+        var id = UUID.Random(); var r = LoginVeil.LayerRecord(id, null, WearableType.Alpha);
+        var w = Assert.IsType<InventoryWearable>(r); Assert.Equal(id, w.UUID); Assert.Equal(WearableType.Alpha, w.WearableType); Assert.NotEqual(AssetType.Bodypart, w.AssetType);
+        Assert.Equal(WearableType.Alpha, ((InventoryWearable)LoginVeil.LayerRecord(id, null, null)).WearableType);
+    }
+    [Fact] public void LayerRecord_PrefersTheFetchedWearable()
+    { var f = new InventoryWearable(UUID.Random()) { WearableType = WearableType.Alpha }; Assert.Same(f, LoginVeil.LayerRecord(f.UUID, f, WearableType.Tattoo)); }
+}

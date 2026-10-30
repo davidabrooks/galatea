@@ -112,6 +112,24 @@ internal static class LoginVeil
     internal static bool RevealWithVeil(string name)
         => !Waits(name) && (IsHeadPart(name) || Program.OutfitSendRank(name) == 2 || System.Text.RegularExpressions.Regex.IsMatch(name ?? "", @"teeth|eyes?\b|lel evox|earring|necklace|piercing|nails|lashes", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
 
+    /// <summary>Pure (tested): the record to attach a stashed item from, with NO inventory fetch. 14:38 relog: FetchInventory2 was not
+    /// available yet at login, so every stash fetch hung (~10 s): the clothes only came on at +10.5 s (through the library's outfit send, not
+    /// the stash), and the 4 head parts were "not prefetched yet" at veil-off. RezSingleAttachmentFromInv only needs the item id (the sim
+    /// looks the item up in our own inventory); the name rides along for the log. A cached, non-link record is used when there is one.</summary>
+    internal static InventoryItem AttachRecord(Stashed x, UUID owner, InventoryItem known)
+        => known != null && !known.IsLink() && known.UUID == x.Item ? known : new InventoryObject(x.Item) { Name = x.Name ?? "", OwnerID = owner, Description = "" };
+
+    /// <summary>Pure (tested): what the release loop waits on: the COF links when read; before that, the stash's clothes if any of them
+    /// is a waited (body-cutting) garment; else null (not known yet).</summary>
+    internal static List<(UUID Item, string Name)> WaitSource(List<(UUID Item, string Name)> cofLinks, List<(UUID Item, string Name)> stashedClothes)
+        => cofLinks ?? (stashedClothes != null && stashedClothes.Any(x => Waits(x.Name)) ? stashedClothes : null);
+
+    /// <summary>Pure (tested): the record that drops the veil from the library's worn layers. 14:38 relog: the veil item fetch had not
+    /// finished (FetchInventory2 not up yet), so the layer drop was skipped: the COF link and the bake were right (body visible), but the
+    /// library still listed the veil as worn (rlv_layers showed it). Now a fetched wearable is used, else one built from the worn layer.</summary>
+    internal static InventoryItem LayerRecord(UUID id, InventoryItem fetched, WearableType? worn)
+        => fetched is InventoryWearable ? fetched : new InventoryWearable(id) { AssetType = AssetType.Clothing, WearableType = worn ?? WearableType.Alpha, Name = "login veil" };
+
     internal static string FormatStash(IEnumerable<Stashed> s, DateTime at)
         => $"# login veil stash {at:yyyy-MM-dd HH:mm:ss}: attachments taken off at logout (COF links kept); re-attached at login\n"
            + string.Concat(s.Select(x => $"{x.Item}\t{x.Point}\t{(x.Name ?? "").Replace('\t', ' ').Replace('\n', ' ')}\n"));
@@ -291,6 +309,20 @@ public static partial class Program
         catch { return new(); }
     }
 
+    /// <summary>Attach stashed items NOW from the stash file's own ids (LoginVeil.AttachRecord): no fetch, never waits on the inventory server.</summary>
+    static int LoginVeilAttachDirect(IEnumerable<LoginVeil.Stashed> items, string why)
+    {
+        int n = 0; var worn = WornPrims().Select(AttachItemId).ToHashSet();
+        foreach (var x in items.Where(x => !worn.Contains(x.Item)))
+        {
+            if (OutfitChangeActive) { Log("login-veil", $"stash attach ({why}) stopped: an outfit change is running"); break; }
+            InventoryItem known = null; try { known = client.Inventory.Store.Contains(x.Item) ? client.Inventory.Store[x.Item] as InventoryItem : null; } catch { }
+            client.Appearance.Attach(LoginVeil.AttachRecord(x, client.Self.AgentID, known), x.Point > 0 ? (AttachmentPoint)x.Point : AttachmentPoint.Default, false); n++;
+        }
+        if (n > 0) Log("login-veil", $"stash: {n} attachment(s) sent directly, no fetch ({why})");
+        return n;
+    }
+
     static async Task<int> LoginVeilAttach(IEnumerable<LoginVeil.Stashed> items, string why, CancellationToken ct, IReadOnlyDictionary<UUID, Task<InventoryItem>> pre = null)
     {
         int n = 0; var worn = WornPrims().Select(AttachItemId).ToHashSet();
@@ -327,9 +359,9 @@ public static partial class Program
                 var itemTask = id == UUID.Zero ? Task.FromResult<InventoryItem>(null) : FetchItemRO(id, ct);   // fetched once, used by the off path
                 // 14:01 relog: this awaited the stash item fetches (~14 s at login, the server's pace) BEFORE the release loop started, so the
                 // veil decision came at +15.5 s for clothes Ready at +12.3 s. Now the attach runs beside the loop; the loop never waits on it.
-                if (id == UUID.Zero) { if (early.Count > 0) { await Task.Delay(1000, ct); await LoginVeilAttach(early, "login", ct, pre); } why = "no veil configured"; return; }
+                if (id == UUID.Zero) { if (early.Count > 0) { await Task.Delay(1000, ct); LoginVeilAttachDirect(early, "login"); } why = "no veil configured"; return; }
                 bool retried = false, fellBack = false; List<InventoryItem> links = null; DateTime linksAt = DateTime.MinValue; UUID cofId = UUID.Zero;
-                await LoginVeil.BesideLoop(early.Count == 0 ? null : async () => { await Task.Delay(1000, ct); await LoginVeilAttach(early, "login", ct, pre); }, async () => {
+                await LoginVeil.BesideLoop(early.Count == 0 ? null : async () => { await Task.Delay(1000, ct); LoginVeilAttachDirect(early, $"login, +{(DateTime.Now - t0).TotalSeconds:F1} s"); }, async () => {
                 while (gen == loginVeilGen && LoggedIn)
                 {
                     double now = (DateTime.Now - t0).TotalSeconds;
@@ -351,10 +383,12 @@ public static partial class Program
                         Log("login-veil", $"stash clothes still not back at +{now:F0} s: wearing the last clothed outfit '{last ?? "-"}'");
                         if (!string.IsNullOrWhiteSpace(last)) _ = Task.Run(async () => { try { Log("login-veil", "fallback outfit: " + (await WearOutfitWithHuds(last)).Replace("\n", " | ")); } catch (Exception ex) { Log("login-veil", "fallback outfit failed: " + ex.GetBaseException().Message); } });
                     }
-                    var garments = (links ?? new()).Select(l => new LoginVeil.Garment(l.Name,
-                        worn.Contains(l.AssetUUID) ? (loginSeenAt.TryGetValue(l.AssetUUID, out var s) ? (s - t0).TotalSeconds : 0) : null,
+                    // the waited list: the COF links, or (COF not read yet) the stash's own clothes, so a slow COF read never holds the veil
+                    var src = LoginVeil.WaitSource(links?.Select(l => (l.AssetUUID, l.Name)).ToList(), early.Select(x => (x.Item, x.Name)).ToList());
+                    var garments = (src ?? new()).Select(l => new LoginVeil.Garment(l.Name,
+                        worn.Contains(l.Item) ? (loginSeenAt.TryGetValue(l.Item, out var s) ? (s - t0).TotalSeconds : 0) : null,
                         loginReadyAt.TryGetValue(l.Name, out var r) ? (r - t0).TotalSeconds : null)).ToList();
-                    var (rel, w) = links == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.Release(garments, now, stash.Count > 0);
+                    var (rel, w) = src == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.Release(garments, now, stash.Count > 0);
                     why = w; if (rel) break;
                     if (w.StartsWith("KEEP")) { off = false; break; }
                     await Task.Delay(200, ct);
@@ -398,7 +432,13 @@ public static partial class Program
         if (late.Count > 0 && late.Any(x => !WornPrims().Select(AttachItemId).Contains(x.Item)))
         {
             Log("login-veil", $"head parts on at +{(DateTime.Now - t0).TotalSeconds:F1} s ({(confirmed ? "veil-off bake confirmed by the sim" : $"no bake confirmation in {LoginVeil.ConfirmMaxSec:F0} s")})");
-            try { await LoginVeilAttach(late.Where(x => !loginVeilBurstSent.ContainsKey(x.Item)), "after the veil-off bake", ct, pre); } catch (Exception ex) { Log("login-veil", "head parts attach failed: " + ex.GetBaseException().Message); }
+            try
+            {
+                LoginVeilAttachDirect(late.Where(x => !loginVeilBurstSent.ContainsKey(x.Item)), "after the veil-off bake");
+                for (int i = 0; i < 12; i++) { var w = WornPrims().Select(AttachItemId).ToHashSet(); if (late.All(x => w.Contains(x.Item))) break; await Task.Delay(250, ct); }
+                await LoginVeilAttach(late, "after the veil-off bake, fetched retry", ct, pre);   // only what the direct attach did not bring
+            }
+            catch (Exception ex) { Log("login-veil", "head parts attach failed: " + ex.GetBaseException().Message); }
         }
         // the collar only once the head parts are really on (David: it appeared first)
         _ = Task.Run(async () =>
@@ -413,13 +453,11 @@ public static partial class Program
     static readonly System.Collections.Concurrent.ConcurrentDictionary<UUID, byte> loginVeilBurstSent = new();
     static async Task LoginVeilBurst(List<LoginVeil.Stashed> late, DateTime t0, CancellationToken ct, IReadOnlyDictionary<UUID, Task<InventoryItem>> pre)
     {
+        // 14:38 relog: "4 not prefetched yet" (the fetch hung at login): the burst no longer needs a fetched record, every head part goes now
         var ordered = late.OrderBy(x => LoginVeil.RevealOrder(x.Name)).ToList();
-        var ready = ordered.Where(x => pre != null && pre.TryGetValue(x.Item, out var t) && t.IsCompletedSuccessfully && t.Result != null).ToList();
-        var worn = WornPrims().Select(AttachItemId).ToHashSet(); int n = 0;
-        foreach (var x in ready.Where(x => !worn.Contains(x.Item))) { loginVeilBurstSent[x.Item] = 1; var it = pre[x.Item].Result; if (it.IsLink()) continue; client.Appearance.Attach(it, x.Point > 0 ? (AttachmentPoint)x.Point : AttachmentPoint.Default, false); n++; }
-        Log("login-veil", $"head parts sent with the veil-off bake at +{(DateTime.Now - t0).TotalSeconds:F1} s: {n} ({string.Join("; ", ready.Select(x => x.Name))})"
-            + (ready.Count < ordered.Count ? $"; {ordered.Count - ready.Count} not prefetched yet, sent after" : ""));
-        if (ready.Count < ordered.Count) _ = Task.Run(async () => { try { await LoginVeilAttach(ordered.Except(ready), "veil-off burst, late fetch", ct, pre); } catch { } });
+        foreach (var x in ordered) loginVeilBurstSent[x.Item] = 1;
+        int n = LoginVeilAttachDirect(ordered, "veil-off burst");
+        Log("login-veil", $"head parts sent with the veil-off bake at +{(DateTime.Now - t0).TotalSeconds:F1} s: {n} ({string.Join("; ", ordered.Select(x => x.Name))})");
         await Task.CompletedTask;
     }
 
@@ -436,7 +474,7 @@ public static partial class Program
             int simBefore = simAttCof; var tStart = DateTime.Now;
             double rmMs = 0, bakeMs = 0;
             var (removed, confirmed) = await LoginVeil.OffCore(
-                () => { if (it != null) client.Appearance.RemoveFromOutfit(new List<InventoryItem> { it }); },
+                () => { client.Appearance.RemoveFromOutfit(new List<InventoryItem> { LoginVeil.LayerRecord(id, it, SafeWearables().FirstOrDefault(w => w.ItemID == id)?.WearableType) }); },
                 async () =>
                 {
                     using var t = CancellationTokenSource.CreateLinkedTokenSource(ct); t.CancelAfter(5000);
@@ -501,7 +539,7 @@ public static partial class Program
             // read back, then rebake. 12:03 relog: no pre-read and no item fetch here any more (both were done before, at the server's pace).
             int before = CofVer();
             it ??= await FetchItemRO(id, ct);
-            if (it != null) { try { client.Appearance.RemoveFromOutfit(new List<InventoryItem> { it }); } catch { } }
+            try { client.Appearance.RemoveFromOutfit(new List<InventoryItem> { LoginVeil.LayerRecord(id, it, SafeWearables().FirstOrDefault(w => w.ItemID == id)?.WearableType) }); } catch { }
             string rm = ""; bool still = true;
             for (int k = 0; k < 2 && still; k++)
             {

@@ -279,6 +279,9 @@ public sealed class SlTools
         return await R("wear add " + Clean(item_uuid));
     }
 
+    [McpServerTool(Name = "detach_item"), Description("Detach one worn attachment (HUDs included) by its inventory item uuid (see 'worn'). The COF link is removed too, so it stays off at the next login.")]
+    public static Task<string> DetachItem(string item_uuid) => R("detach " + Clean(item_uuid));
+
     [McpServerTool(Name = "chan_say"), Description("Say text on a NON-zero chat channel (e.g. 95 for Maitreya auto-hide commands like 'jeans menu'). Channel 0 is refused: use say.")]
     public static Task<string> ChanSay(int channel, string text)
         => channel == 0 ? Task.FromResult(Json(new { ok = false, result = "refused: channel 0 is local chat; use say" })) : R($"chan {channel} {Clean(text)}");

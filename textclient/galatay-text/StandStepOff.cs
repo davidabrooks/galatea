@@ -31,8 +31,9 @@ public static partial class Program
                 else if (client.Self.SittingOn == 0)
                 {
                     await Task.Delay(500);
-                    var r = await PostHover(PinnedHover(), "stand command repin");
-                    WLog($"stand command: hover repin {PinnedHover():F3} -> {(r.ok ? "ok" : "failed")} {r.info}");
+                    var r = await PostHover(PinnedHover(), "stand command repin (last verified for this footwear)");
+                    WLog($"stand command: hover repin {PinnedHover():F3} -> {(r.ok ? "ok" : "failed")} {r.info}; visual check follows");
+                    hoverSvc.HoverCheckRequest("stand", 3000);   // its verified result is the hover kept in force (and saved for this footwear)
                 }
             }
             catch (Exception ex) { WLog($"stand command ({step}): " + ex.GetBaseException().Message); }

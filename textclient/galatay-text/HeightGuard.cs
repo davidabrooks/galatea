@@ -43,7 +43,7 @@ public static partial class Program
     static double PinnedHover()
     {
         string file = null; try { if (File.Exists(HoverFile)) file = File.ReadLines(HoverFile).FirstOrDefault()?.Trim(); } catch { }
-        return PinnedHoverFrom(rlvHoverOverride, Environment.GetEnvironmentVariable("GT_HOVER"), file);
+        return PinnedHoverFrom(rlvHoverOverride, Environment.GetEnvironmentVariable("GT_HOVER"), PinTextFor(FootwearKeyNow(), LoadFootwearHovers(), file));   // HoverFootwear.cs
     }
 
     static Avatar SelfAv()
@@ -200,7 +200,7 @@ public static partial class Program
             var old = $"pinned {I(PinnedHover())}, in force {(EffectiveHoverNow() is double h ? I(h) : "?")}";
             try { File.AppendAllText(HoverHistory, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} old: {old} -> new {I(v)}\n"); } catch { }
             var (ok, info) = await PostHover(v, "hover set");
-            if (ok) { try { File.WriteAllText(HoverFile, I(v) + "\n"); } catch { } rlvHoverOverride = HoverSetOverride(rlvHoverOverride, v); }
+            if (ok) { try { File.WriteAllText(HoverFile, I(v) + "\n"); } catch { } SaveVerifiedStandHover(v, "hover set"); rlvHoverOverride = HoverSetOverride(rlvHoverOverride, v); }
             return $"old: {old}; {info}; {(ok ? $"pinned value saved to {HoverFile}" : "NOT saved")}";
         }
         // `hover apply <m>`: POST only. Nothing is written to hover.txt (unlike `set`, which pins the value for every later login and region change).

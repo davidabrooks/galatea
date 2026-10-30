@@ -464,7 +464,7 @@ internal sealed partial class Hover
             if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, remeasured here"; h.Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, remeasuring on this pose"); }
             hoverLastCheckedPose = pose;
             string calTxt = calibrated ? "bias calibrated against David's viewer" : "DEFAULT bias, not yet calibrated against David's viewer (hover calibrate)";
-            if (SupportConfirmed(eg, aim)) how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}); hover left alone";
+            if (SupportConfirmed(eg, aim)) { if (kind == "stand") Program.SaveVerifiedStandHover(hov, key); how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}); hover left alone"; }
             else
             {
                 var t = PoseHoverFromGap(hov, eg);
@@ -487,6 +487,7 @@ internal sealed partial class Hover
                 fixedHover = true; finalImg = img2;
                 double? basis2 = g2 is double g2r ? (parts == null || sg1 == null ? g2r : SupportGap(parts, hoverLastPartGaps) ?? g2r) : null;
                 bool good = applied && basis2 is double gg && SupportConfirmed(gg - aim, aim);
+                if (good && kind == "stand" && eff2 is double ev) Program.SaveVerifiedStandHover(ev, key);   // HoverFootwear.cs: the hover in force for this footwear
                 string verdict = good ? (calibrated ? "contact confirmed" : "contact in the render; NOT verified against David's viewer (default bias)") : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
                 how = $"render gap {basis:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(basis2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}{liftTxt}): {info}; {img2}";
             }

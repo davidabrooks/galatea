@@ -97,7 +97,7 @@ public static partial class Program
             .Where(l => l.ParentUUID == cof.UUID && l.IsLink() && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment)).ToList();
         var worn = WornPrims().Select(AttachItemId).Where(u => u != UUID.Zero).ToHashSet();
         worn.UnionWith(early);   // already requested at login: do not send it twice
-        var plan = LoginCover.Plan(links.Select(l => new LoginCover.Item(l.AssetUUID, l.Name)), worn, OutfitSendRank, client.Settings.Agent.OutfitSendExclude);
+        var plan = LoginCover.Plan(links.Select(l => new LoginCover.Item(l.AssetUUID, l.Name)), worn, OutfitSendRank, LoginVeil.HoldExclude(client.Settings.Agent.OutfitSendExclude, LoginVeilHeld));
         double since() => (DateTime.UtcNow - t0).TotalSeconds;
         if (plan.Count == 0) { Log("login-cover", $"restore settled at +{since():F1} s with {worn.Count} worn: every cover item (body, head, hands, feet) is already on"); return; }
         Log("login-cover", $"restore settled at +{since():F1} s with {worn.Count} worn: attaching {plan.Count} missing cover item(s) now, head first: {string.Join("; ", plan.Select(p => p.Name))}");
@@ -129,7 +129,7 @@ public static partial class Program
         var links = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>()
             .Where(l => l.ParentUUID == cof.UUID && l.IsLink() && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment)).ToList();
         var worn = WornPrims().Select(AttachItemId).Where(u => u != UUID.Zero).ToHashSet();
-        var plan = LoginCover.EarlyPlan(links.Select(l => new LoginCover.Item(l.AssetUUID, l.Name)), worn, OutfitSendRank, client.Settings.Agent.OutfitSendExclude);
+        var plan = LoginCover.EarlyPlan(links.Select(l => new LoginCover.Item(l.AssetUUID, l.Name)), worn, OutfitSendRank, LoginVeil.HoldExclude(client.Settings.Agent.OutfitSendExclude, LoginVeilHeld));
         double since() => (DateTime.UtcNow - t0).TotalSeconds;
         if (plan.Count == 0) { Log("login-cover", $"early: real head and body already on at +{since():F1} s"); return sent; }
         foreach (var p in plan)

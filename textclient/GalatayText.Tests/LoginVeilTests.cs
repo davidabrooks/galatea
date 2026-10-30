@@ -42,4 +42,21 @@ public class LoginVeilTests
         Assert.False(LoginVeil.LogoutVerdict(true, 2918, 2918).ok);
         Assert.True(LoginVeil.LogoutVerdict(true, 2918, 2919).ok);
     }
+
+    // 11:48 relog: "[login-veil] veil off at +18.3 s: every garment attached and Ready by +8.3 s", yet David saw the alpha still worn; at 11:49
+    // outfit_wear logged "layer off: 'Galatea login veil (body alpha)'" and "1 COF link(s) removed in one batch": the link had never gone.
+    [Fact] public void VeilOff_NeedsLinkGoneAndCofMoved()
+    {
+        Assert.True(LoginVeil.Release(new[] { new LoginVeil.Garment(Shirt, 7, 8.3) }, 18.3).release);
+        Assert.False(LoginVeil.OffVerdict(true, 2925, 2925).ok);   // the 11:48 state
+        Assert.False(LoginVeil.OffVerdict(true, 2925, 2926).ok);
+        Assert.False(LoginVeil.OffVerdict(false, 2925, 2925).ok);
+        Assert.True(LoginVeil.OffVerdict(false, 2925, 2926).ok);
+    }
+
+    [Fact] public void MaxHold_ReleasesIntoTheSameVerifiedOff()
+    {
+        var r = LoginVeil.Release(new[] { new LoginVeil.Garment(Shirt, null, null) }, LoginVeil.MaxHoldSec);
+        Assert.True(r.release); Assert.Contains("max hold", r.why);
+    }
 }

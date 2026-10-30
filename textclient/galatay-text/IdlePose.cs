@@ -562,6 +562,13 @@ public static partial class Program
                 }
                 else Log("idlepose", "login: no leftover collar pose");
                 IdleSave();
+                // the AO may start its held force sit after the reset: re-check, and stand (toggle off) if a learned AO sit plays
+                foreach (var ms in LoginAoRecheckDelaysMs)
+                {
+                    await Task.Delay(ms);
+                    if (!LoginAoRecheckNeeded(LoggedIn, AoSitReallyOn(), client.Self.SittingOn != 0, idlePosed != null)) continue;
+                    Log("idlepose", "login recheck: AO sit playing after the login reset: " + await AoGroundSitEnsureOff("login recheck"));
+                }
             }
             catch (Exception ex) { Log("idlepose", "login reset: " + ex.GetBaseException().Message); }
         });

@@ -100,6 +100,39 @@ internal static class LoginVeil
         return true;
     }
 
+    /// <summary>Pure (tested): the logout detach waves. 2026-10-30 14:56:49 and 14:59:14 logouts (David): hair and teeth floated by themselves after
+    /// everything else vanished; all 9 detaches went out in one burst, in worn order (head before hair at 14:56:49), and the logout followed in the same
+    /// second. Wave 1 = the small head parts (hair, teeth, eyes, earrings, lips: what floats without the head), wave 2 = the real head and the clothes.
+    /// Each wave is confirmed gone (and settled) before the next, and the last one before the logout.</summary>
+    internal static List<List<Stashed>> LogoutWaves(IEnumerable<Stashed> stash)
+    {
+        var all = (stash ?? Enumerable.Empty<Stashed>()).ToList();
+        var w1 = all.Where(x => IsLooseHeadPart(x.Name)).ToList();
+        var w2 = all.Where(x => !IsLooseHeadPart(x.Name)).ToList();
+        return new[] { w1, w2 }.Where(w => w.Count > 0).ToList();
+    }
+    /// <summary>Pure (tested): a head part that would float on its own once the head is gone (not the real head itself).</summary>
+    internal static bool IsLooseHeadPart(string name) => !LoginOrder.IsRealHead(name) && RevealWithVeil(name);
+    internal const int WaveConfirmMs = 4000, WaveSettleMs = 1200, LogoutSettleMs = 1500;
+    /// <summary>Pure-ish (tested with fakes): detach wave by wave; wait until every item of a wave is no longer worn (bounded) plus a settle, so the
+    /// observers' viewers get the kills in that order, then the next wave; the settle after the last wave keeps the logout from racing the kills.
+    /// Returns one log line per wave with its ms offset.</summary>
+    internal static async Task<List<string>> DetachInWaves(List<List<Stashed>> waves, Action<Stashed> detach, Func<HashSet<UUID>> worn,
+        int confirmMs = WaveConfirmMs, int settleMs = WaveSettleMs, int finalSettleMs = LogoutSettleMs)
+    {
+        var log = new List<string>(); var t0 = DateTime.Now;
+        for (int i = 0; i < waves.Count; i++)
+        {
+            var w = waves[i]; foreach (var x in w) detach(x);
+            var sent = (DateTime.Now - t0).TotalMilliseconds; bool gone = false;
+            for (int t = 0; t <= confirmMs; t += 100) { var on = worn(); if (!w.Any(x => on.Contains(x.Item))) { gone = true; break; } await Task.Delay(100); }
+            var conf = (DateTime.Now - t0).TotalMilliseconds;
+            log.Add($"wave {i + 1}/{waves.Count} sent +{sent:F0} ms, {(gone ? "confirmed gone" : "NOT all gone")} +{conf:F0} ms: {string.Join("; ", w.Select(x => x.Name))}");
+            await Task.Delay(i == waves.Count - 1 ? finalSettleMs : settleMs);
+        }
+        return log;
+    }
+
     /// <summary>Pure (tested): the real head or a head add-on (Kisser lips): faces the alpha cannot hide (lashes), shown with the veil-off bake.</summary>
     internal static bool IsHeadPart(string name)
         => LoginOrder.IsRealHead(name) || (name ?? "").Contains("Kisser", StringComparison.OrdinalIgnoreCase);
@@ -289,8 +322,9 @@ public static partial class Program
             if (stash.Count == 0) { Log("login-veil", "stash: nothing the veil cannot hide is worn"); return; }
             var tmp = LoginVeilStashFile + ".tmp";
             File.WriteAllText(tmp, LoginVeil.FormatStash(stash, DateTime.Now)); File.Move(tmp, LoginVeilStashFile, true);   // the list exists BEFORE anything comes off
-            foreach (var x in stash) DetachItem(x.Item, "login veil stash");
-            for (int i = 0; i < 16; i++) { var w = WornPrims().Select(AttachItemId).ToHashSet(); if (!stash.Any(x => w.Contains(x.Item))) break; await Task.Delay(250); }
+            // hair / teeth / eyes / earrings first (confirmed gone), then the head and the clothes, then a settle before the logout (LoginVeil.LogoutWaves)
+            var waveLog = await LoginVeil.DetachInWaves(LoginVeil.LogoutWaves(stash), x => DetachItem(x.Item, "login veil stash"), () => WornPrims().Select(AttachItemId).ToHashSet());
+            foreach (var l in waveLog) Log("login-veil", "stash " + l);
             var left = WornPrims().Select(AttachItemId).ToHashSet();
             Log("login-veil", $"stash: {stash.Count} attachment(s) taken off for logout (COF links kept, list in {Path.GetFileName(LoginVeilStashFile)}): {string.Join("; ", stash.Select(x => x.Name))}"
                 + (stash.Any(x => left.Contains(x.Item)) ? $"; still attached: {string.Join("; ", stash.Where(x => left.Contains(x.Item)).Select(x => x.Name))}" : ""));

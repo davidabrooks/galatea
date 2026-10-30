@@ -107,6 +107,15 @@ public static partial class Program
         if (!after.Any(st.Contains)) return new();
         return (unclassifiedBefore ?? Enumerable.Empty<UUID>()).Where(u => !after.Contains(u)).Distinct().ToList();
     }
+    // pure (tested): may the verified stand press the AO force-sit toggle? 2026-10-30 14:56:41 logout: the AO held its force sit (VAMOSITG25, 990f4821, a LEARNED
+    // AO sit) since 14:45 under the collar poses; idlePosed was the collar and no built-in ground sit played, so the stand made 6 stands and 0 toggles, logged
+    // "STILL ground sitting" and logged out sitting; the AO kept force sit ON and the 14:57:28 login came back sitting. A learned AO sit playing IS the AO's force
+    // sit being on, so the toggle turns it off (never pressed when nothing plays: AoStandNext returns Done first).
+    internal static bool AoStandMayToggle(string poseKind, bool builtinGroundSitPlaying, bool learnedAoSitPlaying)
+        => poseKind == "groundsit" || builtinGroundSitPlaying || learnedAoSitPlaying;
+    // pure (tested): login re-checks after the +20 s reset: the AO starts its held sit late (14:57:51 "already off", 990f4821 playing by 14:58:19)
+    internal static readonly int[] LoginAoRecheckDelaysMs = { 15000, 30000 };
+    internal static bool LoginAoRecheckNeeded(bool loggedIn, bool aoSitPlaying, bool sittingOnObject, bool posed) => loggedIn && aoSitPlaying && !sittingOnObject && !posed;
     internal enum AoStandStep { Done, Stand, Toggle, GiveUp }
     // pure (tested): the next move of the verified stand, from how many moves are already made (stands + toggles). Pattern: stand,
     // stand, toggle, stand, toggle, stand, then give up. The AO toggle is touched only while an AO sit really plays AND we believe
@@ -232,7 +241,7 @@ public static partial class Program
             return "AO force sit already off (no AO sit animation playing, only classified AO stands" + (hoverSvc.RenderEvidenceNow().call == PoseCall.Standing ? "; the render shows her standing)" : "; no fresh render)");
         }
         bool believed = AoBelievedSitting(idlePosed?.kind, aoSitSeenAt, DateTime.Now);
-        bool mayToggle = idlePosed?.kind == "groundsit" || SelfAnims().Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED);
+        bool mayToggle = AoStandMayToggle(idlePosed?.kind, SelfAnims().Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED), AoSitReallyOn());
         int stands = 0, toggles = 0; string trail = "";
         while (AoStandNext(AoSitReallyOn(), stands + toggles, mayToggle) is var step && step is AoStandStep.Stand or AoStandStep.Toggle)
         {

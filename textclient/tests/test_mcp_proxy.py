@@ -25,8 +25,8 @@ for line in sys.stdin:
         sys.stderr.write("stub got initialize\n"); sys.stderr.flush()
         reply({"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "stub", "version": "1", "pid": os.getpid()}})
     elif meth == "notifications/initialized": sys.stderr.write("stub got initialized\n"); sys.stderr.flush()
-    elif meth == "tools/list": reply({"tools": [{"name": "t"}]})
-    elif meth == "tools/call": reply({"pid": os.getpid()})
+    elif meth == "tools/list": reply({"tools": [{"name": "t"}] + ([{"name": "new_tool", "inputSchema": {"type": "object"}}] if os.path.exists(os.environ.get("STUB_NEW_FLAG", "/nonexistent")) else [])})
+    elif meth == "tools/call": reply({"pid": os.getpid(), "called": (m.get("params") or {}).get("name"), "args": (m.get("params") or {}).get("arguments")})
     elif meth == "slow": pass            # never answers: in flight
     elif meth == "garbage": sys.stdout.write("not json at all\n"); sys.stdout.flush(); reply({"ok": True})
     elif meth == "die": os._exit(7)
@@ -357,3 +357,26 @@ def test_real_connector_survives_cancelled_inflight_calls_behind_the_proxy(tmp_p
         assert c.garbage == []
     finally:
         assert c.close() == 0
+
+
+def test_generic_tools_reach_tools_added_after_registration(tmp_path, stub):
+    """Regression (2026-10-30): the host caches tools/list once; a tool added by a later child build must still be callable."""
+    flag = tmp_path / "newflag"
+    c = Client(tmp_path, stub, extra_env={"STUB_NEW_FLAG": str(flag)})
+    try:
+        c.handshake()
+        names = [t["name"] for t in c.call("tools/list")["result"]["tools"]]
+        assert names == ["t", "list_tools", "call_tool"]
+        assert c.call("tools/call", {"name": "t", "arguments": {"a": 1}})["result"]["called"] == "t"   # passthrough unchanged
+        flag.write_text("1"); n0 = len(c.notes)
+        c.p.send_signal(signal.SIGHUP); c.wait_note("notifications/tools/list_changed", after=n0)
+        r = c.call("tools/call", {"name": "list_tools", "arguments": {}})
+        listed = json.loads(r["result"]["content"][0]["text"])["tools"]
+        assert [t["name"] for t in listed] == ["t", "new_tool"] and listed[1]["inputSchema"] == {"type": "object"}
+        r = c.call("tools/call", {"name": "call_tool", "arguments": {"name": "new_tool", "arguments": {"x": 2}}})
+        assert r["result"]["called"] == "new_tool" and r["result"]["args"] == {"x": 2}
+        bad = c.call("tools/call", {"name": "call_tool", "arguments": {}})
+        assert bad["result"]["isError"] is True
+        assert not c.garbage
+    finally:
+        c.close()

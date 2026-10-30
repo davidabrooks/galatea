@@ -369,13 +369,16 @@ public static partial class Program
             var noProps = prims.Where(p => p.Properties == null).ToList();
             if (noProps.Count > 0) { try { await Task.WhenAny(EnsureProperties(client.Network.CurrentSim, noProps), Task.Delay(3000)); } catch { } }
             var late = LoginVeilStashCandidates(prims);
-            var stash = LoginVeil.MergeStash(loginVeilEarlyStash, late);
+            var usualPlan = await LoginVeilUsualPlan(LoginVeil.MergeStash(loginVeilEarlyStash, late));   // dress as usual at login (LoginVeilUsual.cs)
+            Log("login-veil", "usual outfit: " + usualPlan.Why);
+            var stash = usualPlan.Stash;
             if (stash.Count == 0) { Log("login-veil", "stash: nothing the veil cannot hide is worn"); return; }
             var tmp = LoginVeilStashFile + ".tmp";
             File.WriteAllText(tmp, LoginVeil.FormatStash(stash, DateTime.Now)); File.Move(tmp, LoginVeilStashFile, true);   // the list exists BEFORE anything comes off
             // hair / teeth / eyes / earrings first (confirmed gone), then the head and the clothes, then a settle before the logout (LoginVeil.LogoutWaves)
             var waveLog = await LoginVeil.DetachInWaves(LoginVeil.LogoutWaves(late), x => DetachItem(x.Item, "login veil stash"), () => WornPrims().Select(AttachItemId).ToHashSet());
             foreach (var l in waveLog) Log("login-veil", "stash " + l);
+            await LoginVeilUsualCof(usualPlan);
             var left = WornPrims().Select(AttachItemId).ToHashSet();
             Log("login-veil", $"stash: {stash.Count} attachment(s) taken off for logout (COF links kept, list in {Path.GetFileName(LoginVeilStashFile)}): {string.Join("; ", stash.Select(x => x.Name))}"
                 + (stash.Any(x => left.Contains(x.Item)) ? $"; still attached: {string.Join("; ", stash.Where(x => left.Contains(x.Item)).Select(x => x.Name))}" : ""));

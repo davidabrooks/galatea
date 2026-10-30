@@ -52,14 +52,14 @@ public class LoginVeilEvoxTests
         Assert.True(EvoxHide.SafetyRestoreDue(true, true, EvoxHide.SafetyNetSec));
         Assert.False(EvoxHide.SafetyRestoreDue(false, false, 999));
     }
-    [Fact] public async Task Logout_EarsAndLashesHidden_AfterTheHairWave_BeforeCollarAndVeil()
+    [Fact] public async Task Logout_EarsLashesAndCollar_BeforeTheHairWave_HairWaveRightBeforeVeil()
     {
         var steps = new List<string>();
         var ok = await LoginVeil.LogoutCore(() => { steps.Add("collar"); return Task.CompletedTask; }, 1000,
             () => { steps.Add("veil"); return Task.FromResult(true); }, () => { steps.Add("stash"); return Task.CompletedTask; },
             () => { steps.Add("hair"); return Task.CompletedTask; }, () => { steps.Add("ears-lashes"); return Task.CompletedTask; });
         Assert.True(ok);
-        Assert.Equal(new[] { "hair", "ears-lashes", "collar", "veil", "stash" }, steps);
+        Assert.Equal(new[] { "ears-lashes", "collar", "hair", "veil", "stash" }, steps);
     }
     [Fact] public async Task Logout_StuckHud_DoesNotHoldTheLogout()
     {

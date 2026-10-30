@@ -39,7 +39,7 @@ public static partial class Program
             for (int k = 0; k < 16; k++)
             {
                 float a = k * MathF.PI / 8, cx = me.X + MathF.Cos(a) * r, cy = me.Y + MathF.Sin(a) * r;
-                var c = new Vector3(cx, cy, me.Z);
+                var c = new Vector3(cx, cy, above ? spot.Value.Z : me.Z);   // up on a seat: aim at the floor, not seat height
                 if (InFurnitureMargin(c, boxes, ClearBodyMargin) != null || blocked(cx, cy) || !ClearLine(me, c, others, blocked)) continue;
                 float d = MathF.Abs(a - outA) % (2 * MathF.PI); if (d > MathF.PI) d = 2 * MathF.PI - d;
                 float score = r + (ol > 0.05f ? 0.8f * d / MathF.PI : 0f);

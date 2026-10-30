@@ -21,10 +21,11 @@ internal sealed partial class Hover
     // pure (tested): parse the words after "hover calibrate" -> (action show|set|reset, target stand|sit|here, cm) or an error
     internal static (bool ok, string action, string target, double cm, string err) HoverCalibrateParse(string[] a)
     {
-        const string usage = "usage: hover calibrate stand|sit|here <cm> (what you see now: + above the ground, - sunk) | hover calibrate show | hover calibrate reset stand|sit|here";
+        const string usage = "usage: hover calibrate stand|sit|here <cm> (what you see now: + above the ground, - sunk) | hover calibrate show [stand|sit|here] | hover calibrate reset stand|sit|here";
         if (a == null || a.Length == 0) return (false, null, null, 0, usage);
         var w = a.Select(x => x.ToLowerInvariant()).ToArray();
         if (w is ["show"]) return (true, "show", null, 0, null);
+        if (w is ["show", "stand" or "sit" or "here"]) return (true, "show", w[1], 0, null);   // the MCP tool advertises `show stand`
         if (w is ["reset", "stand" or "sit" or "here"]) return (true, "reset", w[1], 0, null);
         if (w.Length is 2 or 3 && w[0] is "stand" or "sit" or "here" && (w.Length == 2 || w[2] == "cm"))
         {
@@ -66,6 +67,12 @@ internal sealed partial class Hover
         var (ok, action, target, cm, err) = HoverCalibrateParse(a);
         if (!ok) return err;
         bool android = h.AndroidFormNow(); var nums = PoseNums();
+        if (action == "show" && target != null)
+        {
+            var (sk, sp) = PoseNow();
+            var want = target == "here" ? PoseBiasPoseKey(android, sp ?? sk) : PoseBiasKey(android, target);
+            return nums.TryGetValue(want, out var sv) ? $"{want} {Program.I(sv)} (calibrated)" : $"{want} not calibrated: default {Program.I(PoseBiasDefault(target == "here" ? sk : target))}";
+        }
         if (action == "show")
             return nums.Count == 0 ? "no calibrated biases (defaults: stand " + Program.I(PoseBiasDefault("stand")) + ", sit " + Program.I(PoseBiasDefault("sit")) + ")"
                 : string.Join("; ", nums.OrderBy(k => k.Key).Select(k => $"{k.Key} {Program.I(k.Value)}")) + $"; defaults for the rest: stand {Program.I(PoseBiasDefault("stand"))}, sit {Program.I(PoseBiasDefault("sit"))}";

@@ -139,6 +139,8 @@
     <Compile Include="../galatay-text/RedressFast.cs" Link="Core/RedressFast.cs" />
     <Compile Include="../galatay-text/SeatStandOut.cs" Link="Core/SeatStandOut.cs" />
     <Compile Include="../galatay-text/ClearFloor.cs" Link="Core/ClearFloor.cs" />
+    <Compile Include="../galatay-text/StandStepOff.cs" Link="Core/StandStepOff.cs" />
+    <Compile Include="../galatay-text/HoverFootwear.cs" Link="Core/HoverFootwear.cs" />
     <Compile Include="../galatay-text/MaturityPref.cs" Link="Core/MaturityPref.cs" />
     <Compile Include="../galatay-text/TeleportDetail.cs" Link="Core/TeleportDetail.cs" />
     <Compile Include="../galatay-text/WanderRest.cs" Link="Core/WanderRest.cs" />

@@ -2099,9 +2099,11 @@ public static partial class Program
                 if (!rlvForcing.Value) RlvRelease("stand command");   // RlvPlace.cs: David asked her to stand
                 rlvReleasing = true; _ = Task.Run(async () => { await Task.Delay(3000); rlvReleasing = false; });
                 Interlocked.Increment(ref sitGen);
+                bool standWasOnObject = client.Self.SittingOn != 0;
                 client.Self.Stand();
                 await Task.Delay(800);
                 try { Log("idlepose", "stand: " + await IdleExplicitStand("stand command")); } catch { }   // AO force sit off + 30 min no idle sit
+                if (client.Self.SittingOn == 0) _ = Task.Run(() => StandCommandAfter(standWasOnObject));   // StandStepOff.cs: step off the seat, then repin the -4 cm stand hover
                 if (client.Self.SittingOn == 0) { try { SeatLingerTick(); } catch { } _ = Task.Run(CleanupTempAttachesAfterStand); return (DateTime.Now - lastSitEnded).TotalSeconds < 5 ? $"standing; seat anims: {seatLingerLast}" : "standing"; }   // SeatLinger.cs + Experiences.cs temp props
                 return "stand sent (still reported seated)";
             case "moveto": case "goto":

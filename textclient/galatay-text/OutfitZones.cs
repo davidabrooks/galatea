@@ -185,6 +185,7 @@ public static partial class Program
         try
         {
             await Task.Delay(20000); // attachments + COF settle after login
+            await Task.WhenAny(loginVeilRestoreTask, Task.Delay(120000));   // LoginVeil.cs: the clothes taken off at logout are back first
             if (!LoggedIn) return;
             var today = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow,
                 TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles")).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);

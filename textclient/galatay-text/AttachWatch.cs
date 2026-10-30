@@ -372,6 +372,7 @@ public static partial class Program
         if (why.Equals("before sit", StringComparison.Ordinal) || why.StartsWith("seated", StringComparison.Ordinal)) return true;
         // AO restore historically detach+re-attach; keep COF so login/stand still has the HUD
         if (why.StartsWith("ao restore", StringComparison.OrdinalIgnoreCase)) return true;
+        if (why.StartsWith("login veil", StringComparison.Ordinal)) return true;   // LoginVeil.cs stash: re-attached at the next login
         if (why.StartsWith("ao ", StringComparison.OrdinalIgnoreCase) && why.Contains("restore", StringComparison.OrdinalIgnoreCase)) return true;
         return false; // "command", "wear remove", "unexpected self-detach", ...
     }
@@ -417,7 +418,7 @@ public static partial class Program
         detachIntent[item] = (DateTime.Now, keepCof, why);
         try { File.AppendAllText(DetachLog, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} detach item {item} {desc} point={(p == null ? "?" : ((int)p.PrimData.AttachmentPoint).ToString())} ({why}){(keepCof ? " [COF kept]" : " [COF remove]")}; re-attach: text-galatay.sh cmd \"attach {item}\"\n"); } catch { }
         client.Appearance.Detach(item);
-        if (why != "outfit swap" && why != "alpha follow") AlphaFollowAfterRemove(new[] { item }, why);   // AlphaFollow.cs
+        if (why != "outfit swap" && why != "alpha follow" && !why.StartsWith("login veil", StringComparison.Ordinal)) AlphaFollowAfterRemove(new[] { item }, why);   // AlphaFollow.cs
         lastDetachSent[item] = DateTime.Now; // worn all: a chat before this no longer proves the item is attached
         Log("height", $"detached item {item} {desc} ({why}){(keepCof ? "; COF link kept" : "; COF link will be removed")}");
         return $"detach sent for item {item} {desc}" + (keepCof ? " (COF link kept)" : "");

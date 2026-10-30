@@ -16,9 +16,9 @@ public class LoginVeilTests
     {
         Assert.False(LoginVeil.Release(Live1036(null, null), 7.0).release);       // body at +7, T-shirt not attached yet
         Assert.False(LoginVeil.Release(Live1036(7, null), 8.0).release);          // attached, not Ready: the David-saw-the-body window
-        var r = LoginVeil.Release(Live1036(7, 10), 10.5);
+        var r = LoginVeil.Release(Live1036(7, 10), 10.2);
         Assert.False(r.release); Assert.Contains("grace", r.why);
-        Assert.True(LoginVeil.Release(Live1036(7, 10), 11.6).release);           // Ready + grace: now the body may show, dressed
+        Assert.True(LoginVeil.Release(Live1036(7, 10), 10.6).release);           // Ready + 0.5 s grace (12:03 relog: no more +12 s wait)
     }
     [Fact] public void BootsHairAndTheBodyItself_AreNotWaitedFor()
     { Assert.False(LoginVeil.Waits(Boots)); Assert.False(LoginVeil.Waits(Hair)); Assert.False(LoginVeil.Waits(Body)); Assert.True(LoginVeil.Waits(Shirt)); }
@@ -59,4 +59,30 @@ public class LoginVeilTests
         var r = LoginVeil.Release(new[] { new LoginVeil.Garment(Shirt, null, null) }, LoginVeil.MaxHoldSec);
         Assert.True(r.release); Assert.Contains("max hold", r.why);
     }
+
+    // 2026-10-30 12:03 relog: 'veil off at +21.5 s: every garment attached and Ready by +9.2 s'; hair and teeth floated around the invisible body.
+    const string Teeth = "LeL EvoX Teeth", Head = "-Pretty Liars- Real Kisser V7.0 [FEMALE HEAD]", Kisser = "Real Kisser V7.0", Hud = "Maitreya Mesh Body - LaraX HUD", Collar = "Premium Collar";
+    [Fact] public void Stash_TakesHairTeethAndClothes_NotBodyHeadHudsOrCollar()
+    {
+        Assert.True(LoginVeil.ShouldStash(Hair, 2)); Assert.True(LoginVeil.ShouldStash(Shirt, 1)); Assert.True(LoginVeil.ShouldStash(Boots, 7)); Assert.True(LoginVeil.ShouldStash(Teeth, 11));
+        Assert.False(LoginVeil.ShouldStash(Body, 1)); Assert.False(LoginVeil.ShouldStash(Head, 2)); Assert.False(LoginVeil.ShouldStash(Kisser, 12));
+        Assert.False(LoginVeil.ShouldStash(Hud, 35)); Assert.False(LoginVeil.ShouldStash("Some screen thing", 33)); Assert.False(LoginVeil.ShouldStash(Collar, 39)); Assert.False(LoginVeil.ShouldStash("", 5));
+    }
+    [Fact] public void Reveal_HairAndTeethWithTheVeil_ClothesAtLogin()
+    { Assert.True(LoginVeil.RevealWithVeil(Hair)); Assert.True(LoginVeil.RevealWithVeil(Teeth)); Assert.False(LoginVeil.RevealWithVeil(Shirt)); Assert.False(LoginVeil.RevealWithVeil(Boots)); }
+    [Fact] public void Stash_RoundTrips()
+    {
+        var a = new[] { new LoginVeil.Stashed(UUID.Random(), 2, Hair), new LoginVeil.Stashed(UUID.Random(), 55, Shirt) };
+        var b = LoginVeil.ParseStash(LoginVeil.FormatStash(a, DateTime.Now));
+        Assert.Equal(a, b); Assert.Empty(LoginVeil.ParseStash("# only a comment\n")); Assert.Empty(LoginVeil.ParseStash(null));
+    }
+    [Fact] public void WithAStash_TheVeilNeverComesOffOverABareBody()
+    {
+        Assert.False(LoginVeil.Release(Live1036(null, null), LoginVeil.MaxHoldSec, stashed: true).release);   // no 25 s release
+        var k = LoginVeil.Release(Live1036(null, null), LoginVeil.MaxHoldStashedSec, stashed: true);
+        Assert.False(k.release); Assert.StartsWith("KEEP", k.why);                                          // past 90 s: stays invisible
+        Assert.True(LoginVeil.Release(Live1036(7, null), LoginVeil.MaxHoldStashedSec, stashed: true).release); // attached, not Ready: dressed, may release
+        Assert.True(LoginVeil.Release(Live1036(7, 10), 10.6, stashed: true).release);
+    }
+    [Fact] public void StashDetach_KeepsTheCofLinks_SoTheLibraryRestoreIsAFallback() => Assert.True(Program.KeepCofForDetachWhy("login veil stash"));
 }

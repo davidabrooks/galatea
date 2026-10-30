@@ -34,7 +34,7 @@ internal sealed partial class Hover
     // floor while the render said contact: the model's body-root error differs per animation), then the (form, kind) bias, then the default
     internal static string PoseBiasPoseKey(bool android, string pose) => $"bias|{(android ? "android" : "human")}|{pose}";
     internal static double PoseBiasFor(IReadOnlyDictionary<string, double> nums, bool android, string kind, string pose)
-        => nums.TryGetValue(PoseBiasPoseKey(android, pose), out var a) ? a : nums.TryGetValue(PoseBiasKey(android, kind), out var b) ? b : PoseBiasDefault(kind);
+        => nums.TryGetValue(PoseBiasPoseKey(android, pose), out var a) ? a : nums.TryGetValue(PoseBiasKey(android, kind), out var b) ? b : PoseBiasDefault(kind, android);
     // pure (tested): David's photo is truth: the bias that makes the render's gap equal the real gap he sees
     internal static double PoseBiasFromPhoto(double biasUsed, double renderGap, double realGap) => Math.Round(biasUsed + (renderGap - realGap), 4);
     // pure (tested): has this pose / posture a bias that was set from David's own view (hover calibrate)? else the default is only a first guess
@@ -43,8 +43,20 @@ internal sealed partial class Hover
     internal static string PoseBiasKey(bool android, string kind) => $"bias|{(android ? "android" : "human")}|{kind}";
     // measured 2026-10-23 17:19 (android): stands render 0.2315 m high at the pin (the sim keeps her feet on the floor);
     // ground sits -0.055 m at David's approved VAMOSITG26 -0.12 m
-    internal static double PoseBiasDefault(string kind) => kind == "stand" ? 0.2315 : -0.055;
+    // 2026-10-29 21:36-21:40 (David's viewer is truth): the HUMAN form used these ANDROID numbers, so the render and his viewer disagreed:
+    // stand: render contact at +0.009, David sees contact at -0.04 (render floor ~4.9 cm high) -> 0.2315 - 0.049 = 0.1825;
+    // VAMOSITG12 ground sit: render contact at -0.30, David sees ~13 cm sunk there (contact ~ -0.17) -> -0.055 + 0.13 = 0.075.
+    // First guesses from David's eyes; `hover calibrate` still overrides per kind / pose.
+    internal const double HumanStandBiasDefault = 0.1825, HumanSitBiasDefault = 0.075;
+    internal static double PoseBiasDefault(string kind, bool android = true) =>
+        android ? (kind == "stand" ? 0.2315 : -0.055) : (kind == "stand" ? HumanStandBiasDefault : HumanSitBiasDefault);
     internal static bool PoseGapSane(double gap) => Math.Abs(gap) <= 0.25;
+    // 2026-10-29 21:38 (David's own screenshot): VAMOSITG12 on clear Peronaut floor really floated +0.28 m; the 0.25 m cap rejected a correct render as
+    // "implausible" and nothing was fixed. A ground sit on clear floor (not on / within HoverFurnitureNearM of a footprint) may apply up to GroundSitGapMax;
+    // fixes above HoverFixMax still need the second consistent render (HoverFixConfirmed). Stands and sits on furniture keep the 0.25 m cap.
+    internal const double GroundSitGapMax = 0.45;
+    internal static bool PoseGapSane(double gap, string kind, bool nearFurniture) =>
+        PoseGapSane(gap) || (kind == "sit" && !nearFurniture && Math.Abs(gap) <= GroundSitGapMax);
     internal static bool PoseGapConfirmed(double gap) => Math.Abs(gap) <= PoseHoverTol;
     // ---- ground sits whose floor contact is not (only) the hips (2026-10-27 David: VAMOSITG13 / 11 rest on their hands, VAMOSITG27 on chest / forearms / thighs) ----
     // David's rule: look at the ground the way he does and adjust to it; the ground types differ, so NO per-pose hover value and NO per-pose offset. The ONE close-up render measures, against the floor
@@ -419,7 +431,8 @@ internal sealed partial class Hover
             var parts = SupportParts(kind, pose);   // which body parts support her in this pose (data: names only, never numbers); null = unlisted: the whole-body lowest gap
             var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind, parts: parts);   // render 1: the contact close-up (replaces the wide side view)
             string finalImg = img1;
-            if (g1 is not double gap || !PoseGapSane(gap))
+            bool nearFurn = h.InPeronaut && Program.InFurnitureMargin(h.Client.Self.SimPosition, h.HomeFootprints(), HoverFurnitureNearM) != null;
+            if (g1 is not double gap || !PoseGapSane(gap, kind, nearFurn))
             {
                 if (g1 is double bg) return await HoverGapOnFurniture(kind, key, bg, img1);   // moved off the furniture (retry reason) or left unresolved (logged, null = finished)
                 var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; h.Log("posehover", bad); hoverCheckResult = bad; return null;

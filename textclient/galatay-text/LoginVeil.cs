@@ -41,6 +41,15 @@ internal static class LoginVeil
         return (true, $"COF v{cofBefore} -> v{cofAfter}, veil linked");
     }
 
+    /// <summary>Pure (tested): did the login veil really come off? Its COF link must be gone and the COF version must have moved (else the
+    /// rebake is skipped as a duplicate). 11:48 relog: "veil off" was logged while the link stayed in the COF.</summary>
+    internal static (bool ok, string why) OffVerdict(bool linkStillInCof, int cofBefore, int cofAfter)
+    {
+        if (linkStillInCof) return (false, "veil link still in Current Outfit");
+        if (cofAfter <= cofBefore) return (false, $"COF version did not move (v{cofBefore} -> v{cofAfter}), the bake would skip it");
+        return (true, $"COF v{cofBefore} -> v{cofAfter}, veil link gone");
+    }
+
     /// <summary>Pure: the veil item id from routes/_login-veil.txt (first non-comment UUID).</summary>
     internal static UUID ParseVeilFile(string text)
     {
@@ -124,14 +133,30 @@ public static partial class Program
 
     static async Task LoginVeilOff(UUID id, DateTime t0, string why)
     {
+        string At() => $"+{(DateTime.Now - t0).TotalSeconds:F1} s";
         try
         {
-            if (!LoggedIn || !LoginVeilWorn(id)) { Log("login-veil", $"veil not worn at +{(DateTime.Now - t0).TotalSeconds:F1} s ({why})"); return; }
-            using var cts = new CancellationTokenSource(20000);
-            var it = await FetchItemRO(id, cts.Token); if (it == null) return;
-            client.Appearance.RemoveFromOutfit(new List<InventoryItem> { it }); await RebakeNow("login veil off");
-            Log("login-veil", $"veil off at +{(DateTime.Now - t0).TotalSeconds:F1} s: {why}");
+            if (!LoggedIn) { Log("login-veil", $"veil NOT off at {At()}: logged out ({why})"); return; }
+            using var cts = new CancellationTokenSource(30000); var ct = cts.Token;
+            var cof = await CofFolder(ct); if (cof == null) { Log("login-veil", $"veil NOT off at {At()}: Current Outfit not found ({why})"); return; }
+            async Task<bool> Linked() => (await ReadFolderRO(cof.UUID, ct, 8000)).OfType<InventoryItem>().Any(l => l.ParentUUID == cof.UUID && l.IsLink() && l.AssetUUID == id);
+            int CofVer() => (client.Inventory.Store[cof.UUID] as InventoryFolder)?.Version ?? cof.Version;
+            // 11:48 relog: trusted RemoveFromOutfit, logged "veil off", but the COF link stayed (outfit_wear at 11:49 still removed it).
+            // The COF link is the truth: check it (not only the wearables list), remove it ourselves, read back, then rebake.
+            if (!LoginVeilWorn(id) && !await Linked()) { Log("login-veil", $"veil not worn at {At()} ({why})"); return; }
+            int before = CofVer();
+            var it = await FetchItemRO(id, ct);
+            if (it != null) { try { client.Appearance.RemoveFromOutfit(new List<InventoryItem> { it }); } catch { } }
+            string rm = ""; bool still = true;
+            for (int k = 0; k < 2 && still; k++)
+            {
+                rm += (k > 0 ? "; retry: " : "") + await CofLinksOffBatch(new[] { id }, "login veil off", ct);
+                still = await Linked();
+            }
+            var (ok, v) = LoginVeil.OffVerdict(still, before, CofVer());
+            if (ok) await RebakeNow("login veil off");
+            Log("login-veil", ok ? $"veil off at {At()}: {why} ({v}; {rm})" : $"veil NOT off at {At()}: {v} ({rm}); trigger: {why}");
         }
-        catch (Exception ex) { Log("login-veil", "veil off failed: " + ex.GetBaseException().Message); }
+        catch (Exception ex) { Log("login-veil", $"veil NOT off at {At()}: " + ex.GetBaseException().Message); }
     }
 }

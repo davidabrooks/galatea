@@ -28,18 +28,23 @@ internal static class LoginOrder
     /// reported "every garment Ready". Garments first seen after <paramref name="loginWindowSec"/> are not part of the login order (named apart);
     /// the caller also passes garments seen at login and taken off since.</summary>
     internal const double LoginWindowSec = 30;
-    internal static List<string> Findings(IEnumerable<Worn> worn, double loginWindowSec = LoginWindowSec)
+    /// <param name="veilOffSec">16:24 login: "the base face showed for about 5 s" was logged although the full-avatar login veil hid the base
+    /// head until +90 s. With a veil (seconds it came off; double.MaxValue = still on), a head that arrived before then never showed the base face.</param>
+    internal static List<string> Findings(IEnumerable<Worn> worn, double loginWindowSec = LoginWindowSec, double? veilOffSec = null)
     {
         var all = (worn ?? Array.Empty<Worn>()).ToList(); var res = new List<string>();
         var later = all.Where(x => IsBodyCuttingGarment(x.Name) && x.SeenSec is double s0 && s0 > loginWindowSec).ToList();
         var w = all.Except(later).ToList();
         var head = w.FirstOrDefault(x => IsRealHead(x.Name));
         var headLine = head == null ? null : head.SeenSec is not double hs ? $"the real head '{head.Name}' was not seen: the base face stayed visible"
+            : veilOffSec is double vo && hs <= vo ? $"real head arrived at +{hs:F0} s, under the login veil ({(vo >= 1e9 ? "still on" : $"off at +{vo:F0} s")}): the base face was hidden"
+            : veilOffSec is double vo2 && hs - vo2 > 0.5 ? $"real head arrived at +{hs:F0} s, {hs - vo2:F0} s AFTER the veil came off at +{vo2:F0} s: the base face showed for about {hs - vo2:F0} s"
+            : veilOffSec != null ? $"real head arrived at +{hs:F0} s"
             : hs > 2 ? $"real head arrived at +{hs:F0} s: the base face showed for about {hs:F0} s" : $"real head arrived at +{hs:F0} s";
         var body = w.FirstOrDefault(x => IsBody(x.Name) && x.SeenSec != null);
         if (body == null) { res.Add("the body was not seen in this login's attachments"); if (headLine != null) res.Add(headLine); return res; }
         double bodyAt = body.SeenSec!.Value; double uncutUntil = bodyAt;
-        foreach (var g in w.Where(x => IsBodyCuttingGarment(x.Name)).OrderBy(x => x.SeenSec ?? 1e9))
+        foreach (var g in w.Where(x => IsBodyCuttingGarment(x.Name) && !LoginVeil.IsBodyAddOn(x.Name)).OrderBy(x => x.SeenSec ?? 1e9))
         {
             if (g.ReadySec is not double r) { res.Add($"'{g.Name}' never announced Ready: its body cut may never have applied"); uncutUntil = double.MaxValue; continue; }
             if (r < bodyAt) { res.Add($"'{g.Name}' was Ready at +{r:F0} s, BEFORE the body arrived at +{bodyAt:F0} s: its cut of the body may not have applied (skin showing under it)"); uncutUntil = double.MaxValue; }
@@ -74,7 +79,8 @@ public static partial class Program
                 using var cts = new CancellationTokenSource(10000);
                 foreach (var (id, at) in loginSeenAt.ToArray())
                     if (!wornIds.Contains(id) && (at - t0).TotalSeconds <= LoginOrder.LoginWindowSec && await FetchItemRO(id, cts.Token) is InventoryItem gone) worn.Add(Mk(gone.Name, id));
-                Log("login-order", string.Join("; ", LoginOrder.Findings(worn)));
+                var vo = loginVeilOffAt; double? veilSec = vo == DateTime.MinValue ? null : vo == DateTime.MaxValue ? double.MaxValue : Math.Max(0, (vo - t0).TotalSeconds);
+                Log("login-order", string.Join("; ", LoginOrder.Findings(worn, veilOffSec: veilSec)));
             }
             catch (Exception ex) { Log("login-order", "analysis failed: " + ex.GetBaseException().Message); }
         });

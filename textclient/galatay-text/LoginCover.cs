@@ -9,6 +9,11 @@
 // 2026-10-29 (21:34 login, David: "I saw the base face too long"): the fast path still WAITED for the sim restore to settle (+6.0 s) before
 // attaching the head, although the sim never restores it (point #12 goes to the Real Kisser): head seen at +6.7 s, base face ~6 s plus the
 // viewer's mesh load. Now the real head (EarlyPlan) is attached right at login, before the settle wait; the rest of the cover set keeps the wait.
+// 2026-10-30 (10:19 login, David: "I briefly saw your base torso, then you removed it for a few seconds even though you were wearing a bikini top"):
+// the same one-object-per-point rule hit the BODY: the Petite Add-on (the LaraX torso/chest piece) shares point #1 (Chest) with the bikini top, so
+// the sim restored the bikini top (+0 s) and never the add-on; the cover pass only sent it after the settle (+9.8 s) and it rezzed at +27 s, while
+// the body itself came last in the sim's own restore (+7 s): base torso first, then the body with its chest hidden and no add-on under the bikini.
+// EarlyPlan now attaches the whole body set (real head, body, body add-on) at login; the rest of the cover set keeps the wait.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -36,10 +41,15 @@ internal static class LoginCover
             .Select((i, idx) => (i, idx, r: PlanRank(i.Name, rank)))
             .OrderBy(x => x.r).ThenBy(x => x.idx).Select(x => x.i).ToList();
 
-    /// <summary>Pure (tested): the cover items attached AT ONCE at login, without waiting for the sim restore: only the real head (the sim restores
-    /// one object per point and gives the head's point to the Real Kisser, so waiting never helps; ATTACHMENT_ADD keeps the Kisser on).</summary>
+    /// <summary>Pure (tested): the cover items attached AT ONCE at login, without waiting for the sim restore: the real head, the mesh body and the
+    /// body add-on (the sim restores one object per point: the head's point goes to the Real Kisser, the add-on's Chest point to the top worn, and
+    /// the body itself comes late in the sim's order; ATTACHMENT_ADD keeps the Kisser and the top on). Eyes, teeth, hands, feet keep the wait.</summary>
     internal static List<Item> EarlyPlan(IEnumerable<Item> cof, ISet<UUID> worn, Func<string, int> rank, Func<UUID, string, bool> exclude = null)
-        => Plan(cof, worn, rank, exclude).Where(i => PlanRank(i.Name, rank) < 0).ToList();
+        => Plan(cof, worn, rank, exclude).Where(i => PlanRank(i.Name, rank) < 0 || IsBodyPart(i.Name)).ToList();
+
+    /// <summary>Pure: the Maitreya mesh body or its add-on (not the body HUD).</summary>
+    internal static bool IsBodyPart(string name)
+        => (name ?? "").StartsWith("Maitreya Mesh Body", StringComparison.OrdinalIgnoreCase) && !(name ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The real head before everything else (the base face is the most visible gap), then body, then the rest of the cover set.</summary>
     internal static int PlanRank(string name, Func<string, int> rank)
@@ -105,7 +115,7 @@ public static partial class Program
         Log("login-cover", $"after +{since():F1} s not seen: {string.Join("; ", invs.Where(i => !have2.Contains(i.UUID)).Select(i => i.Name))} (the library add-missing pass still covers them)");
     }
 
-    /// <summary>Attach the real head right at login (before the restore-settle wait). Returns the item ids requested.</summary>
+    /// <summary>Attach the real head and the body set right at login (before the restore-settle wait). Returns the item ids requested.</summary>
     static async Task<HashSet<UUID>> LoginCoverEarlyHead(int gen, DateTime t0)
     {
         var sent = new HashSet<UUID>();
@@ -117,13 +127,13 @@ public static partial class Program
         var worn = WornPrims().Select(AttachItemId).Where(u => u != UUID.Zero).ToHashSet();
         var plan = LoginCover.EarlyPlan(links.Select(l => new LoginCover.Item(l.AssetUUID, l.Name)), worn, OutfitSendRank, client.Settings.Agent.OutfitSendExclude);
         double since() => (DateTime.UtcNow - t0).TotalSeconds;
-        if (plan.Count == 0) { Log("login-cover", $"early: real head already on at +{since():F1} s"); return sent; }
+        if (plan.Count == 0) { Log("login-cover", $"early: real head and body already on at +{since():F1} s"); return sent; }
         foreach (var p in plan)
         {
             if (gen != loginCoverGen || !LoggedIn) break;
             var it = await FetchItemRO(p.Id, ct); if (it == null || it.IsLink()) continue;
             client.Appearance.Attach(it, AttachmentPoint.Default, false); sent.Add(it.UUID);
-            Log("login-cover", $"early: attaching the real head at +{since():F1} s, before the restore settles: {it.Name}");
+            Log("login-cover", $"early: attaching at +{since():F1} s, before the restore settles: {it.Name}");
         }
         return sent;
     }

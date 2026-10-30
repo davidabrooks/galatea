@@ -65,12 +65,22 @@ public class LoginCoverTests
         Assert.DoesNotContain(LoginOrder.Findings(new[] { new LoginOrder.Worn(body, 5, null), new LoginOrder.Worn("-Pretty Liars- Real Kisser V7.0 [FEMALE HEAD]", 1, null) }), l => l.Contains("real head"));
         Assert.True(LoginOrder.IsRealHead(head)); Assert.False(LoginOrder.IsRealHead("-Pretty Liars- Real Kisser V7.0 [FEMALE HEAD]"));
     }
-    [Fact] public void EarlyPlan_IsOnlyTheRealHead_NotTheKisserOrTheBody()
+    [Fact] public void EarlyPlan_IsTheRealHead_NotTheKisserOrEyes()
     {   // regression 2026-10-29 21:34: the head waited for the restore settle (+6 s) although the sim never restores it
-        var cof = new[] { new LoginCover.Item(U(1), "Maitreya Mesh Body - LaraX V1.1"), new LoginCover.Item(U(2), "-Pretty Liars- Real Kisser V7.0 [FEMALE HEAD]"),
+        var cof = new[] { new LoginCover.Item(U(2), "-Pretty Liars- Real Kisser V7.0 [FEMALE HEAD]"),
                           new LoginCover.Item(U(3), "/ HEAD / lel evox / AVALON 4.0"), new LoginCover.Item(U(4), "/ EYES / lel evox 4.0") };
         var early = LoginCover.EarlyPlan(cof, new HashSet<UUID>(), Program.OutfitSendRank);
         Assert.Equal(new[] { U(3) }, early.Select(i => i.Id).ToArray());
         Assert.Empty(LoginCover.EarlyPlan(cof, new HashSet<UUID> { U(3) }, Program.OutfitSendRank));   // already worn: nothing
+    }
+    [Fact] public void EarlyPlan_BikiniTopOnChest_BodyAndPetiteAddOnAttachAtLogin_NotAfterTheSettle()
+    {   // regression 2026-10-30 10:19: the bikini top took Chest (#1) from the Petite Add-on; the add-on waited for the settle (+9.8 s, rezzed +27 s),
+        // the body came last in the sim restore (+7 s): base torso, then a body with no torso under the bikini top
+        var cof = All(); cof.Add(new LoginCover.Item(U(15), "TETRA - Spicy Bikini Top - LaraX Petite"));
+        var early = LoginCover.EarlyPlan(cof, new HashSet<UUID> { U(15) }, Program.OutfitSendRank).Select(i => i.Name).ToList();
+        Assert.Equal(new[] { "/ HEAD / lel evox / AVALON 4.0", "Maitreya Mesh Body - LaraX V1.1", "Maitreya Mesh Body - LaraX Petite Add-on V1.1" }, early);
+        Assert.DoesNotContain(early, n => n.Contains("HUD") || n.Contains("Bikini") || n.Contains("EYES"));
+        var allBody = Cof.Where(c => c.id != 9).Select(c => U(c.id)).ToHashSet();   // body restored, add-on lost its point
+        Assert.Equal(new[] { U(9) }, LoginCover.EarlyPlan(All(), allBody, Program.OutfitSendRank).Select(i => i.Id).ToArray());
     }
 }

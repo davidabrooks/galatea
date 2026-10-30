@@ -16,6 +16,11 @@ Restart (SIGHUP = soft, SIGUSR1 = force, or touch run/restart-connector, content
   stopping the child logs Galatay out. Pending client requests get a JSON-RPC error (-32001). The child gets SIGTERM
   (graceful: logs out if needed), SIGKILL after GT_PROXY_STOP_S. An unexpected child exit is respawned once per
   GT_PROXY_RESPAWN_WINDOW_S; a second death inside the window ends the proxy (exit 1), so the host sees a dead connector.
+Generic tools (2026-10-30): the host caches tools/list once, when the connector is added, so a tool added later
+(after a child restart) is invisible to it. The proxy therefore appends two stable tools to every tools/list result:
+  list_tools                    -> the child's current tools (name, description, inputSchema) as JSON text
+  call_tool {name, arguments}   -> rewritten in place to tools/call {name, arguments}; the child's answer passes through
+Every child tool still passes through unchanged. A child tool with either name shadows the proxy's.
 State file: <run dir>/connector-proxy-<proxy pid>.json (restart-connector.sh reads it).
 Env: GT_SOCK (run dir = its dirname), GT_PROXY_CHILD_CMD (default: galatay-mcp-child.sh beside this file; shlex-split),
 GT_PROXY_STOP_S (30), GT_PROXY_INIT_TIMEOUT_S (60), GT_PROXY_RESPAWN_WINDOW_S (60).
@@ -50,6 +55,55 @@ initialized_line = None          # raw bytes of the client's notifications/initi
 replay_wait = {}                 # replay id -> (Event, [response])
 state = {"restarts": 0, "last_restart": None, "last_result": "started", "last_refusal": None}
 exit_code = [0]
+GENERIC_LIST, GENERIC_CALL = "list_tools", "call_tool"
+GENERIC_TOOLS = [
+    {"name": GENERIC_LIST, "description": "List every tool the Second Life connector exposes right now (names, descriptions, "
+     "input schemas), including tools added after this connector was registered. Use call_tool to run one.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": GENERIC_CALL, "description": "Run any connector tool by name, including tools missing from your cached tool list. "
+     "Call list_tools first to see names and argument schemas.",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "tool name"},
+                     "arguments": {"type": "object", "description": "the tool's arguments"}}, "required": ["name"]}},
+]
+rewrite = {}                     # json.dumps(id) -> "list" (append generic tools) | "wrap" (tools/list result as a tool result)
+child_tool_names = set()         # names from the child's last tools/list (generic names shadowed by a real tool pass through)
+
+
+def rewrite_request(msg):
+    """Client -> child: map list_tools / call_tool onto the child's own methods. Returns the (maybe new) msg."""
+    m, key = msg.get("method"), json.dumps(msg.get("id"))
+    if "id" not in msg: return msg
+    if m == "tools/list":
+        rewrite[key] = "list"; return msg
+    if m != "tools/call": return msg
+    params = msg.get("params") or {}
+    name = params.get("name")
+    if name in child_tool_names or name not in (GENERIC_LIST, GENERIC_CALL): return msg
+    args = params.get("arguments") or {}
+    if name == GENERIC_LIST:
+        rewrite[key] = "wrap"
+        return {"jsonrpc": "2.0", "id": msg["id"], "method": "tools/list", "params": {}}
+    inner = args.get("name")
+    if not isinstance(inner, str) or not inner or inner in (GENERIC_LIST, GENERIC_CALL):
+        return {"_reply": {"jsonrpc": "2.0", "id": msg["id"], "result": {"isError": True, "content": [
+            {"type": "text", "text": "call_tool needs {name: <a tool from list_tools>, arguments: {...}}"}]}}}
+    np = {k: v for k, v in params.items() if k not in ("name", "arguments")}
+    np.update(name=inner, arguments=args.get("arguments") or {})
+    return {**msg, "params": np}
+
+
+def rewrite_response(msg):
+    """Child -> client for a request rewrite_request marked. Returns the new msg or None (unchanged)."""
+    how = rewrite.pop(json.dumps(msg.get("id")), None)
+    res = msg.get("result")
+    if how is None or not isinstance(res, dict) or not isinstance(res.get("tools"), list): return None
+    global child_tool_names
+    child_tool_names = {t.get("name") for t in res["tools"] if isinstance(t, dict)}
+    if how == "list":
+        extra = [t for t in GENERIC_TOOLS if t["name"] not in child_tool_names]
+        return {**msg, "result": {**res, "tools": res["tools"] + extra}}
+    slim = [{k: t.get(k) for k in ("name", "description", "inputSchema") if k in t} for t in res["tools"] if isinstance(t, dict)]
+    return {"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [{"type": "text", "text": json.dumps({"tools": slim})}]}}
 
 
 def log(msg):
@@ -148,6 +202,8 @@ def child_reader(c):
                 w[1].append(msg); w[0].set(); continue
             with pend_lock:
                 if c is child: pending.pop(key, None)
+            rw = rewrite_response(msg)
+            if rw is not None: emit_obj(rw); continue
             if "result" in msg and isinstance(msg["result"], dict) and "capabilities" in msg["result"] and "serverInfo" in msg["result"]:
                 caps = msg["result"]["capabilities"]
                 if isinstance(caps, dict):
@@ -251,6 +307,9 @@ def stdin_loop():
                 m = msg.get("method")
                 if m == "initialize" and "id" in msg: init_line = line
                 elif m == "notifications/initialized": initialized_line = line
+                nm = rewrite_request(msg)
+                if "_reply" in nm: emit_obj(nm["_reply"]); continue
+                if nm is not msg: line = json.dumps(nm, separators=(",", ":")).encode()
                 if m is not None and "id" in msg:
                     with pend_lock: pending[json.dumps(msg["id"])] = msg["id"]
             try:

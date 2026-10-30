@@ -327,7 +327,7 @@ public static partial class Program
         // The COF link stays as it is. Comma-separated name prefixes, GT_OUTFIT_KEEP_OFF.
         var keepOff = Env("GT_OUTFIT_KEEP_OFF", "#Firestorm LSL Bridge").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         // 2026-10-05: clothing color HUDs ('<HUD> ...', '[HUD ...') are transient: never re-attached by the after-bake outfit send
-        client.Settings.Agent.OutfitSendExclude = (id, name) => keepOff.Any(k => name.StartsWith(k, StringComparison.OrdinalIgnoreCase)) || ClothingHudNameRx.IsMatch(name ?? "");
+        client.Settings.Agent.OutfitSendExclude = (id, name) => LoginVeilHeld(id) || keepOff.Any(k => name.StartsWith(k, StringComparison.OrdinalIgnoreCase)) || ClothingHudNameRx.IsMatch(name ?? "");
         client.Settings.Agent.OutfitSendRank = OutfitSendRank;   // LoginStart.cs: body / head / hands first, accessories and HUDs last
         Log("appearance", $"login outfit send keeps off: {string.Join(", ", keepOff)}");
         Log("appearance", $"login outfit re-send mode: {outfitMode} (SendOutfitAfterBake={client.Settings.Agent.SendOutfitAfterBake}, detach-all={client.Settings.Agent.OutfitSendDetachAll})");

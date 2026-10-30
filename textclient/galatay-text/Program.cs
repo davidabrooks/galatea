@@ -2024,6 +2024,7 @@ public static partial class Program
             case "idlepose": return await IdlePoseCmd(a);   // IdlePose.cs
             case "collar" when a.Length == 1 && a[0] == "stealth": return await CollarStealthOn("command");   // CollarStealth.cs
             case "invdump": return await InvDumpCmd(a);   // InvDump.cs
+            case "veil" when a.Length >= 1 && a[0] == "create": return await LoginVeilCreateCmd(a);   // LoginVeilCreate.cs
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);
             case "sethome": return await SetHomeCmd();
             case "autofollow": return AutoFollowCmd(a);

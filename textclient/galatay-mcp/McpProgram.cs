@@ -335,6 +335,9 @@ public sealed class SlTools
         return Json(new { ok = !(txt.StartsWith("refused") || txt.StartsWith("not logged in") || txt.StartsWith("usage")), result = txt.TrimEnd() });
     }
 
+    [McpServerTool(Name = "login_veil_create"), Description("Create (free, L$0: a viewer-style 'New Alpha' wearable) the body-only system alpha 'Galatea login veil (body alpha)' in Clothing (upper + lower body invisible; head, eyes, hair unmasked), NOT worn, and write its item id to routes/_login-veil.txt. Refuses if a veil is already set unless force=true.")]
+    public static Task<string> LoginVeilCreate(bool force = false) => R(force ? "veil create force" : "veil create");
+
     [McpServerTool(Name = "dialog_reply"), Description("Press a button on the most recent script dialog (e.g. an AVsitter pose menu). Never use for anything involving payment.")]
     public static Task<string> DialogReply(string button)
     {

@@ -36,4 +36,26 @@ public class LogoutWavesTests
         Assert.True((DateTime.Now - firstGone).TotalMilliseconds >= 300);
         Assert.All(log, l => Assert.Contains("confirmed gone", l));
     }
+
+    // 2026-10-30 15:31:45 logout (textclient.log "stash wave 1/2 ... confirmed gone +211 ms", wave 2 +1419 ms): David still saw hair, teeth and
+    // earrings floating alone at the end. They now come off before the collar stealth and the veil, while the head is still on.
+    [Fact] public async Task LooseHeadParts_ComeOffBeforeCollarAndVeil()
+    {
+        var steps = new List<string>();
+        var ok = await LoginVeil.LogoutCore(() => { steps.Add("collar"); return Task.CompletedTask; }, 1000,
+            () => { steps.Add("veil"); return Task.FromResult(true); }, () => { steps.Add("stash"); return Task.CompletedTask; },
+            () => { steps.Add("hair-teeth-earrings"); return Task.CompletedTask; });
+        Assert.True(ok);
+        Assert.Equal(new[] { "hair-teeth-earrings", "collar", "veil", "stash" }, steps);
+    }
+    [Fact] public void EarlyStash_IsKeptInTheLoginList_LateWavesHaveNoHeadParts()
+    {
+        var all = Live1456(); var early = all.Where(x => LoginVeil.IsLooseHeadPart(x.Name)).ToList();
+        var late = all.Except(early).ToList();
+        var merged = LoginVeil.MergeStash(early, late);
+        Assert.Equal(9, merged.Count);
+        Assert.Single(LoginVeil.LogoutWaves(late));
+        Assert.DoesNotContain(LoginVeil.LogoutWaves(late)[0], x => LoginVeil.IsLooseHeadPart(x.Name));
+        Assert.Equal(4, early.Count);
+    }
 }

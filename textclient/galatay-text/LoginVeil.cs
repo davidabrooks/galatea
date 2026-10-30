@@ -57,8 +57,12 @@ internal static class LoginVeil
 
     /// <summary>Pure-ish (tested with fakes): the logout order. Collar Stealth first (to its end, capped), then the veil; the stash only when the
     /// veil is verified on. 14:01 relog (David): the collar disappeared last, because the stealth ran beside the veil and the stash.</summary>
-    internal static async Task<bool> LogoutCore(Func<Task> collarStealth, int collarMaxMs, Func<Task<bool>> veilOn, Func<Task> stash)
+    internal static async Task<bool> LogoutCore(Func<Task> collarStealth, int collarMaxMs, Func<Task<bool>> veilOn, Func<Task> stash, Func<Task> looseHeadPartsFirst = null)
     {
+        // 15:31:45 logout (David): hair, teeth and earrings still floated alone at the end although our client got their KillObject 1.4 s before
+        // the head's. Observers get those kills later than we do, so they now come off FIRST, while the head and body are still fully shown;
+        // collar stealth and the veil bake (~6 s at 15:31:36-42) then run before the head and clothes go: a late kill shows a bald, whole avatar.
+        if (looseHeadPartsFirst != null) { try { await looseHeadPartsFirst(); } catch { } }
         if (collarStealth != null) { try { await Task.WhenAny(collarStealth(), Task.Delay(collarMaxMs)); } catch { } }
         bool ok = await veilOn();
         if (ok) await stash();
@@ -127,7 +131,10 @@ internal static class LoginVeil
     }
     /// <summary>Pure (tested): a head part that would float on its own once the head is gone (not the real head itself).</summary>
     internal static bool IsLooseHeadPart(string name) => !LoginOrder.IsRealHead(name) && RevealWithVeil(name);
-    internal const int WaveConfirmMs = 4000, WaveSettleMs = 1200, LogoutSettleMs = 1500;
+    internal const int WaveConfirmMs = 4000, WaveSettleMs = 1200, LogoutSettleMs = 2500, EarlySettleMs = 1500;
+    /// <summary>Pure (tested): the early stash (loose head parts, taken before the veil) merged with the late one, by item, early first.</summary>
+    internal static List<Stashed> MergeStash(IEnumerable<Stashed> early, IEnumerable<Stashed> late)
+        => (early ?? Enumerable.Empty<Stashed>()).Concat(late ?? Enumerable.Empty<Stashed>()).GroupBy(x => x.Item).Select(g => g.First()).ToList();
     /// <summary>Pure-ish (tested with fakes): detach wave by wave; wait until every item of a wave is no longer worn (bounded) plus a settle, so the
     /// observers' viewers get the kills in that order, then the next wave; the settle after the last wave keeps the logout from racing the kills.
     /// Returns one log line per wave with its ms offset.</summary>
@@ -260,7 +267,36 @@ public static partial class Program
         var id = LoginVeilItem(); if (id == UUID.Zero || !LoggedIn) return;
         // 14:01 relog (David): the collar vanished LAST. Stealth now runs to the end (capped) BEFORE the veil and the stash; the collar's
         // alpha is saved with it on logout, so it also rezzes hidden at the next login.
-        await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarStealthMaxMs, LoginVeilOnVerified, LoginVeilStashForLogout);
+        loginVeilEarlyStash = new();
+        await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarStealthMaxMs, LoginVeilOnVerified, LoginVeilStashForLogout, LoginVeilLooseHeadPartsFirst);
+    }
+
+    static List<LoginVeil.Stashed> loginVeilEarlyStash = new();
+    static List<LoginVeil.Stashed> LoginVeilStashCandidates(List<Primitive> prims)
+    {
+        var always = AlwaysWearIds();
+        return prims.Select(p => new LoginVeil.Stashed(AttachItemId(p), (int)p.PrimData.AttachmentPoint, p.Properties?.Name ?? ""))
+                    .Where(x => LoginVeil.ShouldStash(x.Name, x.Point) && !always.Contains(x.Item)).GroupBy(x => x.Item).Select(g => g.First()).ToList();
+    }
+    /// <summary>Logout step 0: hair, teeth, eyes, earrings off while the head and body are fully visible (stash file written first).</summary>
+    static async Task LoginVeilLooseHeadPartsFirst()
+    {
+        if (Env("GT_VEIL_STASH", "1") == "0" || !LoggedIn || LoginVeilItem() == UUID.Zero) return;
+        try
+        {
+            var prims = WornPrims().Where(p => AttachItemId(p) != UUID.Zero).ToList();
+            var noProps = prims.Where(p => p.Properties == null).ToList();
+            if (noProps.Count > 0) { try { await Task.WhenAny(EnsureProperties(client.Network.CurrentSim, noProps), Task.Delay(3000)); } catch { } }
+            var loose = LoginVeilStashCandidates(prims).Where(x => LoginVeil.IsLooseHeadPart(x.Name)).ToList();
+            if (loose.Count == 0) return;
+            var tmp = LoginVeilStashFile + ".tmp";
+            File.WriteAllText(tmp, LoginVeil.FormatStash(loose, DateTime.Now)); File.Move(tmp, LoginVeilStashFile, true);
+            loginVeilEarlyStash = loose;
+            var l = await LoginVeil.DetachInWaves(new List<List<LoginVeil.Stashed>> { loose }, x => DetachItem(x.Item, "login veil stash, early"),
+                () => WornPrims().Select(AttachItemId).ToHashSet(), finalSettleMs: LoginVeil.EarlySettleMs);
+            foreach (var x in l) Log("login-veil", "stash early (head still on, before collar/veil) " + x);
+        }
+        catch (Exception ex) { Log("login-veil", "early head-part stash failed: " + ex.GetBaseException().Message); }
     }
 
     static async Task<bool> LoginVeilOnVerified()
@@ -332,14 +368,13 @@ public static partial class Program
             var prims = WornPrims().Where(p => AttachItemId(p) != UUID.Zero).ToList();
             var noProps = prims.Where(p => p.Properties == null).ToList();
             if (noProps.Count > 0) { try { await Task.WhenAny(EnsureProperties(client.Network.CurrentSim, noProps), Task.Delay(3000)); } catch { } }
-            var always = AlwaysWearIds();
-            var stash = prims.Select(p => new LoginVeil.Stashed(AttachItemId(p), (int)p.PrimData.AttachmentPoint, p.Properties?.Name ?? ""))
-                             .Where(x => LoginVeil.ShouldStash(x.Name, x.Point) && !always.Contains(x.Item)).GroupBy(x => x.Item).Select(g => g.First()).ToList();
+            var late = LoginVeilStashCandidates(prims);
+            var stash = LoginVeil.MergeStash(loginVeilEarlyStash, late);
             if (stash.Count == 0) { Log("login-veil", "stash: nothing the veil cannot hide is worn"); return; }
             var tmp = LoginVeilStashFile + ".tmp";
             File.WriteAllText(tmp, LoginVeil.FormatStash(stash, DateTime.Now)); File.Move(tmp, LoginVeilStashFile, true);   // the list exists BEFORE anything comes off
             // hair / teeth / eyes / earrings first (confirmed gone), then the head and the clothes, then a settle before the logout (LoginVeil.LogoutWaves)
-            var waveLog = await LoginVeil.DetachInWaves(LoginVeil.LogoutWaves(stash), x => DetachItem(x.Item, "login veil stash"), () => WornPrims().Select(AttachItemId).ToHashSet());
+            var waveLog = await LoginVeil.DetachInWaves(LoginVeil.LogoutWaves(late), x => DetachItem(x.Item, "login veil stash"), () => WornPrims().Select(AttachItemId).ToHashSet());
             foreach (var l in waveLog) Log("login-veil", "stash " + l);
             var left = WornPrims().Select(AttachItemId).ToHashSet();
             Log("login-veil", $"stash: {stash.Count} attachment(s) taken off for logout (COF links kept, list in {Path.GetFileName(LoginVeilStashFile)}): {string.Join("; ", stash.Select(x => x.Name))}"

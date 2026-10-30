@@ -88,3 +88,23 @@ public class AoSitTests
     }
     static string Root() { var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
 }
+
+// 2026-10-30 14:56:41 logout "STILL ground sitting ... (6 stands, 0 toggles)" with the learned AO sit 990f4821 playing under a collar pose; 14:57:28 login sat.
+public class AoSitLogoutTests
+{
+    [Fact] public void LearnedAoSitPlaying_AllowsTheToggle_EvenUnderACollarPose()
+    {
+        Assert.True(Program.AoStandMayToggle("collar", false, true));
+        Assert.True(Program.AoStandMayToggle(null, false, true));
+        Assert.False(Program.AoStandMayToggle("collar", false, false));
+        Assert.Equal(Program.AoStandStep.Toggle, Program.AoStandNext(true, 2, Program.AoStandMayToggle("collar", false, true)));
+    }
+    [Fact] public void LoginRecheck_OnlyWhenAnAoSitPlaysOnTheGround()
+    {
+        Assert.True(Program.LoginAoRecheckNeeded(true, true, false, false));
+        Assert.False(Program.LoginAoRecheckNeeded(true, false, false, false));
+        Assert.False(Program.LoginAoRecheckNeeded(true, true, true, false));
+        Assert.False(Program.LoginAoRecheckNeeded(false, true, false, false));
+        Assert.True(Program.LoginAoRecheckDelaysMs.Sum() >= 30000);
+    }
+}

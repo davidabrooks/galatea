@@ -70,6 +70,7 @@
     <Compile Include="../galatay-text/LoginOrder.cs" Link="Core/LoginOrder.cs" />
     <Compile Include="../galatay-text/LoginVeil.cs" Link="Core/LoginVeil.cs" />
     <Compile Include="../galatay-text/LoginVeilCreate.cs" Link="Core/LoginVeilCreate.cs" />
+    <Compile Include="../galatay-text/LoginVeilEvox.cs" Link="Core/LoginVeilEvox.cs" />
     <Compile Include="../galatay-text/OutfitCollarLinks.cs" Link="Core/OutfitCollarLinks.cs" />
     <Compile Include="../galatay-text/AttFaces.cs" Link="Core/AttFaces.cs" />
     <Compile Include="../galatay-text/ForceRebake.cs" Link="Core/ForceRebake.cs" />

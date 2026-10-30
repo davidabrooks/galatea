@@ -40,7 +40,7 @@ internal static class LoginVeil
     internal static readonly double MaxHoldSec = 25, GraceSec = 0.5, MaxHoldStashedSec = 90, RetryAttachSec = 8, OutfitFallbackSec = 25;
     internal sealed record Stashed(UUID Item, int Point, string Name);
     internal static readonly double ConfirmMaxSec = 12;
-    internal const int CollarStealthMaxMs = 20000;
+    internal const int CollarStealthMaxMs = 20000, EvoxHideMaxMs = 25000;
 
     /// <summary>Pure-ish (tested with fakes): the veil-off order. Layer out of the library's wearables, known COF link(s) deleted, bake requested,
     /// and only then the (slow, at login) confirmation. Returns whether the links call succeeded and whether the bake was confirmed.
@@ -57,12 +57,16 @@ internal static class LoginVeil
 
     /// <summary>Pure-ish (tested with fakes): the logout order. Collar Stealth first (to its end, capped), then the veil; the stash only when the
     /// veil is verified on. 14:01 relog (David): the collar disappeared last, because the stealth ran beside the veil and the stash.</summary>
-    internal static async Task<bool> LogoutCore(Func<Task> collarStealth, int collarMaxMs, Func<Task<bool>> veilOn, Func<Task> stash, Func<Task> looseHeadPartsFirst = null)
+    internal static async Task<bool> LogoutCore(Func<Task> collarStealth, int collarMaxMs, Func<Task<bool>> veilOn, Func<Task> stash, Func<Task> looseHeadPartsFirst = null,
+                                                Func<Task> hideHeadFaces = null, int hideHeadFacesMaxMs = EvoxHideMaxMs)
     {
         // 15:31:45 logout (David): hair, teeth and earrings still floated alone at the end although our client got their KillObject 1.4 s before
         // the head's. Observers get those kills later than we do, so they now come off FIRST, while the head and body are still fully shown;
         // collar stealth and the veil bake (~6 s at 15:31:36-42) then run before the head and clothes go: a late kill shows a bald, whole avatar.
         if (looseHeadPartsFirst != null) { try { await looseHeadPartsFirst(); } catch { } }
+        // 16:0x relog (David): ears and lashes (EvoX head faces) and nails floated under the veil. Ears and lashes are hidden in the head
+        // itself through its HUD (LoginVeilEvox.cs), after the hair wave, capped so a stuck HUD never holds the logout.
+        if (hideHeadFaces != null) { try { await Task.WhenAny(hideHeadFaces(), Task.Delay(hideHeadFacesMaxMs)); } catch { } }
         if (collarStealth != null) { try { await Task.WhenAny(collarStealth(), Task.Delay(collarMaxMs)); } catch { } }
         bool ok = await veilOn();
         if (ok) await stash();
@@ -268,7 +272,7 @@ public static partial class Program
         // 14:01 relog (David): the collar vanished LAST. Stealth now runs to the end (capped) BEFORE the veil and the stash; the collar's
         // alpha is saved with it on logout, so it also rezzes hidden at the next login.
         loginVeilEarlyStash = new();
-        await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarStealthMaxMs, LoginVeilOnVerified, LoginVeilStashForLogout, LoginVeilLooseHeadPartsFirst);
+        await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarStealthMaxMs, LoginVeilOnVerified, LoginVeilStashForLogout, LoginVeilLooseHeadPartsFirst, LoginVeilEvoxHideForLogout);
     }
 
     static List<LoginVeil.Stashed> loginVeilEarlyStash = new();
@@ -427,6 +431,7 @@ public static partial class Program
     static void LoginVeilStart()
     {
         int gen = Interlocked.Increment(ref loginVeilGen); var t0 = DateTime.Now;
+        LoginVeilEvoxSafetyNet(t0);   // ears / lashes hidden at logout come back on every path (no veil, kept on, error)
         var id = LoginVeilItem(); var stash = LoginVeilReadStash();
         if (id == UUID.Zero && stash.Count == 0) return;
         loginVeilHeld.Clear(); loginVeilBurstSent.Clear(); foreach (var x in stash.Where(x => LoginVeil.RevealWithVeil(x.Name))) loginVeilHeld[x.Item] = 1;   // before login-cover plans
@@ -530,6 +535,7 @@ public static partial class Program
         _ = Task.Run(async () =>
         {
             for (int i = 0; i < 40; i++) { var w = WornPrims().Select(AttachItemId).ToHashSet(); if (late.All(x => w.Contains(x.Item))) break; await Task.Delay(250); }
+            _ = Task.Run(() => LoginVeilEvoxShowAfterLogin("veil off"));   // ears and lashes right after the head is on (LoginVeilEvox.cs)
             await Task.Delay(500); await LoginVeilCollarShowAfterLogin();
         });
     }

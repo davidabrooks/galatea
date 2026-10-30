@@ -241,6 +241,10 @@ public sealed class SlTools
     public static Task<string> IdlePose([Description("status | on | off | now [collar|groundsit] | stop | idle <s> | aomap <face> <u,v>")] string action = "status") => R("idlepose " + Clean(action));
     [McpServerTool(Name = "wander"), Description("Wander at home (the text client's wander command, WanderCmds): action on | off | status. The state persists in wander-state.json.")]
     public static Task<string> Wander([Description("on | off | status")] string action = "status") => R("wander " + Clean(action));
+    [McpServerTool(Name = "groups_list"), Description("READ-ONLY: my current Second Life groups (uuid, name, title, flags) and the active group.")]
+    public static Task<string> GroupsList() => R("group list");
+    [McpServerTool(Name = "group_leave"), Description("Leave ONE group I am in, by its exact name or uuid (see groups_list). Logged; verified by a fresh group list. Ambiguous or unknown names send nothing.")]
+    public static Task<string> GroupLeave([Description("exact group name or uuid")] string group) => R("group leave " + Clean(group));
     [McpServerTool(Name = "texture_save"), Description("READ-ONLY: download one texture by uuid and save it as a PNG under /workspace/secondlife/textures/ (e.g. to read a HUD's button labels).")]
     public static Task<string> TextureSave(string uuid) => R("texture save " + Clean(uuid));
     [McpServerTool(Name = "collar_stealth"), Description("Make my N° 9 collar invisible: its own menu About -> Stealth, pressed only if not already on. Changes nothing else.")]

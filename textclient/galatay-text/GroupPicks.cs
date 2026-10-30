@@ -320,6 +320,31 @@ public static partial class Program
         $"name='{g.Name}' id={g.ID} open_enrollment={g.OpenEnrollment} membership_fee=L${g.MembershipFee} members={g.GroupMembershipCount} " +
         $"show_in_list={g.ShowInList} mature={g.MaturePublish} founder={g.FounderID}";
 
+    // pure (tested): the ONE current group a leave targets: exact uuid, else exact name (case-insensitive); ambiguous or none -> null + why
+    internal static (UUID? id, string why) GroupLeaveTarget(string arg, IEnumerable<(UUID id, string name)> groups)
+    {
+        arg = (arg ?? "").Trim().Trim('"', '\'');
+        if (arg.Length == 0) return (null, "give the exact group name or uuid");
+        var list = groups.ToList();
+        if (UUID.TryParse(arg, out var u)) return list.Any(g => g.id == u) ? (u, "uuid") : (null, $"not a member of a group with uuid {u}");
+        var m = list.Where(g => string.Equals(g.name?.Trim(), arg, StringComparison.OrdinalIgnoreCase)).ToList();
+        return m.Count == 1 ? (m[0].id, "name") : m.Count == 0 ? (null, $"no current group named exactly '{arg}' (see group list)") : (null, $"{m.Count} groups named '{arg}': use the uuid");
+    }
+    // 2026-10-29 (David): leave ONE group, by exact name or uuid; logged; verified by a fresh group list
+    static async Task<string> GroupLeaveCmd(string arg)
+    {
+        var (groups, _) = await FetchCurrentGroups(8000);
+        var (id, why) = GroupLeaveTarget(arg, groups.Values.Select(g => (g.ID, g.Name)));
+        if (id is not UUID gid) return "nothing sent: " + why;
+        var name = groups[gid].Name;
+        Log("group", $"leave: '{name}' ({gid}) by {why}");
+        client.Groups.LeaveGroup(gid);
+        await Task.Delay(3000);
+        var (after, fresh) = await FetchCurrentGroups(8000);
+        var ok = !after.ContainsKey(gid);
+        Log("group", $"leave '{name}' ({gid}): {(ok ? "gone from my groups" : "STILL listed")}{(fresh ? "" : " (no fresh reply)")}");
+        return ok ? $"left '{name}' ({gid})" : $"leave sent for '{name}' ({gid}) but it is still listed{(fresh ? "" : " (no fresh server reply)")}";
+    }
     static async Task<string> GroupCmds(string[] a)
     {
         var sub = a.Length > 0 ? a[0].ToLowerInvariant() : "list";
@@ -332,6 +357,7 @@ public static partial class Program
             sb.Append(ActiveGroupLine(groups));
             return sb.ToString();
         }
+        if (sub == "leave") return await GroupLeaveCmd(a.Length > 1 ? string.Join(" ", a.Skip(1)) : "");
         if (sub == "activate") return await GroupActivateCmd(a);
         if (sub == "invites") return a.Length > 1 && a[1] == "selftest" ? GroupInvitesSelfTest() : GroupInvitesText(a.Length > 1 && a[1] == "all");
         if (sub == "accept" || sub == "decline") return await GroupInviteRespondCmd(a, sub == "accept");

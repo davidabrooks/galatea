@@ -299,7 +299,7 @@ public class IdlePoseTests
         Assert.Equal(0.137, Hover.PoseBiasFor(n, true, "sit", "VAMOSITG22"), 3);     // its own bias wins
         Assert.Equal(-0.055, Hover.PoseBiasFor(n, true, "sit", "VAMOSITG27"), 3);    // else the (form, kind) bias
         Assert.Equal(0.2315, Hover.PoseBiasFor(n, true, "stand", "stand:x"), 4);     // else the default
-        Assert.Equal(0.137, Hover.PoseBiasFor(new System.Collections.Generic.Dictionary<string, double>(), false, "sit", "q") + 0.192, 3);
+        Assert.Equal(Hover.HumanSitBiasDefault, Hover.PoseBiasFor(new System.Collections.Generic.Dictionary<string, double>(), false, "sit", "q"), 3);   // human form: its own default (2026-10-29)
         // render said gap +0.267 at bias -0.055; the photo shows ~0.075 really: bias must rise by 0.192
         Assert.Equal(0.137, Hover.PoseBiasFromPhoto(-0.055, 0.267, 0.075), 3);
         // with the lowest body point (hand/back/thigh) the gap is already the minimum over every avatar vertex

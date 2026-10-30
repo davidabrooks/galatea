@@ -9,8 +9,37 @@ using LibreMetaverse;
 
 namespace GalatayText;
 
+// 2026-10-30 16:37 (David's rule, replaces #357's always-swap): logging back in within 10 minutes of the logout, I come back in exactly
+// what I logged out in, even naked; only after more than 10 minutes do I log in in my usual outfit. The decision is made at LOGIN:
+// the logout keeps the as-worn stash and writes the usual outfit's clothes list beside it (run/login-veil-usual.txt); the COF is not
+// rewritten at logout. GT_VEIL_USUAL_AFTER_MIN (default 10) is the threshold.
 internal static class UsualOutfit
 {
+    internal const double DefaultAfterMin = 10;
+
+    /// <summary>Pure (tested): the stash to put on at login. Within the threshold: as worn (no swap). Past it: the usual outfit's plan.</summary>
+    internal static Plan AtLogin(List<LoginVeil.Stashed> asWorn, IEnumerable<(UUID Item, string Name)> usualLinks, string usualName, TimeSpan sinceLogout, double afterMin = DefaultAfterMin)
+    {
+        var s = asWorn ?? new();
+        if (sinceLogout < TimeSpan.FromMinutes(afterMin))
+            return new(s, new(), new(), false, $"back within {afterMin:F0} min of the logout ({sinceLogout.TotalMinutes:F1} min): exactly as I logged out");
+        var p = For(s, usualLinks, usualName);
+        return p with { Why = $"{sinceLogout.TotalMinutes:F0} min since the logout (> {afterMin:F0}): " + p.Why };
+    }
+
+    internal static string FormatUsual(string name, IEnumerable<(UUID Item, string Name)> links)
+        => $"# usual {(name ?? "").Replace('\n', ' ')}\n" + string.Concat((links ?? Enumerable.Empty<(UUID, string)>()).Select(x => $"{x.Item}\t{(x.Name ?? "").Replace('\t', ' ').Replace('\n', ' ')}\n"));
+    internal static (string name, List<(UUID Item, string Name)> links) ParseUsual(string text)
+    {
+        string name = null; var l = new List<(UUID, string)>();
+        foreach (var line in (text ?? "").Split('\n').Select(x => x.TrimEnd('\r')))
+        {
+            if (line.StartsWith("# usual ")) { name = line.Substring(8).Trim(); continue; }
+            var f = line.Split('\t'); if (f.Length >= 2 && UUID.TryParse(f[0], out var id) && id != UUID.Zero) l.Add((id, f[1]));
+        }
+        return (string.IsNullOrWhiteSpace(name) ? null : name, l);
+    }
+
     internal sealed record Plan(List<LoginVeil.Stashed> Stash, List<LoginVeil.Stashed> Add, List<UUID> Drop, bool Changed, string Why);
 
     /// <summary>Pure (tested): my usual outfit's name: the last clothed outfit, else the last named one if it is a clothed outfit.</summary>
@@ -43,27 +72,44 @@ internal static class UsualOutfit
 
 public static partial class Program
 {
-    /// <summary>Logout (veil on): the plan for the stash against my usual outfit. Bounded inventory reads; any failure keeps the stash as worn.</summary>
-    static async Task<UsualOutfit.Plan> LoginVeilUsualPlan(List<LoginVeil.Stashed> stash)
+    static string LoginVeilUsualFile => Env("GT_VEIL_USUAL_FILE", "/home/box/viewers/textclient/run/login-veil-usual.txt");
+    static double LoginVeilUsualAfterMin => double.TryParse(Env("GT_VEIL_USUAL_AFTER_MIN", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var m) && m >= 0 ? m : UsualOutfit.DefaultAfterMin;
+
+    /// <summary>Logout (veil on): write my usual outfit's name and links beside the stash (bounded reads); nothing is changed now.</summary>
+    static async Task LoginVeilUsualSave()
     {
+        try { File.Delete(LoginVeilUsualFile); } catch { }
         var name = UsualOutfit.Name(LastClothedOutfit(), lastNamedOutfit);
-        if (Env("GT_VEIL_USUAL", "1") == "0" || name == null) return UsualOutfit.For(stash, null, name);
+        if (Env("GT_VEIL_USUAL", "1") == "0" || name == null) { Log("login-veil", $"usual outfit '{name ?? "-"}' unknown: login wears the stash as worn"); return; }
         try
         {
             using var cts = new CancellationTokenSource(12000);
             var mo = await FindMyOutfits(cts.Token);
             var folder = mo == null ? null : (await ReadFolderRO(mo.UUID, cts.Token, 5000)).OfType<InventoryFolder>()
                 .FirstOrDefault(f => f.ParentUUID == mo.UUID && f.Name.Trim().Equals(name, StringComparison.OrdinalIgnoreCase));
-            if (folder == null) { Log("login-veil", $"usual outfit '{name}' not found in My Outfits: stash as worn"); return UsualOutfit.For(stash, null, null); }
+            if (folder == null) { Log("login-veil", $"usual outfit '{name}' not found in My Outfits"); return; }
             var links = (await ReadFolderRO(folder.UUID, cts.Token, 5000)).OfType<InventoryItem>()
                 .Where(l => l.ParentUUID == folder.UUID && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment))
                 .Select(l => (l.IsLink() ? l.AssetUUID : l.UUID, l.Name)).ToList();
-            return UsualOutfit.For(stash, links, name);
+            File.WriteAllText(LoginVeilUsualFile, UsualOutfit.FormatUsual(name, links));
+            Log("login-veil", $"usual outfit '{name}' saved for login ({links.Count} links; used only if I'm away more than {LoginVeilUsualAfterMin:F0} min)");
         }
-        catch (Exception ex) { Log("login-veil", "usual outfit read failed (stash as worn): " + ex.GetBaseException().Message); return UsualOutfit.For(stash, null, null); }
+        catch (Exception ex) { Log("login-veil", "usual outfit read failed (login wears the stash as worn): " + ex.GetBaseException().Message); }
     }
 
-    /// <summary>Logout, after the stash detach: the Current Outfit follows the plan (dropped clothes unlinked, usual clothes linked), so the
+    /// <summary>Login: as worn, or (away past the threshold) my usual outfit. Never throws; any failure = as worn.</summary>
+    static UsualOutfit.Plan LoginVeilUsualAtLogin(List<LoginVeil.Stashed> stash, DateTime loggedOutAt)
+    {
+        try
+        {
+            var (name, links) = File.Exists(LoginVeilUsualFile) ? UsualOutfit.ParseUsual(File.ReadAllText(LoginVeilUsualFile)) : (null, new());
+            try { File.Delete(LoginVeilUsualFile); } catch { }
+            return UsualOutfit.AtLogin(stash, links, name, DateTime.Now - loggedOutAt, LoginVeilUsualAfterMin);
+        }
+        catch (Exception ex) { return new(stash, new(), new(), false, "usual outfit check failed (as worn): " + ex.GetBaseException().Message); }
+    }
+
+    /// <summary>Login, usual outfit chosen: the Current Outfit follows the plan (dropped clothes unlinked, usual clothes linked), so the
     /// login's add-missing pass and the veil's COF wait both see my usual outfit.</summary>
     static async Task LoginVeilUsualCof(UsualOutfit.Plan plan)
     {

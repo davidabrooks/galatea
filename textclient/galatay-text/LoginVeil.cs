@@ -413,9 +413,8 @@ public static partial class Program
             var noProps = prims.Where(p => p.Properties == null).ToList();
             if (noProps.Count > 0) { try { await Task.WhenAny(EnsureProperties(client.Network.CurrentSim, noProps), Task.Delay(3000)); } catch { } }
             var late = LoginVeilStashCandidates(prims);
-            var usualPlan = await LoginVeilUsualPlan(LoginVeil.MergeStash(loginVeilEarlyStash, late));   // dress as usual at login (LoginVeilUsual.cs)
-            Log("login-veil", "usual outfit: " + usualPlan.Why);
-            var stash = usualPlan.Stash;
+            var stash = LoginVeil.MergeStash(loginVeilEarlyStash, late);   // as worn; the usual outfit is chosen at login (LoginVeilUsual.cs)
+            await LoginVeilUsualSave();
             if (stash.Count == 0) { Log("login-veil", "stash: nothing the veil cannot hide is worn"); return; }
             var tmp = LoginVeilStashFile + ".tmp";
             File.WriteAllText(tmp, LoginVeil.FormatStash(stash, DateTime.Now)); File.Move(tmp, LoginVeilStashFile, true);   // the list exists BEFORE anything comes off
@@ -423,7 +422,6 @@ public static partial class Program
             foreach (var x in stash) loginVeilHeld[x.Item] = 1;   // no outfit send may put any of them back before the logout
             var waveLog = await LoginVeil.DetachInWaves(LoginVeil.LogoutWaves(late), x => DetachItem(x.Item, "login veil stash"), () => WornPrims().Select(AttachItemId).ToHashSet());
             foreach (var l in waveLog) Log("login-veil", "stash " + l);
-            await LoginVeilUsualCof(usualPlan);
             var left = WornPrims().Select(AttachItemId).ToHashSet();
             var back = LoginVeil.HeldWornEarly(stash.Select(x => x.Item), left);   // anything back on (or never off): one more confirmed wave
             if (back.Count > 0)
@@ -439,11 +437,13 @@ public static partial class Program
         catch (Exception ex) { Log("login-veil", "stash failed (the outfit stays as it is): " + ex.GetBaseException().Message); }
     }
 
+    static DateTime loginVeilStashAt = DateTime.MinValue;   // the stash file's write time = the logout
     static List<LoginVeil.Stashed> LoginVeilReadStash()
     {
         try
         {
             var f = LoginVeilStashFile; if (!File.Exists(f)) return new();
+            loginVeilStashAt = File.GetLastWriteTime(f);
             if ((DateTime.Now - File.GetLastWriteTime(f)).TotalDays > 14) { Log("login-veil", "stash file older than 14 days: ignored (the COF restore covers the outfit)"); File.Delete(f); return new(); }
             return LoginVeil.ParseStash(File.ReadAllText(f));
         }
@@ -486,9 +486,16 @@ public static partial class Program
         LoginVeilEvoxSafetyNet(t0);   // ears / lashes hidden at logout come back on every path (no veil, kept on, error)
         var id = LoginVeilItem(); var stash = LoginVeilReadStash();
         if (id == UUID.Zero && stash.Count == 0) return;
+        var usual = stash.Count == 0 ? null : LoginVeilUsualAtLogin(stash, loginVeilStashAt);
+        if (usual != null) { Log("login-veil", "login outfit: " + usual.Why); stash = usual.Stash; }
         var (early, late) = LoginVeil.SplitStash(stash); loginVeilHoldTries.Clear();
         loginVeilOffAt = id != UUID.Zero ? DateTime.MaxValue : DateTime.MinValue;   // the login-order check: the base head is covered until the veil is off
         loginVeilHeld.Clear(); loginVeilBurstSent.Clear(); foreach (var x in late) loginVeilHeld[x.Item] = 1;   // before login-cover plans (and the outfit send)
+        if (usual?.Changed == true)
+        {   // the clothes not put back keep their COF links until LoginVeilUsualCof drops them: hold them so no path wears them meanwhile
+            foreach (var d in usual.Drop) loginVeilHeld[d] = 1;
+            _ = Task.Run(() => LoginVeilUsualCof(usual));
+        }
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); loginVeilRestoreTask = done.Task;
         _ = Task.Run(async () =>
         {

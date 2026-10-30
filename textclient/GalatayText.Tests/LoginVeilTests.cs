@@ -34,4 +34,12 @@ public class LoginVeilTests
         Assert.Equal(id, LoginVeil.ParseVeilFile("# body-only alpha\n\n11111111-2222-3333-4444-555555555555  Galatea login veil\n"));
         Assert.Equal(UUID.Zero, LoginVeil.ParseVeilFile("# nothing\n")); Assert.Equal(UUID.Zero, LoginVeil.ParseVeilFile(null));
     }
+    // 11:34:10-13 logout: "bake requested" after "Skipping duplicate outfit send (already sent for COF v2918)", then "veil ... on for logout";
+    // the 11:34:38 login was still COF v2918 and "veil not worn". The veil must only count as on when its link is in a newer COF.
+    [Fact] public void LogoutVeil_UnchangedCofVersion_IsNotOn()
+    {
+        Assert.False(LoginVeil.LogoutVerdict(false, 2918, 2918).ok);
+        Assert.False(LoginVeil.LogoutVerdict(true, 2918, 2918).ok);
+        Assert.True(LoginVeil.LogoutVerdict(true, 2918, 2919).ok);
+    }
 }

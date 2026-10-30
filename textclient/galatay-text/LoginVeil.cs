@@ -32,6 +32,15 @@ internal static class LoginVeil
         return nowSec >= last + GraceSec ? (true, $"every garment attached and Ready by +{last:F1} s") : (false, "grace after the last Ready");
     }
 
+    /// <summary>Pure (tested): did the logout veil really get into the outfit? It needs its COF link and a COF version newer than before
+    /// (the sim bakes by COF version; an unchanged version means the bake request is skipped as a duplicate).</summary>
+    internal static (bool ok, string why) LogoutVerdict(bool linkInCof, int cofBefore, int cofAfter)
+    {
+        if (!linkInCof) return (false, "no veil link in Current Outfit");
+        if (cofAfter <= cofBefore) return (false, $"COF version did not move (v{cofBefore} -> v{cofAfter}), the bake would skip it");
+        return (true, $"COF v{cofBefore} -> v{cofAfter}, veil linked");
+    }
+
     /// <summary>Pure: the veil item id from routes/_login-veil.txt (first non-comment UUID).</summary>
     internal static UUID ParseVeilFile(string text)
     {
@@ -57,10 +66,24 @@ public static partial class Program
         var id = LoginVeilItem(); if (id == UUID.Zero || !LoggedIn) return;
         try
         {
-            using var cts = new CancellationTokenSource(8000);
+            using var cts = new CancellationTokenSource(20000);
             var it = await FetchItemRO(id, cts.Token); if (it == null) { Log("login-veil", $"veil item {id} not found in inventory"); return; }
-            if (!LoginVeilWorn(id)) { client.Appearance.AddToOutfit(new List<InventoryItem> { it }, false); await RebakeNow("login veil on for logout"); await Task.Delay(3000); }
-            Log("login-veil", $"veil '{it.Name}' on for logout: the next login starts with the body hidden");
+            // 11:34 relog: AddToOutfit alone left the COF at v2918 (no link yet), so the bake request was skipped as a duplicate and the veil
+            // never reached the sim; the log still said "on". Now: the COF link is made and checked, the COF version must move, then the bake.
+            var cof = await CofFolder(cts.Token); int before = cof?.Version ?? -1;
+            if (!LoginVeilWorn(id)) client.Appearance.AddToOutfit(new List<InventoryItem> { it }, false);
+            var add = await CofLinksOnBatch(new List<InventoryItem> { it }, null, "login veil on for logout", cts.Token);
+            bool linked = false; int after = -1;
+            if (cof != null)
+            {
+                var items = await ReadFolderRO(cof.UUID, cts.Token, 8000);
+                linked = items.OfType<InventoryItem>().Any(l => l.IsLink() && l.AssetUUID == id);
+                after = (client.Inventory.Store[cof.UUID] as InventoryFolder)?.Version ?? cof.Version;
+            }
+            var (ok, why) = LoginVeil.LogoutVerdict(linked, before, after);
+            if (ok) { await RebakeNow("login veil on for logout"); await Task.Delay(4000); }
+            Log("login-veil", ok ? $"veil '{it.Name}' on for logout ({why}; {add}): the next login starts with the body hidden"
+                                 : $"veil NOT on for logout: {why} ({add}); this login will show the body as before");
         }
         catch (Exception ex) { Log("login-veil", "veil on failed: " + ex.GetBaseException().Message); }
     }
@@ -104,7 +127,7 @@ public static partial class Program
         try
         {
             if (!LoggedIn || !LoginVeilWorn(id)) { Log("login-veil", $"veil not worn at +{(DateTime.Now - t0).TotalSeconds:F1} s ({why})"); return; }
-            using var cts = new CancellationTokenSource(8000);
+            using var cts = new CancellationTokenSource(20000);
             var it = await FetchItemRO(id, cts.Token); if (it == null) return;
             client.Appearance.RemoveFromOutfit(new List<InventoryItem> { it }); await RebakeNow("login veil off");
             Log("login-veil", $"veil off at +{(DateTime.Now - t0).TotalSeconds:F1} s: {why}");

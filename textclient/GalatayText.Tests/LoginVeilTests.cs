@@ -99,9 +99,15 @@ public class LoginVeilTests
         foreach (var (n, p) in new[] { (Body, 40), (AddOn, 1), (N9, 39), (Bridge, 30), (Ao, 35), ("Authorizer", 39), ("Maitreya Mesh Body - LaraX HUD V1.1", 34), ("Skeleton fix", 1), ("Bento HandL", 5) })
             Assert.False(LoginVeil.ShouldStash(n, p), n);
     }
+    // 15:32 login after a pre-#353 logout: the stash held the EvoX head for veil-off while the veil waited for the head -> veil KEPT at +90 s.
+    [Fact] public void StashedRealHead_GoesWithTheClothes_NotHeldForTheVeil()
+    {
+        Assert.True(LoginOrder.IsRealHead(EvoxHead)); Assert.False(LoginVeil.RevealWithVeil(EvoxHead));
+        Assert.Contains(LoginVeil.LogoutWaves(new[] { new LoginVeil.Stashed(UUID.Random(), 12, EvoxHead), new LoginVeil.Stashed(UUID.Random(), 2, Hair) })[0], x => x.Name == Hair);
+    }
     [Fact] public void HeadAndLips_ComeBackWithTheVeil_HeadFirst()
     {
-        Assert.True(LoginVeil.RevealWithVeil(EvoxHead)); Assert.True(LoginVeil.RevealWithVeil(Head)); Assert.True(LoginVeil.RevealWithVeil(Eyes));
+        Assert.True(LoginVeil.RevealWithVeil(Eyes)); Assert.True(LoginVeil.RevealWithVeil(Kisser));
         var order = new[] { Gums, Hair, Head, EvoxHead }.OrderBy(LoginVeil.RevealOrder).ToArray();
         Assert.Equal(EvoxHead, order[0]); Assert.Equal(Head, order[1]); Assert.Equal(Hair, order[2]);
     }

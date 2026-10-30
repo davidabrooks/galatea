@@ -155,9 +155,11 @@ internal static class LoginVeil
     internal static int RevealOrder(string name)
         => LoginOrder.IsRealHead(name) ? 0 : IsHeadPart(name) ? 1 : Program.OutfitSendRank(name) == 2 ? 2 : 3;
 
-    /// <summary>Pure (tested): put this stashed item back only together with the veil-off bake (hair, teeth, eyes, jewellery), not at login.</summary>
+    /// <summary>Pure (tested): put this stashed item back only together with the veil-off bake (hair, teeth, eyes, jewellery), not at login.
+    /// Never the real head: since #353 the veil waits for the head, so a stashed head held for veil-off deadlocked the 15:32 login (veil KEPT at
+    /// +90 s). A real head found in the stash goes with the clothes.</summary>
     internal static bool RevealWithVeil(string name)
-        => !Waits(name) && (IsHeadPart(name) || Program.OutfitSendRank(name) == 2 || System.Text.RegularExpressions.Regex.IsMatch(name ?? "", @"teeth|eyes?\b|lel evox|earring|necklace|piercing|nails|lashes", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+        => !Waits(name) && !LoginOrder.IsRealHead(name) && (IsHeadPart(name) || Program.OutfitSendRank(name) == 2 || System.Text.RegularExpressions.Regex.IsMatch(name ?? "", @"teeth|eyes?\b|lel evox|earring|necklace|piercing|nails|lashes", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
 
     /// <summary>Pure (tested): the record to attach a stashed item from, with NO inventory fetch. 14:38 relog: FetchInventory2 was not
     /// available yet at login, so every stash fetch hung (~10 s): the clothes only came on at +10.5 s (through the library's outfit send, not

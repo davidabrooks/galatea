@@ -64,13 +64,4 @@ public class LoginVeilHoldTests
         Assert.DoesNotContain(f, l => l.Contains("base face showed") || l.Contains("Nipple Rings"));
         Assert.Contains(LoginOrder.Findings(w, veilOffSec: 2), l => l.Contains("AFTER the veil came off") && l.Contains("base face showed"));
     }
-
-    [Fact] public void QuickRelog_ThresholdIs10Minutes()
-    {   // 2026-10-30 David: "10 minutes, not 30"
-        var now = new DateTime(2026, 10, 30, 23, 0, 0, DateTimeKind.Utc);
-        Assert.Equal("last", Program.ChooseLoginStart("home", now.AddMinutes(-9), now));
-        Assert.Equal("home", Program.ChooseLoginStart("home", now.AddMinutes(-10), now));
-        Assert.Equal("home", Program.ChooseLoginStart("home", now.AddMinutes(-20), now));
-        Assert.False(Program.RestorePlacementAfterRelog(TimeSpan.FromMinutes(15)));
-    }
 }

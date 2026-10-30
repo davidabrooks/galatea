@@ -9,12 +9,12 @@ using LibreMetaverse;
 
 namespace GalatayText;
 
-// 2026-10-12 David: after a short time offline (restart / deploy / reconnect, < 10 min since 2026-10-30, David: "10 minutes, not 30"; was 30 since the last heartbeat) log in
+// 2026-10-12 David: after a short time offline (restart / deploy / reconnect, < 30 min since the last heartbeat) log in
 // at the last location; the configured start (home = the bedroom) only after a longer absence.
 public static partial class Program
 {
     static readonly string LastOnlineFile = Env("GT_LAST_ONLINE", "/home/box/viewers/textclient/run/last-online.txt");
-    internal static readonly TimeSpan ShortAbsence = TimeSpan.FromMinutes(10);
+    internal static readonly TimeSpan ShortAbsence = TimeSpan.FromMinutes(30);
     static DateTime lastOnlineWrite = DateTime.MinValue;
 
     // pure

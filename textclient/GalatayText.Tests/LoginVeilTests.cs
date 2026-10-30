@@ -62,10 +62,10 @@ public class LoginVeilTests
 
     // 2026-10-30 12:03 relog: 'veil off at +21.5 s: every garment attached and Ready by +9.2 s'; hair and teeth floated around the invisible body.
     const string Teeth = "LeL EvoX Teeth", Head = "-Pretty Liars- Real Kisser V7.0 [FEMALE HEAD]", Kisser = "Real Kisser V7.0", Hud = "Maitreya Mesh Body - LaraX HUD", Collar = "Premium Collar";
-    [Fact] public void Stash_TakesHairTeethAndClothes_NotBodyHeadHudsOrCollar()
+    [Fact] public void Stash_TakesHairTeethAndClothes_NotBodyHudsOrCollar()
     {
         Assert.True(LoginVeil.ShouldStash(Hair, 2)); Assert.True(LoginVeil.ShouldStash(Shirt, 1)); Assert.True(LoginVeil.ShouldStash(Boots, 7)); Assert.True(LoginVeil.ShouldStash(Teeth, 11));
-        Assert.False(LoginVeil.ShouldStash(Body, 1)); Assert.False(LoginVeil.ShouldStash(Head, 2)); Assert.False(LoginVeil.ShouldStash(Kisser, 12));
+        Assert.False(LoginVeil.ShouldStash(Body, 1));
         Assert.False(LoginVeil.ShouldStash(Hud, 35)); Assert.False(LoginVeil.ShouldStash("Some screen thing", 33)); Assert.False(LoginVeil.ShouldStash(Collar, 39)); Assert.False(LoginVeil.ShouldStash("", 5));
     }
     [Fact] public void Reveal_HairAndTeethWithTheVeil_ClothesAtLogin()
@@ -85,4 +85,54 @@ public class LoginVeilTests
         Assert.True(LoginVeil.Release(Live1036(7, 10), 10.6, stashed: true).release);
     }
     [Fact] public void StashDetach_KeepsTheCofLinks_SoTheLibraryRestoreIsAFallback() => Assert.True(Program.KeepCofForDetachWhy("login veil stash"));
+
+    // 2026-10-30 14:01 relog (David): "I could see your fingernails and eyelashes floating". No separate nail / lash attachment was worn: the lashes
+    // are a non-BOM face of the Lelutka head (the nails of the Maitreya body), which the full alpha cannot hide. The head and lips are stashed now.
+    const string EvoxHead = "/ HEAD / lel evox / AVALON 4.0", Eyes = "/ EYES / lel evox 4.0", Gums = "/ GUMS / TEETH / lel evox 4.0", AddOn = "Maitreya Mesh Body - LaraX Petite Add-on V1.1",
+                 Bracelet = ".Heol Star Bracelet Gold", Bridge = "#Firestorm LSL Bridge v2.29", Ao = "VISTA ANIMATIONS *HUD 6.3*MARTHA STS BENTO AO-V1.7", N9 = ":: No 9 :: Premium Collar";
+    [Fact] public void Stash_IsGeneric_HeadAndLipsIncluded_BodyAddonCollarHudBridgeNot()
+    {
+        foreach (var (n, p) in new[] { (EvoxHead, 2), (Head, 12), (Kisser, 12), (Eyes, 15), (Gums, 47), (Bracelet, 6), ("Some Brand Lashes", 17), ("Some Brand Nails", 6), ("Unknown Necklace", 39) })
+            Assert.True(LoginVeil.ShouldStash(n, p), n);
+        foreach (var (n, p) in new[] { (Body, 40), (AddOn, 1), (N9, 39), (Bridge, 30), (Ao, 35), ("Authorizer", 39), ("Maitreya Mesh Body - LaraX HUD V1.1", 34), ("Skeleton fix", 1), ("Bento HandL", 5) })
+            Assert.False(LoginVeil.ShouldStash(n, p), n);
+    }
+    [Fact] public void HeadAndLips_ComeBackWithTheVeil_HeadFirst()
+    {
+        Assert.True(LoginVeil.RevealWithVeil(EvoxHead)); Assert.True(LoginVeil.RevealWithVeil(Head)); Assert.True(LoginVeil.RevealWithVeil(Eyes));
+        var order = new[] { Gums, Hair, Head, EvoxHead }.OrderBy(LoginVeil.RevealOrder).ToArray();
+        Assert.Equal(EvoxHead, order[0]); Assert.Equal(Head, order[1]); Assert.Equal(Hair, order[2]);
+    }
+
+    // 14:01 relog: Ready +12.3 s, veil decision +15.5 s (the clothes attach was awaited in front of the loop), bake POST +1.75 s after the link removal.
+    [Fact] public async Task TheReleaseLoop_DoesNotWaitForTheClothesAttach()
+    {
+        var gate = new TaskCompletionSource();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = await LoginVeil.BesideLoop(() => gate.Task, () => Task.FromResult(42));
+        Assert.Equal(42, r); Assert.True(sw.ElapsedMilliseconds < 1000); gate.SetResult();
+    }
+    [Fact] public async Task VeilOff_HeadPartsBurstGoesAfterTheLinkRemovalAndBeforeTheBake()
+    {
+        var steps = new List<string>();
+        var (rm, ok) = await LoginVeil.OffCore(() => steps.Add("drop"), () => { steps.Add("links"); return Task.FromResult(true); },
+            () => { steps.Add("bake"); return Task.CompletedTask; }, () => { steps.Add("confirm"); return Task.FromResult(true); },
+            () => { steps.Add("burst"); return Task.CompletedTask; });
+        Assert.True(rm && ok); Assert.Equal(new[] { "drop", "links", "burst", "bake", "confirm" }, steps);
+        steps.Clear();
+        await LoginVeil.OffCore(null, () => Task.FromResult(false), () => { steps.Add("bake"); return Task.CompletedTask; }, () => Task.FromResult(true), () => { steps.Add("burst"); return Task.CompletedTask; });
+        Assert.Empty(steps);   // links not removed: no head parts over a still-veiled body, no bake
+    }
+
+    // 14:01 relog (David): "the collar disappeared last instead of first".
+    [Fact] public async Task Logout_CollarStealthFinishesBeforeTheVeilAndTheStash()
+    {
+        var steps = new List<string>();
+        var ok = await LoginVeil.LogoutCore(async () => { await Task.Delay(50); steps.Add("collar"); }, 5000,
+            () => { steps.Add("veil"); return Task.FromResult(true); }, () => { steps.Add("stash"); return Task.CompletedTask; });
+        Assert.True(ok); Assert.Equal(new[] { "collar", "veil", "stash" }, steps);
+        steps.Clear();
+        await LoginVeil.LogoutCore(() => new TaskCompletionSource().Task, 100, () => { steps.Add("veil"); return Task.FromResult(false); }, () => { steps.Add("stash"); return Task.CompletedTask; });
+        Assert.Equal(new[] { "veil" }, steps);   // a hung collar menu is capped; veil not verified: nothing comes off
+    }
 }

@@ -6,6 +6,9 @@
 // Current Outfit that is not worn yet (real head, body, hands, feet, skeleton; rank <= 1 of OutfitSendRank, plus the body add-on), in rank order, at
 // once. The library pass later finds them worn and skips them. The sim restore order itself (boots / shorts / body / T-shirt) is not under our control:
 // what the client can still do for the body is reported by LoginOrder ([login-order] lines).
+// 2026-10-29 (21:34 login, David: "I saw the base face too long"): the fast path still WAITED for the sim restore to settle (+6.0 s) before
+// attaching the head, although the sim never restores it (point #12 goes to the Real Kisser): head seen at +6.7 s, base face ~6 s plus the
+// viewer's mesh load. Now the real head (EarlyPlan) is attached right at login, before the settle wait; the rest of the cover set keeps the wait.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -32,6 +35,11 @@ internal static class LoginCover
             .GroupBy(i => i.Id).Select(g => g.First())
             .Select((i, idx) => (i, idx, r: PlanRank(i.Name, rank)))
             .OrderBy(x => x.r).ThenBy(x => x.idx).Select(x => x.i).ToList();
+
+    /// <summary>Pure (tested): the cover items attached AT ONCE at login, without waiting for the sim restore: only the real head (the sim restores
+    /// one object per point and gives the head's point to the Real Kisser, so waiting never helps; ATTACHMENT_ADD keeps the Kisser on).</summary>
+    internal static List<Item> EarlyPlan(IEnumerable<Item> cof, ISet<UUID> worn, Func<string, int> rank, Func<UUID, string, bool> exclude = null)
+        => Plan(cof, worn, rank, exclude).Where(i => PlanRank(i.Name, rank) < 0).ToList();
 
     /// <summary>The real head before everything else (the base face is the most visible gap), then body, then the rest of the cover set.</summary>
     internal static int PlanRank(string name, Func<string, int> rank)
@@ -63,6 +71,8 @@ public static partial class Program
     static async Task LoginCoverRun(int gen)
     {
         var t0 = DateTime.UtcNow; int last = -1; var changed = t0;
+        var early = new HashSet<UUID>();
+        try { early = await LoginCoverEarlyHead(gen, t0); } catch (Exception ex) { Log("login-cover", "early head attach failed: " + ex.GetBaseException().Message); }
         while (gen == loginCoverGen && LoggedIn)
         {
             int n = WornPrims().Count(p => AttachItemId(p) != UUID.Zero); var now = DateTime.UtcNow;
@@ -76,6 +86,7 @@ public static partial class Program
         var links = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>()
             .Where(l => l.ParentUUID == cof.UUID && l.IsLink() && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment)).ToList();
         var worn = WornPrims().Select(AttachItemId).Where(u => u != UUID.Zero).ToHashSet();
+        worn.UnionWith(early);   // already requested at login: do not send it twice
         var plan = LoginCover.Plan(links.Select(l => new LoginCover.Item(l.AssetUUID, l.Name)), worn, OutfitSendRank, client.Settings.Agent.OutfitSendExclude);
         double since() => (DateTime.UtcNow - t0).TotalSeconds;
         if (plan.Count == 0) { Log("login-cover", $"restore settled at +{since():F1} s with {worn.Count} worn: every cover item (body, head, hands, feet) is already on"); return; }
@@ -92,5 +103,28 @@ public static partial class Program
         }
         var have2 = WornPrims().Select(AttachItemId).ToHashSet();
         Log("login-cover", $"after +{since():F1} s not seen: {string.Join("; ", invs.Where(i => !have2.Contains(i.UUID)).Select(i => i.Name))} (the library add-missing pass still covers them)");
+    }
+
+    /// <summary>Attach the real head right at login (before the restore-settle wait). Returns the item ids requested.</summary>
+    static async Task<HashSet<UUID>> LoginCoverEarlyHead(int gen, DateTime t0)
+    {
+        var sent = new HashSet<UUID>();
+        if (gen != loginCoverGen || !LoggedIn) return sent;
+        using var cts = new CancellationTokenSource(15000); var ct = cts.Token;
+        var cof = await CofFolder(ct); if (cof == null) return sent;
+        var links = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>()
+            .Where(l => l.ParentUUID == cof.UUID && l.IsLink() && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment)).ToList();
+        var worn = WornPrims().Select(AttachItemId).Where(u => u != UUID.Zero).ToHashSet();
+        var plan = LoginCover.EarlyPlan(links.Select(l => new LoginCover.Item(l.AssetUUID, l.Name)), worn, OutfitSendRank, client.Settings.Agent.OutfitSendExclude);
+        double since() => (DateTime.UtcNow - t0).TotalSeconds;
+        if (plan.Count == 0) { Log("login-cover", $"early: real head already on at +{since():F1} s"); return sent; }
+        foreach (var p in plan)
+        {
+            if (gen != loginCoverGen || !LoggedIn) break;
+            var it = await FetchItemRO(p.Id, ct); if (it == null || it.IsLink()) continue;
+            client.Appearance.Attach(it, AttachmentPoint.Default, false); sent.Add(it.UUID);
+            Log("login-cover", $"early: attaching the real head at +{since():F1} s, before the restore settles: {it.Name}");
+        }
+        return sent;
     }
 }

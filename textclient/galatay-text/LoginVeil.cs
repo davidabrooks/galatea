@@ -63,11 +63,15 @@ internal static class LoginVeil
         // 15:31:45 logout (David): hair, teeth and earrings still floated alone at the end although our client got their KillObject 1.4 s before
         // the head's. Observers get those kills later than we do, so they now come off FIRST, while the head and body are still fully shown;
         // collar stealth and the veil bake (~6 s at 15:31:36-42) then run before the head and clothes go: a late kill shows a bald, whole avatar.
-        if (looseHeadPartsFirst != null) { try { await looseHeadPartsFirst(); } catch { } }
-        // 16:0x relog (David): ears and lashes (EvoX head faces) and nails floated under the veil. Ears and lashes are hidden in the head
-        // itself through its HUD (LoginVeilEvox.cs), after the hair wave, capped so a stuck HUD never holds the logout.
+        // 16:48 relog (David): eyes and hair came off ~19 s before anything else (hair wave gone 16:48:36, EvoX ear/lash HUD step until
+        // 16:48:49, collar stealth until 16:48:52, veil bake 16:48:53). The slow steps (head HUD, collar menu) now run first, with the head
+        // still fully dressed; the hair wave goes right before the veil, so the bald moment is the veil bake only (~1 s).
+        // Ears and lashes (EvoX head faces) are hidden through the head's HUD, capped so a stuck HUD never holds the logout.
         if (hideHeadFaces != null) { try { await Task.WhenAny(hideHeadFaces(), Task.Delay(hideHeadFacesMaxMs)); } catch { } }
         if (collarStealth != null) { try { await Task.WhenAny(collarStealth(), Task.Delay(collarMaxMs)); } catch { } }
+        // 15:31:45 logout: hair, teeth and earrings floated alone at the end (observers get their kills late), so they still come off
+        // before the veil and the head / clothes stash.
+        if (looseHeadPartsFirst != null) { try { await looseHeadPartsFirst(); } catch { } }
         bool ok = await veilOn();
         if (ok) await stash();
         return ok;
@@ -135,7 +139,7 @@ internal static class LoginVeil
     }
     /// <summary>Pure (tested): a head part that would float on its own once the head is gone (not the real head itself).</summary>
     internal static bool IsLooseHeadPart(string name) => !LoginOrder.IsRealHead(name) && RevealWithVeil(name);
-    internal const int WaveConfirmMs = 4000, WaveSettleMs = 1200, LogoutSettleMs = 2500, EarlySettleMs = 1500;
+    internal const int WaveConfirmMs = 4000, WaveSettleMs = 1200, LogoutSettleMs = 2500, EarlySettleMs = 0;   // the veil follows the hair wave at once (16:48 relog)
     /// <summary>Pure (tested): the early stash (loose head parts, taken before the veil) merged with the late one, by item, early first.</summary>
     internal static List<Stashed> MergeStash(IEnumerable<Stashed> early, IEnumerable<Stashed> late)
         => (early ?? Enumerable.Empty<Stashed>()).Concat(late ?? Enumerable.Empty<Stashed>()).GroupBy(x => x.Item).Select(g => g.First()).ToList();

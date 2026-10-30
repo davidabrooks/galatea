@@ -39,14 +39,25 @@ public class LogoutWavesTests
 
     // 2026-10-30 15:31:45 logout (textclient.log "stash wave 1/2 ... confirmed gone +211 ms", wave 2 +1419 ms): David still saw hair, teeth and
     // earrings floating alone at the end. They now come off before the collar stealth and the veil, while the head is still on.
-    [Fact] public async Task LooseHeadParts_ComeOffBeforeCollarAndVeil()
+    [Fact] public async Task LooseHeadParts_ComeOffAfterCollar_RightBeforeVeil()
     {
         var steps = new List<string>();
         var ok = await LoginVeil.LogoutCore(() => { steps.Add("collar"); return Task.CompletedTask; }, 1000,
             () => { steps.Add("veil"); return Task.FromResult(true); }, () => { steps.Add("stash"); return Task.CompletedTask; },
             () => { steps.Add("hair-teeth-earrings"); return Task.CompletedTask; });
         Assert.True(ok);
-        Assert.Equal(new[] { "hair-teeth-earrings", "collar", "veil", "stash" }, steps);
+        Assert.Equal(new[] { "collar", "hair-teeth-earrings", "veil", "stash" }, steps);
+    }
+    // 2026-10-30 16:48:34 logout (David): eyes and hair off ~19 s before the veil (HUD 13 s + collar 3 s between). The hair wave must be
+    // the last step before the veil, and no settle wait follows it.
+    [Fact] public async Task HairWave_ToVeil_GapIsUnderOneSecond_EvenWithSlowHudAndCollar()
+    {
+        DateTime hairDone = default, veilAt = default;
+        await LoginVeil.LogoutCore(() => Task.Delay(400), 5000,
+            () => { veilAt = DateTime.Now; return Task.FromResult(true); }, () => Task.CompletedTask,
+            () => { hairDone = DateTime.Now; return Task.CompletedTask; }, () => Task.Delay(400));
+        Assert.True((veilAt - hairDone).TotalMilliseconds < 1000);
+        Assert.Equal(0, LoginVeil.EarlySettleMs);
     }
     [Fact] public void EarlyStash_IsKeptInTheLoginList_LateWavesHaveNoHeadParts()
     {

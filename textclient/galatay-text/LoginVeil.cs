@@ -1,0 +1,114 @@
+// LoginVeil.cs (2026-10-30, David at the 10:36 relog: "I didn't see your base textures, but I did see your good body for a few seconds before your clothes covered you").
+// Evidence (textclient.log, login 10:36:17): boots #7 and shorts #10 seen +3 s, real head +4 s, shorts "Ready" +5 s, BODY #40 and T-shirt #55 seen
+// together at +7 s, T-shirt and boots "Ready" +10 s. The sim restores body and T-shirt in the same instant: the client has no order left to fix. What
+// David saw is his viewer drawing the (cached) body before the T-shirt's mesh and the shorts' body cut arrived (the shorts were Ready at +5 s, before
+// the body existed, so their cut had nobody to apply to). The only lever is to keep the body INVISIBLE until the garments are there and Ready:
+// a body-only system alpha layer (the "veil": upper + lower body alpha, NOT the head) put on at logout, so the login bake already hides the
+// system body AND the BOM mesh body from the first frame, then taken off (and rebaked) once every worn LaraX garment is seen and Ready.
+// The veil item is named by its inventory item id in routes/_login-veil.txt (first non-comment line). No file / item: nothing changes.
+// Safety: the veil is always taken off by MaxHold, and a veil found worn outside the login window is taken off too.
+using LibreMetaverse;
+
+namespace GalatayText;
+
+internal static class LoginVeil
+{
+    internal sealed record Garment(string Name, double? SeenSec, double? ReadySec);
+    internal static readonly double MaxHoldSec = 25, GraceSec = 1.5;
+
+    /// <summary>Pure: the garments the veil waits for: LaraX-fitted clothing (it cuts the body and announces Ready).</summary>
+    internal static bool Waits(string name) => LoginOrder.IsBodyCuttingGarment(name);
+
+    /// <summary>Pure (tested): take the veil off now? Every waited garment of the current outfit is seen and Ready, plus a short grace for the
+    /// viewer to draw it; nothing to wait for (purposely naked) releases at once; MaxHold always releases.</summary>
+    internal static (bool release, string why) Release(IEnumerable<Garment> garments, double nowSec)
+    {
+        var g = (garments ?? Array.Empty<Garment>()).Where(x => Waits(x.Name)).ToList();
+        if (nowSec >= MaxHoldSec) return (true, $"max hold {MaxHoldSec:F0} s reached; still waiting for: {string.Join("; ", g.Where(x => x.SeenSec == null || x.ReadySec == null).Select(x => x.Name))}");
+        if (g.Count == 0) return (true, "no body-cutting garment in the outfit");
+        var missing = g.Where(x => x.SeenSec == null || x.ReadySec == null).ToList();
+        if (missing.Count > 0) return (false, "waiting for: " + string.Join("; ", missing.Select(x => x.Name + (x.SeenSec == null ? " (not attached)" : " (not Ready)"))));
+        double last = g.Max(x => Math.Max(x.SeenSec!.Value, x.ReadySec!.Value));
+        return nowSec >= last + GraceSec ? (true, $"every garment attached and Ready by +{last:F1} s") : (false, "grace after the last Ready");
+    }
+
+    /// <summary>Pure: the veil item id from routes/_login-veil.txt (first non-comment UUID).</summary>
+    internal static UUID ParseVeilFile(string text)
+    {
+        foreach (var l in (text ?? "").Split('\n').Select(x => x.Trim()))
+            if (l.Length > 0 && !l.StartsWith("#") && UUID.TryParse(l.Split(' ', '\t')[0], out var id) && id != UUID.Zero) return id;
+        return UUID.Zero;
+    }
+}
+
+public static partial class Program
+{
+    static int loginVeilGen;
+    static UUID LoginVeilItem()
+    {
+        if (Env("GT_LOGIN_VEIL", "1") == "0") return UUID.Zero;
+        try { var f = Path.Combine(RouteDir, "_login-veil.txt"); return File.Exists(f) ? LoginVeil.ParseVeilFile(File.ReadAllText(f)) : UUID.Zero; } catch { return UUID.Zero; }
+    }
+    static bool LoginVeilWorn(UUID id) => id != UUID.Zero && SafeWearables().Any(w => w.ItemID == id);
+
+    /// <summary>Logout: put the veil on and get it into the bake, so the next login starts with the body hidden.</summary>
+    static async Task LoginVeilOnForLogout()
+    {
+        var id = LoginVeilItem(); if (id == UUID.Zero || !LoggedIn) return;
+        try
+        {
+            using var cts = new CancellationTokenSource(8000);
+            var it = await FetchItemRO(id, cts.Token); if (it == null) { Log("login-veil", $"veil item {id} not found in inventory"); return; }
+            if (!LoginVeilWorn(id)) { client.Appearance.AddToOutfit(new List<InventoryItem> { it }, false); await RebakeNow("login veil on for logout"); await Task.Delay(3000); }
+            Log("login-veil", $"veil '{it.Name}' on for logout: the next login starts with the body hidden");
+        }
+        catch (Exception ex) { Log("login-veil", "veil on failed: " + ex.GetBaseException().Message); }
+    }
+
+    /// <summary>Login: take the veil off once the outfit's garments are attached and Ready (LoginVeil.Release).</summary>
+    static void LoginVeilStart()
+    {
+        int gen = Interlocked.Increment(ref loginVeilGen); var t0 = DateTime.Now;
+        var id = LoginVeilItem(); if (id == UUID.Zero) return;
+        _ = Task.Run(async () =>
+        {
+            string why = "?";
+            try
+            {
+                await Task.Delay(1000);
+                using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
+                while (gen == loginVeilGen && LoggedIn)
+                {
+                    double now = (DateTime.Now - t0).TotalSeconds;
+                    var garments = new List<LoginVeil.Garment>();
+                    var cof = await CofFolder(ct);
+                    if (cof != null)
+                    {
+                        var worn = WornPrims().Select(AttachItemId).ToHashSet();
+                        foreach (var l in (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>().Where(l => l.ParentUUID == cof.UUID && l.IsLink() && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment)).GroupBy(l => l.AssetUUID).Select(g => g.First()))
+                            garments.Add(new(l.Name, worn.Contains(l.AssetUUID) && loginSeenAt.TryGetValue(l.AssetUUID, out var s) ? (s - t0).TotalSeconds : worn.Contains(l.AssetUUID) ? 0 : null,
+                                             loginReadyAt.TryGetValue(l.Name, out var r) ? (r - t0).TotalSeconds : null));
+                    }
+                    var (rel, w) = cof == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.Release(garments, now);
+                    why = w; if (rel) break;
+                    await Task.Delay(300, ct);
+                }
+            }
+            catch (Exception ex) { why = "error: " + ex.GetBaseException().Message; }
+            finally { if (gen == loginVeilGen) await LoginVeilOff(id, t0, why); }
+        });
+    }
+
+    static async Task LoginVeilOff(UUID id, DateTime t0, string why)
+    {
+        try
+        {
+            if (!LoggedIn || !LoginVeilWorn(id)) { Log("login-veil", $"veil not worn at +{(DateTime.Now - t0).TotalSeconds:F1} s ({why})"); return; }
+            using var cts = new CancellationTokenSource(8000);
+            var it = await FetchItemRO(id, cts.Token); if (it == null) return;
+            client.Appearance.RemoveFromOutfit(new List<InventoryItem> { it }); await RebakeNow("login veil off");
+            Log("login-veil", $"veil off at +{(DateTime.Now - t0).TotalSeconds:F1} s: {why}");
+        }
+        catch (Exception ex) { Log("login-veil", "veil off failed: " + ex.GetBaseException().Message); }
+    }
+}

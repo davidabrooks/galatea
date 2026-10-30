@@ -121,7 +121,11 @@ public static partial class Program
         var sent = new HashSet<UUID>();
         if (gen != loginCoverGen || !LoggedIn) return sent;
         using var cts = new CancellationTokenSource(15000); var ct = cts.Token;
-        var cof = await CofFolder(ct); if (cof == null) return sent;
+        // 2026-10-30: at the 10:35 and 10:36 logins this pass logged nothing: the inventory root was not readable yet at +0 s and it returned
+        // silently. Retry for a few seconds, and say so when it gives up.
+        InventoryFolder cof = null;
+        for (int i = 0; i < 20 && cof == null && gen == loginCoverGen && LoggedIn; i++) { try { cof = await CofFolder(ct); } catch (OperationCanceledException) { throw; } catch { } if (cof == null) await Task.Delay(250, ct); }
+        if (cof == null) { Log("login-cover", $"early: Current Outfit folder not readable by +{(DateTime.UtcNow - t0).TotalSeconds:F1} s; the body set waits for the restore"); return sent; }
         var links = (await ReadFolderRO(cof.UUID, ct)).OfType<InventoryItem>()
             .Where(l => l.ParentUUID == cof.UUID && l.IsLink() && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment)).ToList();
         var worn = WornPrims().Select(AttachItemId).Where(u => u != UUID.Zero).ToHashSet();

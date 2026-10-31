@@ -75,3 +75,21 @@ public class LoginVeilEvoxTests
         Assert.True(ok);
     }
 }
+
+// 2026-10-30 16:44/16:48/17:00/17:20 logouts: the HUD said "please wear your head to activate me." and ignored the presses (NOT confirmed).
+public class EvoxHudHandshakeTests
+{
+    [Fact] public void NoHeadLine_Detected()
+    {
+        Assert.True(EvoxHide.IsNoHeadLine("Hello Galatea, please wear your head to activate me."));
+        Assert.False(EvoxHide.IsNoHeadLine("Ready"));
+    }
+    [Fact] public void Retry_UntilConfirmed_CappedByTriesAndTime()
+    {
+        Assert.True(EvoxHide.RetryDue(false, 1, EvoxHide.MaxAttempts, 5, EvoxHide.BudgetSec));
+        Assert.False(EvoxHide.RetryDue(true, 1, EvoxHide.MaxAttempts, 5, EvoxHide.BudgetSec));
+        Assert.False(EvoxHide.RetryDue(false, EvoxHide.MaxAttempts, EvoxHide.MaxAttempts, 5, EvoxHide.BudgetSec));
+        Assert.False(EvoxHide.RetryDue(false, 1, EvoxHide.MaxAttempts, EvoxHide.BudgetSec, EvoxHide.BudgetSec));
+        Assert.True(EvoxHide.BudgetSec < LoginVeil.EvoxHideMaxMs / 1000.0);   // the logout cap still wins
+    }
+}

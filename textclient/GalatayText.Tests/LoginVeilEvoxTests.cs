@@ -41,6 +41,10 @@ public class LoginVeilEvoxTests
         Assert.Equal("ears,lashes", EvoxHide.Marker(new(false, false), new(true, true)));
         Assert.Equal("lashes", EvoxHide.Marker(new(true, false), new(true, true)));   // android: ears were hidden before, they stay hidden
         Assert.Equal("", EvoxHide.Marker(new(false, false), new(false, false)));      // press failed: nothing to undo
+        // 13:56 broken-session logout: head unseen must keep the earlier marker, not wipe it
+        Assert.False(EvoxHide.MarkerReplaces(null, null));
+        Assert.False(EvoxHide.MarkerReplaces(new(false, false), null));
+        Assert.True(EvoxHide.MarkerReplaces(new(false, false), new(true, true)));
         Assert.Equal(new EvoxHide.Parts(true, false), EvoxHide.ShowTarget("lashes", new(true, true)));
         Assert.Equal(new EvoxHide.Parts(false, false), EvoxHide.ShowTarget("ears,lashes\n", new(true, true)));
         Assert.Empty(EvoxHide.Presses(new(false, false), EvoxHide.ShowTarget("ears,lashes", new(false, false))));

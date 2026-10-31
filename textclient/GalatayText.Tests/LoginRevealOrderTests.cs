@@ -37,7 +37,27 @@ public class LoginRevealOrderTests
         Assert.True(EvoxHide.IsEvoxHead(false, "/ HEAD / lel evox / AVALON 4.0"));
         Assert.False(EvoxHide.IsEvoxHead(false, null));
         Assert.False(EvoxHide.IsEvoxHead(false, "/ HUD / lel evox (f) 4.0"));
-        Assert.InRange(EvoxHide.VeilHoldMs, 1000, 5000);
+    }
+    [Fact] public void VeilHold_WaitsForTheHudNotAFixedTime_WithOnlyASafetyCap()
+    {
+        // 2026-10-31 15:49 login: the fixed 5 s hold ran out 1.1 s before the HUD accepted the head
+        Assert.InRange(EvoxHide.VeilHoldCapMs, 20000, 60000);
+        Assert.Equal("HUD ready", EvoxHide.HoldOutcome(true, true));
+        Assert.Contains("FAILED", EvoxHide.HoldOutcome(false, false));
+        Assert.Contains("FAILED", EvoxHide.HoldOutcome(true, false));
+    }
+    [Fact] public void HudHandshake_JudgedOnlyOnceHudAndHeadAreBothOn()
+    {
+        var a = new DateTime(2026, 10, 31, 15, 49, 10); var b = a.AddSeconds(3);
+        Assert.Equal(b.AddMilliseconds(EvoxHide.NoHeadWaitMs), EvoxHide.HandshakeQuietUntil(a, b));
+        Assert.Equal(b.AddMilliseconds(EvoxHide.NoHeadWaitMs), EvoxHide.HandshakeQuietUntil(b, a));
+    }
+    [Fact] public void PostVeilOffRebake_FiveSecondsLater_SameLoginOnly()
+    {
+        Assert.Equal(5000, EvoxHide.PostVeilRebakeMs);
+        Assert.True(EvoxHide.PostVeilRebakeDue(true, 3, 3));
+        Assert.False(EvoxHide.PostVeilRebakeDue(true, 3, 4));
+        Assert.False(EvoxHide.PostVeilRebakeDue(false, 3, 3));
     }
     [Fact] public void HudPrep_RetriesNoHeadOnlyUnderTheVeil()
     {

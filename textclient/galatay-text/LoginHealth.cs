@@ -49,9 +49,12 @@ public static partial class Program
         if (string.IsNullOrWhiteSpace(region)) p.Add("region name unknown");
         if (objectsKnown <= 0) p.Add("0 objects");
         if (!hasFetchInventory2) p.Add("no FetchInventory2 cap");
-        if (!hasUploadBakedTexture) p.Add("no UploadBakedTexture cap");
-        // the region name alone can arrive without caps (13:57 seed 404): caps missing = failed even with a region
-        bool failed = p.Contains("region name unknown") || !hasFetchInventory2 || !hasUploadBakedTexture;
+        // 14:12 relog (David watching): a healthy login was marked FAILED for "no UploadBakedTexture cap" and the collar and
+        // EvoX steps were skipped. That cap is legacy (server-side baking never uses it; regions stopped granting it), so it is
+        // only informational now. The parameter stays so the call site and logs keep showing it.
+        _ = hasUploadBakedTexture;
+        // the region name alone can arrive without caps (13:57 seed 404): no FetchInventory2 = failed even with a region
+        bool failed = p.Contains("region name unknown") || !hasFetchInventory2;
         return failed ? string.Join(", ", p) : null;
     }
 

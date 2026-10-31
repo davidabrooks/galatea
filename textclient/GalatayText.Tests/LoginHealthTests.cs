@@ -34,6 +34,9 @@ public class LoginHealthTests
         Assert.NotNull(Program.LoginHealthProblem("Peronaut", 2074, false, false));   // region but no caps
         Assert.Null(Program.LoginHealthProblem("Peronaut", 2074, true, true));
         Assert.Null(Program.LoginHealthProblem("Peronaut", 0, true, true));            // empty sky region with caps is fine
+        // 14:12 regression: no UploadBakedTexture (legacy, unused by server-side baking) must not fail a healthy login
+        Assert.Null(Program.LoginHealthProblem("Peronaut", 823, true, false));
+        Assert.NotNull(Program.LoginHealthProblem("Peronaut", 823, false, true));
         Program.LoginFailedReason = Program.LoginHealthProblem("", 0, false, false);
         try
         {

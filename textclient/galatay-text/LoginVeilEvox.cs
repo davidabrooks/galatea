@@ -42,6 +42,8 @@ internal static class EvoxHide
     }
 
     /// <summary>Pure (tested): the logout marker = the parts that were visible before and that we hid (never the android's hidden ears).</summary>
+    internal static bool MarkerReplaces(Parts before, Parts after) => before != null && after != null;
+
     internal static string Marker(Parts before, Parts after)
     {
         if (before == null || after == null) return "";
@@ -162,6 +164,9 @@ public static partial class Program
         {
             var (before, after, msg) = await EvoxSet(_ => new EvoxHide.Parts(true, true), "logout veil");
             var m = EvoxHide.Marker(before, after);
+            // 13:56 logout in a broken session: head unseen (before/after null) wiped the earlier "ears,lashes" marker, so the
+            // next login never showed the ears. Unknown state keeps the old marker.
+            if (!EvoxHide.MarkerReplaces(before, after)) { Log("login-veil", $"evox for logout: {msg} (state unknown: marker kept)"); return; }
             if (m.Length > 0) File.WriteAllText(LoginVeilEvoxFile, m + "\n"); else { try { File.Delete(LoginVeilEvoxFile); } catch { } }
             Log("login-veil", $"evox for logout: {msg} (show at login: {(m.Length > 0 ? m : "nothing")})");
         }

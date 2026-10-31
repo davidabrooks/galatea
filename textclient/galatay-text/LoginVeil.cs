@@ -420,10 +420,17 @@ public static partial class Program
         try
         {
             var f = LoginVeilCollarFile; if (!File.Exists(f)) return;
-            var m = File.ReadAllText(f); File.Delete(f);
-            if (!LoginVeil.CollarShowAfterLogin(m) || !LoggedIn) return;
-            var (r, _) = await CollarStealthSet(false, "login veil off");
-            Log("login-veil", "collar after the veil-off bake: " + r);
+            var m = File.ReadAllText(f);
+            if (!LoginVeil.CollarShowAfterLogin(m) || !LoggedIn) { File.Delete(f); return; }
+            // 17:34 login: the marker was deleted before the (failed) show, so the next logout saw "already hidden" and kept it hidden.
+            // The marker now goes only once the collar is visible; a failed show is retried.
+            for (int i = 0; i < 3 && LoggedIn; i++)
+            {
+                var (r, _) = await CollarStealthSet(false, "login veil off");
+                Log("login-veil", "collar after the veil-off bake: " + r);
+                if (r.Contains(" visible")) { File.Delete(f); return; }
+                await Task.Delay(5000);
+            }
         }
         catch (Exception ex) { Log("login-veil", "collar show after login failed: " + ex.GetBaseException().Message); }
     }

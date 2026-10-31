@@ -52,6 +52,9 @@ public static partial class Program
         }
         return null;
     }
+    internal const int CollarTouchTries = 4;
+    /// <summary>Pure (tested): touch the collar again? Only when the touch missed it by name (properties not loaded), within the tries.</summary>
+    internal static bool CollarTouchRetry(string touchResult, int attempt) => attempt < CollarTouchTries && (touchResult ?? "").StartsWith("no single worn attachment matches");
     static Task<string> CollarStealthOn(string why) => CollarStealthSet(true, why).ContinueWith(t => t.Result.result);
     // collar main menu -> About -> press "Stealth" only if its state differs from `want`. wasOn = state before (null = unknown)
     static async Task<(string result, bool? wasOn)> CollarStealthSet(bool want, string why)
@@ -59,9 +62,17 @@ public static partial class Program
         if (!await CollarMenuEnter()) return ("collar menu busy for 90 s", null);
         try
         {
-            var prev = lastDialog;
-            var t = await Exec("touch-attachment \"Premium Collar\" 1");
-            var main = await CollarDialogAfter(prev, 10000);
+            // 17:34:04 login: the touch found no collar by name (worn prim names not loaded yet: "worn: ?, ..."), so the collar stayed
+            // invisible. A name miss is retried after the properties load.
+            string t = ""; ScriptDialogEventArgs main = null;
+            for (int attempt = 1; ; attempt++)
+            {
+                var prev = lastDialog;
+                t = await Exec("touch-attachment \"Premium Collar\" 1");
+                if (CollarTouchRetry(t, attempt)) { await Task.Delay(2000); continue; }
+                main = await CollarDialogAfter(prev, 10000);
+                break;
+            }
             if (main == null || !(main.ButtonLabels ?? new()).Contains("About")) return ($"collar menu did not open ({t})", null);
             await Exec("dialog About");
             var about = await CollarDialogAfter(main, 10000);

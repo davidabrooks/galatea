@@ -40,6 +40,8 @@ internal interface IFeetHost
     Task<List<(string name, float alpha)>> FootMeshAlphas();
     /// <summary>Touch one prim at a texture coordinate on a face (Grab + DeGrab).</summary>
     Task TouchPrim(Primitive prim, Vector3 st, int face);
+    /// <summary>2026-10-31: the login veil is off (and its restore done) a moment ago: the outfit she logged in with is on. False = no veil / not yet.</summary>
+    bool LoginSettled => false;
 }
 
 /// <summary>What the hover code needs: the session, hover state in force, the pose state, a few pose actions, the scene export and the paths.</summary>
@@ -144,6 +146,7 @@ public static partial class Program
         public Task EnsureProperties(Simulator sim, List<Primitive> prims) => Program.EnsureProperties(sim, prims);
         public Task<string> TouchAttachment(string rest) => Program.TouchAttachment(rest);
         public bool PoseBusy => Program.idleLock.CurrentCount == 0 || DateTime.Now < Program.aoSitTransitionUntil;
+        public bool LoginSettled => FeetAuto.LoginSettledNow(Program.loginVeilOffAt, Program.loginVeilRestoreTask?.IsCompleted ?? false, DateTime.Now);
         public double PoseSettledSec => (DateTime.Now - Program.hoverSvc.PostureChangedAt).TotalSeconds;
         public bool Sitting => Program.client.Self.SittingOn != 0 || Program.AoSitReallyOn();
         public async Task<List<(string name, float alpha)>> FootMeshAlphas()

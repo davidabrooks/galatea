@@ -118,7 +118,15 @@ internal sealed class FeetAuto
 // The close-up is kept only as an informational picture; it never decides a fit.
     // 2026-10-28 11:42 relog (David: the body showed under the shirt and shorts before the clothes rendered): the feet code attached / detached the Maitreya HUD (an item the sim had
     // already restored, worn and in the COF) four times within 30 s of login. No HUD round trip until the login has settled.
-    internal const double FeetFootwearStableSec = 1.5, FeetFastPollSec = 1;
+    internal const double FeetFootwearStableSec = 1.5, FeetFastPollSec = 1, FeetAfterVeilSec = 1.5;
+    // 2026-10-31 13:13 login (#368 live): f1 pressed at +88 s. (a) the loop's first poll came at +42 s (45 s start delay); (b) that first poll saw
+    // prevWornSig == null as an "outfit change" and restarted the 8 s window; (c) a login is not a footwear CHANGE, so the fast path never applied and
+    // the idle-pose lock (~26 s) blocked it; (d) the 40 s login wait. The 40 s wait exists so no HUD round trip makes the body show before the
+    // clothes render (2026-10-28 11:42); the login veil now hides exactly that window, so the wait ends FeetAfterVeilSec after the veil is off.
+    // A login now counts as a footwear change (the set is known once the veil is off): pressed within ~2 s of veil-off.
+    /// <summary>Pure: the login is settled for the feet: the veil came off (a real time, not Min = no veil / Max = still on) FeetAfterVeilSec ago and its restore finished.</summary>
+    internal static bool LoginSettledNow(DateTime veilOffAt, bool restoreDone, DateTime now) =>
+        restoreDone && veilOffAt != DateTime.MinValue && veilOffAt != DateTime.MaxValue && (now - veilOffAt).TotalSeconds >= FeetAfterVeilSec;
     internal const double FeetOutfitStableSec = 8, FeetPoseSettleSec = 5, FeetRetryCooldownSec = 90, FeetLoginGraceSec = 40;
     internal const int FeetPressAttempts = 3, FeetRetakes = 3, FeetGiveUpRounds = 3;
     internal const double FeetMinLuma = 0.10, FeetMinP95Luma = 0.25;
@@ -135,9 +143,9 @@ internal sealed class FeetAuto
     /// <summary>Pure: may a feet press happen now? Not while the outfit is changing, a pose / sit transition runs, the posture just changed, or she sits (a press must be verifiable standing).</summary>
     /// 2026-10-31 (12:53 login: boots came off in the daily swap, f1 pressed only ~40 s later): footwearChange = the listed footwear set changed and
     /// has held FeetFootwearStableSec. Then the rest of the outfit settling and unrelated pose / posture transitions no longer block the press.
-    internal static (bool ok, string why) FeetPressReady(double outfitStableSec, bool poseBusy, double poseSettledSec, bool sitting, double sinceLoginSec = double.MaxValue, bool footwearChange = false)
+    internal static (bool ok, string why) FeetPressReady(double outfitStableSec, bool poseBusy, double poseSettledSec, bool sitting, double sinceLoginSec = double.MaxValue, bool footwearChange = false, bool loginSettled = false)
     {
-        if (sinceLoginSec < FeetLoginGraceSec) return (false, $"login settling ({sinceLoginSec:F0} s since login, no HUD round trip before {FeetLoginGraceSec:F0} s)");
+        if (sinceLoginSec < FeetLoginGraceSec && !loginSettled) return (false, $"login settling ({sinceLoginSec:F0} s since login, no HUD round trip before {FeetLoginGraceSec:F0} s or the veil off)");
         if (footwearChange) return sitting ? (false, "sitting: the feet are pressed and verified only while standing") : (true, null);
         if (outfitStableSec < FeetOutfitStableSec) return (false, $"outfit change in progress (worn attachments changed {outfitStableSec:F0} s ago, need {FeetOutfitStableSec:F0} s stable)");
         if (poseBusy) return (false, "a pose / sit transition is in progress");
@@ -208,7 +216,9 @@ internal sealed class FeetAuto
     /// <summary>A new login: the last pressed pose is not valid across a relog, so it is cleared and everything restarts (the first stable poll verifies the fit from evidence).</summary>
     internal void NewLogin()
     {
-        ClearFeetState(); prevPoll = prevSig = prevWornSig = lastWaitReason = failedWanted = prevFootSig = null; footChangePending = false; failedRounds = 0; needsVerify = true; wornChangedAt = loginAt = Now();
+        ClearFeetState(); prevPoll = prevSig = prevWornSig = lastWaitReason = failedWanted = prevFootSig = null; failedRounds = 0; needsVerify = true; wornChangedAt = loginAt = footChangedAt = Now();
+        lastPressWanted = null; lastPressAt = DateTime.MinValue;   // the press rate limit does not carry across a relog
+        footChangePending = true;   // a login makes the footwear newly known: the fast path presses it (after the veil / login wait), no 8 s window, no pose gate
         LastFitText = "feet fit: not checked yet since login";
         h.Log("feet", "new login: last pressed feet pose cleared (it is not valid across a relog); the fit will be verified from evidence");
     }
@@ -216,8 +226,8 @@ internal sealed class FeetAuto
     (bool ok, string why) FeetReadyNow()
     {
         var wornSig = FeetWornSignature(h.WornPrims().Select(h.AttachItemId));
-        if (wornSig != prevWornSig) { prevWornSig = wornSig; wornChangedAt = Now(); }
-        return FeetPressReady((Now() - wornChangedAt).TotalSeconds, h.PoseBusy, h.PoseSettledSec, h.Sitting, (Now() - loginAt).TotalSeconds, footChangePending);
+        if (wornSig != prevWornSig) { if (prevWornSig != null) wornChangedAt = Now(); prevWornSig = wornSig; }   // the first poll is a baseline, not a change
+        return FeetPressReady((Now() - wornChangedAt).TotalSeconds, h.PoseBusy, h.PoseSettledSec, h.Sitting, (Now() - loginAt).TotalSeconds, footChangePending, h.LoginSettled);
     }
 
     int loopClaimed;
@@ -232,7 +242,7 @@ internal sealed class FeetAuto
     internal async Task FeetLoop()
     {
         if (!ClaimLoop()) { h.Log("feet", "feet loop already running: this start is ignored"); return; }
-        await Task.Delay(45000); // let login attachments arrive
+        await Task.Delay(3000);  // FeetTick waits for the attachments itself; the login wait is FeetPressReady's (veil off or 40 s)
         ClearFeetState();        // a fresh process is a fresh login: the stored pose is not trusted
         while (true)
         {

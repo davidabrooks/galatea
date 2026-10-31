@@ -81,9 +81,22 @@ public static partial class Program
                     if (!wornIds.Contains(id) && (at - t0).TotalSeconds <= LoginOrder.LoginWindowSec && await FetchItemRO(id, cts.Token) is InventoryItem gone) worn.Add(Mk(gone.Name, id));
                 var vo = loginVeilOffAt; double? veilSec = vo == DateTime.MinValue ? null : vo == DateTime.MaxValue ? double.MaxValue : Math.Max(0, (vo - t0).TotalSeconds);
                 Log("login-order", string.Join("; ", LoginOrder.Findings(worn, veilOffSec: veilSec)));
+                try
+                {
+                    var before = LoginSilentGarments();
+                    var after = LoginVeil.UpdateSilent(before, worn.Select(w => (w.Name, w.SeenSec, w.ReadySec)));
+                    if (!after.SetEquals(before)) { File.WriteAllLines(LoginSilentFile, after); Log("login-order", $"known silent garments now: {(after.Count == 0 ? "none" : string.Join("; ", after))}"); }
+                }
+                catch (Exception ex) { Log("login-order", "silent garment list not saved: " + ex.GetBaseException().Message); }
             }
             catch (Exception ex) { Log("login-order", "analysis failed: " + ex.GetBaseException().Message); }
         });
+    }
+    static string LoginSilentFile => Env("GT_LOGIN_SILENT_FILE", "/home/box/viewers/textclient/run/login-silent-garments.txt");
+    static SortedSet<string> LoginSilentGarments()
+    {
+        try { return new SortedSet<string>(File.Exists(LoginSilentFile) ? File.ReadAllLines(LoginSilentFile).Select(l => l.Trim()).Where(l => l.Length > 0) : Array.Empty<string>(), StringComparer.Ordinal); }
+        catch { return new(StringComparer.Ordinal); }
     }
     static void LoginOrderNoteSeen(UUID item) { if (item != UUID.Zero && loginOrderT0 != DateTime.MinValue) loginSeenAt.TryAdd(item, DateTime.Now); }
     static void LoginOrderNoteChat(ChatSourceType src, string from, string msg)

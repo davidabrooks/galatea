@@ -122,7 +122,7 @@ internal sealed partial class Hover
         return m.Success ? double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : null;
     }
     // pure (tested): what the close-up is framed on, for the log: the lowest body contact of the posture
-    internal static string HoverContactLabel(string kind) => kind switch { "stand" => "feet (soles)", "sit" => "hips and any thighs / heels in contact", "seat" => "hips against the seat", _ => "lowest contact" };
+    internal static string HoverContactLabel(string kind) => kind switch { "stand" => "feet (soles)", "sit" => "hips and any thighs / heels in contact", "seat" => "hips against the seat", "kneel" => "knees / shins / feet (lowest contact)", _ => "lowest contact" };
     // pure (tested): on furniture (sitting on an object) the contact close-up frames her HIPS against the SEAT, never her feet over the terrain, and the render uses the
     // sim's own seated placement (no hover model: hover is not the fix on furniture, the furniture's adjust is). Env for look.py / render_mesh.py
     // pure (tested): what tells the renderer which close-up to draw: the label for the log and the posture kind (stand | sit = AO ground sit | seat | other).
@@ -305,6 +305,14 @@ internal sealed partial class Hover
     // never treated as a stand, so no hover check runs on it
     internal static string HoverPostureKind(bool aoSitPlaying, bool seatedOnObject, bool unclassifiedAoAnim = false) => seatedOnObject ? "seat" : aoSitPlaying ? "sit" : unclassifiedAoAnim ? "unknown" : "stand";
     // pure (tested): a sit or a stand that follows a different posture (login = unknown) wants a check; a stand->stand AO rotation, or sitting on an object, does not
+    /// <summary>Pure (tested): did this check attempt really measure (so it starts the cooldown)? Not when it stopped on a precondition before any render.
+    /// 2026-10-31 12:52 login: try 1 stopped on "form not known yet" yet set the cooldown, so tries 3-5 waited on "another check ran a moment ago" and it gave up.</summary>
+    /// <summary>Pure (tested): an automatic request is covered when a check FINISHED on this same pose within the cooldown (12:52 / 13:13 logins: the stand request
+    /// retried "another check ran a moment ago" until it gave up, though the region check had just measured that stand).</summary>
+    internal static bool HoverCovered(bool manual, string pose, string lastCheckedPose, double sinceDoneSec) =>
+        !manual && pose != null && string.Equals(pose, lastCheckedPose, StringComparison.OrdinalIgnoreCase) && sinceDoneSec < HoverCheckCooldownSec;
+    internal static bool HoverRunCounts(string retry) => retry == null
+        || !(retry.StartsWith("not in that pose", StringComparison.Ordinal) || retry.StartsWith("form not known", StringComparison.Ordinal) || retry.StartsWith("a check is already running", StringComparison.Ordinal));
     internal static bool HoverCheckWantedOnPosture(string prev, string now) => now is "sit" or "stand" && prev != now;
     internal const int HoverCheckMaxTries = 6, HoverCheckRetryMs = 8000, HoverCheckSettleSec = 3, HoverCheckCooldownSec = 30;
     // pure (tested): may the check run now? (true, null) = go; (false, reason) = wait and retry; (false, "skip: ...") = never for this request
@@ -316,7 +324,7 @@ internal sealed partial class Hover
         if (following || speed >= 0.1f) return (false, "moving");
         if (poseBusy) return (false, "a pose is being entered or left");
         if (settledSec < HoverCheckSettleSec) return (false, "posture changed a moment ago");
-        if (!manual && !poseChanged && sinceLastRunSec < HoverCheckCooldownSec) return (false, "another check ran a moment ago");   // an automatic pose change is always remeasured, never held back by the cooldown
+        if (!manual && !poseChanged && sinceLastRunSec < HoverCheckCooldownSec) return (false, "another check ran a moment ago");   // an automatic pose change is always remeasured, never held back by the cooldown   // an automatic pose change is always remeasured, never held back by the cooldown
         return (true, null);
     }
     long hoverReqSeq; string hoverPosture; DateTime hoverPostureAt = DateTime.MinValue, hoverCheckLastRun = DateTime.MinValue;
@@ -351,13 +359,16 @@ internal sealed partial class Hover
                     if (Interlocked.Read(ref hoverReqSeq) != id) return "replaced by a newer hover check request";   // a newer request replaced this one
                     if (!h.LoggedIn) return "not logged in";
                     var (kind, pose) = PoseNow(); var sitting = h.Client.Self.SittingOn != 0;
+                    if (!sitting && HoverCovered(why == "manual", pose, hoverLastCheckedPose, (DateTime.Now - hoverCheckDoneAt).TotalSeconds))
+                    { var cv = $"{why}: covered: {pose} was checked {(DateTime.Now - hoverCheckDoneAt).TotalSeconds:F0} s ago"; h.Log("posehover", cv); return cv; }
                     var (go, block) = HoverCheckReady(sitting ? "seat" : kind, h.Client.Self.Velocity.Length(), h.IdleLeashedNow(), h.Following, h.IdleBusy,
                                                       (DateTime.Now - hoverPostureAt).TotalSeconds, (DateTime.Now - hoverCheckLastRun).TotalSeconds, why == "manual", PoseChangedSinceCheck(hoverLastCheckedPose, pose));
                     string retry = block;
                     if (go)
                     {
-                        hoverCheckLastRun = DateTime.Now;
+                        var prevRun = hoverCheckLastRun; hoverCheckLastRun = DateTime.Now;   // cooldown stamp before the run: a failed check cannot loop (undone below when nothing was measured)
                         retry = await PoseHoverCheck(kind, pose, why);
+                        if (!HoverRunCounts(retry)) hoverCheckLastRun = prevRun;   // a check that never measured (form unknown, wrong pose) must not start the cooldown
                         if (retry == null) { hoverCheckDoneAt = DateTime.Now; HoverGaveUp = null; return hoverCheckResult; }
                     }
                     else if (block.StartsWith("skip:")) { h.Log("posehover", $"{why}: {block}"); return $"{why}: {block}"; }
@@ -375,11 +386,21 @@ internal sealed partial class Hover
         });
     }
     // is she still in that pose? (a check must never act on a pose she has left). The AO's anim_list decides sit vs stand, never the sim.
-    bool PoseStill(string kind, string pose) => h.Client.Self.SittingOn == 0 && (kind == "sit"
+    bool PoseStill(string kind, string pose) => h.Client.Self.SittingOn == 0 && (kind == "kneel"
+        ? KneelStill(h.IdlePosed, pose, h.Client.Self.Velocity.Length())
+        : kind == "sit"
         ? h.AoSitReallyOn() && (pose == "sit" || string.Equals(h.AoSitCurrentName, pose, StringComparison.OrdinalIgnoreCase))
         : kind == "stand" && h.IdlePosed == null && h.Client.Self.Velocity.Length() < 0.1f && !h.LeashActive && !h.AoForceSitOn(h.SelfAnims(), false) && h.AoUnclassifiedNow().Count == 0);
     // the pose she is really in (the AO decides sit vs stand, not the sim): (kind, pose name)
-    internal (string kind, string pose) PoseNow() => h.AoSitReallyOn() ? ("sit", h.AoSitCurrentName ?? "sit") : h.AoUnclassifiedNow().Count > 0 ? ("unknown", "unknown") : ("stand", "stand");
+    // 2026-10-31 (David: "your automatic hover height check when you sit or change sits is not working"): the collar kneel / sit poses (nadu, kneel, tower...)
+    // are not AO animations, so PoseNow said "stand" and no visual check was ever requested for them (only AutoHover's capsule estimate, observe-only).
+    // A collar pose is now its own kind "kneel" (pose = the collar pose name): checked on entry and on every change, never mistaken for a stand.
+    internal (string kind, string pose) PoseNow() => PoseKindNow(h.IdlePosed, h.Client.Self.SittingOn != 0, h.AoSitReallyOn(), h.AoSitCurrentName, h.AoUnclassifiedNow().Count > 0);
+    /// <summary>Pure (tested): the pose she is in: a collar pose = ("kneel", its name); an AO sit = ("sit", name); an unclassified AO animation = unknown; else stand.</summary>
+    internal static (string kind, string pose) PoseKindNow(Program.IdlePoseState posed, bool seated, bool aoSit, string aoSitName, bool unclassified)
+        => posed is { kind: "collar" } && !seated ? ("kneel", posed.pose) : aoSit ? ("sit", aoSitName ?? "sit") : unclassified ? ("unknown", "unknown") : ("stand", "stand");
+    /// <summary>Pure (tested): still in the collar pose the check was started for?</summary>
+    internal static bool KneelStill(Program.IdlePoseState posed, string pose, float speed) => posed is { kind: "collar" } && string.Equals(posed.pose, pose, StringComparison.OrdinalIgnoreCase) && speed < 0.1f;
 
     // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): ONE render of the hips against the seat;
     // reports the gap and the close-up path; changes nothing (the AO, the hover and the furniture stay as they are)

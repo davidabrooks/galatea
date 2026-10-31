@@ -78,6 +78,21 @@ internal static class LoginVeil
         return (true, await confirm());
     }
 
+    /// <summary>Pure-ish (tested with fakes): the reveal after the veil-off bake. 2026-10-31 14:47 login (David: "it took too long for your
+    /// collar to appear, and then it was even longer before your ears appeared"): the collar showed at +22.5 s, the ears at ~+34 s, because
+    /// the collar never waited for the ears. Now the ears and lashes go first (their HUD readied under the veil), and the collar only once
+    /// that step has finished (or its cap ran out), so the collar is always the last thing to appear.</summary>
+    internal static async Task RevealCore(Func<Task> earsAndLashes, int earsMaxMs, Func<Task> collar)
+    {
+        if (earsAndLashes != null)
+        {
+            Task t; try { t = earsAndLashes(); } catch { t = Task.CompletedTask; }
+            try { await Task.WhenAny(t, Task.Delay(earsMaxMs)); } catch { }
+        }
+        if (collar != null) { try { await collar(); } catch { } }
+    }
+    internal const int RevealEarsMaxMs = 15000;
+
     static async Task<bool> SafeSpec(Func<Task<bool>, Task<bool>> spec, Task<bool> rm) { try { return await spec(rm); } catch { return false; } }
     /// <summary>Pure (tested): the speculative bake covers the veil removal only when it landed at or past the COF version the delete produced
     /// (another COF change could have taken that number with the veil still linked).</summary>
@@ -430,6 +445,21 @@ public static partial class Program
         }
         catch (Exception ex) { Log("login-veil", "collar stealth for logout failed: " + ex.GetBaseException().Message); }
     }
+    /// <summary>Login, under the veil: open the collar's About page now so at the reveal only the Stealth press remains (14:47 login: touch,
+    /// main menu, About, press took ~3 s after the veil-off). Nothing is pressed here: the collar stays hidden under the veil.</summary>
+    static async Task LoginVeilCollarPrepare(DateTime t0)
+    {
+        try
+        {
+            var f = LoginVeilCollarFile; if (!File.Exists(f) || !LoginVeil.CollarShowAfterLogin(File.ReadAllText(f))) return;
+            for (int i = 0; i < 120 && LoggedIn && loginVeilOffAt == DateTime.MaxValue && !WornPrims().Any(p => AttachItemId(p) == N9CollarItem); i++) await Task.Delay(250);
+            if (!LoggedIn || loginVeilOffAt != DateTime.MaxValue) return;
+            await Task.Delay(1500);   // its scripts start after the attach (17:34 login: no menu when touched at once)
+            if (loginVeilOffAt != DateTime.MaxValue) return;
+            Log("login-veil", $"collar prep at +{(DateTime.Now - t0).TotalSeconds:F1} s: " + await CollarStealthPrepare(false, "login veil off"));
+        }
+        catch (Exception ex) { Log("login-veil", "collar prep failed: " + ex.GetBaseException().Message); }
+    }
     static async Task LoginVeilCollarShowAfterLogin()
     {
         try
@@ -536,6 +566,10 @@ public static partial class Program
         LoginVeilEvoxSafetyNet(t0);   // ears / lashes hidden at logout come back on every path (no veil, kept on, error)
         var id = LoginVeilItem(); var stash = LoginVeilReadStash();
         if (id == UUID.Zero && stash.Count == 0) return;
+        // under the veil: get the EvoX HUD attached and talking to the head, and the collar's About page open, so at the veil-off
+        // only the presses remain (14:47 login: HUD handshake 13.4 s and collar menus ~4.5 s, both AFTER the veil came off)
+        loginRevealPending = id != UUID.Zero;
+        if (id != UUID.Zero) { _ = Task.Run(() => LoginVeilEvoxPrepare(t0)); _ = Task.Run(() => LoginVeilCollarPrepare(t0)); }
         var usual = stash.Count == 0 ? null : LoginVeilUsualAtLogin(stash, loginVeilStashAt);
         if (usual != null) { Log("login-veil", "login outfit: " + usual.Why); stash = usual.Stash; }
         var (early, late) = LoginVeil.SplitStash(stash); loginVeilHoldTries.Clear();
@@ -549,7 +583,7 @@ public static partial class Program
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); loginVeilRestoreTask = done.Task;
         _ = Task.Run(async () =>
         {
-            string why = "?"; bool off = true;
+            string why = "?"; bool off = true, revealed = false;
             using var cts = new CancellationTokenSource(150000); var ct = cts.Token;
                         var pre = stash.GroupBy(x => x.Item).ToDictionary(g => g.Key, g => FetchItemRO(g.Key, ct));   // every stash item fetched once, in parallel, up front
             List<UUID> veilLinks = null;
@@ -622,17 +656,18 @@ public static partial class Program
                 Func<Task> burst = late.Count == 0 ? null : () => LoginVeilBurst(late, t0, ct, pre);
                 if (off && gen == loginVeilGen) confirmed = await LoginVeilOff(id, t0, why, itemTask.IsCompleted ? await itemTask : null, cofId, veilLinks, burst);
                 else if (!off) Log("login-veil", $"veil KEPT ON at +{(DateTime.Now - t0).TotalSeconds:F1} s: {why}");
-                if (off) await LoginVeilReveal(late, t0, confirmed, ct, pre);   // hair, teeth, eyes: only after the skin is drawn
+                if (off) { revealed = true; await LoginVeilReveal(late, t0, confirmed, ct, pre); }   // hair, teeth, eyes: only after the skin is drawn
             }
             catch (Exception ex)
             {   // never nude: with a stash, the veil only comes off once its clothes are attached
                 why = "error: " + ex.GetBaseException().Message; var w = WornPrims().Select(AttachItemId).ToHashSet();
-                if (gen == loginVeilGen && id != UUID.Zero && early.Where(x => LoginVeil.Waits(x.Name)).All(x => w.Contains(x.Item)) && LoginVeil.HeadsNotAttached(stash.Select(x => (x.Item, x.Name)), w).Count == 0) { var c = await LoginVeilOff(id, t0, why, null); await LoginVeilReveal(late, t0, c, CancellationToken.None, null); }
+                if (gen == loginVeilGen && id != UUID.Zero && early.Where(x => LoginVeil.Waits(x.Name)).All(x => w.Contains(x.Item)) && LoginVeil.HeadsNotAttached(stash.Select(x => (x.Item, x.Name)), w).Count == 0) { var c = await LoginVeilOff(id, t0, why, null); revealed = true; await LoginVeilReveal(late, t0, c, CancellationToken.None, null); }
                 else Log("login-veil", $"veil KEPT ON ({why}): stashed clothes not back");
             }
             finally
             {
                 loginVeilHeld.Clear();
+                if (!revealed) loginRevealPending = false;
                 try { if (stash.Count > 0 && LoggedIn) await LoginVeilStashDone(stash, t0); } catch { }
                 done.TrySetResult();
             }
@@ -679,12 +714,19 @@ public static partial class Program
             }
             catch (Exception ex) { Log("login-veil", "head parts attach failed: " + ex.GetBaseException().Message); }
         }
-        // the collar only once the head parts are really on (David: it appeared first)
+        // 14:47 login: ears/lashes waited for every head part (hair etc.), then the collar ran beside them and showed 11 s before the ears.
+        // Now: ears and lashes at once (the head is on: the veil only comes off with the real head attached; their HUD was readied under
+        // the veil), the collar only after that step AND the head parts (David: the collar is the last thing to appear).
         _ = Task.Run(async () =>
         {
-            for (int i = 0; i < 40; i++) { var w = WornPrims().Select(AttachItemId).ToHashSet(); if (late.All(x => w.Contains(x.Item))) break; await Task.Delay(250); }
-            _ = Task.Run(() => LoginVeilEvoxShowAfterLogin("veil off"));   // ears and lashes right after the head is on (LoginVeilEvox.cs)
-            await Task.Delay(500); await LoginVeilCollarShowAfterLogin();
+            async Task HeadParts() { for (int i = 0; i < 40; i++) { var w = WornPrims().Select(AttachItemId).ToHashSet(); if (late.All(x => w.Contains(x.Item))) break; await Task.Delay(250); } }
+            try
+            {
+                var parts = HeadParts();
+                await LoginVeil.RevealCore(() => LoginVeilEvoxShowAfterLogin("veil off"), LoginVeil.RevealEarsMaxMs,
+                    async () => { await parts; await LoginVeilCollarShowAfterLogin(); });
+            }
+            finally { loginRevealPending = false; }
         });
     }
 
@@ -754,7 +796,9 @@ public static partial class Program
             if (!removed) return await LoginVeilOff(id, t0, why, it, once);
             double confMs = (DateTime.Now - tStart).TotalMilliseconds;
             loginVeilOffAt = DateTime.Now;
-            Log("login-veil", $"veil off at {At()}: {why} (links removed +{rmMs:F0} ms, bake requested +{bakeMs:F0} ms, "
+            // 14:47 login: "veil off at +17.9 s" with "bake requested +4853 ms" read as a late log line. It is not: this line is written when
+            // the sim sends our new appearance (what other viewers see); the offsets are from the start of the veil-off step, now stated.
+            Log("login-veil", $"veil off at {At()} (seen by others; veil-off step began at +{(tStart - t0).TotalSeconds:F1} s): {why} (links removed +{rmMs:F0} ms, bake POST answered +{bakeMs:F0} ms, "
                 + (confirmed ? $"sim appearance COF v{simBefore} -> v{simAttCof} at +{confMs:F0} ms)" : $"no sim appearance for a newer COF than v{simBefore} in {LoginVeil.ConfirmMaxSec:F0} s)"));
             // read-back AFTER the bake request: only if the link is somehow still there, redo the verified slow path
             var (kids, ok) = await ReadFolderTimed(cofId, ct, 6000);

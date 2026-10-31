@@ -58,6 +58,18 @@ internal sealed class FeetAuto
     }
 
     /// <summary>Pure: press when two polls agree and the pose differs from the last one pressed (unknown -> press).</summary>
+    /// <summary>Pure: signature of the LISTED footwear worn (sorted ids of worn items that are in the rules); a change = shoes on / off.</summary>
+    internal static string FeetFootwearSignature(IEnumerable<UUID> worn, FeetRules rules) =>
+        string.Join(",", (worn ?? Array.Empty<UUID>()).Where(u => rules.Footwear.ContainsKey(u)).Distinct().Select(u => u.ToString()).OrderBy(x => x, StringComparer.Ordinal));
+
+    /// <summary>Pure: fast path after a footwear change: press as soon as the footwear set has held FeetFootwearStableSec and the pose differs
+    /// from the last pressed one (no second-poll agreement, no 8 s whole-outfit window).</summary>
+    internal static bool FeetFastPress(bool footwearChangePending, double footwearStableSec, string wanted, string lastPressed) =>
+        footwearChangePending && footwearStableSec >= FeetFootwearStableSec && wanted != null && wanted != lastPressed;
+
+    /// <summary>Pure: poll interval: fast while a footwear change is pending or the worn set changed in the last 10 s, else 4 s.</summary>
+    internal static int FeetPollMs(bool footwearChangePending, double wornStableSec) => footwearChangePending || wornStableSec < 10 ? (int)(FeetFastPollSec * 1000) : 4000;
+
     internal static bool FeetShouldPress(string wanted, string previousPoll, string lastPressed) =>
         wanted != null && wanted == previousPoll && wanted != lastPressed;
 
@@ -106,6 +118,7 @@ internal sealed class FeetAuto
 // The close-up is kept only as an informational picture; it never decides a fit.
     // 2026-10-28 11:42 relog (David: the body showed under the shirt and shorts before the clothes rendered): the feet code attached / detached the Maitreya HUD (an item the sim had
     // already restored, worn and in the COF) four times within 30 s of login. No HUD round trip until the login has settled.
+    internal const double FeetFootwearStableSec = 1.5, FeetFastPollSec = 1;
     internal const double FeetOutfitStableSec = 8, FeetPoseSettleSec = 5, FeetRetryCooldownSec = 90, FeetLoginGraceSec = 40;
     internal const int FeetPressAttempts = 3, FeetRetakes = 3, FeetGiveUpRounds = 3;
     internal const double FeetMinLuma = 0.10, FeetMinP95Luma = 0.25;
@@ -120,9 +133,12 @@ internal sealed class FeetAuto
     internal static string FeetWornSignature(IEnumerable<UUID> worn) => string.Join(",", (worn ?? Array.Empty<UUID>()).Where(u => u != UUID.Zero).Select(u => u.ToString()).OrderBy(x => x, StringComparer.Ordinal));
 
     /// <summary>Pure: may a feet press happen now? Not while the outfit is changing, a pose / sit transition runs, the posture just changed, or she sits (a press must be verifiable standing).</summary>
-    internal static (bool ok, string why) FeetPressReady(double outfitStableSec, bool poseBusy, double poseSettledSec, bool sitting, double sinceLoginSec = double.MaxValue)
+    /// 2026-10-31 (12:53 login: boots came off in the daily swap, f1 pressed only ~40 s later): footwearChange = the listed footwear set changed and
+    /// has held FeetFootwearStableSec. Then the rest of the outfit settling and unrelated pose / posture transitions no longer block the press.
+    internal static (bool ok, string why) FeetPressReady(double outfitStableSec, bool poseBusy, double poseSettledSec, bool sitting, double sinceLoginSec = double.MaxValue, bool footwearChange = false)
     {
         if (sinceLoginSec < FeetLoginGraceSec) return (false, $"login settling ({sinceLoginSec:F0} s since login, no HUD round trip before {FeetLoginGraceSec:F0} s)");
+        if (footwearChange) return sitting ? (false, "sitting: the feet are pressed and verified only while standing") : (true, null);
         if (outfitStableSec < FeetOutfitStableSec) return (false, $"outfit change in progress (worn attachments changed {outfitStableSec:F0} s ago, need {FeetOutfitStableSec:F0} s stable)");
         if (poseBusy) return (false, "a pose / sit transition is in progress");
         if (poseSettledSec < FeetPoseSettleSec) return (false, "the posture changed a moment ago");
@@ -184,6 +200,7 @@ internal sealed class FeetAuto
     // ---- state of the loop ----
     internal Func<DateTime> Now = () => DateTime.Now;
     internal Func<int, Task> Delay = ms => Task.Delay(ms);
+    string prevFootSig; DateTime footChangedAt = DateTime.MinValue; bool footChangePending;
     string prevPoll, prevSig, prevWornSig, lastWaitReason, failedWanted; DateTime wornChangedAt = DateTime.MinValue, lastFailAt = DateTime.MinValue;
     int failedRounds; bool needsVerify = true; DateTime loginAt = DateTime.MinValue;
     internal string LastFitText = "feet fit: not checked yet since login";
@@ -191,7 +208,7 @@ internal sealed class FeetAuto
     /// <summary>A new login: the last pressed pose is not valid across a relog, so it is cleared and everything restarts (the first stable poll verifies the fit from evidence).</summary>
     internal void NewLogin()
     {
-        ClearFeetState(); prevPoll = prevSig = prevWornSig = lastWaitReason = failedWanted = null; failedRounds = 0; needsVerify = true; wornChangedAt = loginAt = Now();
+        ClearFeetState(); prevPoll = prevSig = prevWornSig = lastWaitReason = failedWanted = prevFootSig = null; footChangePending = false; failedRounds = 0; needsVerify = true; wornChangedAt = loginAt = Now();
         LastFitText = "feet fit: not checked yet since login";
         h.Log("feet", "new login: last pressed feet pose cleared (it is not valid across a relog); the fit will be verified from evidence");
     }
@@ -200,7 +217,7 @@ internal sealed class FeetAuto
     {
         var wornSig = FeetWornSignature(h.WornPrims().Select(h.AttachItemId));
         if (wornSig != prevWornSig) { prevWornSig = wornSig; wornChangedAt = Now(); }
-        return FeetPressReady((Now() - wornChangedAt).TotalSeconds, h.PoseBusy, h.PoseSettledSec, h.Sitting, (Now() - loginAt).TotalSeconds);
+        return FeetPressReady((Now() - wornChangedAt).TotalSeconds, h.PoseBusy, h.PoseSettledSec, h.Sitting, (Now() - loginAt).TotalSeconds, footChangePending);
     }
 
     int loopClaimed;
@@ -221,7 +238,7 @@ internal sealed class FeetAuto
         {
             try { if (h.Client?.Network?.Connected == true) await FeetTick(); }
             catch (Exception ex) { h.Log("feet", "loop error: " + ex.GetBaseException().Message); }
-            await Task.Delay(4000);
+            await Task.Delay(FeetPollMs(footChangePending, (Now() - wornChangedAt).TotalSeconds));
         }
     }
 
@@ -231,7 +248,16 @@ internal sealed class FeetAuto
         if (h.WornPrims().Count <= 3) return "waiting for the attachments";
         var (f, why, rules) = FeetNow();
         var sig = FeetBodySigNow(); bool bodyChanged = FeetBodyChanged(prevSig, sig); prevSig = sig;
+        var footSig = FeetFootwearSignature(h.WornPrims().Select(h.AttachItemId), rules);
+        if (footSig != prevFootSig)
+        {
+            if (prevFootSig != null) { footChangePending = true; footChangedAt = Now(); h.Log("feet", $"footwear changed (now {f}: {why}): pressing as soon as it holds {FeetFootwearStableSec:0.#} s, not waiting for the rest of the outfit"); }
+            prevFootSig = footSig;
+        }
         var (press, _) = FeetDecide(f, prevPoll, ReadFeetState(), bodyChanged);
+        if (!press && FeetFastPress(footChangePending, (Now() - footChangedAt).TotalSeconds, f, ReadFeetState())) press = true;
+        else if (footChangePending && f == ReadFeetState()) footChangePending = false;
+        if (footChangePending && (Now() - footChangedAt).TotalSeconds < FeetFootwearStableSec) return "waiting: the footwear change has not held yet";
         if (bodyChanged) { ClearFeetState(); failedRounds = 0; needsVerify = true; h.Log("feet", $"worn body changed (item/attachment id): last pressed pose cleared, the fit will be verified; signature {sig}"); }
         if (prevPoll != null && f != prevPoll) { failedRounds = 0; needsVerify = true; }
         prevPoll = f;
@@ -249,7 +275,8 @@ internal sealed class FeetAuto
             h.Log("feet", "feet NOT verified before any press: " + v.Why + "; pressing"); 
         }
         lastPressWanted = f; lastPressAt = Now();
-        return await PressFeet(f, why, rules);
+        try { return await PressFeet(f, why, rules); }
+        finally { footChangePending = false; }
     }
 
     string LogFit(bool verified, string feet, string why)

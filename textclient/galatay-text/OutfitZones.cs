@@ -179,6 +179,17 @@ public static partial class Program
         return string.IsNullOrWhiteSpace(rememberedForHouse) ? "keep" : "restore-remembered";
     }
 
+    internal static string TodayPt() => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow,
+        TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles")).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Pure (tested): the day's pick at login. The outfit the login veil already put on wins when it is still a candidate
+    /// (2026-10-31: no second, random swap ~30 s after login); else a random member of the pool.</summary>
+    internal static string DailyPickAtLogin(IReadOnlyList<string> cands, IReadOnlyList<string> pool, string veilPick, Func<int, string> random)
+    {
+        if (!string.IsNullOrWhiteSpace(veilPick)) { var c = cands.FirstOrDefault(x => x.Equals(veilPick.Trim(), StringComparison.OrdinalIgnoreCase)); if (c != null) return c; }
+        return pool.Count > 0 ? random(pool.Count) : null;
+    }
+
     static async Task DailyOutfitAfterLogin()
     {
         if (Interlocked.Exchange(ref dailyOutfitKick, 1) != 0) return;
@@ -187,8 +198,7 @@ public static partial class Program
             await Task.Delay(20000); // attachments + COF settle after login
             await Task.WhenAny(loginVeilRestoreTask, Task.Delay(120000));   // LoginVeil.cs: the clothes taken off at logout are back first
             if (!LoggedIn) return;
-            var today = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow,
-                TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles")).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            var today = TodayPt();
             string prev = null;
             try { if (File.Exists(DailyOutfitDateFile)) prev = File.ReadLines(DailyOutfitDateFile).FirstOrDefault()?.Trim(); } catch { }
             bool dailyPending = prev != today;
@@ -211,7 +221,10 @@ public static partial class Program
                 var cands = DailyOutfitCandidates((await ListOutfitFolders(cts.Token)).Select(f => f.Name), DailyOutfitAllow());
                 var pool = DailyOutfitPool(cands, lastNamedOutfit);
                 Log("outfit-daily", $"candidates [{string.Join(", ", cands)}], current '{lastNamedOutfit ?? "-"}' -> pool [{string.Join(", ", pool)}]");
-                if (pool.Count > 0) { pick = pool[Random.Shared.Next(pool.Count)]; freshPick = true; }
+                var veilPick = Interlocked.Exchange(ref loginDailyPick, null);
+                var chosen = DailyPickAtLogin(cands, pool, veilPick, n => pool[Random.Shared.Next(n)]);
+                if (chosen != null) { pick = chosen; freshPick = true; }
+                if (veilPick != null && chosen == veilPick) Log("outfit-daily", $"'{pick}' already put on by the login veil: kept as today's pick (no swap; this pass adds its layers / HUD colour)");
             }
             beachOutfitBusy = true;
             try

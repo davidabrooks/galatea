@@ -295,7 +295,14 @@ public static partial class Program
 
     public static async Task<string> LoginAsync()
     {
+        if (!await loginGate.WaitAsync(0)) { Log("login", "refused: another login is running"); return "BUSY: another login is running"; }
+        try { return await LoginCoreAsync(); } finally { loginGate.Release(); }
+    }
+    static async Task<string> LoginCoreAsync()
+    {
         if (LoggedIn) return "OK already logged in";
+        LoginFailedReason = null;
+        var healthGen = Interlocked.Read(ref reloginGen);
         var lmvGuard = LmvPatchGuard();   // CrashGuard.cs: an unpatched LibreMetaverse crashes the process right after login
         if (lmvGuard != null) { Log("login", "refused: " + lmvGuard); return "REFUSED: " + lmvGuard; }
         var guard = SessionGuard();
@@ -382,6 +389,7 @@ public static partial class Program
         await Set360(); _ = Ensure360ForCurrentRegion("login");
         var msg = $"OK in {sw.Elapsed.TotalSeconds:F1}s: region {client.Network.CurrentSim?.Name} pos {Fmt(client.Self.SimPosition)} agent {client.Self.AgentID}";
         Log("login", msg);
+        _ = Task.Run(() => LoginHealthCheck(healthGen)); // LoginHealth.cs: no caps / empty region at +15 s = FAILED
         if (tickerTask == null) tickerTask = Task.Run(Ticker);
         if (followTask == null) followTask = Task.Run(FollowLoop); // Follow.cs
         EffectsAuditStart(); // log every outgoing ViewerEffect (LookAt.cs)
@@ -426,6 +434,7 @@ public static partial class Program
 
     public static async Task Shutdown(string why)
     {
+        CancelPendingRelogin("logout: " + why);
         if (shuttingDown) return; shuttingDown = true;
         try { if (LoggedIn) await Task.WhenAny(IdleExplicitStand("logout"), Task.Delay(15000)); } catch { }   // IdlePose.cs: stand up (pose + AO force sit off) before every logout
         bool deliberate = why == "logout command" || DeliberateStopRequested();
@@ -1812,7 +1821,7 @@ public static partial class Program
         var rest = sp < 0 ? "" : line[(sp + 1)..].Trim();
         var a = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (cmd != "status" && cmd != "where" && cmd != "help" && line != "anim list") Log("cmd", line);
-        if (cmd == "login") return await LoginAsync();
+        if (cmd == "login") { CancelPendingRelogin("manual login"); return await LoginAsync(); }
         if (cmd == "remind") return RemindCmd(a); // works logged out (FriendWatch.cs)
         if (!LoggedIn && cmd != "help" && cmd != "restart") return "not logged in" + (cmd is "status" or "where" ? "" : " (use login)");
         if (cmd is "say" or "shout" or "whisper" || (cmd == "chan" && a.Length > 0 && a[0] == "0")) { var qg = QuietChatGuard(); if (qg != null) { Log("quiet", $"manual {cmd} {qg}"); return qg; } }

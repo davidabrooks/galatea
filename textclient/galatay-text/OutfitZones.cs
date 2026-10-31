@@ -34,7 +34,7 @@ public static partial class Program
 
     static void OutfitZonesLoad()
     {
-        zoneArmed = false; Interlocked.Exchange(ref dailyOutfitKick, 0);
+        zoneArmed = false; Interlocked.Exchange(ref dailyOutfitKick, 0); Interlocked.Exchange(ref forceOutfitConsumed, 0); forceOutfitThisLogin = false;
         try { if (File.Exists(LastNamedOutfitFile)) lastNamedOutfit = File.ReadAllText(LastNamedOutfitFile).Trim(); } catch { }
         try
         {
@@ -169,7 +169,7 @@ public static partial class Program
     }
 
     // Login order (David 16:16): settle, decide beach/house FIRST, then the daily pick. On the beach: keep / put on the
-    // Bikini and save the daily pick for the walk up to the house. Not on the beach: wear the daily pick (once per PT day).
+    // Bikini and save the daily pick for the walk up to the house. Not on the beach: wear the next pick (when away > 1 h or forced; was once per PT day).
     // 2026-10-12 David: logged in wearing an android body (Kay/CALISTA, BodyFamily) -> no daily/random outfit or colour pick, keep it
     internal static string LoginOutfitPlan(bool onBeach, bool bikiniWorn, bool dailyPending, string rememberedForHouse, bool androidWorn = false)
     {
@@ -201,7 +201,10 @@ public static partial class Program
             var today = TodayPt();
             string prev = null;
             try { if (File.Exists(DailyOutfitDateFile)) prev = File.ReadLines(DailyOutfitDateFile).FirstOrDefault()?.Trim(); } catch { }
-            bool dailyPending = prev != today;
+            // 2026-10-31 (David t2850u): the change is due after more than an hour away (or the force marker), decided by the login veil;
+            // with no veil decision (no stash), fall back to the time since the last logout recorded at login, else the old new-day rule.
+            bool dailyPending = loginOutfitChangeDue ?? (ConsumeForceOutfitMarker() || prev != today);
+            loginOutfitChangeDue = null;
             var region = client.Network.CurrentSim?.Name ?? "";
             var z = client.Self.SimPosition.Z;
             var lpos = client.Self.SimPosition;

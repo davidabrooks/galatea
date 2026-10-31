@@ -163,6 +163,23 @@ public class LoginVeilNoFetchTests
         var other = new InventoryObject(UUID.Random()) { Name = "other" };
         Assert.Equal(x.Item, LoginVeil.AttachRecord(x, UUID.Random(), other).UUID);
     }
+    // 2026-10-31 16:40 login: outfit changed at login (PCP Beth -> ARTi'S shorts); the old jeans' COF link stayed (drop failed), the veil
+    // waited for them and stayed on at +90 s. Dropped items are never waited for.
+    [Fact] public void WaitSource_IgnoresTheOldOutfitsDroppedClothes_WhenTheLoginOutfitChanged()
+    {
+        var jeans = (UUID.Random(), "Maitreya LaraX Vintage Jeans Low-Waist #3 (Flat)"); var shorts = (UUID.Random(), "TETRA - Geena ripped shorts - LaraX (low waist)");
+        var top = (UUID.Random(), "[ARTi'S] Strapless Top - LaraX");
+        var cof = new List<(UUID, string)> { jeans, shorts, top };
+        var src = LoginVeil.WaitSource(cof, new() { shorts, top }, new List<UUID> { jeans.Item1 })!;
+        Assert.DoesNotContain(jeans, src);
+        var g = src.Select(l => new LoginVeil.Garment(l.Name, 5, 7)).ToList();
+        Assert.True(LoginVeil.Release(g, 90.2, stashed: true).release);
+        Assert.True(LoginVeil.Release(g, 12, stashed: true).release);
+        // without the dropped list (old behaviour) the jeans held the veil on
+        var old = LoginVeil.WaitSource(cof, new() { shorts, top })!.Select(l => new LoginVeil.Garment(l.Name, l.Item1 == jeans.Item1 ? null : 5, l.Item1 == jeans.Item1 ? null : 7));
+        Assert.False(LoginVeil.Release(old, 90.2, stashed: true).release);
+        Assert.Same(cof, LoginVeil.WaitSource(cof, new(), null));   // nothing dropped: unchanged
+    }
     [Fact] public void WaitSource_UsesTheStashClothes_UntilTheCofIsRead()
     {
         var shirt = (UUID.Random(), "TETRA - Chill T-Shirt - LaraX Petite"); var boots = (UUID.Random(), "TETRA - Moca Ankle Boots (Suede) - Maitreya Mid");

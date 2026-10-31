@@ -110,8 +110,9 @@ internal static class LoginVeil
         // 16:48:49, collar stealth until 16:48:52, veil bake 16:48:53). The slow steps (head HUD, collar menu) now run first, with the head
         // still fully dressed; the hair wave goes right before the veil, so the bald moment is the veil bake only (~1 s).
         // Ears and lashes (EvoX head faces) are hidden through the head's HUD, capped so a stuck HUD never holds the logout.
-        if (hideHeadFaces != null) { try { await Task.WhenAny(hideHeadFaces(), Task.Delay(hideHeadFacesMaxMs)); } catch { } }
+        // 2026-10-31 15:27 relog (David): the collar must go FIRST; the 8 s ear/lash HUD step ran before it. Collar, then ears/lashes.
         if (collarStealth != null) { try { await Task.WhenAny(collarStealth(), Task.Delay(collarMaxMs)); } catch { } }
+        if (hideHeadFaces != null) { try { await Task.WhenAny(hideHeadFaces(), Task.Delay(hideHeadFacesMaxMs)); } catch { } }
         // 15:31:45 logout: hair, teeth and earrings floated alone at the end (observers get their kills late), so they still come off
         // before the veil and the head / clothes stash.
         if (looseHeadPartsFirst != null) { try { await looseHeadPartsFirst(); } catch { } }
@@ -569,6 +570,9 @@ public static partial class Program
         // under the veil: get the EvoX HUD attached and talking to the head, and the collar's About page open, so at the veil-off
         // only the presses remain (14:47 login: HUD handshake 13.4 s and collar menus ~4.5 s, both AFTER the veil came off)
         loginRevealPending = id != UUID.Zero;
+        // 2026-10-31 15:27 login: the prep started before loginVeilOffAt was set to "veil on", read the old MinValue as "veil off"
+        // and quit at +0.0 s. The veil state is set first now.
+        loginVeilOffAt = id != UUID.Zero ? DateTime.MaxValue : DateTime.MinValue;
         if (id != UUID.Zero) { _ = LoginVeilEvoxPrepare(t0); _ = Task.Run(() => LoginVeilCollarPrepare(t0)); }
         var usual = stash.Count == 0 ? null : LoginVeilUsualAtLogin(stash, loginVeilStashAt);
         if (usual != null) { Log("login-veil", "login outfit: " + usual.Why); stash = usual.Stash; }

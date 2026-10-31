@@ -16,12 +16,18 @@ namespace GalatayText;
 internal static class UsualOutfit
 {
     internal const double DefaultAfterMin = 10;
+    // 2026-10-31 (David, t2850u): the next outfit pick goes on any time I've been logged out more than an hour (was: once per PT day).
+    internal const double DefaultChangeAfterMin = 60;
+
+    /// <summary>Pure (tested): does this login change to the next outfit pick? Yes past the hour, or when the one-shot force marker was set.</summary>
+    internal static bool OutfitChangeDue(TimeSpan sinceLogout, bool forced, double changeAfterMin = DefaultChangeAfterMin)
+        => forced || sinceLogout > TimeSpan.FromMinutes(changeAfterMin);
 
     /// <summary>Pure (tested): the stash to put on at login. Within the threshold: as worn (no swap). Past it: the usual outfit's plan.</summary>
-    internal static Plan AtLogin(List<LoginVeil.Stashed> asWorn, IEnumerable<(UUID Item, string Name)> usualLinks, string usualName, TimeSpan sinceLogout, double afterMin = DefaultAfterMin)
+    internal static Plan AtLogin(List<LoginVeil.Stashed> asWorn, IEnumerable<(UUID Item, string Name)> usualLinks, string usualName, TimeSpan sinceLogout, double afterMin = DefaultAfterMin, bool forced = false)
     {
         var s = asWorn ?? new();
-        if (sinceLogout < TimeSpan.FromMinutes(afterMin))
+        if (!forced && sinceLogout < TimeSpan.FromMinutes(afterMin))
             return new(s, new(), new(), false, $"back within {afterMin:F0} min of the logout ({sinceLogout.TotalMinutes:F1} min): exactly as I logged out");
         var p = For(s, usualLinks, usualName);
         return p with { Why = $"{sinceLogout.TotalMinutes:F0} min since the logout (> {afterMin:F0}): " + p.Why };
@@ -32,10 +38,10 @@ internal static class UsualOutfit
     /// <summary>Pure (tested): which outfit the login veil should put on past the threshold: the daily pre-pick when the daily is pending and it
     /// has clothes; else the usual outfit. Within the threshold: the usual (AtLogin then keeps the stash as worn anyway).</summary>
     internal static (string Name, List<(UUID Item, string Name)> Links, bool Daily) LoginTarget(TimeSpan sinceLogout, bool dailyPending,
-        string usualName, List<(UUID Item, string Name)> usualLinks, string dailyName, List<(UUID Item, string Name)> dailyLinks, double afterMin = DefaultAfterMin)
+        string usualName, List<(UUID Item, string Name)> usualLinks, string dailyName, List<(UUID Item, string Name)> dailyLinks, double afterMin = DefaultAfterMin, bool forced = false)
     {
         usualLinks ??= new();
-        if (sinceLogout < TimeSpan.FromMinutes(afterMin) || !dailyPending || string.IsNullOrWhiteSpace(dailyName)
+        if ((!forced && sinceLogout < TimeSpan.FromMinutes(afterMin)) || !dailyPending || string.IsNullOrWhiteSpace(dailyName)
             || dailyLinks == null || !dailyLinks.Any(x => x.Item != UUID.Zero && IsClothes(x.Name)))
             return (usualName, usualLinks, false);
         return (dailyName, dailyLinks, true);
@@ -93,7 +99,7 @@ public static partial class Program
     static string LoginVeilDailyFile => Env("GT_VEIL_DAILY_FILE", "/home/box/viewers/textclient/run/login-veil-daily.txt");
     internal static string loginDailyPick;   // the daily outfit the login veil put on (DailyOutfitAfterLogin uses it as the day's pick: no second, random swap)
 
-    /// <summary>Logout: pre-pick the next daily outfit (same pool rule as the login picker) and save its links, so a login on a new day
+    /// <summary>Logout: pre-pick the next daily outfit (same pool rule as the login picker) and save its links, so a login after more than an hour away
     /// dresses in it from the start. Not on the beach (the bikini rule decides there) and not while undressed.</summary>
     static async Task LoginVeilDailySave(InventoryFolder mo, string current, CancellationToken ct)
     {
@@ -109,14 +115,32 @@ public static partial class Program
                 .Where(l => l.ParentUUID == folder.UUID && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment))
                 .Select(l => (l.IsLink() ? l.AssetUUID : l.UUID, l.Name)).ToList();
             File.WriteAllText(LoginVeilDailyFile, UsualOutfit.FormatUsual(pick, links));
-            Log("login-veil", $"next daily outfit '{pick}' pre-picked for login ({links.Count} links; worn at login only on a new day, away more than {LoginVeilUsualAfterMin:F0} min)");
+            Log("login-veil", $"next daily outfit '{pick}' pre-picked for login ({links.Count} links; worn at login when I'm away more than {LoginVeilOutfitChangeAfterMin:F0} min or the force marker is set)");
         }
         catch (Exception ex) { Log("login-veil", "daily pre-pick failed (login wears the usual outfit): " + ex.GetBaseException().Message); }
     }
 
-    static bool DailyPendingToday()
+    static double LoginVeilOutfitChangeAfterMin => double.TryParse(Env("GT_OUTFIT_CHANGE_AFTER_MIN", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var m) && m >= 0 ? m : UsualOutfit.DefaultChangeAfterMin;
+    // One-shot (David t2850u test): `touch` this file and the next login changes to the next pick however short the time away. Consumed at login.
+    internal static string ForceOutfitChangeFile => Env("GT_FORCE_OUTFIT_CHANGE", "/home/box/viewers/textclient/run/force-outfit-change");
+    static int forceOutfitConsumed;   // per process: the marker is read once
+    static bool forceOutfitThisLogin;
+    /// <summary>Set by the login veil: null = not decided yet (no veil stash), else whether this login changes to the next pick.</summary>
+    internal static bool? loginOutfitChangeDue;
+
+    static bool ConsumeForceOutfitMarker()
     {
-        try { return !File.Exists(DailyOutfitDateFile) || File.ReadLines(DailyOutfitDateFile).FirstOrDefault()?.Trim() != TodayPt(); } catch { return true; }
+        if (Interlocked.Exchange(ref forceOutfitConsumed, 1) != 0) return forceOutfitThisLogin;
+        try
+        {
+            if (File.Exists(ForceOutfitChangeFile))
+            {
+                File.Delete(ForceOutfitChangeFile); forceOutfitThisLogin = true;
+                Log("login-veil", $"force-outfit-change marker found and consumed ({ForceOutfitChangeFile}): this login changes to the next pick");
+            }
+        }
+        catch (Exception ex) { Log("login-veil", "force-outfit-change marker read failed: " + ex.GetBaseException().Message); }
+        return forceOutfitThisLogin;
     }
 
     static async Task LoginVeilUsualSave()
@@ -152,9 +176,13 @@ public static partial class Program
             try { File.Delete(LoginVeilUsualFile); } catch { }
             try { File.Delete(LoginVeilDailyFile); } catch { }
             var since = DateTime.Now - loggedOutAt;
-            var t = UsualOutfit.LoginTarget(since, DailyPendingToday(), name, links, dName, dLinks, LoginVeilUsualAfterMin);
-            var plan = UsualOutfit.AtLogin(stash, t.Links, t.Name, since, LoginVeilUsualAfterMin);
-            if (t.Daily) { loginDailyPick = t.Name; plan = plan with { Why = plan.Why.Replace("my usual outfit", "today's daily outfit") }; }
+            var forced = ConsumeForceOutfitMarker();
+            var due = UsualOutfit.OutfitChangeDue(since, forced, LoginVeilOutfitChangeAfterMin);
+            loginOutfitChangeDue = due;
+            Log("login-veil", $"outfit change {(due ? "DUE" : "not due")}: {since.TotalMinutes:F1} min away (change after {LoginVeilOutfitChangeAfterMin:F0}){(forced ? ", forced by marker" : "")}");
+            var t = UsualOutfit.LoginTarget(since, due, name, links, dName, dLinks, LoginVeilUsualAfterMin, forced);
+            var plan = UsualOutfit.AtLogin(stash, t.Links, t.Name, since, LoginVeilUsualAfterMin, forced && t.Daily);
+            if (t.Daily) { loginDailyPick = t.Name; plan = plan with { Why = plan.Why.Replace("my usual outfit", "the next outfit pick") }; }
             return plan;
         }
         catch (Exception ex) { return new(stash, new(), new(), false, "usual outfit check failed (as worn): " + ex.GetBaseException().Message); }

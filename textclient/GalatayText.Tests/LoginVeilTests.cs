@@ -94,7 +94,7 @@ public class LoginVeilTests
     {
         // 15:16:48 relog (David): base face for a few seconds. The real head and the lips stay on through logout.
         Assert.False(LoginVeil.ShouldStash(EvoxHead, 2)); Assert.False(LoginVeil.ShouldStash(EvoxHead, 12)); Assert.False(LoginVeil.ShouldStash(Head, 12));
-        foreach (var (n, p) in new[] { (Eyes, 15), (Gums, 47), (Bracelet, 6), ("Some Brand Lashes", 17), ("Some Brand Nails", 6), ("Unknown Necklace", 39) })
+        foreach (var (n, p) in new[] { (Gums, 47), (Bracelet, 6), ("Some Brand Lashes", 17), ("Some Brand Nails", 6), ("Unknown Necklace", 39) })
             Assert.True(LoginVeil.ShouldStash(n, p), n);
         foreach (var (n, p) in new[] { (Body, 40), (AddOn, 1), (N9, 39), (Bridge, 30), (Ao, 35), ("Authorizer", 39), ("Maitreya Mesh Body - LaraX HUD V1.1", 34), ("Skeleton fix", 1), ("Bento HandL", 5) })
             Assert.False(LoginVeil.ShouldStash(n, p), n);

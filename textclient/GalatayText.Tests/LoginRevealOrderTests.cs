@@ -30,6 +30,15 @@ public class LoginRevealOrderTests
         Assert.True(EvoxHide.SafetyRestoreDue(true, false, 16, revealPending: false));
         Assert.True(EvoxHide.SafetyRestoreDue(true, true, EvoxHide.SafetyNetSec, revealPending: true));
     }
+    [Fact] public void EvoxHead_FoundByItemIdBeforeItsNameLoads()
+    {
+        // 2026-10-31 15:15 login: head attached at +4 s, no prim name yet; the prep waited and the HUD came after the veil-off
+        Assert.True(EvoxHide.IsEvoxHead(true, null));
+        Assert.True(EvoxHide.IsEvoxHead(false, "/ HEAD / lel evox / AVALON 4.0"));
+        Assert.False(EvoxHide.IsEvoxHead(false, null));
+        Assert.False(EvoxHide.IsEvoxHead(false, "/ HUD / lel evox (f) 4.0"));
+        Assert.InRange(EvoxHide.VeilHoldMs, 1000, 5000);
+    }
     [Fact] public void HudPrep_RetriesNoHeadOnlyUnderTheVeil()
     {
         Assert.True(EvoxHide.PrepRetryDue(false, true, 1, EvoxHide.PrepMaxAttempts));

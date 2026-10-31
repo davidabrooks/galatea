@@ -569,7 +569,7 @@ public static partial class Program
         // under the veil: get the EvoX HUD attached and talking to the head, and the collar's About page open, so at the veil-off
         // only the presses remain (14:47 login: HUD handshake 13.4 s and collar menus ~4.5 s, both AFTER the veil came off)
         loginRevealPending = id != UUID.Zero;
-        if (id != UUID.Zero) { _ = Task.Run(() => LoginVeilEvoxPrepare(t0)); _ = Task.Run(() => LoginVeilCollarPrepare(t0)); }
+        if (id != UUID.Zero) { _ = LoginVeilEvoxPrepare(t0); _ = Task.Run(() => LoginVeilCollarPrepare(t0)); }
         var usual = stash.Count == 0 ? null : LoginVeilUsualAtLogin(stash, loginVeilStashAt);
         if (usual != null) { Log("login-veil", "login outfit: " + usual.Why); stash = usual.Stash; }
         var (early, late) = LoginVeil.SplitStash(stash); loginVeilHoldTries.Clear();
@@ -654,6 +654,7 @@ public static partial class Program
                 return 0; });
                 bool confirmed = false;
                 Func<Task> burst = late.Count == 0 ? null : () => LoginVeilBurst(late, t0, ct, pre);
+                if (off && gen == loginVeilGen) await LoginVeilHoldForEvox(t0);
                 if (off && gen == loginVeilGen) confirmed = await LoginVeilOff(id, t0, why, itemTask.IsCompleted ? await itemTask : null, cofId, veilLinks, burst);
                 else if (!off) Log("login-veil", $"veil KEPT ON at +{(DateTime.Now - t0).TotalSeconds:F1} s: {why}");
                 if (off) { revealed = true; await LoginVeilReveal(late, t0, confirmed, ct, pre); }   // hair, teeth, eyes: only after the skin is drawn
@@ -696,6 +697,15 @@ public static partial class Program
         Log("login-veil", miss.Count == 0 ? $"stash: all {stash.Count} back on by +{(DateTime.Now - t0).TotalSeconds:F1} s"
                                           : $"stash: not back on: {string.Join("; ", miss.Select(x => x.Name))} (COF links kept: the library's add-missing pass still wears them)");
         try { File.Delete(LoginVeilStashFile); } catch { }
+    }
+
+    /// <summary>2026-10-31 15:15 login: the HUD prep finished 9 s after the veil-off, so the ears came late. The veil-off waits for
+    /// the prep (at most EvoxHide.VeilHoldMs): the HUD is talking to the head when the veil lifts, only the presses remain.</summary>
+    static async Task LoginVeilHoldForEvox(DateTime t0)
+    {
+        var p = evoxPrepTask; if (p.IsCompleted) return;
+        var t = DateTime.Now; var w = await Task.WhenAny(p, Task.Delay(EvoxHide.VeilHoldMs));
+        Log("login-veil", $"veil-off held {(DateTime.Now - t).TotalSeconds:F1} s for the EvoX HUD prep at +{(t - t0).TotalSeconds:F1} s: {(w == p ? (p.Result ? "HUD ready" : "prep gave up") : $"cap {EvoxHide.VeilHoldMs / 1000} s reached, ears pressed as soon as it is ready")}");
     }
 
     /// <summary>After the veil-off bake (or ConfirmMaxSec without a confirmation): release the held head parts, attach them, show the collar.</summary>

@@ -105,6 +105,7 @@ internal static class LoginVeil
     internal static bool ShouldStash(string name, int point)
     {
         if (string.IsNullOrWhiteSpace(name) || (point >= 31 && point <= 38)) return false;
+        if (IsHeadEyes(name, point)) return false;   // 17:03 (David): the head handles the eyes itself
         if (LoginOrder.IsBody(name) || LoginCover.IsBodyPart(name)) return false;
         int r = Program.OutfitSendRank(name);
         if (r == 0 || r >= 8) return false;
@@ -197,13 +198,17 @@ internal static class LoginVeil
     internal static string FormatStash(IEnumerable<Stashed> s, DateTime at)
         => $"# login veil stash {at:yyyy-MM-dd HH:mm:ss}: attachments taken off at logout (COF links kept); re-attached at login\n"
            + string.Concat(s.Select(x => $"{x.Item}\t{x.Point}\t{(x.Name ?? "").Replace('\t', ' ').Replace('\n', ' ')}\n"));
+    /// <summary>Pure (tested): mesh eyes (eyeball points or an 'eyes' item). 2026-10-30 17:03 (David): my head handles the eyes automatically, so
+    /// the veil flow leaves them alone: never stashed or detached at logout, never held or re-attached at login (old stash lines are dropped).</summary>
+    internal static bool IsHeadEyes(string name, int point)
+        => point == 15 || point == 16 || System.Text.RegularExpressions.Regex.IsMatch(name ?? "", @"\beyes\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     internal static List<Stashed> ParseStash(string text)
     {
         var r = new List<Stashed>();
         foreach (var l in (text ?? "").Split('\n'))
         {
             if (l.StartsWith("#")) continue; var f = l.TrimEnd('\r').Split('\t');
-            if (f.Length >= 3 && UUID.TryParse(f[0], out var id) && id != UUID.Zero && int.TryParse(f[1], out var pt) && r.All(x => x.Item != id)) r.Add(new(id, pt, f[2]));
+            if (f.Length >= 3 && UUID.TryParse(f[0], out var id) && id != UUID.Zero && int.TryParse(f[1], out var pt) && !IsHeadEyes(f[2], pt) && r.All(x => x.Item != id)) r.Add(new(id, pt, f[2]));
         }
         return r;
     }

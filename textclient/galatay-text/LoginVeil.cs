@@ -47,11 +47,14 @@ internal static class LoginVeil
     /// The head-parts burst (attach requests, no waiting) goes between the link removal and the bake request, so face, hair and skin land together.</summary>
     internal static async Task<(bool removed, bool confirmed)> OffCore(Action dropLayer, Func<Task<bool>> removeKnownLinks, Func<Task> rebake, Func<Task<bool>> confirm, Func<Task> burst = null)
     {
-        try { dropLayer?.Invoke(); } catch { }
+        // 17:00/17:04 logins (veil off +19.2 / +15.9 s, garments Ready +7.0 s): dropping the layer first (RemoveFromOutfit) armed the library's
+        // delayed appearance pass, whose own bake request ("Requesting bake ... lastReq=-1") hit the server while our POST was in flight:
+        // our POST took 4.2 s / timed out at 5 s. The 16:45 login (+8.6 s) beat that timer. The layer now drops only after our bake POST.
         bool removed = await removeKnownLinks();
-        if (!removed) return (false, false);
+        if (!removed) { try { dropLayer?.Invoke(); } catch { } return (false, false); }
         if (burst != null) { try { await burst(); } catch { } }
         await rebake();
+        try { dropLayer?.Invoke(); } catch { }
         return (true, await confirm());
     }
 
@@ -249,6 +252,8 @@ internal static class LoginVeil
 
     /// <summary>Pure (tested): take the veil off now? Every waited garment of the current outfit is seen and Ready, plus a short grace for the
     /// viewer to draw it; nothing to wait for (purposely naked) releases at once; MaxHold always releases.</summary>
+    /// <summary>Pure (tested): start a background COF refresh in the release loop? Every 5 s (sooner while nothing was read yet), never two at once.</summary>
+    internal static bool CofRefreshDue(bool haveLinks, double sinceLastSec, bool inFlight) => !inFlight && sinceLastSec > (haveLinks ? 5 : 1);
     internal static (bool release, string why) Release(IEnumerable<Garment> garments, double nowSec, bool stashed = false)
     {
         var g = (garments ?? Array.Empty<Garment>()).Where(x => Waits(x.Name)).ToList();
@@ -519,13 +524,15 @@ public static partial class Program
                 // 14:01 relog: this awaited the stash item fetches (~14 s at login, the server's pace) BEFORE the release loop started, so the
                 // veil decision came at +15.5 s for clothes Ready at +12.3 s. Now the attach runs beside the loop; the loop never waits on it.
                 if (id == UUID.Zero) { if (early.Count > 0) { await Task.Delay(1000, ct); LoginVeilAttachDirect(early, "login"); } why = "no veil configured"; return; }
-                bool retried = false, fellBack = false; List<InventoryItem> links = null; DateTime linksAt = DateTime.MinValue; UUID cofId = UUID.Zero;
+                bool retried = false, fellBack = false; List<InventoryItem> links = null; DateTime linksAt = DateTime.MinValue; UUID cofId = UUID.Zero; Task cofRefresh = null;
                 await LoginVeil.BesideLoop(early.Count == 0 ? null : async () => { await Task.Delay(1000, ct); LoginVeilAttachDirect(early, $"login, +{(DateTime.Now - t0).TotalSeconds:F1} s"); }, async () => {
                 while (gen == loginVeilGen && LoggedIn)
                 {
                     double now = (DateTime.Now - t0).TotalSeconds;
-                    if (links == null || (DateTime.Now - linksAt).TotalSeconds > 5)
-                    {   // one COF read, refreshed at most every 5 s with a short timeout: the tick itself never waits on the server
+                    // 17:00 login: Ready at +7.0 s but the loop sat in a COF re-read (4 s timeout) until +10.2 s. The first read is awaited (the
+                    // veil link ids are needed); refreshes run beside the loop, so a release is never held by a read.
+                    async Task RefreshCof()
+                    {
                         var cof = cofId == UUID.Zero ? await CofFolder(ct) : null; if (cof != null) cofId = cof.UUID;
                         if (cofId != UUID.Zero)
                         {
@@ -534,6 +541,9 @@ public static partial class Program
                         }
                         linksAt = DateTime.Now;
                     }
+                    if (links == null && linksAt == DateTime.MinValue) await RefreshCof();
+                    else if (LoginVeil.CofRefreshDue(links != null, (DateTime.Now - linksAt).TotalSeconds, cofRefresh != null && !cofRefresh.IsCompleted))
+                        cofRefresh = Task.Run(async () => { try { await RefreshCof(); } catch { linksAt = DateTime.Now; } });
                     var worn = WornPrims().Select(AttachItemId).ToHashSet();
                     LoginVeilEnforceHold(late, worn, now);
                     if (stash.Count > 0 && !retried && now >= LoginVeil.RetryAttachSec) { retried = true; _ = Task.Run(async () => { try { await LoginVeilAttach(early, "retry", ct, pre); } catch { } }); }

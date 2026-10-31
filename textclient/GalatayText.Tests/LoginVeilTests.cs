@@ -126,7 +126,7 @@ public class LoginVeilTests
         var (rm, ok) = await LoginVeil.OffCore(() => steps.Add("drop"), () => { steps.Add("links"); return Task.FromResult(true); },
             () => { steps.Add("bake"); return Task.CompletedTask; }, () => { steps.Add("confirm"); return Task.FromResult(true); },
             () => { steps.Add("burst"); return Task.CompletedTask; });
-        Assert.True(rm && ok); Assert.Equal(new[] { "drop", "links", "burst", "bake", "confirm" }, steps);
+        Assert.True(rm && ok); Assert.Equal(new[] { "links", "burst", "bake", "drop", "confirm" }, steps);
         steps.Clear();
         await LoginVeil.OffCore(null, () => Task.FromResult(false), () => { steps.Add("bake"); return Task.CompletedTask; }, () => Task.FromResult(true), () => { steps.Add("burst"); return Task.CompletedTask; });
         Assert.Empty(steps);   // links not removed: no head parts over a still-veiled body, no bake

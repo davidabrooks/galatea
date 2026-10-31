@@ -704,12 +704,12 @@ public static partial class Program
     }
 
     /// <summary>2026-10-31 15:15 login: the HUD prep finished 9 s after the veil-off, so the ears came late. The veil-off waits for
-    /// the prep (at most EvoxHide.VeilHoldMs): the HUD is talking to the head when the veil lifts, only the presses remain.</summary>
+    /// the prep until it is ready (EvoxHide.VeilHoldCapMs is only a safety cap): the HUD is talking to the head when the veil lifts, only the presses remain.</summary>
     static async Task LoginVeilHoldForEvox(DateTime t0)
     {
         var p = evoxPrepTask; if (p.IsCompleted) return;
-        var t = DateTime.Now; var w = await Task.WhenAny(p, Task.Delay(EvoxHide.VeilHoldMs));
-        Log("login-veil", $"veil-off held {(DateTime.Now - t).TotalSeconds:F1} s for the EvoX HUD prep at +{(t - t0).TotalSeconds:F1} s: {(w == p ? (p.Result ? "HUD ready" : "prep gave up") : $"cap {EvoxHide.VeilHoldMs / 1000} s reached, ears pressed as soon as it is ready")}");
+        var t = DateTime.Now; var w = await Task.WhenAny(p, Task.Delay(EvoxHide.VeilHoldCapMs));
+        Log("login-veil", $"veil-off held {(DateTime.Now - t).TotalSeconds:F1} s for the EvoX HUD prep at +{(t - t0).TotalSeconds:F1} s: {EvoxHide.HoldOutcome(w == p, w == p && p.Result)}");
     }
 
     /// <summary>After the veil-off bake (or ConfirmMaxSec without a confirmation): release the held head parts, attach them, show the collar.</summary>
@@ -814,6 +814,8 @@ public static partial class Program
             // the sim sends our new appearance (what other viewers see); the offsets are from the start of the veil-off step, now stated.
             Log("login-veil", $"veil off at {At()} (seen by others; veil-off step began at +{(tStart - t0).TotalSeconds:F1} s): {why} (links removed +{rmMs:F0} ms, bake POST answered +{bakeMs:F0} ms, "
                 + (confirmed ? $"sim appearance COF v{simBefore} -> v{simAttCof} at +{confMs:F0} ms)" : $"no sim appearance for a newer COF than v{simBefore} in {LoginVeil.ConfirmMaxSec:F0} s)"));
+            { var g = loginVeilGen; _ = Task.Run(async () => { await Task.Delay(EvoxHide.PostVeilRebakeMs); if (!EvoxHide.PostVeilRebakeDue(LoggedIn, g, loginVeilGen)) return;
+                try { Log("login-veil", $"post-veil-off safeguard at {At()}: {await ForceRebakeCmd()}"); } catch (Exception ex) { Log("login-veil", "post-veil-off safeguard failed: " + ex.GetBaseException().Message); } }); }
             // read-back AFTER the bake request: only if the link is somehow still there, redo the verified slow path
             var (kids, ok) = await ReadFolderTimed(cofId, ct, 6000);
             if (ok && kids.OfType<InventoryItem>().Any(l => l.ParentUUID == cofId && l.IsLink() && l.AssetUUID == id))

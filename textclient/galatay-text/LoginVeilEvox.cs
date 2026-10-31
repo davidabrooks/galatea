@@ -96,8 +96,20 @@ internal static class EvoxHide
     /// <summary>Pure (tested): the EvoX head, by its known item id (no prim name needed) or by name once Properties arrive.</summary>
     internal static bool IsEvoxHead(bool knownHeadItem, string name) =>
         knownHeadItem || (LoginOrder.IsRealHead(name ?? "") && (name ?? "").Contains("lel evox", StringComparison.OrdinalIgnoreCase));
-    /// <summary>Most the veil-off waits for the HUD prep, so the ears show the moment the veil lifts (never left veiled long).</summary>
-    internal const int VeilHoldMs = 5000;
+    /// <summary>2026-10-31 15:49 login (David: "instead of waiting a fixed amount of time, can you wait until the controller is ready?"):
+    /// the fixed 5 s hold ran out at +11.5 s, the HUD accepted the head at +12.6 s. The veil-off now waits for the prep itself (HUD on and
+    /// accepted the head, or the prep gave up); this cap is only a safety net so the veil can never get stuck.</summary>
+    internal const int VeilHoldCapMs = 30000;
+    /// <summary>Pure (tested): the hold's log text.</summary>
+    internal static string HoldOutcome(bool prepDone, bool prepOk) =>
+        prepDone ? (prepOk ? "HUD ready" : "prep gave up (FAILED: ears pressed after the veil-off)") : $"FAILED: safety cap {VeilHoldCapMs / 1000} s reached, HUD not ready; ears pressed as soon as it is";
+    /// <summary>Pure (tested): 15:49 login: HUD attach sent at +4.8 s (head seen +3.8 s, then 1 s), seen +10.1 s: the sim took 5.3 s to
+    /// rez it, queued behind the login outfit restore. The attach now goes at +0 s from the known item id, overlapping that. The "please
+    /// wear your head" verdict only counts once BOTH the HUD and the head are on: the quiet window runs from the later of the two.</summary>
+    internal static DateTime HandshakeQuietUntil(DateTime hudSeen, DateTime headSeen) => (hudSeen > headSeen ? hudSeen : headSeen).AddMilliseconds(NoHeadWaitMs);
+    /// <summary>Safeguard (15:27 login: David's viewer kept the veil after the sim accepted the veil-off): resend the look once, this long after the veil-off.</summary>
+    internal const int PostVeilRebakeMs = 5000;
+    internal static bool PostVeilRebakeDue(bool loggedIn, int genAtVeilOff, int genNow) => loggedIn && genAtVeilOff == genNow;
     internal const string HudName = "/ HUD / lel evox (f) 4.0";
     /// <summary>Pure (tested): the HUD's attach record from its known item id, with NO inventory fetch. 2026-10-31 15:02 login: the
     /// under-the-veil prep fetched the HUD item first; FetchInventory2 was not ready at login, so the fetch hung its full 15 s, gave
@@ -120,7 +132,7 @@ public static partial class Program
     /// <summary>2026-10-31 15:15 login: the head was attached at +4 s but its prim name (Properties) had not loaded, so the
     /// name-only match kept the prep waiting under the veil; the HUD went on at +19 s, after the veil-off. The known item id needs no name.</summary>
     static Primitive EvoxHeadRoot() => WornPrims().FirstOrDefault(p => EvoxHide.IsEvoxHead(AttachItemId(p) == EvoxHeadItem, p.Properties?.Name));
-    /// <summary>The under-the-veil prep: done (ok or given up). The veil-off waits on it up to EvoxHide.VeilHoldMs.</summary>
+    /// <summary>The under-the-veil prep: done (ok or given up). The veil-off waits on it (safety cap EvoxHide.VeilHoldCapMs).</summary>
     internal static Task<bool> evoxPrepTask = Task.FromResult(true);
     static async Task<EvoxHide.Parts> EvoxReadHidden()
     {
@@ -285,24 +297,30 @@ public static partial class Program
             {
                 using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
                 var item = evoxHudItemCache ??= EvoxHide.HudRecord(EvoxHudItem, client.Self.AgentID);   // no fetch: it hung 15 s at login
+                // 15:49 login: attach-to-seen took 5.3 s; send it now, from the known id, while the head and outfit are still coming
+                if (!WornPrims().Any(p => AttachItemId(p) == EvoxHudItem)) { client.Appearance.Attach(item, AttachmentPoint.Default, false); Log("login-veil", $"evox prep try 1: HUD attach sent at {At()} (before the head)"); }
+                evoxHudOursWorn = true;
                 for (int attempt = 1; ; attempt++)
                 {
-                    for (int i = 0; VeilOn() && EvoxHeadRoot() == null && i < 240; i++) { if (i % 8 == 0) EvoxRequestWornProps(); await Task.Delay(250, ct); }
-                    if (!VeilOn()) { Log("login-veil", $"evox prep: veil already off at {At()} (the reveal does it all)"); return false; }
-                    if (EvoxHeadRoot() == null) { Log("login-veil", $"evox prep: head still unseen at {At()}"); return false; }
-                    // the head's own scripts start a moment after it rezzes; give it that moment once
-                    if (attempt == 1) { Log("login-veil", $"evox prep: head seen at {At()}"); await Task.Delay(1000, ct); }
                     DateTime noHeadAt = DateTime.MinValue;
                     EventHandler<ChatEventArgs> onChat = (s2, e) => { try { if (e.Type == ChatType.OwnerSay && EvoxHide.IsNoHeadLine(e.Message) && (e.FromName ?? "").IndexOf("lel evox", StringComparison.OrdinalIgnoreCase) >= 0) noHeadAt = DateTime.Now; } catch { } };
                     client.Self.ChatFromSimulator += onChat; bool ok = false;
                     try
                     {
-                        if (!WornPrims().Any(p => AttachItemId(p) == EvoxHudItem)) { client.Appearance.Attach(item, AttachmentPoint.Default, false); Log("login-veil", $"evox prep try {attempt}: HUD attach sent at {At()}"); }
-                        evoxHudOursWorn = true;
+                        if (attempt > 1 && !WornPrims().Any(p => AttachItemId(p) == EvoxHudItem)) { client.Appearance.Attach(item, AttachmentPoint.Default, false); Log("login-veil", $"evox prep try {attempt}: HUD attach sent at {At()}"); }
+                        for (int i = 0; VeilOn() && EvoxHeadRoot() == null && i < 240; i++) { if (i % 8 == 0) EvoxRequestWornProps(); await Task.Delay(250, ct); }
+                        if (!VeilOn()) { Log("login-veil", $"evox prep: veil already off at {At()} (the reveal does it all)"); return false; }
+                        if (EvoxHeadRoot() == null) { Log("login-veil", $"evox prep: head still unseen at {At()}"); return false; }
+                        var headSeen = DateTime.Now; if (attempt == 1) Log("login-veil", $"evox prep: head seen at {At()}");
                         var hud = await WaitWornItem(EvoxHudItem, 15000, ct);
                         Log("login-veil", $"evox prep try {attempt}: HUD {(hud != null ? "seen" : "NOT seen in 15 s")} at {At()}");
-                        if (hud != null) { for (int i = 0; i < EvoxHide.NoHeadWaitMs / 100 && noHeadAt == DateTime.MinValue; i++) await Task.Delay(100, ct); ok = noHeadAt == DateTime.MinValue; }
-                        if (hud != null) _ = EnsureProperties(Sim, LinkPrims(hud));   // the button names, ready for the press
+                        if (hud != null)
+                        {
+                            _ = EnsureProperties(Sim, LinkPrims(hud));   // the button names, ready for the press
+                            var quiet = EvoxHide.HandshakeQuietUntil(DateTime.Now, headSeen);
+                            while (DateTime.Now < quiet && noHeadAt == DateTime.MinValue) await Task.Delay(100, ct);
+                            ok = noHeadAt == DateTime.MinValue;
+                        }
                     }
                     finally { client.Self.ChatFromSimulator -= onChat; }
                     Log("login-veil", $"evox prep try {attempt} at {At()}: {(ok ? "HUD on and accepted the head; presses wait for the veil-off" : "HUD said no head")}");

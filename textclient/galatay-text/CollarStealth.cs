@@ -55,12 +55,67 @@ public static partial class Program
     internal const int CollarTouchTries = 4;
     /// <summary>Pure (tested): touch the collar again? Only when the touch missed it by name (properties not loaded), within the tries.</summary>
     internal static bool CollarTouchRetry(string touchResult, int attempt) => attempt < CollarTouchTries && (touchResult ?? "").StartsWith("no single worn attachment matches");
+    /// <summary>A collar About page opened ahead of time (login, under the veil) holding the menu lock; CollarStealthSet presses on it.</summary>
+    internal sealed record CollarPrepared(ScriptDialogEventArgs About, string Label, bool On, bool Want, DateTime At);
+    static CollarPrepared collarPrepared;
+    internal const double CollarPrepMaxAgeSec = 45;
+    /// <summary>Pure (tested): use the pre-opened About page? Same wanted state, fresh enough for the collar's own menu timeout.</summary>
+    internal static bool CollarPrepUsable(CollarPrepared p, bool want, DateTime now) => p != null && p.Want == want && p.Label != null && (now - p.At).TotalSeconds < CollarPrepMaxAgeSec;
+    static async Task<string> CollarStealthPrepare(bool want, string why)
+    {
+        if (LoginBrokenStop("collar") is string broken) return broken;
+        if (!await CollarMenuEnter()) return "collar menu busy";
+        bool keep = false;
+        try
+        {
+            string t = ""; ScriptDialogEventArgs main = null;
+            for (int attempt = 1; ; attempt++)
+            {
+                var prev = lastDialog; t = await Exec("touch-attachment \"Premium Collar\" 1");
+                if (CollarTouchRetry(t, attempt)) { await Task.Delay(1500); continue; }
+                main = await CollarDialogAfter(prev, 8000); break;
+            }
+            if (main == null || !(main.ButtonLabels ?? new()).Contains("About")) return $"menu did not open ({t}); the reveal opens it";
+            await Exec("dialog About");
+            var about = await CollarDialogAfter(main, 8000);
+            var (label, on) = StealthButton(about?.ButtonLabels);
+            if (label == null) return "About page not ready; the reveal opens it";
+            if (!StealthNeedsPress(label, on, want)) return $"already '{label}'";
+            collarPrepared = new CollarPrepared(about, label, on, want, DateTime.Now); keep = true;
+            var mine = collarPrepared;
+            _ = Task.Run(async () => { await Task.Delay(TimeSpan.FromSeconds(CollarPrepMaxAgeSec)); if (Interlocked.CompareExchange(ref collarPrepared, null, mine) == mine) stealthLock.Release(); });
+            return $"About page open, '{label}' ready to press at the reveal";
+        }
+        finally { if (!keep) stealthLock.Release(); }
+    }
     static Task<string> CollarStealthOn(string why) => CollarStealthSet(true, why).ContinueWith(t => t.Result.result);
     // collar main menu -> About -> press "Stealth" only if its state differs from `want`. wasOn = state before (null = unknown)
     static async Task<(string result, bool? wasOn)> CollarStealthSet(bool want, string why)
     {
         var broken = LoginBrokenStop("collar");
         if (broken != null) { Log("collar", broken); return (broken, null); }
+        var prep = collarPrepared;
+        if (prep != null && Interlocked.CompareExchange(ref collarPrepared, null, prep) == prep)
+        {   // we now own the lock the prep held
+            try
+            {
+                if (CollarPrepUsable(prep, want, DateTime.Now))
+                {
+                    var idx = prep.About.ButtonLabels.FindIndex(b => b == prep.Label);
+                    client.Self.ReplyToScriptDialog(prep.About.Channel, idx, prep.Label, prep.About.ObjectID);
+                    var back = await CollarDialogAfter(prep.About, 3000);
+                    var (_, nowOn2) = StealthButton(back?.ButtonLabels);
+                    if (back != null && nowOn2 == want)
+                    {
+                        Log("collar", $"stealth {(want ? "on" : "off")} ({why}): pressed '{prep.Label}' on the page opened under the veil -> {(nowOn2 ? "on" : "off")}");
+                        string W2(bool x) => x ? "invisible (Stealth on)" : "visible (Stealth off)";
+                        return ($"collar now {W2(want)}", prep.On);
+                    }
+                    Log("collar", $"stealth ({why}): the pre-opened page did not answer; full menu path");
+                }
+            }
+            finally { stealthLock.Release(); }
+        }
         if (!await CollarMenuEnter()) return ("collar menu busy for 90 s", null);
         try
         {

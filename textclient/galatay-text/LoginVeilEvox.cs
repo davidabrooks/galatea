@@ -68,6 +68,15 @@ internal static class EvoxHide
     internal static bool RetryDue(bool confirmed, int attempt, int maxAttempts, double elapsedSec, double budgetSec) => !confirmed && attempt < maxAttempts && elapsedSec < budgetSec;
     internal const int MaxAttempts = 3; internal const double BudgetSec = 22;
     internal static bool SafetyRestoreDue(bool markerExists, bool veilWorn, double secsSinceLogin) => markerExists && (!veilWorn || secsSinceLogin >= SafetyNetSec);
+    /// <summary>Pure (tested): 14:47 login: the safety net fired at +16 s, while the veil-off step was still running, said "head not worn"
+    /// and took the HUD gate. While the veil-off reveal is pending it waits (until the cap).</summary>
+    internal static bool SafetyRestoreDue(bool markerExists, bool veilWorn, double secsSinceLogin, bool revealPending) =>
+        SafetyRestoreDue(markerExists, veilWorn, secsSinceLogin) && (!revealPending || secsSinceLogin >= SafetyNetSec);
+    /// <summary>Pure (tested): the under-the-veil HUD prep: try again after "please wear your head"? Only while the veil is on and tries remain.
+    /// The retry waits for the head (not a fixed delay); the HUD is re-attached so it handshakes again.</summary>
+    internal static bool PrepRetryDue(bool handshakeOk, bool veilOn, int attempt, int maxAttempts) => !handshakeOk && veilOn && attempt < maxAttempts;
+    internal const int PrepMaxAttempts = 6;
+    internal const int NoHeadWaitMs = 2500;
 }
 
 public static partial class Program
@@ -75,7 +84,9 @@ public static partial class Program
     internal static readonly UUID EvoxHudItem = new("80597a5b-5254-386b-ad5e-6c260f65c8eb");   // '/ HUD / lel evox (f) 4.0' (Avalon 4.0 box)
     static string LoginVeilEvoxFile => Env("GT_VEIL_EVOX_FILE", "/home/box/viewers/textclient/run/login-veil-evox.txt");
     static readonly SemaphoreSlim evoxGate = new(1, 1);
-    static InventoryItem evoxHudItemCache;   // 17:20 logout: logout -> HUD attached took 6 s, mostly the item fetch
+    static InventoryItem evoxHudItemCache;
+    static volatile bool evoxHudOursWorn;   // the under-the-veil prep attached it: EvoxSet detaches it after its presses
+    internal static volatile bool loginRevealPending;   // 17:20 logout: logout -> HUD attached took 6 s, mostly the item fetch
     static async Task WaitNotWorn(UUID item, int ms) { for (int i = 0; i < ms / 100 && WornPrims().Any(p => AttachItemId(p) == item); i++) await Task.Delay(100); }
 
     static Primitive EvoxHeadRoot() => WornPrims().FirstOrDefault(p => LoginOrder.IsRealHead(p.Properties?.Name ?? "") && (p.Properties?.Name ?? "").Contains("lel evox", StringComparison.OrdinalIgnoreCase));
@@ -110,6 +121,7 @@ public static partial class Program
             {
                 attempt++;
                 var hud = WornPrims().FirstOrDefault(p => AttachItemId(p) == EvoxHudItem);
+                if (hud != null && evoxHudOursWorn) attached = true;
                 DateTime noHeadAt = DateTime.MinValue;
                 EventHandler<ChatEventArgs> onChat = (s2, e) =>
                 {
@@ -151,7 +163,7 @@ public static partial class Program
         catch (Exception ex) { return (null, null, "failed: " + ex.GetBaseException().Message); }
         finally
         {
-            if (attached && item != null) { try { await Task.Delay(300); client.Appearance.Detach(item); } catch { } }
+            if (attached && item != null) { try { await Task.Delay(300); client.Appearance.Detach(item); } catch { } evoxHudOursWorn = false; }
             evoxGate.Release();
         }
     }
@@ -182,7 +194,7 @@ public static partial class Program
             var broken = LoginBrokenStop("evox"); if (broken != null) { Log("login-veil", broken + "; marker kept"); return; }
             var m = File.ReadAllText(f).Trim();
             if (m.Length == 0) { File.Delete(f); return; }
-            for (int i = 0; i < 40 && EvoxHeadRoot() == null; i++) await Task.Delay(250);   // the head first
+            for (int i = 0; i < 40 && EvoxHeadRoot() == null; i++) { if (i % 8 == 0) EvoxRequestWornProps(); await Task.Delay(250); }   // the head first
             var (_, after, msg) = await EvoxSet(now => EvoxHide.ShowTarget(m, now), why);
             bool ok = after != null && EvoxHide.Presses(after, EvoxHide.ShowTarget(m, after)).Count == 0;
             if (ok) { try { File.Delete(f); } catch { } }
@@ -199,7 +211,7 @@ public static partial class Program
         {
             for (int i = 0; i < 3; i++)
             {
-                while (LoggedIn && !EvoxHide.SafetyRestoreDue(File.Exists(LoginVeilEvoxFile), LoginVeilWorn(LoginVeilItem()), (DateTime.Now - t0).TotalSeconds)
+                while (LoggedIn && !EvoxHide.SafetyRestoreDue(File.Exists(LoginVeilEvoxFile), LoginVeilWorn(LoginVeilItem()), (DateTime.Now - t0).TotalSeconds, loginRevealPending)
                        && File.Exists(LoginVeilEvoxFile)) await Task.Delay(2000);
                 if (!LoggedIn || !File.Exists(LoginVeilEvoxFile)) return;
                 await Task.Delay(5000);   // the veil-off path normally gets there first
@@ -209,5 +221,59 @@ public static partial class Program
                 await Task.Delay(30000);
             }
         });
+    }
+
+    /// <summary>14:47 login: the safety net said "head not worn" at +16 s with the head attached since +6 s: its prim names had not loaded.</summary>
+    static void EvoxRequestWornProps()
+    {
+        try { var miss = WornPrims().Where(p => p.Properties == null).ToList(); if (miss.Count > 0) _ = EnsureProperties(Sim, miss); } catch { }
+    }
+
+    /// <summary>Login, under the veil: attach the EvoX HUD as soon as the real head is on and keep it once it accepts the head (no
+    /// "please wear your head" line). "No head" = re-attach once the head is there again, quick, not a fixed long delay. The presses
+    /// themselves wait for the veil-off (LoginVeilReveal): ears pressed under a veil would float on an invisible body.</summary>
+    static async Task LoginVeilEvoxPrepare(DateTime t0)
+    {
+        try
+        {
+            if (Env("GT_VEIL_EVOX", "1") == "0" || !File.Exists(LoginVeilEvoxFile) || File.ReadAllText(LoginVeilEvoxFile).Trim().Length == 0) return;
+            bool VeilOn() => LoggedIn && loginVeilOffAt == DateTime.MaxValue;
+            string At() => $"+{(DateTime.Now - t0).TotalSeconds:F1} s";
+            if (!await evoxGate.WaitAsync(5000)) return;
+            try
+            {
+                using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
+                var item = evoxHudItemCache ?? await FetchItemRO(EvoxHudItem, ct); if (item == null) { Log("login-veil", "evox prep: HUD not in inventory"); return; }
+                evoxHudItemCache = item;
+                for (int attempt = 1; ; attempt++)
+                {
+                    for (int i = 0; VeilOn() && EvoxHeadRoot() == null && i < 240; i++) { if (i % 8 == 0) EvoxRequestWornProps(); await Task.Delay(250, ct); }
+                    if (!VeilOn()) { Log("login-veil", $"evox prep: veil already off at {At()} (the reveal does it all)"); return; }
+                    if (EvoxHeadRoot() == null) { Log("login-veil", $"evox prep: head still unseen at {At()}"); return; }
+                    // the head's own scripts start a moment after it rezzes; give it that moment once
+                    if (attempt == 1) await Task.Delay(1000, ct);
+                    DateTime noHeadAt = DateTime.MinValue;
+                    EventHandler<ChatEventArgs> onChat = (s2, e) => { try { if (e.Type == ChatType.OwnerSay && EvoxHide.IsNoHeadLine(e.Message) && (e.FromName ?? "").IndexOf("lel evox", StringComparison.OrdinalIgnoreCase) >= 0) noHeadAt = DateTime.Now; } catch { } };
+                    client.Self.ChatFromSimulator += onChat; bool ok = false;
+                    try
+                    {
+                        if (!WornPrims().Any(p => AttachItemId(p) == EvoxHudItem)) client.Appearance.Attach(item, AttachmentPoint.Default, false);
+                        evoxHudOursWorn = true;
+                        var hud = await WaitWornItem(EvoxHudItem, 15000, ct);
+                        if (hud != null) { for (int i = 0; i < EvoxHide.NoHeadWaitMs / 100 && noHeadAt == DateTime.MinValue; i++) await Task.Delay(100, ct); ok = noHeadAt == DateTime.MinValue; }
+                        if (hud != null) _ = EnsureProperties(Sim, LinkPrims(hud));   // the button names, ready for the press
+                    }
+                    finally { client.Self.ChatFromSimulator -= onChat; }
+                    Log("login-veil", $"evox prep try {attempt} at {At()}: {(ok ? "HUD on and accepted the head; presses wait for the veil-off" : "HUD said no head")}");
+                    if (ok) return;
+                    if (!EvoxHide.PrepRetryDue(ok, VeilOn(), attempt, EvoxHide.PrepMaxAttempts)) return;
+                    try { client.Appearance.Detach(item); } catch { }
+                    await WaitNotWorn(EvoxHudItem, 4000);
+                    await Task.Delay(300, ct);
+                }
+            }
+            finally { evoxGate.Release(); }
+        }
+        catch (Exception ex) { Log("login-veil", "evox prep failed: " + ex.GetBaseException().Message); }
     }
 }

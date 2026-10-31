@@ -116,6 +116,9 @@ internal sealed partial class Hover
         if (parts is { Length: > 0 }) env["GT_HC_PARTS"] = string.Join(",", parts);
         return env;
     }
+    // pure (tested): render_mesh found no floor under her in the export (scene still loading, 2026-10-31 14:34): no reading, retry
+    internal static bool HoverFloorMissing(string stdout) => (stdout ?? "").Contains("hover check: no reading: the floor under her is not in the export", StringComparison.Ordinal);
+    volatile bool hoverLastFloorMissing;
     internal static double? HoverCheckGap(string stdout)
     {
         var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "", @"hover check gap ([+-]?\d+\.\d+) m");
@@ -234,6 +237,7 @@ internal sealed partial class Hover
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
         var text = await o; await e;
+        hoverLastFloorMissing = !seat && HoverFloorMissing(text);
         hoverLastPartGaps = seat ? new() : HoverCheckPartGaps(text);   // read by the check that made this render (under poseGate)
         return (seat ? SeatContactGap(text) : HoverCheckGap(text), text.Split('\n').FirstOrDefault(l => l.EndsWith(".jpg"))?.Trim() ?? "no image");
     }
@@ -244,8 +248,23 @@ internal sealed partial class Hover
     internal bool FormCertainNow()
     {
         if (Program.IsAndroidOutfit(h.CurrentOutfit)) return true;
-        try { var w = h.WornPrims().Where(p => p.ParentID == h.Client.Self.LocalID).ToList(); return FormCertain(false, w.Count, w.Count(p => !string.IsNullOrEmpty(p.Properties?.Name))); } catch { return false; }
+        try
+        {
+            var w = h.WornPrims().Where(p => p.ParentID == h.Client.Self.LocalID).ToList();
+            var unnamed = UnnamedWornToAsk(w.Select(p => (p.LocalID, p.Properties?.Name)), DateTime.Now, formAskedAt);
+            if (unnamed.Length > 0) { foreach (var id in unnamed) formAskedAt[id] = DateTime.Now; try { h.Client.Objects.SelectObjects(h.Client.Network.CurrentSim, unnamed, true); } catch { } }
+            return FormCertain(false, w.Count, w.Count(p => !string.IsNullOrEmpty(p.Properties?.Name)));
+        }
+        catch { return false; }
     }
+    // 2026-10-31 14:34 login (#372): every stand check try said "form not known yet" for 40 s although all 12 attachments were on by +15 s: a worn
+    // root whose properties (name) the sim never sent unasked stayed unnamed, and nothing asked for it. Now the check asks (ObjectSelect -> ObjectProperties)
+    // for each unnamed worn root, at most once per FormAskEverySec, so the name arrives within a try or two.
+    internal const double FormAskEverySec = 5;
+    readonly Dictionary<uint, DateTime> formAskedAt = new();
+    // pure (tested): the worn roots that have no name yet and were not asked for in the last FormAskEverySec
+    internal static uint[] UnnamedWornToAsk(IEnumerable<(uint id, string name)> worn, DateTime now, IReadOnlyDictionary<uint, DateTime> askedAt) =>
+        worn.Where(p => string.IsNullOrEmpty(p.name) && !(askedAt.TryGetValue(p.id, out var t) && (now - t).TotalSeconds < FormAskEverySec)).Select(p => p.id).ToArray();
     readonly SemaphoreSlim poseGate = new(1, 1);
 
     // ---- 2026-10-28: the render's pelvis height is evidence of sit vs stand (PoseEvidence.cs). Every scene export a check makes records it; `idle_pose verify` / status make one on purpose ----
@@ -312,7 +331,7 @@ internal sealed partial class Hover
     internal static bool HoverCovered(bool manual, string pose, string lastCheckedPose, double sinceDoneSec) =>
         !manual && pose != null && string.Equals(pose, lastCheckedPose, StringComparison.OrdinalIgnoreCase) && sinceDoneSec < HoverCheckCooldownSec;
     internal static bool HoverRunCounts(string retry) => retry == null
-        || !(retry.StartsWith("not in that pose", StringComparison.Ordinal) || retry.StartsWith("form not known", StringComparison.Ordinal) || retry.StartsWith("a check is already running", StringComparison.Ordinal));
+        || !(retry.StartsWith("not in that pose", StringComparison.Ordinal) || retry.StartsWith("form not known", StringComparison.Ordinal) || retry.StartsWith("floor not loaded", StringComparison.Ordinal) || retry.StartsWith("a check is already running", StringComparison.Ordinal));
     internal static bool HoverCheckWantedOnPosture(string prev, string now) => now is "sit" or "stand" && prev != now;
     internal const int HoverCheckMaxTries = 6, HoverCheckRetryMs = 8000, HoverCheckSettleSec = 3, HoverCheckCooldownSec = 30;
     // pure (tested): may the check run now? (true, null) = go; (false, reason) = wait and retry; (false, "skip: ...") = never for this request
@@ -455,6 +474,7 @@ internal sealed partial class Hover
             bool nearFurn = h.InPeronaut && Program.InFurnitureMargin(h.Client.Self.SimPosition, h.HomeFootprints(), HoverFurnitureNearM) != null;
             if (g1 is not double gap || !PoseGapSane(gap, kind, nearFurn))
             {
+                if (g1 == null && hoverLastFloorMissing) { h.Log("posehover", $"{key}: the floor under her is not in the scene yet (still loading); no reading, retry ({img1})"); return "floor not loaded yet"; }
                 if (g1 is double bg) return await HoverGapOnFurniture(kind, key, bg, img1);   // moved off the furniture (retry reason) or left unresolved (logged, null = finished)
                 var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; h.Log("posehover", bad); hoverCheckResult = bad; return null;
             }

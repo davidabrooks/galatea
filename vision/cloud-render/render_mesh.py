@@ -1305,6 +1305,13 @@ def hover_check_z0(env, agent_z, lo_z, floor_z):
     z0 = agent_z - size / 2 + hov - float(env.get("GT_HOVER_BIAS", "0"))
     return z0, z0 + lo_z - floor_z, hov, size
 
+HOVER_FLOOR_MISSING_M = 1.0
+def hover_floor_missing(gap, seated=False):
+    """2026-10-31 14:34 login: the export at +23 s had 979 prims, not yet the floor she stands on (z 28.03), so the floor cast went through to
+    a surface 3 m lower (z 25.04) and the check read a +3.004 m gap. A standing avatar is never a metre above her floor (the sim keeps her
+    on it), so a gap that big means the floor is not in the export yet: no reading (the caller retries on a fuller scene)"""
+    return (not seated) and gap is not None and gap > HOVER_FLOOR_MISSING_M
+
 def hover_check_detail(env, agent_z, agent_off, lo_z, floor_z, hov):
     """one diagnostic line for the hover check: the bias used, calibrated against David's viewer or the default, and the gap the viewer's own
     placement formula (mesh z 0 = agent z + agent_off, scene-mesher) would give at the same hover; (no commands read it, `look` logs it)"""
@@ -1626,7 +1633,9 @@ if SCENE:
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
     lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
     HC = hover_check_z0(os.environ, g[2], lo[2], fl)   # 2026-10-23 hover check: real placement + her hover, floor from the scene (seated on an object: look.py leaves GT_HOVER_CHECK off, the sim's placement)
-    if HC:
+    if HC and hover_floor_missing(HC[1], mst):
+        z0 = HC[0]; print(f"GT: hover check: no reading: the floor under her is not in the export yet (cast hit z {fl:.3f}, {HC[1]:+.3f} m below her lowest point; scene still loading)", flush=True)
+    elif HC:
         z0 = HC[0]; print(f"GT: hover check gap {HC[1]:+.3f} m (hover {HC[2]:+.3f}, size {HC[3]:.3f}, floor {fl:.3f})", flush=True)
         # diagnostics for the calibration (2026-10-26): the bias in use, whether David's viewer ever confirmed it, and where the viewer's own
         # placement formula (scene-mesher agent_off, LLVOAvatar::computeBodySize) would have put her: the gap between the two is the raw model error

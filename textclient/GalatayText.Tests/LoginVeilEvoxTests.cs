@@ -56,14 +56,14 @@ public class LoginVeilEvoxTests
         Assert.True(EvoxHide.SafetyRestoreDue(true, true, EvoxHide.SafetyNetSec));
         Assert.False(EvoxHide.SafetyRestoreDue(false, false, 999));
     }
-    [Fact] public async Task Logout_EarsLashesAndCollar_BeforeTheHairWave_HairWaveRightBeforeVeil()
+    [Fact] public async Task Logout_CollarThenEarsLashes_BeforeTheHairWave_HairWaveRightBeforeVeil()
     {
         var steps = new List<string>();
         var ok = await LoginVeil.LogoutCore(() => { steps.Add("collar"); return Task.CompletedTask; }, 1000,
             () => { steps.Add("veil"); return Task.FromResult(true); }, () => { steps.Add("stash"); return Task.CompletedTask; },
             () => { steps.Add("hair"); return Task.CompletedTask; }, () => { steps.Add("ears-lashes"); return Task.CompletedTask; });
         Assert.True(ok);
-        Assert.Equal(new[] { "ears-lashes", "collar", "hair", "veil", "stash" }, steps);
+        Assert.Equal(new[] { "collar", "ears-lashes", "hair", "veil", "stash" }, steps);
     }
     [Fact] public async Task Logout_StuckHud_DoesNotHoldTheLogout()
     {
@@ -111,5 +111,34 @@ public class EvoxHudHandshakeTests
         while (dir != null && !File.Exists(Path.Combine(dir, "galatay-text", "LoginVeilEvox.cs"))) dir = Path.GetDirectoryName(dir);
         Assert.NotNull(dir);
         Assert.DoesNotContain("FetchItemRO(EvoxHudItem", File.ReadAllText(Path.Combine(dir, "galatay-text", "LoginVeilEvox.cs")));
+    }
+}
+
+// 2026-10-31 15:27 relog (#376 live, David): the veil-off prep quit at +0.0 s ("veil already off"), the ears came by the safety net
+// at +36 s, and the logout hid the ears before the collar.
+public class EvoxPrepRace1527Tests
+{
+    [Fact] public void Prep_UnsetVeilTime_WithAVeil_CountsAsOn()
+    {
+        Assert.True(EvoxHide.PrepVeilOn(true, DateTime.MinValue, veilExpected: true));
+        Assert.True(EvoxHide.PrepVeilOn(true, DateTime.MaxValue, veilExpected: true));
+        Assert.False(EvoxHide.PrepVeilOn(true, DateTime.Now, veilExpected: true));
+        Assert.False(EvoxHide.PrepVeilOn(false, DateTime.MaxValue, veilExpected: true));
+        Assert.False(EvoxHide.PrepVeilOn(true, DateTime.MinValue, veilExpected: false));
+    }
+    [Fact] public async Task HeadRead_WaitsForTheHead_InsteadOfNotWorn()
+    {
+        int n = 0, pokes = 0;
+        var v = await EvoxHide.WaitFor(() => Task.FromResult(++n < 4 ? null : "head"), () => pokes++, 40, 1);
+        Assert.Equal("head", v); Assert.Equal(4, n); Assert.True(pokes >= 1);
+        n = 0; Assert.Null(await EvoxHide.WaitFor<string>(() => { n++; return Task.FromResult<string>(null); }, null, 5, 1)); Assert.Equal(5, n);
+    }
+    [Fact] public async Task Logout_CollarGoesBeforeEarsAndLashes()
+    {
+        var steps = new List<string>();
+        await LoginVeil.LogoutCore(() => { steps.Add("collar"); return Task.CompletedTask; }, 1000,
+            () => { steps.Add("veil"); return Task.FromResult(true); }, () => { steps.Add("stash"); return Task.CompletedTask; },
+            () => { steps.Add("hair"); return Task.CompletedTask; }, () => { steps.Add("ears"); return Task.CompletedTask; });
+        Assert.Equal(new[] { "collar", "ears", "hair", "veil", "stash" }, steps);
     }
 }

@@ -76,6 +76,22 @@ internal static class EvoxHide
     /// The retry waits for the head (not a fixed delay); the HUD is re-attached so it handshakes again.</summary>
     internal static bool PrepRetryDue(bool handshakeOk, bool veilOn, int attempt, int maxAttempts) => !handshakeOk && veilOn && attempt < maxAttempts;
     internal const int PrepMaxAttempts = 6;
+    /// <summary>Pure (tested): 2026-10-31 15:27 login: the prep ran before loginVeilOffAt was set to MaxValue (veil on) and took the
+    /// old MinValue ("no veil this login") as "veil already off", so it quit at +0.0 s. A prep that knows a veil was worn treats MinValue
+    /// as still on; only a real veil-off time (set at the reveal) means off.</summary>
+    internal static bool PrepVeilOn(bool loggedIn, DateTime offAt, bool veilExpected) =>
+        loggedIn && (offAt == DateTime.MaxValue || (veilExpected && offAt == DateTime.MinValue));
+    internal const int HeadWaitTries = 40;
+    /// <summary>Poll get() until non-null (poke every 8th try), up to tries x ms.</summary>
+    internal static async Task<T> WaitFor<T>(Func<Task<T>> get, Action poke, int tries, int ms) where T : class
+    {
+        for (int i = 0; ; i++)
+        {
+            var v = await get(); if (v != null || i >= tries - 1) return v;
+            if (i % 8 == 0) { try { poke?.Invoke(); } catch { } }
+            await Task.Delay(ms);
+        }
+    }
     internal const int NoHeadWaitMs = 2500;
     /// <summary>Pure (tested): the EvoX head, by its known item id (no prim name needed) or by name once Properties arrive.</summary>
     internal static bool IsEvoxHead(bool knownHeadItem, string name) =>
@@ -127,7 +143,10 @@ public static partial class Program
         bool attached = false; InventoryItem item = null;
         try
         {
-            var before = await EvoxReadHidden(); if (before == null) return (null, null, "EvoX head (ear / lash prims) not worn");
+            // 2026-10-31 15:27:57: "head not worn" 3 s after the veil-off with the head (by item id) worn since +4 s: its prims were
+            // being re-sent. Wait for it (by item id) instead of failing on the first read.
+            var before = await EvoxHide.WaitFor(EvoxReadHidden, EvoxRequestWornProps, EvoxHide.HeadWaitTries, 250);
+            if (before == null) return (null, null, "EvoX head (ear / lash prims) not worn");
             var want = target(before); var presses = EvoxHide.Presses(before, want);
             if (presses.Count == 0) return (before, before, "nothing to change");
             using var cts = new CancellationTokenSource(25000); var t0 = DateTime.Now;
@@ -258,7 +277,7 @@ public static partial class Program
         try
         {
             if (Env("GT_VEIL_EVOX", "1") == "0" || !File.Exists(LoginVeilEvoxFile) || File.ReadAllText(LoginVeilEvoxFile).Trim().Length == 0) return true;
-            bool VeilOn() => LoggedIn && loginVeilOffAt == DateTime.MaxValue;
+            bool VeilOn() => EvoxHide.PrepVeilOn(LoggedIn, loginVeilOffAt, veilExpected: true);   // only started with a veil item
             string At() => $"+{(DateTime.Now - t0).TotalSeconds:F1} s";
             Log("login-veil", $"evox prep start at {At()}");
             if (!await evoxGate.WaitAsync(5000)) { Log("login-veil", $"evox prep: HUD gate busy at {At()}"); return false; }

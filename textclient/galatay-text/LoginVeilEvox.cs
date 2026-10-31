@@ -174,6 +174,7 @@ public static partial class Program
         try
         {
             var f = LoginVeilEvoxFile; if (!File.Exists(f) || !LoggedIn) return;
+            var broken = LoginBrokenStop("evox"); if (broken != null) { Log("login-veil", broken + "; marker kept"); return; }
             var m = File.ReadAllText(f).Trim();
             if (m.Length == 0) { File.Delete(f); return; }
             for (int i = 0; i < 40 && EvoxHeadRoot() == null; i++) await Task.Delay(250);   // the head first

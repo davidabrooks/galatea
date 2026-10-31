@@ -59,6 +59,8 @@ public static partial class Program
     // collar main menu -> About -> press "Stealth" only if its state differs from `want`. wasOn = state before (null = unknown)
     static async Task<(string result, bool? wasOn)> CollarStealthSet(bool want, string why)
     {
+        var broken = LoginBrokenStop("collar");
+        if (broken != null) { Log("collar", broken); return (broken, null); }
         if (!await CollarMenuEnter()) return ("collar menu busy for 90 s", null);
         try
         {
@@ -70,6 +72,8 @@ public static partial class Program
                 var prev = lastDialog;
                 t = await Exec("touch-attachment \"Premium Collar\" 1");
                 if (CollarTouchRetry(t, attempt)) { await Task.Delay(2000); continue; }
+                // every retry used and still no name resolved: the session has no inventory (13:57 seed 404), say so plainly
+                if (WornNamesUnresolved(t)) { var m = $"collar stopped: no worn attachment name has resolved after {attempt} tries ({t}); the session has no inventory, a fresh login is needed"; Log("collar", m); return (m, null); }
                 main = await CollarDialogAfter(prev, 10000);
                 break;
             }

@@ -430,6 +430,7 @@ public static partial class Program
     static void ScheduleEmbeddedRelogin(bool kicked)
     {
         if (Interlocked.Exchange(ref embeddedReloginRunning, 1) == 1) return;
+        var gen = Interlocked.Read(ref reloginGen);   // LoginHealth.cs: a manual login or logout after this cancels it
         _ = Task.Run(async () =>
         {
             try
@@ -439,7 +440,8 @@ public static partial class Program
                     var d = EmbeddedReloginDelay(n, kicked);
                     Log("disconnect", $"auto-relogin {n}/{EmbeddedReloginMax} in {d.TotalSeconds:F0} s (MCP connector: no supervisor relaunch)");
                     await Task.Delay(d);
-                    if (LoggedIn) { Log("disconnect", "auto-relogin: already logged in again"); return; }
+                    var go = EmbeddedReloginDecision(DeliberateStopRequested(), LoggedIn, gen, Interlocked.Read(ref reloginGen), loginGate.CurrentCount == 0);
+                    if (go != "go") { Log("disconnect", $"auto-relogin {n}: {go}"); return; }
                     var r = await LoginAsync();
                     Log("disconnect", $"auto-relogin {n}: {r}");
                     if (r.StartsWith("OK")) return;

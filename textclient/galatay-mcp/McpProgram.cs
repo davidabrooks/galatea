@@ -136,6 +136,23 @@ public sealed class SlTools
     [McpServerTool(Name = "set_profile"), Description("Set ONLY the profile About (Second Life) text. Reads the current profile first (backup saved to /workspace/secondlife/profile-backup-*.json), updates just the About text (AgentProfile capability partial PUT, or legacy AvatarPropertiesUpdate resending all other fields unchanged), then reads it back and reports whether it matches and whether any other field changed.")]
     public static async Task<string> SetProfile([Description("New About text (max 4000 chars)")] string about_text) => Json(await Core.SetAboutObj(about_text));
 
+    [McpServerTool(Name = "upload_texture"), Description("PAID (L$) upload of ONE texture (.j2c JPEG2000 codestream, power-of-two sides <= 2048) into Textures via NewFileAgentInventory. ONLY with David's explicit OK for this exact image and fee; confirm=true required. Price checked first (2K tier) and must be <= max_price; one upload per approval marker (Program.PaidMarker). Logs and returns balance before/after, upload_price, new_asset (texture id) and new_inventory_item.")]
+    public static async Task<string> UploadTexture([Description(".j2c file path on the box")] string path, [Description("inventory name")] string name, [Description("highest L$ fee David approved")] int max_price, [Description("must be true")] bool confirm = false)
+    {
+        var why = Core.UploadTextureRefusal(confirm, max_price, Clean(path));
+        if (why != null) return Json(new { ok = false, result = why });
+        return Json(await Core.PaidTextureUploadObj(max_price, Clean(path), Clean(name)));
+    }
+
+    [McpServerTool(Name = "set_profile_image"), Description("Set my profile (Second Life tab) picture to an existing texture asset id (e.g. new_asset from upload_texture): backs up the profile to /workspace/secondlife/profile-backup-*.json, partial PUT of sl_image_id only via AgentProfile, reads back and reports any other field that changed.")]
+    public static async Task<string> SetProfileImage([Description("texture asset uuid")] string texture_id) => Json(await Core.SetProfileImageIdObj(Clean(texture_id)));
+
+    [McpServerTool(Name = "list_picks", ReadOnly = true), Description("READ-ONLY: my profile Picks with id, name and details (description, region, parcel, snapshot).")]
+    public static async Task<string> ListPicks() => Json(await Core.ListPicksObj());
+
+    [McpServerTool(Name = "delete_pick"), Description("Delete ONE of my profile Picks by exact pick id (from list_picks). Saves that pick's full details to /workspace/secondlife/picks-backup-*.json first (refuses if it cannot), then reads the list back.")]
+    public static async Task<string> DeletePick([Description("pick uuid")] string pick_id) => Json(await Core.DeletePickObj(Clean(pick_id)));
+
     [McpServerTool(Name = "webhook_test"), Description("Send one test POST {kind:'test'} to the configured chat webhook and return the HTTP status, or 'not configured' if the URL file or key is missing. Counts toward the 15 s / 120-per-day webhook limits.")]
     public static Task<string> WebhookTest() => Webhook.Test();
 

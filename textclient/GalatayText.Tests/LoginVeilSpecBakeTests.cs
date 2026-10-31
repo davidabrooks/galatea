@@ -37,3 +37,16 @@ public class LoginVeilSpecBakeTests
         Assert.False(r.removed); Assert.Empty(steps);
     }
 }
+
+// 2026-10-30 17:29:21 login: link delete back in 293 ms, but OffCore awaited the speculative POST still in flight (~3.4 s).
+public class LoginVeilSpecNoWaitTests
+{
+    [Fact] public async Task PendingSpec_IsNotAwaited_FinalBakeGoesAtOnce()
+    {
+        var steps = new List<string>(); var never = new TaskCompletionSource<bool>(); var t0 = System.DateTime.Now;
+        var r = await LoginVeil.OffCore(null, () => Task.FromResult(true), () => { steps.Add("final"); return Task.CompletedTask; }, () => Task.FromResult(true), null,
+            _ => never.Task, () => true);
+        Assert.True(r.removed); Assert.Equal(new[] { "final" }, steps);
+        Assert.True((System.DateTime.Now - t0).TotalSeconds < 1);
+    }
+}

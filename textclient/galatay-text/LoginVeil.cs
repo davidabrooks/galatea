@@ -56,7 +56,9 @@ internal static class LoginVeil
         var rmTask = removeKnownLinks();
         Task<bool> specTask = speculativeBake == null ? Task.FromResult(false) : SafeSpec(speculativeBake, rmTask);
         bool removed = await rmTask;
-        bool specOk = await specTask;
+        // 17:29:21 login: the delete returned in 293 ms but the spec POST in flight was awaited ~3.4 s. Once the delete is back, a spec still
+        // pending is not waited for: the final bake goes now (the server keeps whichever lands for the newest version).
+        bool specOk = specTask.IsCompleted && await specTask;
         if (!removed) { try { dropLayer?.Invoke(); } catch { } return (false, false); }
         if (burst != null) { try { await burst(); } catch { } }
         if (!specOk || (finalBakeNeeded?.Invoke() ?? true)) await rebake();
@@ -264,6 +266,7 @@ internal static class LoginVeil
     /// <summary>Pure (tested): take the veil off now? Every waited garment of the current outfit is seen and Ready, plus a short grace for the
     /// viewer to draw it; nothing to wait for (purposely naked) releases at once; MaxHold always releases.</summary>
     /// <summary>Pure (tested): start a background COF refresh in the release loop? Every 5 s (sooner while nothing was read yet), never two at once.</summary>
+    internal const int VeilLinksWaitMs = 1500;
     internal static bool CofRefreshDue(bool haveLinks, double sinceLastSec, bool inFlight) => !inFlight && sinceLastSec > (haveLinks ? 5 : 1);
     internal static (bool release, string why) Release(IEnumerable<Garment> garments, double nowSec, bool stashed = false)
     {
@@ -552,7 +555,9 @@ public static partial class Program
                         }
                         linksAt = DateTime.Now;
                     }
-                    if (links == null && linksAt == DateTime.MinValue) await RefreshCof();
+                    // 17:29:21 login: Ready by +11.6 s, release only at +18.1 s. The first read is not awaited either now (the wait list falls
+                    // back to the stash's own clothes); at release the veil link ids are waited for at most VeilLinksWaitMs (else: verified path).
+                    if (linksAt == DateTime.MinValue && cofRefresh == null) { linksAt = DateTime.Now; cofRefresh = Task.Run(async () => { try { await RefreshCof(); Log("login-veil", $"Current Outfit read at +{(DateTime.Now - t0).TotalSeconds:F1} s ({links?.Count ?? 0} object links, veil link {(veilLinks?.Count > 0 ? "found" : "not found")})"); } catch { linksAt = DateTime.Now; } }); }
                     else if (LoginVeil.CofRefreshDue(links != null, (DateTime.Now - linksAt).TotalSeconds, cofRefresh != null && !cofRefresh.IsCompleted))
                         cofRefresh = Task.Run(async () => { try { await RefreshCof(); } catch { linksAt = DateTime.Now; } });
                     var worn = WornPrims().Select(AttachItemId).ToHashSet();
@@ -571,7 +576,10 @@ public static partial class Program
                         loginReadyAt.TryGetValue(l.Name, out var r) ? (r - t0).TotalSeconds : null)).ToList();
                     var heads = LoginVeil.HeadsNotAttached((links?.Select(l => (l.AssetUUID, l.Name)) ?? Enumerable.Empty<(UUID, string)>()).Concat(stash.Select(x => (x.Item, x.Name))), worn);
                     var (rel, w) = src == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.ReleaseWithHead(garments, now, stash.Count > 0, heads);
-                    why = w; if (rel) break;
+                    why = w;
+                    if (rel && (veilLinks == null || veilLinks.Count == 0) && cofRefresh != null && !cofRefresh.IsCompleted)
+                    { try { await Task.WhenAny(cofRefresh, Task.Delay(LoginVeil.VeilLinksWaitMs, ct)); } catch { } }
+                    if (rel) break;
                     if (w.StartsWith("KEEP")) { off = false; break; }
                     await Task.Delay(200, ct);
                 }

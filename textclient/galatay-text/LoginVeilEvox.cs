@@ -77,6 +77,12 @@ internal static class EvoxHide
     internal static bool PrepRetryDue(bool handshakeOk, bool veilOn, int attempt, int maxAttempts) => !handshakeOk && veilOn && attempt < maxAttempts;
     internal const int PrepMaxAttempts = 6;
     internal const int NoHeadWaitMs = 2500;
+    internal const string HudName = "/ HUD / lel evox (f) 4.0";
+    /// <summary>Pure (tested): the HUD's attach record from its known item id, with NO inventory fetch. 2026-10-31 15:02 login: the
+    /// under-the-veil prep fetched the HUD item first; FetchInventory2 was not ready at login, so the fetch hung its full 15 s, gave
+    /// "HUD not in inventory" at +15 s (after the veil-off at +8.3 s) and the ears only came at +24 s. The sim looks the id up in our
+    /// own inventory (same as LoginVeil.AttachRecord).</summary>
+    internal static InventoryItem HudRecord(UUID item, UUID owner) => new InventoryObject(item) { Name = HudName, OwnerID = owner, Description = "", InventoryType = InventoryType.Object };
 }
 
 public static partial class Program
@@ -115,7 +121,7 @@ public static partial class Program
             var want = target(before); var presses = EvoxHide.Presses(before, want);
             if (presses.Count == 0) return (before, before, "nothing to change");
             using var cts = new CancellationTokenSource(25000); var t0 = DateTime.Now;
-            item = evoxHudItemCache ?? await FetchItemRO(EvoxHudItem, cts.Token); if (item != null) evoxHudItemCache = item;
+            item = evoxHudItemCache ??= EvoxHide.HudRecord(EvoxHudItem, client.Self.AgentID);
             EvoxHide.Parts after = before; bool ok = false; int attempt = 0; var notes = new List<string>();
             while (true)
             {
@@ -243,8 +249,7 @@ public static partial class Program
             try
             {
                 using var cts = new CancellationTokenSource(60000); var ct = cts.Token;
-                var item = evoxHudItemCache ?? await FetchItemRO(EvoxHudItem, ct); if (item == null) { Log("login-veil", "evox prep: HUD not in inventory"); return; }
-                evoxHudItemCache = item;
+                var item = evoxHudItemCache ??= EvoxHide.HudRecord(EvoxHudItem, client.Self.AgentID);   // no fetch: it hung 15 s at login
                 for (int attempt = 1; ; attempt++)
                 {
                     for (int i = 0; VeilOn() && EvoxHeadRoot() == null && i < 240; i++) { if (i % 8 == 0) EvoxRequestWornProps(); await Task.Delay(250, ct); }

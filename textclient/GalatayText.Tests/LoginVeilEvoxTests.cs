@@ -96,4 +96,20 @@ public class EvoxHudHandshakeTests
         Assert.False(EvoxHide.RetryDue(false, 1, EvoxHide.MaxAttempts, EvoxHide.BudgetSec, EvoxHide.BudgetSec));
         Assert.True(EvoxHide.BudgetSec < LoginVeil.EvoxHideMaxMs / 1000.0);   // the logout cap still wins
     }
+
+    // 2026-10-31 15:02 login: the prep's HUD item fetch hung 15 s ("HUD not in inventory" after the veil-off): ears came at +24 s.
+    [Fact] public void HudRecord_IsBuiltFromTheKnownIdWithoutAFetch()
+    {
+        var id = new LibreMetaverse.UUID("80597a5b-5254-386b-ad5e-6c260f65c8eb"); var owner = LibreMetaverse.UUID.Random();
+        var r = EvoxHide.HudRecord(id, owner);
+        Assert.Equal(id, r.UUID); Assert.Equal(owner, r.OwnerID); Assert.False(r.IsLink());
+        Assert.Contains("lel evox", r.Name);
+    }
+    [Fact] public void EvoxCode_NeverFetchesTheHudItem()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir != null && !File.Exists(Path.Combine(dir, "galatay-text", "LoginVeilEvox.cs"))) dir = Path.GetDirectoryName(dir);
+        Assert.NotNull(dir);
+        Assert.DoesNotContain("FetchItemRO(EvoxHudItem", File.ReadAllText(Path.Combine(dir, "galatay-text", "LoginVeilEvox.cs")));
+    }
 }

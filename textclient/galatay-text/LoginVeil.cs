@@ -589,6 +589,7 @@ public static partial class Program
         if (usual?.Changed == true)
         {   // the clothes not put back keep their COF links until LoginVeilUsualCof drops them: hold them so no path wears them meanwhile
             foreach (var d in usual.Drop) loginVeilHeld[d] = 1;
+            if (usual.Drop.Count > 0) Log("login-veil", $"veil does not wait for the old outfit's dropped clothes: {usual.Drop.Count} item(s)");
             _ = Task.Run(() => LoginVeilUsualCof(usual));
         }
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); loginVeilRestoreTask = done.Task;

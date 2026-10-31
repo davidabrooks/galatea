@@ -58,6 +58,13 @@ internal static class EvoxHide
         return new Parts(m.Contains("ears") ? false : now.Ears, m.Contains("lashes") ? false : now.Lashes);
     }
     /// <summary>Pure (tested): safety net: restore once the veil is gone, or after SafetyNetSec whatever happens (never left earless).</summary>
+    /// <summary>Pure (tested): the HUD's own failure line. 2026-10-30 16:44/16:48/17:00/17:20 logouts: the HUD, attached for the job, said
+    /// "Hello Galatea, please wear your head to activate me." ~2 s after attaching (its head handshake failed) and ignored the presses, so
+    /// ears/lashes were NOT confirmed. Only 17:03 (no such line) worked.</summary>
+    internal static bool IsNoHeadLine(string msg) => (msg ?? "").IndexOf("please wear your head", StringComparison.OrdinalIgnoreCase) >= 0;
+    /// <summary>Pure (tested): attach the HUD again and retry? Not confirmed (or the HUD said no head), tries left, time left.</summary>
+    internal static bool RetryDue(bool confirmed, int attempt, int maxAttempts, double elapsedSec, double budgetSec) => !confirmed && attempt < maxAttempts && elapsedSec < budgetSec;
+    internal const int MaxAttempts = 3; internal const double BudgetSec = 22;
     internal static bool SafetyRestoreDue(bool markerExists, bool veilWorn, double secsSinceLogin) => markerExists && (!veilWorn || secsSinceLogin >= SafetyNetSec);
 }
 
@@ -66,6 +73,8 @@ public static partial class Program
     internal static readonly UUID EvoxHudItem = new("80597a5b-5254-386b-ad5e-6c260f65c8eb");   // '/ HUD / lel evox (f) 4.0' (Avalon 4.0 box)
     static string LoginVeilEvoxFile => Env("GT_VEIL_EVOX_FILE", "/home/box/viewers/textclient/run/login-veil-evox.txt");
     static readonly SemaphoreSlim evoxGate = new(1, 1);
+    static InventoryItem evoxHudItemCache;   // 17:20 logout: logout -> HUD attached took 6 s, mostly the item fetch
+    static async Task WaitNotWorn(UUID item, int ms) { for (int i = 0; i < ms / 100 && WornPrims().Any(p => AttachItemId(p) == item); i++) await Task.Delay(100); }
 
     static Primitive EvoxHeadRoot() => WornPrims().FirstOrDefault(p => LoginOrder.IsRealHead(p.Properties?.Name ?? "") && (p.Properties?.Name ?? "").Contains("lel evox", StringComparison.OrdinalIgnoreCase));
     static async Task<EvoxHide.Parts> EvoxReadHidden()
@@ -92,30 +101,55 @@ public static partial class Program
             var before = await EvoxReadHidden(); if (before == null) return (null, null, "EvoX head (ear / lash prims) not worn");
             var want = target(before); var presses = EvoxHide.Presses(before, want);
             if (presses.Count == 0) return (before, before, "nothing to change");
-            using var cts = new CancellationTokenSource(25000);
-            var hud = WornPrims().FirstOrDefault(p => AttachItemId(p) == EvoxHudItem);
-            if (hud == null)
+            using var cts = new CancellationTokenSource(25000); var t0 = DateTime.Now;
+            item = evoxHudItemCache ?? await FetchItemRO(EvoxHudItem, cts.Token); if (item != null) evoxHudItemCache = item;
+            EvoxHide.Parts after = before; bool ok = false; int attempt = 0; var notes = new List<string>();
+            while (true)
             {
-                item = await FetchItemRO(EvoxHudItem, cts.Token); if (item == null) return (before, before, "EvoX HUD not in inventory");
-                client.Appearance.Attach(item, AttachmentPoint.Default, false); attached = true;
-                hud = await WaitWornItem(EvoxHudItem, 15000, cts.Token); if (hud == null) return (before, before, "EvoX HUD did not attach");
-                await Task.Delay(1500, cts.Token);   // its scripts start
+                attempt++;
+                var hud = WornPrims().FirstOrDefault(p => AttachItemId(p) == EvoxHudItem);
+                DateTime noHeadAt = DateTime.MinValue;
+                EventHandler<ChatEventArgs> onChat = (s2, e) =>
+                {
+                    try { if (e.Type == ChatType.OwnerSay && EvoxHide.IsNoHeadLine(e.Message) && (e.FromName ?? "").IndexOf("lel evox", StringComparison.OrdinalIgnoreCase) >= 0) noHeadAt = DateTime.Now; } catch { }
+                };
+                client.Self.ChatFromSimulator += onChat;
+                try
+                {
+                    if (hud == null)
+                    {
+                        if (item == null) return (before, before, "EvoX HUD not in inventory");
+                        client.Appearance.Attach(item, AttachmentPoint.Default, false); attached = true;
+                        hud = await WaitWornItem(EvoxHudItem, 15000, cts.Token); if (hud == null) { notes.Add($"try {attempt}: HUD did not attach"); goto next; }
+                        // its scripts start and handshake with the head; the failure line comes ~2 s after the attach
+                        for (int i = 0; i < 10 && noHeadAt == DateTime.MinValue; i++) await Task.Delay(200, cts.Token);
+                    }
+                    if (noHeadAt != DateTime.MinValue) { notes.Add($"try {attempt}: HUD said no head"); goto next; }
+                    var prims = LinkPrims(hud); await EnsureProperties(Sim, prims);
+                    var now = await EvoxReadHidden() ?? after; var pr = EvoxHide.Presses(now, want);
+                    foreach (var (button, face, what) in pr)
+                    {
+                        var b = prims.FirstOrDefault(p => p.Properties?.Name == button);
+                        if (b == null) { Log("login-veil", $"evox: HUD button '{button}' not found ({what})"); continue; }
+                        GrabAt(b, face, 0.5f, 0.5f); await Task.Delay(300, cts.Token);
+                    }
+                    for (int i = 0; i < 12; i++) { await Task.Delay(250, cts.Token); after = await EvoxReadHidden() ?? after; if (after == want) break; }
+                    ok = after == want; if (!ok) notes.Add($"try {attempt}: {(noHeadAt != DateTime.MinValue ? "HUD said no head" : "no change seen")}");
+                }
+                finally { client.Self.ChatFromSimulator -= onChat; }
+            next:
+                if (ok || !EvoxHide.RetryDue(ok, attempt, EvoxHide.MaxAttempts, (DateTime.Now - t0).TotalSeconds, EvoxHide.BudgetSec)) break;
+                // a fresh attach makes the HUD handshake with the head again
+                if (item != null && WornPrims().Any(p => AttachItemId(p) == EvoxHudItem)) { try { client.Appearance.Detach(item); } catch { } attached = true; await WaitNotWorn(EvoxHudItem, 4000); }
+                await Task.Delay(500, cts.Token);
             }
-            var prims = LinkPrims(hud); await EnsureProperties(Sim, prims);
-            foreach (var (button, face, what) in presses)
-            {
-                var b = prims.FirstOrDefault(p => p.Properties?.Name == button);
-                if (b == null) { Log("login-veil", $"evox: HUD button '{button}' not found ({what})"); continue; }
-                GrabAt(b, face, 0.5f, 0.5f); await Task.Delay(400, cts.Token);
-            }
-            EvoxHide.Parts after = before;
-            for (int i = 0; i < 20; i++) { await Task.Delay(250, cts.Token); after = await EvoxReadHidden() ?? after; if (after == want) break; }
-            return (before, after, $"{string.Join(", ", presses.Select(p => p.what))}: {(after == want ? "done" : "NOT confirmed")}");
+            var what2 = string.Join(", ", EvoxHide.Presses(before, want).Select(p => p.what));
+            return (before, after, $"{what2}: {(ok ? "done" : "NOT confirmed")} in {(DateTime.Now - t0).TotalSeconds:F1} s, {attempt} attach(es){(notes.Count > 0 ? " (" + string.Join("; ", notes) + ")" : "")}");
         }
         catch (Exception ex) { return (null, null, "failed: " + ex.GetBaseException().Message); }
         finally
         {
-            if (attached && item != null) { try { await Task.Delay(800); client.Appearance.Detach(item); } catch { } }
+            if (attached && item != null) { try { await Task.Delay(300); client.Appearance.Detach(item); } catch { } }
             evoxGate.Release();
         }
     }

@@ -39,7 +39,19 @@ internal static class LoginVeil
     internal sealed record Garment(string Name, double? SeenSec, double? ReadySec);
     internal static readonly double MaxHoldSec = 25, GraceSec = 0.5, MaxHoldStashedSec = 90, RetryAttachSec = 8, OutfitFallbackSec = 25;
     internal sealed record Stashed(UUID Item, int Point, string Name);
-    internal static readonly double ConfirmMaxSec = 12, ReadyTimeoutSec = 8;
+    internal static readonly double ConfirmMaxSec = 12, ReadyTimeoutSec = 8, KnownSilentTimeoutSec = 2;
+
+    /// <summary>Pure (tested): the known-silent garment names after a login: a waited garment seen but never Ready is added; one that said Ready is removed.</summary>
+    internal static SortedSet<string> UpdateSilent(IEnumerable<string> known, IEnumerable<(string Name, double? SeenSec, double? ReadySec)> worn)
+    {
+        var s = new SortedSet<string>((known ?? Enumerable.Empty<string>()).Where(n => !string.IsNullOrWhiteSpace(n)), StringComparer.Ordinal);
+        foreach (var w in worn ?? Enumerable.Empty<(string, double?, double?)>())
+        {
+            if (!Waits(w.Name) || w.SeenSec == null) continue;
+            if (w.ReadySec == null) s.Add(w.Name); else s.Remove(w.Name);
+        }
+        return s;
+    }
     internal const int CollarStealthMaxMs = 20000, EvoxHideMaxMs = 25000;
 
     /// <summary>Pure-ish (tested with fakes): the veil-off order. Layer out of the library's wearables, known COF link(s) deleted, bake requested,
@@ -132,10 +144,10 @@ internal static class LoginVeil
     /// <summary>Pure (tested): the base face must never show. 2026-10-30 15:16:48 relog: the stashed real head was sent with the veil-off burst at
     /// +9.0 s, the bake without the veil landed at +17.2 s, the head only rezzed at +21 s: the system head was visible ~4 s. The veil now never comes
     /// off while a real head of the outfit (COF links or stash) is not attached; past the stash hold it STAYS on (KEEP), never a bare base face.</summary>
-    internal static (bool release, string why) ReleaseWithHead(IEnumerable<Garment> garments, double nowSec, bool stashed, IEnumerable<string> headsNotAttached)
+    internal static (bool release, string why) ReleaseWithHead(IEnumerable<Garment> garments, double nowSec, bool stashed, IEnumerable<string> headsNotAttached, ICollection<string> knownSilent = null)
     {
         var miss = (headsNotAttached ?? Array.Empty<string>()).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
-        if (miss.Count == 0) return Release(garments, nowSec, stashed);
+        if (miss.Count == 0) return Release(garments, nowSec, stashed, knownSilent);
         if (nowSec >= MaxHoldStashedSec) return (false, $"KEEP: real head not attached after {MaxHoldStashedSec:F0} s ({string.Join("; ", miss)}); the veil stays on (never the base face)");
         return (false, "waiting for the real head: " + string.Join("; ", miss) + " (not attached)");
     }
@@ -268,11 +280,14 @@ internal static class LoginVeil
     /// <summary>Pure (tested): start a background COF refresh in the release loop? Every 5 s once the veil link is known, every 1 s until then, never two at once.</summary>
     internal const int VeilLinksWaitMs = 1500;
     internal static bool CofRefreshDue(bool haveVeilLink, double sinceLastSec, bool inFlight) => !inFlight && sinceLastSec > (haveVeilLink ? 5 : 1);
-    internal static (bool release, string why) Release(IEnumerable<Garment> garments, double nowSec, bool stashed = false)
+    internal static (bool release, string why) Release(IEnumerable<Garment> garments, double nowSec, bool stashed = false, ICollection<string> knownSilent = null)
     {
         var g = (garments ?? Array.Empty<Garment>()).Where(x => Waits(x.Name)).ToList();
         // 16:24 login: '[BB] Nipple Rings' never said Ready and held the veil 90 s. A garment seen but silent for ReadyTimeoutSec counts as drawn.
-        double? Done(Garment x) => x.ReadySec ?? (x.SeenSec is double sn && nowSec >= sn + ReadyTimeoutSec ? sn + ReadyTimeoutSec : null);
+        // 2026-10-31 13:13 login: the LaraX Vintage Jeans never say Ready; every login in them cost the full 8 s. A garment that was silent at a past
+        // login (run/login-silent-garments.txt, LoginOrder's +60 s analysis) is waited for KnownSilentTimeoutSec only.
+        double To(Garment x) => knownSilent != null && knownSilent.Contains(x.Name) ? KnownSilentTimeoutSec : ReadyTimeoutSec;
+        double? Done(Garment x) => x.ReadySec ?? (x.SeenSec is double sn && nowSec >= sn + To(x) ? sn + To(x) : null);
         var missing = g.Where(x => x.SeenSec == null || Done(x) == null).ToList();
         double hold = stashed ? MaxHoldStashedSec : MaxHoldSec;
         if (nowSec >= hold)
@@ -436,7 +451,7 @@ public static partial class Program
     }
 
     static string LoginVeilStashFile => Env("GT_VEIL_STASH_FILE", "/home/box/viewers/textclient/run/login-veil-stash.txt");
-    static volatile Task loginVeilRestoreTask = Task.CompletedTask;   // the daily outfit waits for it (OutfitZones.cs)
+    internal static volatile Task loginVeilRestoreTask = Task.CompletedTask;   // the daily outfit waits for it (OutfitZones.cs)
 
     /// <summary>Logout, veil verified on: take off what the alpha cannot hide (hair, teeth, eyes, mesh clothes), COF links kept, list saved first.</summary>
     static async Task LoginVeilStashForLogout()
@@ -545,6 +560,8 @@ public static partial class Program
                 // 14:01 relog: this awaited the stash item fetches (~14 s at login, the server's pace) BEFORE the release loop started, so the
                 // veil decision came at +15.5 s for clothes Ready at +12.3 s. Now the attach runs beside the loop; the loop never waits on it.
                 if (id == UUID.Zero) { if (early.Count > 0) { await Task.Delay(1000, ct); LoginVeilAttachDirect(early, "login"); } why = "no veil configured"; return; }
+                var silent = LoginSilentGarments(); string lastWaitKey = null;
+                if (silent.Count > 0) Log("login-veil", $"known silent garments (waited {LoginVeil.KnownSilentTimeoutSec:F0} s, not {LoginVeil.ReadyTimeoutSec:F0} s): {string.Join("; ", silent)}");
                 bool retried = false, fellBack = false; List<InventoryItem> links = null; DateTime linksAt = DateTime.MinValue; UUID cofId = UUID.Zero; Task cofRefresh = null;
                 await LoginVeil.BesideLoop(early.Count == 0 ? null : async () => { await Task.Delay(1000, ct); LoginVeilAttachDirect(early, $"login, +{(DateTime.Now - t0).TotalSeconds:F1} s"); }, async () => {
                 while (gen == loginVeilGen && LoggedIn)
@@ -582,7 +599,10 @@ public static partial class Program
                         worn.Contains(l.Item) ? (loginSeenAt.TryGetValue(l.Item, out var s) ? (s - t0).TotalSeconds : 0) : null,
                         loginReadyAt.TryGetValue(l.Name, out var r) ? (r - t0).TotalSeconds : null)).ToList();
                     var heads = LoginVeil.HeadsNotAttached((links?.Select(l => (l.AssetUUID, l.Name)) ?? Enumerable.Empty<(UUID, string)>()).Concat(stash.Select(x => (x.Item, x.Name))), worn);
-                    var (rel, w) = src == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.ReleaseWithHead(garments, now, stash.Count > 0, heads);
+                    var (rel, w) = src == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.ReleaseWithHead(garments, now, stash.Count > 0, heads, silent);
+                    // 13:13 login: the release came ~4 s after the last garment was done and nothing said why: log each new wait reason
+                    var wKey = System.Text.RegularExpressions.Regex.Replace(w, @"[\d.]+ s", "#");
+                    if (!rel && wKey != lastWaitKey) { lastWaitKey = wKey; Log("login-veil", $"waiting at +{now:F1} s: {w}"); }
                     why = w;
                     // 17:33:25 login: the first read came back at +0.0 s with 0 links (Current Outfit not loaded yet) and was not redone for 5 s,
                     // so the release had no veil link ids and took the verified slow path (+3.1 s delete, +12.2 s sim). Until the veil link

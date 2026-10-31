@@ -104,6 +104,7 @@ public class FeetFitTests
         public Task EnsureProperties(Simulator sim, List<Primitive> prims) => Task.CompletedTask;
         public Task<string> TouchAttachment(string rest) { Touches.Add(rest); OnTouch?.Invoke(); return Task.FromResult("touched f3"); }
         public bool PoseBusy => Busy; public double PoseSettledSec => Settled; bool IFeetHost.Sitting => Sitting;
+        public bool VeilOff; bool IFeetHost.LoginSettled => VeilOff;
         public Task<string> FeetCloseupJson(double exposure) { Exposures.Add(exposure); return Task.FromResult(Closeups.Count > 0 ? Closeups.Dequeue() : DefaultCloseup); }
         public Primitive Wear(UUID item, string name = null) { var p = new Primitive { ID = UUID.Random() }; if (name != null) p.Properties = new Primitive.ObjectProperties { Name = name }; Worn.Add(p); Ids[p] = item; return p; }
     }
@@ -123,7 +124,8 @@ public class FeetFitTests
 
     [Fact] public async Task NoPressWhileTheOutfitIsChanging_ThenItPressesOnceStable()
     {
-        var (f, h, _) = Make(); h.Shown = "f3"; h.DefaultCloseup = Img();
+        // 2026-10-31: a login is a footwear change (fast path). With the right pose already recorded, the slow path (verify) still waits for a stable outfit
+        var (f, h, st) = Make(); h.Shown = "f3"; h.DefaultCloseup = Img(); Directory.CreateDirectory(Path.GetDirectoryName(st)!); File.WriteAllText(st, "f3");
         Assert.StartsWith("waiting: login settling", await f.FeetTick()); Advance(f, h, 45); h.Wear(UUID.Random());   // past the login grace; an item arrives
         Assert.StartsWith("waiting: outfit change in progress", await f.FeetTick());
         h.Wear(UUID.Random()); Advance(f, h, 4);                       // another item arrives mid swap
@@ -135,7 +137,7 @@ public class FeetFitTests
     }
     [Fact] public async Task NoPressWhilePoseChangesOrSitting()
     {
-        var (f, h, _) = Make(); h.DefaultCloseup = Img(); await Settle(f, h);
+        var (f, h, st) = Make(); h.DefaultCloseup = Img(); Directory.CreateDirectory(Path.GetDirectoryName(st)!); File.WriteAllText(st, "f3"); await Settle(f, h);
         h.Busy = true; Assert.Contains("pose / sit transition", await f.FeetTick());
         h.Busy = false; h.Settled = 1; Assert.Contains("posture changed a moment ago", await f.FeetTick());
         h.Settled = 60; h.Sitting = true; Assert.Contains("sitting", await f.FeetTick());
@@ -291,5 +293,60 @@ public class FeetFitTests
     [Fact] public void OnlyTheFirstLoopStartRuns_LoginAsyncStartsOnePerLogin()
     {
         var (f, _, _) = Make(); Assert.True(f.ClaimLoop()); Assert.False(f.ClaimLoop()); Assert.False(f.ClaimLoop());
+    }
+
+    // ---- 2026-10-31 13:13:14 login replay (#368 live): f1 pressed only at 13:14:42 (+88 s) ----
+    // The loop's first poll came at +42 s and called the worn set "changed 0 s ago" (8 s window), then the idle-pose lock held it ~26 s.
+    [Fact] public async Task Login_1313_Replay_FeetPressedRightAfterVeilOff_NotAfter88s()
+    {
+        var (f, h, _) = Make(bootsWorn: false); h.Shown = "f3"; h.DefaultCloseup = Img();   // barefoot (Beth Tube Top); the body still shows f3
+        h.OnTouch = () => h.Shown = "f1";
+        Assert.StartsWith("waiting", await f.FeetTick());                  // +0 s: veil on
+        Advance(f, h, 22); h.Wear(UUID.Random());                          // +22 s: veil off, the held head parts arrive
+        h.Busy = true;                                                     // the idle pose / stand check holds the pose lock (13:14:04-13:14:30)
+        Assert.StartsWith("waiting: login settling", await f.FeetTick());  // veil not reported off yet
+        h.VeilOff = true; Advance(f, h, 1);                                // +23 s: veil off and restore done
+        var r = await f.FeetTick();
+        Assert.Single(h.Touches); Assert.Contains("f1", h.Touches[0]);     // pressed at +23 s although the outfit changed 1 s ago and a pose transition runs
+        Assert.Contains("verified", r);
+    }
+
+    [Fact] public async Task Login_NoVeil_PressesAtTheLoginWait_NotLaterForTheFirstPollBaseline()
+    {
+        var (f, h, _) = Make(bootsWorn: false); h.Shown = "f3"; h.DefaultCloseup = Img(); h.OnTouch = () => h.Shown = "f1";
+        Advance(f, h, 41);                                                 // first poll after the 40 s login wait (no veil this login)
+        await f.FeetTick();
+        Assert.Single(h.Touches);                                          // no "worn attachments changed 0 s ago" from the first poll's baseline
+    }
+
+    [Fact] public async Task ShoeChangeLater_PressesWithinFiveSeconds_DespitePoseBusy()
+    {
+        var (f, h, st) = Make(bootsWorn: false); h.Shown = "f1"; h.DefaultCloseup = Img(); h.VeilOff = true;
+        Directory.CreateDirectory(Path.GetDirectoryName(st)!); File.WriteAllText(st, "f1");
+        Advance(f, h, 60); await f.FeetTick(); Advance(f, h, 60); await f.FeetTick();   // settled, nothing to do
+        var touches = h.Touches.Count;
+        h.Wear(Boots); h.Busy = true; h.OnTouch = () => h.Shown = "f3";
+        Advance(f, h, 1); await f.FeetTick();                              // change seen, not held yet
+        Assert.Equal(touches, h.Touches.Count);
+        Advance(f, h, 1); await f.FeetTick();                              // +2 s: held 1 s... 
+        Advance(f, h, 1); await f.FeetTick();                              // +3 s
+        Assert.Equal(touches + 1, h.Touches.Count); Assert.Contains("f3", h.Touches[^1]);
+    }
+
+    [Theory]
+    [InlineData(1.0, false)] [InlineData(1.5, true)] [InlineData(30, true)]
+    public void LoginSettled_FromVeilOffTime(double secAfterVeilOff, bool settled)
+    {
+        var now = new DateTime(2026, 10, 31, 13, 13, 40);
+        Assert.Equal(settled, FeetAuto.LoginSettledNow(now.AddSeconds(-secAfterVeilOff), true, now));
+        Assert.False(FeetAuto.LoginSettledNow(now.AddSeconds(-secAfterVeilOff), false, now));   // restore still running
+        Assert.False(FeetAuto.LoginSettledNow(DateTime.MaxValue, true, now));                    // veil still on
+        Assert.False(FeetAuto.LoginSettledNow(DateTime.MinValue, true, now));                    // no veil: the 40 s wait applies
+    }
+
+    [Fact] public void LoginWait_EndsAtVeilOff_ButStillBlocksBeforeIt()
+    {
+        Assert.False(FeetAuto.FeetPressReady(0, true, 0, false, 23, footwearChange: true).ok);
+        Assert.True(FeetAuto.FeetPressReady(0, true, 0, false, 23, footwearChange: true, loginSettled: true).ok);
     }
 }

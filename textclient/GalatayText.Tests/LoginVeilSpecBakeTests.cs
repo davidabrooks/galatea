@@ -10,7 +10,7 @@ public class LoginVeilSpecBakeTests
     {
         var steps = new List<string>(); var rm = new TaskCompletionSource<bool>();
         var t = LoginVeil.OffCore(null, () => rm.Task, () => { steps.Add("final"); return Task.CompletedTask; }, () => Task.FromResult(true), null,
-            async pending => { steps.Add("spec-start"); Assert.False(pending.IsCompleted); rm.SetResult(true); await Task.Yield(); return true; }, () => false);
+            async pending => { steps.Add("spec-start"); Assert.False(pending.IsCompleted); rm.SetResult(true); await Task.CompletedTask; return true; }, () => false);
         var r = await t;
         Assert.True(r.removed); Assert.Equal(new[] { "spec-start" }, steps);
     }
@@ -48,5 +48,16 @@ public class LoginVeilSpecNoWaitTests
             _ => never.Task, () => true);
         Assert.True(r.removed); Assert.Equal(new[] { "final" }, steps);
         Assert.True((System.DateTime.Now - t0).TotalSeconds < 1);
+    }
+}
+
+// 2026-10-30 17:33:25 login: first Current Outfit read at +0.0 s had 0 links; no re-read for 5 s, release took the slow path.
+public class LoginVeilLinkReadTests
+{
+    [Fact] public void NoVeilLinkYet_ReadsAgainEverySecond()
+    {
+        Assert.True(LoginVeil.CofRefreshDue(false, 1.2, false));
+        Assert.False(LoginVeil.CofRefreshDue(true, 1.2, false));
+        Assert.True(LoginVeil.CofRefreshDue(true, 5.1, false));
     }
 }

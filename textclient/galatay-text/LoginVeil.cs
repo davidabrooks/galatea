@@ -45,18 +45,29 @@ internal static class LoginVeil
     /// <summary>Pure-ish (tested with fakes): the veil-off order. Layer out of the library's wearables, known COF link(s) deleted, bake requested,
     /// and only then the (slow, at login) confirmation. Returns whether the links call succeeded and whether the bake was confirmed.
     /// The head-parts burst (attach requests, no waiting) goes between the link removal and the bake request, so face, hair and skin land together.</summary>
-    internal static async Task<(bool removed, bool confirmed)> OffCore(Action dropLayer, Func<Task<bool>> removeKnownLinks, Func<Task> rebake, Func<Task<bool>> confirm, Func<Task> burst = null)
+    internal static async Task<(bool removed, bool confirmed)> OffCore(Action dropLayer, Func<Task<bool>> removeKnownLinks, Func<Task> rebake, Func<Task<bool>> confirm, Func<Task> burst = null,
+        Func<Task<bool>, Task<bool>> speculativeBake = null, Func<bool> finalBakeNeeded = null)
     {
         // 17:00/17:04 logins (veil off +19.2 / +15.9 s, garments Ready +7.0 s): dropping the layer first (RemoveFromOutfit) armed the library's
         // delayed appearance pass, whose own bake request ("Requesting bake ... lastReq=-1") hit the server while our POST was in flight:
         // our POST took 4.2 s / timed out at 5 s. The 16:45 login (+8.6 s) beat that timer. The layer now drops only after our bake POST.
-        bool removed = await removeKnownLinks();
+        // 17:21 login: the AIS link delete took 5.1 s before the bake POST could start. A speculative bake (for the COF version the delete
+        // will produce, rejected by the server until it exists) now runs beside the delete; the final bake runs only if it did not land.
+        var rmTask = removeKnownLinks();
+        Task<bool> specTask = speculativeBake == null ? Task.FromResult(false) : SafeSpec(speculativeBake, rmTask);
+        bool removed = await rmTask;
+        bool specOk = await specTask;
         if (!removed) { try { dropLayer?.Invoke(); } catch { } return (false, false); }
         if (burst != null) { try { await burst(); } catch { } }
-        await rebake();
+        if (!specOk || (finalBakeNeeded?.Invoke() ?? true)) await rebake();
         try { dropLayer?.Invoke(); } catch { }
         return (true, await confirm());
     }
+
+    static async Task<bool> SafeSpec(Func<Task<bool>, Task<bool>> spec, Task<bool> rm) { try { return await spec(rm); } catch { return false; } }
+    /// <summary>Pure (tested): the speculative bake covers the veil removal only when it landed at or past the COF version the delete produced
+    /// (another COF change could have taken that number with the veil still linked).</summary>
+    internal static bool SpecCovers(int specVersion, int finalVersion) => specVersion > 0 && finalVersion > 0 && specVersion >= finalVersion;
 
     /// <summary>Pure-ish (tested with fakes): the logout order. Collar Stealth first (to its end, capped), then the veil; the stash only when the
     /// veil is verified on. 14:01 relog (David): the collar disappeared last, because the stealth ran beside the veil and the stash.</summary>
@@ -659,6 +670,7 @@ public static partial class Program
         {
             using var cts = new CancellationTokenSource(30000); var ct = cts.Token;
             int simBefore = simAttCof; var tStart = DateTime.Now;
+            int verBefore = (client.Inventory.Store.Contains(cofId) ? client.Inventory.Store[cofId] as InventoryFolder : null)?.Version ?? -1, specVer = -1;
             double rmMs = 0, bakeMs = 0;
             var (removed, confirmed) = await LoginVeil.OffCore(
                 () => { client.Appearance.RemoveFromOutfit(new List<InventoryItem> { LoginVeil.LayerRecord(id, it, SafeWearables().FirstOrDefault(w => w.ItemID == id)?.WearableType) }); },
@@ -673,7 +685,30 @@ public static partial class Program
                 {
                     for (int i = 0; i < LoginVeil.ConfirmMaxSec * 10; i++) { if (LoginVeil.BakeConfirmed(simBefore, simAttCof)) return true; await Task.Delay(100, ct); }
                     return false;
-                }, once);
+                }, once,
+                async rm => {
+                    // one try per ~0.7 s while the delete is pending: cof_version = before + 1, never following 'expected' (that is the veiled version)
+                    var cap = client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAvatarAppearance"); if (cap == null || verBefore <= 0) return false;
+                    while (!rm.IsCompleted && !ct.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            using var t = CancellationTokenSource.CreateLinkedTokenSource(ct); t.CancelAfter(3000);
+                            var (_, data) = await client.HttpCapsClient.PostAsync(cap, OSDFormat.Xml, new OSDMap { ["cof_version"] = verBefore + 1 }, t.Token);
+                            var res = data == null ? null : OSDParser.Deserialize(data) as OSDMap;
+                            if (res != null && res.ContainsKey("success") && res["success"].AsBoolean())
+                            {
+                                specVer = res["cof_version"].AsInteger(); bakeMs = (DateTime.Now - tStart).TotalMilliseconds;
+                                try { client.Appearance.UpdateLastReceivedCOFVersion(specVer); } catch { }
+                                Log("wear", $"speculative bake POST cof_version {verBefore + 1}: ok at +{bakeMs:F0} ms (before the link delete returned)"); return true;
+                            }
+                        }
+                        catch { }
+                        try { await Task.WhenAny(rm, Task.Delay(700, ct)); } catch { }
+                    }
+                    return false;
+                },
+                () => !LoginVeil.SpecCovers(specVer, (client.Inventory.Store.Contains(cofId) ? client.Inventory.Store[cofId] as InventoryFolder : null)?.Version ?? -1));
             if (!removed) return await LoginVeilOff(id, t0, why, it, once);
             double confMs = (DateTime.Now - tStart).TotalMilliseconds;
             loginVeilOffAt = DateTime.Now;

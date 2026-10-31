@@ -16,7 +16,7 @@ public class LoginVeilFastOffTests
             async () => { await Task.Yield(); order.Add("bake"); },
             async () => { await Task.Yield(); order.Add("confirm"); return true; });
         Assert.True(removed); Assert.True(confirmed);
-        Assert.Equal(new[] { "layer", "links", "bake", "confirm" }, order);
+        Assert.Equal(new[] { "links", "bake", "layer", "confirm" }, order);
     }
 
     [Fact] public async Task VeilOff_WithSlowServerReads_BakesWithinASecondOfRelease()

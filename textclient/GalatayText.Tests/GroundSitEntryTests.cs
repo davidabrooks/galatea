@@ -131,7 +131,7 @@ public class GroundSitEntryTests
         var steps = src[src.IndexOf("sealed class GroundSitSteps")..]; steps = steps[..steps.IndexOf("static async Task<string> IdlePoseEnter(")];
         Assert.True(steps.IndexOf("AoGroundSitSwitch()") is var pick and > 0 && pick < steps.IndexOf("SitOnGround()") && steps.IndexOf("SitOnGround()") < steps.IndexOf("AoGroundSitPress("));
         Assert.Contains("aoSitPrePick = true", steps);
-        Assert.Contains("finally { idleLock.Release(); if (hoverAfter) hoverSvc.HoverCheckRequest(\"ground sit\", hoverDelayMs); }", src);   // ONE request, made once the entry is over (poseBusy would hold it for the 8 s retry)
+        Assert.Contains("finally { idleLock.Release(); if (hoverAfter) hoverSvc.HoverCheckRequest(hoverWhy, hoverDelayMs); }", src);   // ONE request, made once the entry is over (poseBusy would hold it for the 8 s retry)
         var hov = Src("AutoHover.cs");
         Assert.DoesNotContain("Stand()", hov); Assert.DoesNotContain("SitOnGround", hov); Assert.DoesNotContain("AoGroundSitToggle", hov);
     }

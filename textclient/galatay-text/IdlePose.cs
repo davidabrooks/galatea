@@ -188,9 +188,11 @@ public static partial class Program
     }
     static double idleRotate = IdleRotateSec(Random.Shared.NextDouble());
     static volatile bool idleRotatePaused;   // `idlepose rotate off` (for tests): keep the current ground sit / collar pose, never switch automatically; resets on restart
+    internal const int CollarHoverDelayMs = 3000;   // the collar pose animation settles; requested after idleLock is released (inside it the check waits for an 8 s retry)
     static async Task<string> IdlePoseRotate()
     {
         if (!await idleLock.WaitAsync(0)) return "busy";
+        bool collarChanged = false;
         try
         {
             var cur = idlePosed; if (cur == null) return "not posed";
@@ -211,9 +213,10 @@ public static partial class Program
             if (!ok) return info;
             idleLastPose = pose; idlePosed = new("collar", pose, anims ?? new(), DateTime.Now); IdleSave();
             try { hoverSvc.AutoHoverKick("pose change"); } catch { }
+            collarChanged = true;
             return $"{cur.pose} -> {pose}: {info}";
         }
-        finally { idleLock.Release(); }
+        finally { idleLock.Release(); if (collarChanged) hoverSvc.HoverCheckRequest("collar pose change", CollarHoverDelayMs); }
     }
     // pure (tested): switch pose family when visibility changes: collar hidden + no chain -> AO ground sit (if allowed),
     // collar or chain visible while ground sitting -> collar pose. null = keep.
@@ -469,7 +472,7 @@ public static partial class Program
     static async Task<string> IdlePoseEnter(string kind, string why)
     {
         if (!await idleLock.WaitAsync(0)) return "idle pose busy";
-        bool hoverAfter = false; int hoverDelayMs = 1000;
+        bool hoverAfter = false; int hoverDelayMs = 1000; string hoverWhy = "ground sit";
         try
         {
             if (idlePosed != null) return $"already posed ({idlePosed.kind} {idlePosed.pose})";
@@ -484,6 +487,7 @@ public static partial class Program
                 Log("idlepose", $"collar pose {pose} ({why}): {info}");
                 if (!ok) return info;
                 idleLastPose = pose; idlePosed = new("collar", pose, anims ?? new(), DateTime.Now); IdleSave(); hoverSvc.AutoHoverKick("kneel");
+                hoverAfter = true; hoverWhy = "collar pose"; hoverDelayMs = CollarHoverDelayMs;   // 2026-10-31: the visual check (was never requested for collar poses)
                 return $"collar pose '{pose}': {info}";
             }
             var before = SelfAnims().ToHashSet();
@@ -505,7 +509,7 @@ public static partial class Program
             hoverAfter = true;   // requested after the lock is released (a request made inside it waits for the 8 s retry)
             return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")}; pose {aoSitCurrentName ?? "?"})";
         }
-        finally { idleLock.Release(); if (hoverAfter) hoverSvc.HoverCheckRequest("ground sit", hoverDelayMs); }   // the ONE hover check of this sit
+        finally { idleLock.Release(); if (hoverAfter) hoverSvc.HoverCheckRequest(hoverWhy, hoverDelayMs); }   // the ONE hover check of this sit / collar pose
     }
     static async Task<string> IdlePoseExit(string why)
     {

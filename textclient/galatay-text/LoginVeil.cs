@@ -229,9 +229,16 @@ internal static class LoginVeil
         => known != null && !known.IsLink() && known.UUID == x.Item ? known : new InventoryObject(x.Item) { Name = x.Name ?? "", OwnerID = owner, Description = "" };
 
     /// <summary>Pure (tested): what the release loop waits on: the COF links when read; before that, the stash's clothes if any of them
-    /// is a waited (body-cutting) garment; else null (not known yet).</summary>
-    internal static List<(UUID Item, string Name)> WaitSource(List<(UUID Item, string Name)> cofLinks, List<(UUID Item, string Name)> stashedClothes)
-        => cofLinks ?? (stashedClothes != null && stashedClothes.Any(x => Waits(x.Name)) ? stashedClothes : null);
+    /// is a waited (body-cutting) garment; else null (not known yet).
+    /// 2026-10-31 16:40 login (outfit change at login): the old outfit's jeans were dropped from the plan, but their COF link was still there
+    /// (the drop's COF read failed), so the veil waited 90 s for jeans that were never coming back and stayed on. Items the login outfit
+    /// dropped (<paramref name="dropped"/>) are never waited for.</summary>
+    internal static List<(UUID Item, string Name)> WaitSource(List<(UUID Item, string Name)> cofLinks, List<(UUID Item, string Name)> stashedClothes, ICollection<UUID> dropped = null)
+    {
+        List<(UUID Item, string Name)> F(List<(UUID Item, string Name)> l) => l == null || dropped == null || dropped.Count == 0 ? l : l.Where(x => !dropped.Contains(x.Item)).ToList();
+        cofLinks = F(cofLinks); stashedClothes = F(stashedClothes);
+        return cofLinks ?? (stashedClothes != null && stashedClothes.Any(x => Waits(x.Name)) ? stashedClothes : null);
+    }
 
     /// <summary>Pure (tested): the record that drops the veil from the library's worn layers. 14:38 relog: the veil item fetch had not
     /// finished (FetchInventory2 not up yet), so the layer drop was skipped: the COF link and the bake were right (body visible), but the
@@ -632,7 +639,7 @@ public static partial class Program
                         if (!string.IsNullOrWhiteSpace(last)) _ = Task.Run(async () => { try { Log("login-veil", "fallback outfit: " + (await WearOutfitWithHuds(last)).Replace("\n", " | ")); } catch (Exception ex) { Log("login-veil", "fallback outfit failed: " + ex.GetBaseException().Message); } });
                     }
                     // the waited list: the COF links, or (COF not read yet) the stash's own clothes, so a slow COF read never holds the veil
-                    var src = LoginVeil.WaitSource(links?.Select(l => (l.AssetUUID, l.Name)).ToList(), early.Select(x => (x.Item, x.Name)).ToList());
+                    var src = LoginVeil.WaitSource(links?.Select(l => (l.AssetUUID, l.Name)).ToList(), early.Select(x => (x.Item, x.Name)).ToList(), usual?.Changed == true ? usual.Drop : null);
                     var garments = (src ?? new()).Select(l => new LoginVeil.Garment(l.Name,
                         worn.Contains(l.Item) ? (loginSeenAt.TryGetValue(l.Item, out var s) ? (s - t0).TotalSeconds : 0) : null,
                         loginReadyAt.TryGetValue(l.Name, out var r) ? (r - t0).TotalSeconds : null)).ToList();

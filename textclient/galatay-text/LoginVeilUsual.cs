@@ -27,6 +27,20 @@ internal static class UsualOutfit
         return p with { Why = $"{sinceLogout.TotalMinutes:F0} min since the logout (> {afterMin:F0}): " + p.Why };
     }
 
+    // 2026-10-31 12:52 login (David: wrong outfit then a swap ~30 s later, feet wrong for ~90 s): past the threshold, when today's daily outfit
+    // is still pending, the login wears the daily pick (pre-chosen at logout, its links saved) instead of the usual outfit, so there is no swap.
+    /// <summary>Pure (tested): which outfit the login veil should put on past the threshold: the daily pre-pick when the daily is pending and it
+    /// has clothes; else the usual outfit. Within the threshold: the usual (AtLogin then keeps the stash as worn anyway).</summary>
+    internal static (string Name, List<(UUID Item, string Name)> Links, bool Daily) LoginTarget(TimeSpan sinceLogout, bool dailyPending,
+        string usualName, List<(UUID Item, string Name)> usualLinks, string dailyName, List<(UUID Item, string Name)> dailyLinks, double afterMin = DefaultAfterMin)
+    {
+        usualLinks ??= new();
+        if (sinceLogout < TimeSpan.FromMinutes(afterMin) || !dailyPending || string.IsNullOrWhiteSpace(dailyName)
+            || dailyLinks == null || !dailyLinks.Any(x => x.Item != UUID.Zero && IsClothes(x.Name)))
+            return (usualName, usualLinks, false);
+        return (dailyName, dailyLinks, true);
+    }
+
     internal static string FormatUsual(string name, IEnumerable<(UUID Item, string Name)> links)
         => $"# usual {(name ?? "").Replace('\n', ' ')}\n" + string.Concat((links ?? Enumerable.Empty<(UUID, string)>()).Select(x => $"{x.Item}\t{(x.Name ?? "").Replace('\t', ' ').Replace('\n', ' ')}\n"));
     internal static (string name, List<(UUID Item, string Name)> links) ParseUsual(string text)
@@ -76,9 +90,39 @@ public static partial class Program
     static double LoginVeilUsualAfterMin => double.TryParse(Env("GT_VEIL_USUAL_AFTER_MIN", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var m) && m >= 0 ? m : UsualOutfit.DefaultAfterMin;
 
     /// <summary>Logout (veil on): write my usual outfit's name and links beside the stash (bounded reads); nothing is changed now.</summary>
+    static string LoginVeilDailyFile => Env("GT_VEIL_DAILY_FILE", "/home/box/viewers/textclient/run/login-veil-daily.txt");
+    internal static string loginDailyPick;   // the daily outfit the login veil put on (DailyOutfitAfterLogin uses it as the day's pick: no second, random swap)
+
+    /// <summary>Logout: pre-pick the next daily outfit (same pool rule as the login picker) and save its links, so a login on a new day
+    /// dresses in it from the start. Not on the beach (the bikini rule decides there) and not while undressed.</summary>
+    static async Task LoginVeilDailySave(InventoryFolder mo, string current, CancellationToken ct)
+    {
+        try
+        {
+            if (Env("GT_VEIL_DAILY", "1") == "0" || beachMode || !AutoOutfitAllowed(wardrobeUndressed, wardrobeUndressedAt, DateTime.Now)) return;
+            var folders = (await ReadFolderRO(mo.UUID, ct, 5000)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID).ToList();
+            var pool = DailyOutfitPool(DailyOutfitCandidates(folders.Select(f => f.Name), DailyOutfitAllow()), lastNamedOutfit ?? current);
+            if (pool.Count == 0) return;
+            var pick = pool[Random.Shared.Next(pool.Count)];
+            var folder = folders.First(f => f.Name.Trim().Equals(pick, StringComparison.OrdinalIgnoreCase));
+            var links = (await ReadFolderRO(folder.UUID, ct, 5000)).OfType<InventoryItem>()
+                .Where(l => l.ParentUUID == folder.UUID && (l.InventoryType == InventoryType.Object || l.InventoryType == InventoryType.Attachment))
+                .Select(l => (l.IsLink() ? l.AssetUUID : l.UUID, l.Name)).ToList();
+            File.WriteAllText(LoginVeilDailyFile, UsualOutfit.FormatUsual(pick, links));
+            Log("login-veil", $"next daily outfit '{pick}' pre-picked for login ({links.Count} links; worn at login only on a new day, away more than {LoginVeilUsualAfterMin:F0} min)");
+        }
+        catch (Exception ex) { Log("login-veil", "daily pre-pick failed (login wears the usual outfit): " + ex.GetBaseException().Message); }
+    }
+
+    static bool DailyPendingToday()
+    {
+        try { return !File.Exists(DailyOutfitDateFile) || File.ReadLines(DailyOutfitDateFile).FirstOrDefault()?.Trim() != TodayPt(); } catch { return true; }
+    }
+
     static async Task LoginVeilUsualSave()
     {
         try { File.Delete(LoginVeilUsualFile); } catch { }
+        try { File.Delete(LoginVeilDailyFile); } catch { }
         var name = UsualOutfit.Name(LastClothedOutfit(), lastNamedOutfit);
         if (Env("GT_VEIL_USUAL", "1") == "0" || name == null) { Log("login-veil", $"usual outfit '{name ?? "-"}' unknown: login wears the stash as worn"); return; }
         try
@@ -93,6 +137,7 @@ public static partial class Program
                 .Select(l => (l.IsLink() ? l.AssetUUID : l.UUID, l.Name)).ToList();
             File.WriteAllText(LoginVeilUsualFile, UsualOutfit.FormatUsual(name, links));
             Log("login-veil", $"usual outfit '{name}' saved for login ({links.Count} links; used only if I'm away more than {LoginVeilUsualAfterMin:F0} min)");
+            await LoginVeilDailySave(mo, name, cts.Token);
         }
         catch (Exception ex) { Log("login-veil", "usual outfit read failed (login wears the stash as worn): " + ex.GetBaseException().Message); }
     }
@@ -103,8 +148,14 @@ public static partial class Program
         try
         {
             var (name, links) = File.Exists(LoginVeilUsualFile) ? UsualOutfit.ParseUsual(File.ReadAllText(LoginVeilUsualFile)) : (null, new());
+            var (dName, dLinks) = File.Exists(LoginVeilDailyFile) ? UsualOutfit.ParseUsual(File.ReadAllText(LoginVeilDailyFile)) : (null, new());
             try { File.Delete(LoginVeilUsualFile); } catch { }
-            return UsualOutfit.AtLogin(stash, links, name, DateTime.Now - loggedOutAt, LoginVeilUsualAfterMin);
+            try { File.Delete(LoginVeilDailyFile); } catch { }
+            var since = DateTime.Now - loggedOutAt;
+            var t = UsualOutfit.LoginTarget(since, DailyPendingToday(), name, links, dName, dLinks, LoginVeilUsualAfterMin);
+            var plan = UsualOutfit.AtLogin(stash, t.Links, t.Name, since, LoginVeilUsualAfterMin);
+            if (t.Daily) { loginDailyPick = t.Name; plan = plan with { Why = plan.Why.Replace("my usual outfit", "today's daily outfit") }; }
+            return plan;
         }
         catch (Exception ex) { return new(stash, new(), new(), false, "usual outfit check failed (as worn): " + ex.GetBaseException().Message); }
     }

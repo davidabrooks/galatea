@@ -195,14 +195,15 @@ public static partial class Program
         if (!plan.Changed) return;
         try
         {
-            using var cts = new CancellationTokenSource(15000);
-            if (plan.Drop.Count > 0) Log("login-veil", "usual outfit: " + await CofLinksOffBatch(plan.Drop, "usual outfit at login", cts.Token));
+            // 90 s: early in a login the Current Outfit folder can be unreadable for a while (no inventory caps yet); CofRetry waits it out.
+            using var cts = new CancellationTokenSource(90000);
+            if (plan.Drop.Count > 0) Log("login-veil", "usual outfit: " + await CofRetry.Run(c => CofLinksOffBatch(plan.Drop, "usual outfit at login", c), cts.Token));
             if (plan.Add.Count > 0)
             {
                 var items = new List<InventoryItem>();
                 foreach (var x in plan.Add) items.Add(await FetchItemRO(x.Item, cts.Token) is InventoryItem it && !it.IsLink() ? it
                     : new InventoryObject(x.Item) { Name = x.Name ?? "", OwnerID = client.Self.AgentID, InventoryType = InventoryType.Object });
-                Log("login-veil", "usual outfit: " + await CofLinksOnBatch(items, null, "usual outfit at login", cts.Token));
+                Log("login-veil", "usual outfit: " + await CofRetry.Run(c => CofLinksOnBatch(items, null, "usual outfit at login", c), cts.Token));
             }
         }
         catch (Exception ex) { Log("login-veil", "usual outfit COF update failed (the stash still sends the clothes): " + ex.GetBaseException().Message); }

@@ -79,6 +79,7 @@
     <Compile Include="../galatay-text/ForceRebake.cs" Link="Core/ForceRebake.cs" />
     <Compile Include="../galatay-text/BodyReattach.cs" Link="Core/BodyReattach.cs" />
     <Compile Include="../galatay-text/CofUnlink.cs" Link="Core/CofUnlink.cs" />
+    <Compile Include="../galatay-text/CofRetry.cs" Link="Core/CofRetry.cs" />
     <Compile Include="../galatay-text/VAuto.cs" Link="Core/VAuto.cs" />
     <Compile Include="../galatay-text/AlphaFollow.cs" Link="Core/AlphaFollow.cs" />
     <Compile Include="../galatay-text/CollarStealth.cs" Link="Core/CollarStealth.cs" />

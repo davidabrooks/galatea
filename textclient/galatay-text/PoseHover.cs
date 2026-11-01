@@ -350,6 +350,51 @@ internal sealed partial class Hover
         if (!manual && !poseChanged && sinceLastRunSec < HoverCheckCooldownSec) return (false, "another check ran a moment ago");   // an automatic pose change is always remeasured, never held back by the cooldown   // an automatic pose change is always remeasured, never held back by the cooldown
         return (true, null);
     }
+    // 2026-10-31 20:17 (David's photo): she sat (cutie -> VAMOSITG23) still at the kneel's 0.087 and floated ~20 cm for the 10 s the
+    // visual check took. The hover each pose's check VERIFIED this session (contact confirmed in a render) is kept here, in memory
+    // (pose-hover-verified.json, measurements only, never a bias) and applied the moment that pose starts; a pose never verified starts
+    // from the last verified hover of the same kind (sit / kneel / stand); the check then refines it. Nothing is hardcoded.
+    internal static readonly string VerifiedPoseHoverFile = Program.Env("GT_POSE_HOVER_VERIFIED", "/workspace/secondlife/pose-hover-verified.json");
+    internal readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> VerifiedPoseHover = LoadVerifiedPoseHover(VerifiedPoseHoverFile);
+    static System.Collections.Concurrent.ConcurrentDictionary<string, double> LoadVerifiedPoseHover(string f)
+    {
+        try { return new(JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(f)) ?? new()); } catch { return new(); }
+    }
+    void NoteVerifiedPoseHover(string key, string kind, double v)
+    {
+        VerifiedPoseHover[key] = v; VerifiedPoseHover["kind|" + key.Split('|')[0] + "|" + kind] = v;
+        try { var tmp = VerifiedPoseHoverFile + ".tmp"; File.WriteAllText(tmp, JsonSerializer.Serialize(new SortedDictionary<string, double>(VerifiedPoseHover), new JsonSerializerOptions { WriteIndented = true })); File.Move(tmp, VerifiedPoseHoverFile, true); }
+        catch (Exception ex) { h.Log("posehover", "verified pose hover not saved: " + ex.GetBaseException().Message); }
+    }
+    // pure (tested): the hover to apply at once on a switch to `key` (its own verified value, else the kind's), or null (none, or already in force)
+    internal static double? EarlyPoseHover(string key, string kind, IReadOnlyDictionary<string, double> verified, double? inForce)
+    {
+        if (key == null) return null;
+        if (!verified.TryGetValue(key, out var v) && !verified.TryGetValue("kind|" + key.Split('|')[0] + "|" + kind, out v)) return null;
+        return inForce is double f && Math.Abs(f - v) <= 0.002 ? null : v;
+    }
+    // on a pose switch: wait (up to waitMs) for the new pose to show, then post its verified hover before the visual check runs
+    async Task EarlyHoverOnSwitch(string why, int waitMs)
+    {
+        try
+        {
+            var t0 = DateTime.Now;
+            while ((DateTime.Now - t0).TotalMilliseconds < waitMs)
+            {
+                var (kind, pose) = PoseNow();
+                if (kind is "stand" or "sit" or "kneel" && PoseChangedSinceCheck(hoverLastCheckedPose, pose) && FormCertainNow())
+                {
+                    var key = PoseHoverKey(h.AndroidFormNow(), pose);
+                    var (eff, _) = await h.EffectiveHoverFresh();
+                    if (EarlyPoseHover(key, kind, VerifiedPoseHover, eff) is double v)
+                    { var (_, info) = await h.PostHover(v, $"pose switch ({why}): {key} verified hover applied before the check"); h.Log("posehover", $"{key}: switch: verified hover {v:0.000} applied at once (was {(eff is double e ? e.ToString("0.000") : "?")}): {info}"); }
+                    return;
+                }
+                await Task.Delay(250);
+            }
+        }
+        catch (Exception ex) { h.Log("posehover", "early hover on switch: " + ex.GetBaseException().Message); }
+    }
     long hoverReqSeq; string hoverPosture; DateTime hoverPostureAt = DateTime.MinValue, hoverCheckLastRun = DateTime.MinValue;
     // from every own-animation packet and the idle tick: note the posture; a sit or stand after another posture requests ONE check
     internal void HoverPostureNote(IEnumerable<UUID> playing, bool seatedOnObject)
@@ -371,6 +416,7 @@ internal sealed partial class Hover
         if (Program.Env("GT_POSE_HOVER_CHECK", "on") == "off") return Task.FromResult("hover check is off (GT_POSE_HOVER_CHECK=off)");
         long id = Interlocked.Increment(ref hoverReqSeq);
         h.Log("posehover", $"visual hover check requested ({why}), in {delayMs / 1000.0:0.#} s");
+        if (why != "manual") _ = EarlyHoverOnSwitch(why, Math.Max(delayMs, 3000));
         return Task.Run(async () =>
         {
             try
@@ -573,8 +619,8 @@ internal sealed partial class Hover
                 : $"; supporting parts {SupportGapsText(parts, partGaps1)}: hover aimed so the lowest is {aim:0.000} m above the floor{(aim > 0 ? " (hands never below it)" : "")}; no per-pose hover value, measured on this floor";
             if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, remeasured here"; h.Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, remeasuring on this pose"); }
             hoverLastCheckedPose = pose;
-            string calTxt = calibrated ? "bias calibrated against David's viewer" : "DEFAULT bias, not yet calibrated against David's viewer (hover calibrate)";
-            if (SupportConfirmed(eg, aim)) { if (kind == "stand" && StandFeetBlock(fw0, Program.FootwearKeyNow(), Program.feetSvc.VerifiedFeet) == null) Program.SaveVerifiedStandHover(hov, key); how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}); hover left alone"; }
+            string calTxt = "Firestorm placement, no per-pose bias";   // #392: render_mesh.py ignores GT_HOVER_BIAS
+            if (SupportConfirmed(eg, aim)) { NoteVerifiedPoseHover(key, kind, hov); if (kind == "stand" && StandFeetBlock(fw0, Program.FootwearKeyNow(), Program.feetSvc.VerifiedFeet) == null) Program.SaveVerifiedStandHover(hov, key); how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}); hover left alone"; }
             else
             {
                 var t = PoseHoverFromGap(hov, eg);
@@ -603,8 +649,9 @@ internal sealed partial class Hover
                 fixedHover = true; finalImg = img2;
                 double? basis2 = g2 is double g2r ? (parts == null || sg1 == null ? g2r : SupportGap(parts, hoverLastPartGaps) ?? g2r) : null;
                 bool good = applied && basis2 is double gg && SupportConfirmed(gg - aim, aim);
+                if (good && eff2 is double evp) NoteVerifiedPoseHover(key, kind, evp);
                 if (good && kind == "stand" && eff2 is double ev && StandFeetBlock(fw0, Program.FootwearKeyNow(), Program.feetSvc.VerifiedFeet) == null) Program.SaveVerifiedStandHover(ev, key);   // HoverFootwear.cs: the hover in force for this footwear
-                string verdict = good ? (calibrated ? "contact confirmed" : "contact in the render; NOT verified against David's viewer (default bias)") : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
+                string verdict = good ? "contact confirmed" : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
                 how = $"render gap {basis:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(basis2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}{liftTxt}): {info}; {img2}";
             }
             int renders = HoverCheckRenderCount(fixedHover, confirmRender);

@@ -38,7 +38,7 @@ public class HoverCalibrationTests
         Assert.Contains("HoverCheckRender(dir, size, eff2 ?? t, bias, kind, parts: parts)", chk);             // the re-render is drawn at the hover really in force
         Assert.DoesNotContain("HoverCheckRender(dir, size, t, bias, kind", chk);
         Assert.Contains("NOT verified: the hover in force is", chk);
-        Assert.Contains("NOT verified against David's viewer (default bias)", chk);       // a default (uncalibrated) bias is never called "confirmed"
+        Assert.DoesNotContain("(default bias)", chk);                                      // 2026-10-31 #392: no per-pose bias in the render, so none is claimed
         Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(chk, @"PostHover\(").Count);
     }
 

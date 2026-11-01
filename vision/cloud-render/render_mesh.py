@@ -1302,6 +1302,9 @@ def hover_check_z0(env, agent_z, lo_z, floor_z):
     size = float(env["GT_AGENT_SIZE"]); hov = float(env.get("GT_HOVER", "0"))
     # GT_HOVER_BIAS: the model's measured error for this posture (2026-10-23: stands render 0.25 m high at the pin, where the sim
     # keeps her feet on the floor; ground sits -0.055 m at David's approved VAMOSITG26 -0.12): subtracted so contact = gap 0
+    # GT_SIM_HOVER (2026-10-31 18:26): the sim moves her agent z by the hover in her own appearance (z 28.953 -> 28.873 when it became -0.08),
+    # so that is taken back out of agent z and only the hover in force is added: the true base, whatever the sim baked in
+    agent_z = agent_z - float(env.get("GT_SIM_HOVER", "0"))
     z0 = agent_z - size / 2 + hov - float(env.get("GT_HOVER_BIAS", "0"))
     return z0, z0 + lo_z - floor_z, hov, size
 

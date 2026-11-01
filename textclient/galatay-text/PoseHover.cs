@@ -106,12 +106,16 @@ internal sealed partial class Hover
     internal static double PoseHoverFromGap(double hov, double gap) => Math.Round(Math.Clamp(hov - gap, -0.4, 0.4), 3);
     // pure (tested): the env that makes the quick render a hover check (hover offset applied, real placement, floor drawn)
     // parts = the body parts that support her in this pose (SupportParts): the renderer frames them in the close-up; it reports every part's gap either way
-    internal static Dictionary<string, string> HoverCheckEnv(double size, double hover, double bias, string[] parts = null)
+    // simHover = the hover in her own AvatarAppearance (AppearanceHover.Z): the sim moves her agent z by it, so the renderer takes it back out of agent z.
+    // 2026-10-31 18:26: after a relog the sim's appearance hover became the login POST -0.08 and her agent z dropped 28.953 -> 28.873 at the same spot;
+    // the render (z - size/2 + hover in force) drew her 8 cm sunk, read -0.062 at the right 0.012, and set 0.074 (David: floating).
+    internal static Dictionary<string, string> HoverCheckEnv(double size, double hover, double bias, string[] parts = null, double simHover = 0)
     {
         var env = new Dictionary<string, string>
         {
             ["GT_HOVER_CHECK"] = "1", ["GT_AGENT_SIZE"] = size.ToString("0.000", CultureInfo.InvariantCulture),
             ["GT_HOVER"] = hover.ToString("0.000", CultureInfo.InvariantCulture), ["GT_HOVER_BIAS"] = bias.ToString("0.0000", CultureInfo.InvariantCulture),
+            ["GT_SIM_HOVER"] = simHover.ToString("0.000", CultureInfo.InvariantCulture),
         };
         if (parts is { Length: > 0 }) env["GT_HC_PARTS"] = string.Join(",", parts);
         return env;
@@ -232,7 +236,7 @@ internal sealed partial class Hover
     {
         var psi = new ProcessStartInfo(h.LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add(h.LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
-        foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, bias, parts)) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
+        foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, bias, parts, Program.SimHoverNow())) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
         foreach (var kv in ContactEnv(seat ? "seat" : kind)) psi.Environment[kv.Key] = kv.Value;
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
@@ -532,7 +536,7 @@ internal sealed partial class Hover
             var (med, sampleWhy) = HoverSampleMedian(samples, kind == "stand" ? HoverSamples : 1);
             if (med is not double medv) { var m0 = $"{key}: not settled: {sampleWhy}; nothing changed, retry"; h.Log("posehover", m0); hoverCheckResult = m0; return "not settled: " + sampleWhy; }
             { int bi = 0; double bd = double.MaxValue; for (int i = 0; i < samples.Count; i++) if (samples[i] is double sv && Math.Abs(sv - medv) < bd) { bd = Math.Abs(sv - medv); bi = i; } rep = all[bi]; }
-            if (samples.Count > 1) h.Log("posehover", $"{key}: {samples.Count} samples at {hov:0.000}: {HoverSamplesText(samples)} -> median {medv:+0.000;-0.000} ({sampleWhy})");
+            if (samples.Count > 1) h.Log("posehover", $"{key}: {samples.Count} samples at {hov:0.000}: {HoverSamplesText(samples)} -> median {medv:+0.000;-0.000} ({sampleWhy}; sim appearance hover {Program.SimHoverNow():0.000} taken out of agent z {h.Client.Self.SimPosition.Z:0.000})");
             hoverLastPartGaps = rep.Value.pg; dir = rep.Value.dir;
             var (g1, img1) = (rep.Value.g, rep.Value.img);   // render 1: the representative contact close-up (the sample nearest the median)
             string finalImg = img1;

@@ -59,6 +59,7 @@ public static partial class Program
     // hover_height as our OWN AvatarAppearance reports it, or null if not received. 2026-10-26: this is NOT the hover David's viewer shows:
     // after a POST (-0.186) it stayed 0 ("sim applies 0") while his viewer drew her sunk by the AgentPreferences value. Never use it to
     // judge what is in force (EffectiveHoverNow / EffectiveHoverFresh below); it is only the last-resort fallback and a diagnostic.
+    internal static double SimHoverNow() => SimHover() ?? 0;
     static double? SimHover() { var av = SelfAv(); return av != null && av.VisualParameters.Length > 0 ? av.HoverHeight.Z : null; }
 
     // The hover IN FORCE = what the AgentPreferences cap holds = what David's viewer applies to her (observed 2026-10-26: prefs -0.186,

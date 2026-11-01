@@ -58,26 +58,10 @@ internal sealed partial class Hover
     internal static bool PoseGapSane(double gap, string kind, bool nearFurniture) =>
         PoseGapSane(gap) || (kind == "sit" && !nearFurniture && Math.Abs(gap) <= GroundSitGapMax);
     internal static bool PoseGapConfirmed(double gap) => Math.Abs(gap) <= PoseHoverTol;
-    // ---- ground sits whose floor contact is not (only) the hips (2026-10-27 David: VAMOSITG13 / 11 rest on their hands, VAMOSITG27 on chest / forearms / thighs) ----
-    // David's rule: look at the ground the way he does and adjust to it; the ground types differ, so NO per-pose hover value and NO per-pose offset. The ONE close-up render measures, against the floor
-    // surface drawn in that render, the visible gap under every body part (render_mesh.py `body_part_gaps`: hips, chest, hands, forearms, thighs, shins, feet; `GT: hover check parts: ...`).
-    // The AO pose name only CHOOSES WHICH PARTS SUPPORT HER (data below, never a number). The hover then goes where the LOWEST supporting part rests on the floor or is just above it:
-    // every supporting part is on or above the floor (hands never below it: they aim HandsAimM above), and nothing is lifted more than that. A pose not listed keeps the
-    // whole-body lowest-vertex gap as before. Nothing absolute is saved or hardcoded.
-    internal const double HandsAimM = 0.008;
-    internal static readonly Dictionary<string, string[]> SupportPartsOfPose = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["VAMOSITG13"] = new[] { "hips", "hands" },    // hips on the floor, both hands propped behind her
-        ["VAMOSITG12"] = new[] { "hips", "hands" },    // hand-supported too
-        ["VAMOSITG11"] = new[] { "hips", "hands" },    // leaning back on both hands
-        ["VAMOSITG27"] = new[] { "chest", "forearms", "thighs" },   // belly down: the hips do not count
-    };
+    // ---- the floor contact (2026-10-31 David: "don't use hardcoded adjustments"; "an average height across all possible contact points") ----
+    // No pose names, part lists or aims here: the renderer's `hover check gap` is the AVERAGE of the lowest points of her contact regions, the regions
+    // reaching down to the height where the points under her surround her pelvis (render_mesh.py, the contact average). The hover puts that average on the floor.
     internal static readonly string[] BodyParts = { "hips", "chest", "hands", "forearms", "thighs", "shins", "feet" };
-    // pure (tested): the body parts that support her in this AO ground sit; null = unlisted pose (the whole-body lowest gap, as before)
-    // 2026-10-31 20:37 (David, VAMOSITG23: hips floating 10+ cm, boot heel on the floor): an unlisted ground sit used the whole-body lowest gap, which was the
-    // footwear heel (feet +0.003 while hips +0.069). A ground sit rests on the hips / thighs, never on the feet or shoes: those are the default supporting parts.
-    internal static readonly string[] GroundSitParts = { "hips", "thighs" };
-    internal static string[] SupportParts(string kind, string pose) => kind != "sit" ? null : pose != null && SupportPartsOfPose.TryGetValue(pose.Trim(), out var p) ? p : GroundSitParts;
     // pure (tested): "GT: hover check parts: hips +0.012, hands -0.040, chest +0.150" -> part -> gap above the floor (m); parts the render could not see are absent
     internal static Dictionary<string, double> HoverCheckPartGaps(string stdout)
     {
@@ -94,8 +78,6 @@ internal sealed partial class Hover
         var g = (parts ?? Enumerable.Empty<string>()).Where(p => gaps != null && gaps.ContainsKey(p)).Select(p => gaps[p]).ToList();
         return g.Count == 0 ? null : g.Min();
     }
-    // pure (tested): where the lowest supporting part is aimed above the floor: HandsAimM when hands support her (never below the floor), else on it
-    internal static double SupportAim(IEnumerable<string> parts) => parts != null && parts.Contains("hands") ? HandsAimM : 0.0;
     // pure (tested): is the lowest supporting part where it is aimed? (effective gap = support gap - aim)
     internal static bool SupportConfirmed(double effGap, double aim) => Math.Abs(effGap) <= (aim > 0 ? aim : PoseHoverTol);
     // pure (tested): "hips +0.012, hands -0.040" for the log, in the order of the supporting parts
@@ -561,7 +543,7 @@ internal sealed partial class Hover
             bool calibrated = BiasCalibrated(nums, android, kind, pose);
             if (size < 1) { h.Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
             double bias = PoseBiasFor(nums, android, kind, pose);
-            var parts = SupportParts(kind, pose);   // which body parts support her in this pose (data: names only, never numbers); unlisted ground sit: hips + thighs (never the shoes)
+            string[] parts = null;   // which body parts support her in this pose (data: names only, never numbers); unlisted ground sit: hips + thighs (never the shoes)
             // 2026-10-31 (David: same boots, same floor, -0.25 / -0.001 / 0.089 / 0.091 vs the right 0.012): ONE render of ONE export drove each fix, and the
             // "verification" re-rendered the SAME export at the new hover, so it always read gap 0 (arithmetic). Now: HoverSamples fresh exports + renders,
             // the median of the agreeing ones drives the fix, a spread over HoverSampleSpreadMax = not settled (nothing changed, retry), and the verification
@@ -617,7 +599,7 @@ internal sealed partial class Hover
             string how; bool fixedHover = false, confirmRender = false;
             // the gap that drives the fix: the lowest SUPPORTING part's gap to the floor drawn in this render (hips, hands, chest, thighs ... as the pose lists them), else the whole-body lowest gap
             var partGaps1 = hoverLastPartGaps; double? sg1 = parts == null ? null : SupportGap(parts, partGaps1);
-            double basis = kind == "stand" ? medv : sg1 ?? gap, aim = sg1 != null ? SupportAim(parts) : 0.0, eg = basis - aim;
+            double basis = kind == "stand" ? medv : sg1 ?? gap, aim = 0.0, eg = basis - aim;
             string liftTxt = parts == null ? "" : sg1 == null ? $"; supporting parts {string.Join("+", parts)} not seen in the render: whole-body lowest gap used"
                 : $"; supporting parts {SupportGapsText(parts, partGaps1)}: hover aimed so the lowest is {aim:0.000} m above the floor{(aim > 0 ? " (hands never below it)" : "")}; no per-pose hover value, measured on this floor";
             if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, remeasured here"; h.Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, remeasuring on this pose"); }

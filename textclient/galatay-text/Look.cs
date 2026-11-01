@@ -166,7 +166,7 @@ public static partial class Program
         double size = SelfAv()?.Scale.Z ?? 0; if (size < 1) return new();
         var (kind, pose) = hoverSvc.PoseNow(); bool android = AndroidFormNow(); var nums = hoverSvc.PoseNums();
         var (hov, _) = await EffectiveHoverFresh();
-        var env = Hover.HoverCheckEnv(size, hov ?? PinnedHover(), Hover.PoseBiasFor(nums, android, kind, pose ?? ""), Hover.SupportParts(kind, pose), SimHoverNow());
+        var env = Hover.HoverCheckEnv(size, hov ?? PinnedHover(), Hover.PoseBiasFor(nums, android, kind, pose ?? ""), null, SimHoverNow());
         foreach (var kv in Hover.ContactEnv(kind)) env[kv.Key] = kv.Value;
         env["GT_HOVER_CAL"] = Hover.BiasCalibrated(nums, android, kind, pose) ? "calibrated" : "default";
         return env;

@@ -22,6 +22,16 @@ public static partial class Program
         d[footwear] = Math.Round(v, 4); return d;
     }
 
+    internal const double SavedHoverDeviationMax = 0.03;
+    /// <summary>Pure (tested): why a stand render fix to `target` must NOT be applied or saved, or null. 2026-10-31 18:26: after a relog the export's
+    /// agent z sat 0.080 m lower (28.873 vs 28.953 at the same spot and hover; it flips between the two across logins), all 3 samples shared it and read
+    /// -0.06 at the approved 0.012, the fix 0.074 was "verified" on the same stale z and saved; David saw her floating. A fix that moves more than
+    /// SavedHoverDeviationMax away from the verified value for this footwear is not trusted: keep the saved value, save nothing, ask for a visual check.</summary>
+    internal static string SavedHoverDeviationBlock(string footwear, IReadOnlyDictionary<string, double> saved, double target)
+        => footwear != null && saved != null && saved.TryGetValue(footwear, out var sv) && Math.Abs(target - sv) > SavedHoverDeviationMax
+            ? $"the render asks for {I(target)} but {footwear}'s verified hover is {I(sv)} ({Math.Abs(target - sv) * 100:0.0} cm apart, over {SavedHoverDeviationMax * 100:0} cm): the render is not trusted (the export's agent z can be stale by ~8 cm after a login); kept {I(sv)}, nothing saved; needs a visual check from David before a new value is saved"
+            : null;
+
     internal static Dictionary<string, double> LoadFootwearHovers()
     {
         try { return File.Exists(HoverFootwearFile) ? JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(HoverFootwearFile)) ?? new() : new(); }

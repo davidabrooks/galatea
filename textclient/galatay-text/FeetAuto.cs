@@ -212,6 +212,11 @@ internal sealed class FeetAuto
     string prevPoll, prevSig, prevWornSig, lastWaitReason, failedWanted; DateTime wornChangedAt = DateTime.MinValue, lastFailAt = DateTime.MinValue;
     int failedRounds; bool needsVerify = true; DateTime loginAt = DateTime.MinValue;
     internal string LastFitText = "feet fit: not checked yet since login";
+    /// <summary>2026-10-31 17:16: the foot pose (f1..f5) whose fit was VERIFIED since the last login / footwear change, else null.
+    /// The stand hover check only measures (and saves per footwear) once this matches the footwear worn (Hover.StandFeetBlock).</summary>
+    internal volatile string VerifiedFeet;
+    /// <summary>Called after a verified fit (wired to a stand hover check), so the hover is measured on the settled feet.</summary>
+    internal Action<string> FeetVerified;
 
     /// <summary>A new login: the last pressed pose is not valid across a relog, so it is cleared and everything restarts (the first stable poll verifies the fit from evidence).</summary>
     internal void NewLogin()
@@ -219,7 +224,7 @@ internal sealed class FeetAuto
         ClearFeetState(); prevPoll = prevSig = prevWornSig = lastWaitReason = failedWanted = prevFootSig = null; failedRounds = 0; needsVerify = true; wornChangedAt = loginAt = footChangedAt = Now();
         lastPressWanted = null; lastPressAt = DateTime.MinValue;   // the press rate limit does not carry across a relog
         footChangePending = true;   // a login makes the footwear newly known: the fast path presses it (after the veil / login wait), no 8 s window, no pose gate
-        LastFitText = "feet fit: not checked yet since login";
+        LastFitText = "feet fit: not checked yet since login"; VerifiedFeet = null;
         h.Log("feet", "new login: last pressed feet pose cleared (it is not valid across a relog); the fit will be verified from evidence");
     }
 
@@ -261,7 +266,7 @@ internal sealed class FeetAuto
         var footSig = FeetFootwearSignature(h.WornPrims().Select(h.AttachItemId), rules);
         if (footSig != prevFootSig)
         {
-            if (prevFootSig != null) { footChangePending = true; footChangedAt = Now(); h.Log("feet", $"footwear changed (now {f}: {why}): pressing as soon as it holds {FeetFootwearStableSec:0.#} s, not waiting for the rest of the outfit"); }
+            if (prevFootSig != null) { footChangePending = true; VerifiedFeet = null; footChangedAt = Now(); h.Log("feet", $"footwear changed (now {f}: {why}): pressing as soon as it holds {FeetFootwearStableSec:0.#} s, not waiting for the rest of the outfit"); }
             prevFootSig = footSig;
         }
         var (press, _) = FeetDecide(f, prevPoll, ReadFeetState(), bodyChanged);
@@ -293,6 +298,8 @@ internal sealed class FeetAuto
     {
         LastFitText = verified ? $"feet fit verified at {Now():HH:mm:ss} ({feet}): {why}" : $"FEET NOT VERIFIED at {Now():HH:mm:ss} ({feet}): {why}";
         h.Log("feet", verified ? "feet fit verified: " + why : "feet NOT verified: " + why);
+        VerifiedFeet = verified ? feet : null;
+        if (verified) try { FeetVerified?.Invoke(feet); } catch { }
         return LastFitText;
     }
 

@@ -1292,20 +1292,21 @@ def z0_of(fl, ll, lo, seated=False):
     if seated and ll is not None: return ll
     return fl - lo if ll is None or abs(ll + lo - fl) < 0.35 else ll
 
-def hover_check_z0(env, agent_z, lo_z, floor_z):
-    """Hover check (2026-10-23, David: judge her hover by eye). The viewer puts her rest-pose foot level at agent z - size/2
-    (the sim's capsule bottom; the sim's size IS the viewer's body size) plus her hover; animations move the body from there.
-    So mesh z0 = agent_z - size/2 + hover, never snapped to the floor (z0_of snaps standing avatars: that hid every hover).
-    Returns (z0, gap of her lowest vertex above the floor, hover, size) or None when GT_HOVER_CHECK is off.
-    ponytail: the viewer's exact root offset per posture isn't modelled; GT_HOVER_BIAS calibrates it per (form, kind)."""
+def hover_check_z0(env, agent_z, lo_z, floor_z, agent_off=None):
+    """Hover check: where David's Firestorm draws her, no per-pose bias (2026-10-31). Firestorm puts the avatar root at
+    agent z - (body size / 2 - pelvis-to-foot) + the avatar's hover, standing and ground-sitting alike (llvoavatar.cpp:5646,
+    5649 standing, 5884-5895 ground sit); agent_off (scene-mesher, LLAvatarAppearance::computeBodySize as Firestorm writes it)
+    is that root in her mesh frame. The hover is her AvatarHoverOffsetZ (GT_HOVER): Firestorm POSTs it to AgentPreferences
+    (llvoavatarself.cpp:284-287, 3437-3450) and other viewers apply the AppearanceHover the sim sends for her
+    (llvoavatar.cpp:10869-10875, 11310-11314), clamped to +-3 m (llvoavatar.cpp:147-148). No viewer code takes hover out
+    of the agent z, but her OWN client's agent z comes back moved by the appearance hover the sim holds for her (GT_SIM_HOVER:
+    28.953 -> 28.873 when it became -0.08, 2026-10-31 18:26), which David's viewer does not see, so that is taken out first.
+    Returns (z0, gap of her lowest vertex above the floor, hover, size) or None when GT_HOVER_CHECK is off."""
     if env.get("GT_HOVER_CHECK") != "1": return None
-    size = float(env["GT_AGENT_SIZE"]); hov = float(env.get("GT_HOVER", "0"))
-    # GT_HOVER_BIAS: the model's measured error for this posture (2026-10-23: stands render 0.25 m high at the pin, where the sim
-    # keeps her feet on the floor; ground sits -0.055 m at David's approved VAMOSITG26 -0.12): subtracted so contact = gap 0
-    # GT_SIM_HOVER (2026-10-31 18:26): the sim moves her agent z by the hover in her own appearance (z 28.953 -> 28.873 when it became -0.08),
-    # so that is taken back out of agent z and only the hover in force is added: the true base, whatever the sim baked in
+    size = float(env["GT_AGENT_SIZE"]); hov = max(-3.0, min(3.0, float(env.get("GT_HOVER", "0"))))
     agent_z = agent_z - float(env.get("GT_SIM_HOVER", "0"))
-    z0 = agent_z - size / 2 + hov - float(env.get("GT_HOVER_BIAS", "0"))
+    off = agent_off if agent_off is not None else -size / 2   # old mesh.json without agent_off: the capsule bottom
+    z0 = agent_z + off + hov
     return z0, z0 + lo_z - floor_z, hov, size
 
 HOVER_FLOOR_MISSING_M = 1.0
@@ -1635,7 +1636,7 @@ if SCENE:
     placed = [] if SELF_FLOOR else [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
     lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
-    HC = hover_check_z0(os.environ, g[2], lo[2], fl)   # 2026-10-23 hover check: real placement + her hover, floor from the scene (seated on an object: look.py leaves GT_HOVER_CHECK off, the sim's placement)
+    HC = hover_check_z0(os.environ, g[2], lo[2], fl, M.get("agent_off"))   # 2026-10-23 hover check: real placement + her hover, floor from the scene (seated on an object: look.py leaves GT_HOVER_CHECK off, the sim's placement)
     if HC and hover_floor_missing(HC[1], mst):
         z0 = HC[0]; print(f"GT: hover check: no reading: the floor under her is not in the export yet (cast hit z {fl:.3f}, {HC[1]:+.3f} m below her lowest point; scene still loading)", flush=True)
     elif HC:

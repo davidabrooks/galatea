@@ -584,6 +584,8 @@ internal sealed partial class Hover
                         h.Log("posehover", msg); hoverCheckResult = msg; return "large fix not confirmed by a second render";
                     }
                 }
+                if (kind == "stand" && Program.SavedHoverDeviationBlock(fw0, Program.LoadFootwearHovers(), t) is string dvb)
+                { var dm = $"{key}: render gap {basis:+0.000;-0.000} at {hov:0.000}: {dvb} ({img1})"; h.Log("posehover", dm); hoverCheckResult = dm; return null; }
                 if (!PoseStill(kind, pose)) { h.Log("posehover", $"{key}: pose changed; skipped"); return null; }
                 if (kind == "stand" && StandFeetBlock(fw0, Program.FootwearKeyNow(), Program.feetSvc.VerifiedFeet) is string fb1) { h.Log("posehover", $"{key}: {fb1}; render gap {gap:+0.000;-0.000} ignored, nothing changed"); return fb1; }
                 var (ok, info) = await h.PostHover(t, $"visual hover fix: {key} (applied now, not saved)");

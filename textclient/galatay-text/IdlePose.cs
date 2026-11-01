@@ -243,6 +243,15 @@ public static partial class Program
     // (logout, shutdown, deploy) never does, and a new login clears any cooldown.
     internal static bool IdleStandStartsCooldown(string why) => why is "stand command" or "manual stop";
     internal static DateTime IdleCooldownAfterLogin() => DateTime.MinValue;
+    // 2026-10-31 18:07 (David): a slow login let her auto-sit 106 s after the veil came off. After login the idle sit waits at least
+    // TWICE the normal idle time (the drawn threshold, 90-300 s), counted from the later of login and veil-off; veil still on = wait.
+    internal const double IdleLoginFactor = 2;
+    internal static bool IdleLoginHoldActive(DateTime now, DateTime loginAt, DateTime veilOffAt, double thresholdSec)
+    {
+        if (veilOffAt == DateTime.MaxValue) return true;
+        var from = veilOffAt > loginAt ? veilOffAt : loginAt;
+        return (now - from).TotalSeconds < IdleLoginFactor * thresholdSec;
+    }
     // stand (stand tool, idle_pose stop, logout): clear any pose, make sure the AO force sit is off; cooldown only for his stand
     static async Task<string> IdleExplicitStand(string why)
     {
@@ -629,6 +638,7 @@ public static partial class Program
             rlv.Has("sit") || rlv.Has("unsit") && sitObj, leashForgetBusy != 0 || shuttingDown, dancing,
             (DateTime.Now - idleActivityAt).TotalSeconds, idleThreshold, CollarVisibleNow(), LeashParticleTarget() != null, AoGroundSitNow() != null, androidNow, idleLeashHold));
         if (kind != null && IdleCooldownActive(DateTime.Now, idleNoSitUntil)) return;   // explicit stand cooldown
+        if (kind != null && IdleLoginHoldActive(DateTime.Now, idleLoginAt, loginVeilOffAt, idleThreshold)) return;   // post-login: 2x the idle time
         if (kind != null) Log("idlepose", "enter: " + await IdlePoseEnter(kind, $"idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0} s"));
     }
 

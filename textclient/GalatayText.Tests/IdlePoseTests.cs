@@ -416,4 +416,16 @@ public class IdlePoseTests
         Assert.Equal(0.105, Hover.AutoHoverDecide("stand", false, -0.045, 0.06, 0.0, 1e9)!.Value, 3);   // sinking into the floor: the problem-fix path still works
     }
     static string Root() { var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
+    [Fact] public void IdleSit_AfterLogin_WaitsTwiceTheIdleTime()   // 2026-10-31 18:07 regression: auto-sat 106 s after a slow login's veil-off
+    {
+        var login = new System.DateTime(2026, 10, 31, 18, 5, 24); var veil = login.AddSeconds(17);
+        Assert.True(Program.IdleLoginHoldActive(login.AddSeconds(600), login, System.DateTime.MaxValue, 94));   // veil still on
+        Assert.True(Program.IdleLoginHoldActive(veil.AddSeconds(106), login, veil, 94));                          // the live case: blocked
+        Assert.True(Program.IdleLoginHoldActive(veil.AddSeconds(187), login, veil, 94));
+        Assert.False(Program.IdleLoginHoldActive(veil.AddSeconds(189), login, veil, 94));
+        Assert.True(Program.IdleLoginHoldActive(login.AddSeconds(500), login, System.DateTime.MinValue, 300));     // no veil: from login
+        Assert.False(Program.IdleLoginHoldActive(login.AddSeconds(601), login, System.DateTime.MinValue, 300));
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        Assert.Contains("IdleLoginHoldActive(DateTime.Now, idleLoginAt, loginVeilOffAt, idleThreshold)) return;", src);
+    }
 }

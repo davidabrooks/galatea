@@ -217,6 +217,9 @@ internal sealed class FeetAuto
     internal volatile string VerifiedFeet;
     /// <summary>Called after a verified fit (wired to a stand hover check), so the hover is measured on the settled feet.</summary>
     internal Action<string> FeetVerified;
+    // 2026-10-31 17:32 (#384 live): f3 pressed at 17:32:02 but the fit was only verified at 17:32:49 (the informational close-ups took ~45 s),
+    // so the stand hover check gave up and she stood at the barefoot hover. A press now tells the hover side at once (saved footwear hover).
+    internal Action<string> FeetPressed;
 
     /// <summary>A new login: the last pressed pose is not valid across a relog, so it is cleared and everything restarts (the first stable poll verifies the fit from evidence).</summary>
     internal void NewLogin()
@@ -331,6 +334,7 @@ internal sealed class FeetAuto
             {
                 var (touched, r) = await PressFeetOnce(feet, why, rules);
                 if (!touched) return r;   // not ready / HUD missing: nothing pressed, not a failed round
+                try { FeetPressed?.Invoke(feet); } catch { }
                 await Delay(4000);        // the body restarts its feet animations
                 var v = await VerifyFit(feet, rules);
                 last = v.Why;

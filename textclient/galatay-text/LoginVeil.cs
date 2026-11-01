@@ -373,9 +373,10 @@ public static partial class Program
         // 14:01 relog (David): the collar vanished LAST. Stealth now runs to the end (capped) BEFORE the veil and the stash; the collar's
         // alpha is saved with it on logout, so it also rezzes hidden at the next login.
         loginVeilEarlyStash = new();
+        logoutHoverFreeze = true;   // HoverFootwear.cs: no footwear hover saved from a logout render
         await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarStealthMaxMs, LoginVeilOnVerified, LoginVeilStashForLogout, LoginVeilLooseHeadPartsFirst, LoginVeilEvoxHideForLogout);
         // the logout hold must never outlive an aborted logout: the outfit send would skip those items for the rest of the session
-        _ = Task.Run(async () => { await Task.Delay(120000); if (LoggedIn && Volatile.Read(ref loginVeilGen) == gen0) loginVeilHeld.Clear(); });
+        _ = Task.Run(async () => { await Task.Delay(120000); if (LoggedIn && Volatile.Read(ref loginVeilGen) == gen0) { loginVeilHeld.Clear(); logoutHoverFreeze = false; } });
     }
 
     static List<LoginVeil.Stashed> loginVeilEarlyStash = new();

@@ -41,10 +41,44 @@ public static partial class Program
         catch { return null; }
     }
 
+    // 2026-10-31 17:30:51: a stand check ran DURING the logout (veil on, clothes being stashed) and saved -0.001 for f3. No save while logging out.
+    internal static volatile bool logoutHoverFreeze;
+    internal static string FootwearHoverSaveBlock(bool loggingOut) => loggingOut ? "logout in progress: the render shows a half-stashed outfit, not saved" : null;
+
+    internal const int FootwearFitTimeoutMs = 90000;
+    /// <summary>Pure (tested): the saved hover to apply right after the foot pose for `feet` is pressed, or null (not standing / never saved).</summary>
+    internal static double? FootwearPressHover(string kind, bool seated, string feet, IReadOnlyDictionary<string, double> saved)
+        => !seated && kind == "stand" && feet != null && saved != null && saved.TryGetValue(feet, out var v) ? v : null;
+    /// <summary>Pure (tested): after the timeout, re-apply the saved value when the fit is still unconfirmed for the same footwear and the hover drifted.</summary>
+    internal static bool FootwearTimeoutReapply(string feet, string fwNow, string verified, double? inForce, double savedV)
+        => string.Equals(feet, fwNow, StringComparison.OrdinalIgnoreCase) && !string.Equals(verified, feet, StringComparison.OrdinalIgnoreCase)
+           && (inForce is not double h || Math.Abs(h - savedV) > 0.005);
+
+    // the shoes' foot pose was just pressed: apply the saved hover for that footwear now (standing only); the measuring check follows the verified fit.
+    // If the fit is never confirmed, the saved value stays in force after FootwearFitTimeoutMs (never the barefoot hover).
+    internal static async Task FootwearPressedHover(string feet)
+    {
+        try
+        {
+            var (kind, _) = hoverSvc.PoseNow();
+            var v = FootwearPressHover(kind, client.Self.SittingOn != 0, feet, LoadFootwearHovers());
+            if (v is not double sv) { Log("height", $"footwear {feet} pressed: no saved hover applied ({(kind != "stand" || client.Self.SittingOn != 0 ? "not standing" : "none saved")})"); return; }
+            var r = await PostHover(sv, $"footwear {feet} pressed: saved hover for it");
+            Log("height", $"footwear {feet} pressed: saved hover {I(sv)} applied ({r.info}); the measuring check runs once the fit is verified");
+            await Task.Delay(FootwearFitTimeoutMs);
+            if (!LoggedIn || client.Self.SittingOn != 0 || hoverSvc.PoseNow().kind != "stand") return;
+            var saved = LoadFootwearHovers(); if (!saved.TryGetValue(feet, out var sv2)) return;
+            if (FootwearTimeoutReapply(feet, FootwearKeyNow(), feetSvc.VerifiedFeet, EffectiveHoverNow(), sv2))
+            { var r2 = await PostHover(sv2, $"footwear {feet}: fit not confirmed in {FootwearFitTimeoutMs / 1000} s, saved hover kept"); Log("height", $"footwear {feet}: fit not confirmed in {FootwearFitTimeoutMs / 1000} s: saved hover {I(sv2)} re-applied ({r2.info})"); }
+        }
+        catch (Exception ex) { Log("height", $"footwear {feet} pressed hover: {ex.GetBaseException().Message}"); }
+    }
+
     // a visual check verified this stand hover for the footwear worn now: remember it
     internal static void SaveVerifiedStandHover(double v, string why)
     {
         var fw = FootwearKeyNow(); if (fw == null) return;
+        if (FootwearHoverSaveBlock(logoutHoverFreeze) is string blk) { Log("height", $"stand hover {I(v)} for footwear {fw} NOT saved: {blk} ({why})"); return; }
         try
         {
             File.WriteAllText(HoverFootwearFile, JsonSerializer.Serialize(FootwearHoverMerge(LoadFootwearHovers(), fw, v), new JsonSerializerOptions { WriteIndented = true }));

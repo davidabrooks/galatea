@@ -32,7 +32,7 @@ public class SupportPartsTests
     {
         Assert.Equal(new[] { "hips", "hands" }, Hover.SupportParts("sit", "VAMOSITG13")); Assert.Equal(new[] { "hips", "hands" }, Hover.SupportParts("sit", " vamositg11 "));
         Assert.Equal(new[] { "hips", "hands" }, Hover.SupportParts("sit", "VAMOSITG12")); Assert.Equal(new[] { "chest", "forearms", "thighs" }, Hover.SupportParts("sit", "VAMOSITG27"));
-        Assert.Null(Hover.SupportParts("sit", "VAMOSITG23")); Assert.Null(Hover.SupportParts("sit", null)); Assert.Null(Hover.SupportParts("stand", "VAMOSITG13")); Assert.Null(Hover.SupportParts("seat", "VAMOSITG27"));
+        Assert.Equal(new[] { "hips", "thighs" }, Hover.SupportParts("sit", "VAMOSITG23")); Assert.Equal(new[] { "hips", "thighs" }, Hover.SupportParts("sit", null)); Assert.Null(Hover.SupportParts("stand", "VAMOSITG13")); Assert.Null(Hover.SupportParts("seat", "VAMOSITG27"));
         Assert.All(Hover.SupportPartsOfPose.Values.SelectMany(v => v), p => Assert.Contains(p, Hover.BodyParts));   // part names only
         var ph = Src("PoseHover.cs"); var table = ph[ph.IndexOf("SupportPartsOfPose = new")..]; table = table[..table.IndexOf("};")];
         Assert.DoesNotMatch(@"[+-]?\d+\.\d+", table.Replace("VAMOSITG", ""));   // no hover number anywhere in the table
@@ -88,5 +88,17 @@ public class SupportPartsTests
         Assert.Contains("renders {renders}", chk); Assert.Equal(1, Hover.HoverCheckRenderCount(false)); Assert.Equal(2, Hover.HoverCheckRenderCount(true));
         Assert.Contains("SupportParts(kind, pose)", Src("Look.cs"));
         Assert.DoesNotContain("File.Write", chk);
+    }
+
+    // David's 20:37 photo (VAMOSITG23, one leg out, knee up): boot heel on the floor, hips floating. The render at hover -0.030 printed exactly these gaps;
+    // the fix must lower the hover by the HIPS gap (to -0.099), not stop at the heel (-0.007 whole-body / feet +0.003 -> about -0.03, the float he saw).
+    [Fact] public void Photo20261031_2037_GroundSitRestsOnHipsNotBootHeels()
+    {
+        var g = Hover.HoverCheckPartGaps("GT: hover check parts: hips +0.069, chest +0.303, forearms +0.250, hands +0.136, thighs +0.083, shins +0.057, feet +0.003");
+        var parts = Hover.SupportParts("sit", "VAMOSITG23");
+        Assert.DoesNotContain("feet", parts); Assert.DoesNotContain("shins", parts);
+        double basis = Hover.SupportGap(parts, g)!.Value; Assert.Equal(0.069, basis, 3);
+        Assert.Equal(-0.099, Hover.PoseHoverFromGap(-0.030, basis - Hover.SupportAim(parts)), 3);
+        Assert.False(Hover.SupportConfirmed(basis - Hover.SupportAim(parts), Hover.SupportAim(parts)));   // the old "contact confirmed" at -0.03 was the heel
     }
 }

@@ -74,7 +74,10 @@ internal sealed partial class Hover
     };
     internal static readonly string[] BodyParts = { "hips", "chest", "hands", "forearms", "thighs", "shins", "feet" };
     // pure (tested): the body parts that support her in this AO ground sit; null = unlisted pose (the whole-body lowest gap, as before)
-    internal static string[] SupportParts(string kind, string pose) => kind == "sit" && pose != null && SupportPartsOfPose.TryGetValue(pose.Trim(), out var p) ? p : null;
+    // 2026-10-31 20:37 (David, VAMOSITG23: hips floating 10+ cm, boot heel on the floor): an unlisted ground sit used the whole-body lowest gap, which was the
+    // footwear heel (feet +0.003 while hips +0.069). A ground sit rests on the hips / thighs, never on the feet or shoes: those are the default supporting parts.
+    internal static readonly string[] GroundSitParts = { "hips", "thighs" };
+    internal static string[] SupportParts(string kind, string pose) => kind != "sit" ? null : pose != null && SupportPartsOfPose.TryGetValue(pose.Trim(), out var p) ? p : GroundSitParts;
     // pure (tested): "GT: hover check parts: hips +0.012, hands -0.040, chest +0.150" -> part -> gap above the floor (m); parts the render could not see are absent
     internal static Dictionary<string, double> HoverCheckPartGaps(string stdout)
     {
@@ -558,7 +561,7 @@ internal sealed partial class Hover
             bool calibrated = BiasCalibrated(nums, android, kind, pose);
             if (size < 1) { h.Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
             double bias = PoseBiasFor(nums, android, kind, pose);
-            var parts = SupportParts(kind, pose);   // which body parts support her in this pose (data: names only, never numbers); null = unlisted: the whole-body lowest gap
+            var parts = SupportParts(kind, pose);   // which body parts support her in this pose (data: names only, never numbers); unlisted ground sit: hips + thighs (never the shoes)
             // 2026-10-31 (David: same boots, same floor, -0.25 / -0.001 / 0.089 / 0.091 vs the right 0.012): ONE render of ONE export drove each fix, and the
             // "verification" re-rendered the SAME export at the new hover, so it always read gap 0 (arithmetic). Now: HoverSamples fresh exports + renders,
             // the median of the agreeing ones drives the fix, a spread over HoverSampleSpreadMax = not settled (nothing changed, retry), and the verification

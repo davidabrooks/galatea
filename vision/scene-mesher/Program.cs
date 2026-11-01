@@ -299,6 +299,48 @@ static class Mesher
         return ok;
     }
 
+    // 2026-10-31 regression: the size her client sent the sim (LibreMetaverse's linear estimate, 1.572) was 8 cm short of the body size
+    // David's Firestorm computes for her shape (1.652), so the sim's agent z and Firestorm's root disagreed and per-pose hover biases
+    // papered over it. The size sent must be Firestorm's: LLAvatarAppearance::computeBodySize written out joint by joint here
+    // (local z times the parent's scale, llavatarappearance.cpp:533-545), checked against BodySizeZ on the default skeleton and her shape.
+    static bool BodySizeSelftest()
+    {
+        var shapeFile = Path.Combine(AppContext.BaseDirectory, "testdata", "galatay-shape-20261031.json");
+        var raw = JsonSerializer.Deserialize<Dictionary<string, float[]>>(File.ReadAllText(shapeFile));
+        var her = raw.ToDictionary(kv => kv.Key, kv => new BoneTransform { Position = new Vector3(kv.Value[0], kv.Value[1], kv.Value[2]), Scale = new Vector3(kv.Value[3], kv.Value[4], kv.Value[5]) });
+        bool ok = true;
+        foreach (var shape in new[] { null, her })
+        {
+            var defs = new Dictionary<string, JointBase>();
+            void Walk(Joint j) { defs[j.name] = j; foreach (var c in j.bone ?? Array.Empty<Joint>()) Walk(c); }
+            Walk(LindenSkeleton.Load().bone);
+            float Pz(string j) => shape != null && shape.TryGetValue(j, out var t) ? t.Position.Z : defs[j].pos[2];
+            float Sz(string j) => shape != null && shape.TryGetValue(j, out var t) ? t.Scale.Z : (defs[j].scale?[2] ?? 1);
+            // Firestorm's mTorso local position is taken against the pelvis (pre-Bento chain); the Bento spine joints between them
+            // sit at +0.084 / -0.084 with the pelvis's scale, so the sum of the three is mTorso's offset at the pelvis scale
+            float torso = Pz("mSpine1") * Sz("mPelvis") + Pz("mSpine2") * Sz("mSpine1") + Pz("mTorso") * Sz("mSpine2");
+            float pelvisToFoot = Pz("mHipLeft") * Sz("mPelvis") - Pz("mKneeLeft") * Sz("mHipLeft") - Pz("mAnkleLeft") * Sz("mKneeLeft") - Pz("mFootLeft") * Sz("mAnkleLeft");
+            float fs = pelvisToFoot + MathF.Sqrt(2) * Pz("mSkull") * Sz("mHead") + Pz("mHead") * Sz("mNeck") + Pz("mNeck") * Sz("mChest") + Pz("mChest") * Sz("mTorso") + torso;
+            var rest = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>(); Skeleton.World(new(), shape, null, default, rest);
+            float ours = BodySizeZ(j => rest[j].Pos.Z);
+            Console.WriteLine($"body size {(shape == null ? "default" : "galatay")}: firestorm {fs:F4} ours {ours:F4}");
+            ok &= MathF.Abs(fs - ours) < 1e-4f;
+            // her client sent the sim 1.572 (AgentSetAppearance, 2026-10-31 log): Firestorm's own size for her shape must agree
+            if (shape != null) ok &= MathF.Abs(fs - 1.572f) < 0.003f;
+        }
+        return ok;
+    }
+
+    // LLAvatarAppearance::computeBodySize (Firestorm llavatarappearance.cpp:533-545) on rest world z (T-pose, no rotations, so
+    // local z times parent scale summed = world z difference): mPelvisToFoot + sqrt(2) * skull + head + neck + chest + torso
+    // NOTE Firestorm's mPelvisToFoot adds hip.z * pelvis scale (hip.z is -0.041, below the pelvis) where the physical distance
+    // subtracts it, so its pelvis-to-foot and body size come out 2 * 0.041 * pelvis scale (~8 cm) shorter than the bone lengths;
+    // reproduced as is, since it decides where the viewer puts her root (llvoavatar.cpp:5646)
+    internal static float PelvisToFootZ(Func<string, float> restZ) =>
+        restZ("mPelvis") - restZ("mFootLeft") + 2 * (restZ("mHipLeft") - restZ("mPelvis"));
+    internal static float BodySizeZ(Func<string, float> restZ) =>
+        PelvisToFootZ(restZ) + restZ("mHead") - restZ("mPelvis") + MathF.Sqrt(2) * (restZ("mSkull") - restZ("mHead"));
+
     // collision volumes take their bone's shape-slider scale: in the SL viewer a skeletal param's bone scale delta also goes
     // to that bone's collision-volume children, times each volume's default scale (LLAvatarJointCollisionVolume inherits
     // scale; reimplemented from the documented LLPolySkeletalDistortion behaviour). LibreMetaverse's ComputeBoneTransforms
@@ -405,6 +447,7 @@ static class Mesher
     {
         if (args.Length == 1 && args[0] == "--pbr-selftest") { bool pok = PbrSelftest(); Console.WriteLine(pok ? "pbr selftest ok" : "pbr selftest FAILED"); return pok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--skin-selftest") { bool sok = SkinSelftest(); Console.WriteLine(sok ? "skin selftest ok" : "skin selftest FAILED"); return sok ? 0 : 1; }
+        if (args.Length == 1 && args[0] == "--bodysize-selftest") { bool bok = BodySizeSelftest(); Console.WriteLine(bok ? "bodysize selftest ok" : "bodysize selftest FAILED"); return bok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--mem-selftest") { bool mok = MemSelftest(); Console.WriteLine(mok ? "mem selftest ok" : "mem selftest FAILED"); return mok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--lod-selftest") { bool lok = LodSelftest(); Console.WriteLine(lok ? "lod selftest ok" : "lod selftest FAILED"); return lok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--selftest")  // default skeleton sanity: pelvis ~1.07 m, head ~1.75 m, arms out (T-pose)
@@ -477,6 +520,7 @@ static class Mesher
         // avatar-local: undo her rotation around her agent position (z moves into the mesh frame with agentOff in PoseAvatar)
         Vector3? lookAt = null; var agentOff = new ConcurrentDictionary<string, float>();  // per avatar owner: mesh z 0 relative to agent z
         var agentOffSeated = new ConcurrentDictionary<string, float>();
+        var bodySize = new ConcurrentDictionary<string, float>(); var sentSize = new ConcurrentDictionary<string, float>();
         if (lookArg is { Length: 3 })
             lookAt = (new Vector3(lookArg[0], lookArg[1], lookArg[2]) - me) * Quaternion.Conjugate(((OSDMap)doc["me"])["rot"].AsQuaternion());
         string only = args.Length > 2 ? args[2] : "all";
@@ -795,7 +839,16 @@ static class Mesher
             float Rz(string j) => rest[j].Pos.Z;
             // seated (LLVOAvatar::updateCharacter): a sitter's pelvis sits AT the agent position, no body-size/foot offset
             agentOffSeated[owner] = -Rz("mPelvis");
-            agentOff[owner] = -0.5f * (Rz("mHead") - Rz("mFootLeft") + MathF.Sqrt(2) * (Rz("mSkull") - Rz("mHead"))) - Rz("mFootLeft");
+            // body size z (LLAvatarAppearance::computeBodySize, Firestorm llavatarappearance.cpp:533-545): pelvis-to-foot + torso
+            // to skull, sqrt(2) on the skull as there; rest skeleton with her mesh joint overrides, as the viewer's joint positions
+            float bodyZ = BodySizeZ(Rz);
+            bodySize[owner] = bodyZ;
+            // the size the viewer sends the sim: body size + the shape's Hover param (mAvatarOffset, llavatarappearance.cpp:528,569;
+            // llagent.cpp:6589; 11001 defaults to 0). Her client's own estimate (LibreMetaverse, 1.572) should match it
+            sentSize[owner] = bodyZ + (vp.TryGetValue(11001, out var shapeHover) ? shapeHover : 0f);
+            // root (llvoavatar.cpp:5646): agent z - (body size / 2 - pelvis-to-foot); the pelvis sits at the root (its local
+            // position is 0, llavatarappearance.cpp:894) and is Rz(mPelvis) up in this mesh frame
+            agentOff[owner] = -0.5f * bodyZ + PelvisToFootZ(Rz) - Rz("mPelvis");
             frames = new Dictionary<string, (Vector3 Pos, Quaternion Rot)>();
             var world = Skeleton.World(overrides, shape, anim, pelvisOff, frames, animPos, lockScale);
             if (owner == "me" && lookAt is Vector3 lt0 && lt0 - new Vector3(0, 0, agentOff[owner]) is var lt && LookRot(lt - frames["mHead"].Pos) is Quaternion q)
@@ -916,7 +969,7 @@ static class Mesher
                 outMeta.Add(new { group = b.Group, tex = b.Tex, rgba = b.Rgba, fullbright = b.Fullbright, glow = b.Glow, mat = b.Mat, nv = b.P.Count / 3, ni = b.I.Count, offset = off });
                 off += (b.P.Count + b.N.Count + b.T.Count + b.I.Count) * 4L;
             }
-        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, agent_off_seated = agentOffSeated.TryGetValue("me", out var mso) ? mso : (float?)null, seated = meMap.ContainsKey("sitting_on") && meMap["sitting_on"].AsUInteger() != 0, bones = frames == null ? null : Bones(frames), others }));
+        File.WriteAllText(Path.Combine(dir, "mesh.json"), JsonSerializer.Serialize(new { batches = outMeta, stats, bakes = doc["bakes"].ToString(), sun = doc.ContainsKey("sun_dir") ? new[] { doc["sun_dir"].AsVector3().X, doc["sun_dir"].AsVector3().Y, doc["sun_dir"].AsVector3().Z } : null, anim = animId, lights, pelvis = frames == null ? null : new[] { frames["mPelvis"].Pos.X, frames["mPelvis"].Pos.Y, frames["mPelvis"].Pos.Z }, head = frames == null ? null : new[] { frames["mHead"].Pos.X, frames["mHead"].Pos.Y, frames["mHead"].Pos.Z }, me = new[] { me.X, me.Y, me.Z }, me_yaw = Yaw(meMap["rot"].AsQuaternion()), agent_off = agentOff.TryGetValue("me", out var mo) ? mo : (float?)null, agent_off_seated = agentOffSeated.TryGetValue("me", out var mso) ? mso : (float?)null, body_size = bodySize.TryGetValue("me", out var mbs) ? mbs : (float?)null, sent_size = sentSize.TryGetValue("me", out var mss) ? mss : (float?)null, seated = meMap.ContainsKey("sitting_on") && meMap["sitting_on"].AsUInteger() != 0, bones = frames == null ? null : Bones(frames), others }));
         Phase("write");
         Console.Error.WriteLine("timing: " + string.Join(", ", phases));
         Console.WriteLine($"{batches.Count} batches, {outMeta.Sum(m => ((dynamic)m).nv)} vertices, {off / 1048576.0:F1} MB; " + string.Join(", ", stats.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}")));

@@ -288,7 +288,7 @@ public class IdlePoseTests
         var root = Root();
         var rm = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "vision/cloud-render/render_mesh.py"));
         Assert.Contains("z0 = agent_z + off + hov", rm);                          // Firestorm root + the hover, no per-pose bias (2026-10-31)
-        Assert.Contains("HC = hover_check_z0(os.environ, g[2], lo[2], fl, M.get(\"agent_off\"))", rm);   // not snapped; gap vs the scene floor
+        Assert.Contains("HC = hover_check_z0(os.environ, g[2], lo_c, fl, M.get(\"agent_off\"))", rm);   // not snapped; gap vs the scene floor
         Assert.Contains("if view == \"side\":", rm);
         var lk = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "vision/look.py"));
         Assert.Contains("a[1] == \"hovercheck\": a = [a[0], \"view\"", lk);    // scene mode: the real floor geometry is meshed

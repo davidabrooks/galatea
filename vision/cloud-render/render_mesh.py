@@ -1309,6 +1309,56 @@ def hover_check_z0(env, agent_z, lo_z, floor_z, agent_off=None):
     z0 = agent_z + off + hov
     return z0, z0 + lo_z - floor_z, hov, size
 
+def com_inside(xy, c):
+    """is c inside the convex hull of the points xy (n, 2)? Yes exactly when no half-plane through c is empty of them: the largest angular gap between
+    the points seen from c is under pi"""
+    d = np.asarray(xy, np.float64) - np.asarray(c, np.float64)[None]
+    if len(d) < 3: return False
+    a = np.sort(np.arctan2(d[:, 1], d[:, 0])); g = np.diff(np.concatenate([a, a[:1] + 2 * np.pi]))
+    return bool(g.max() < np.pi)
+
+def support_z(verts, com):
+    """2026-10-31 (David: "don't use hardcoded adjustments"; 20:37 photo: boot heel on the floor, hips floating). A body standing on a floor is held up
+    once the points it touches surround its centre of mass (static equilibrium; SL cannot tip her, only move her up or down). So her contact height is
+    the lowest z at which the vertices at or below it surround the centre of mass (the pelvis joint, horizontally); anything lower (a heel stuck out in
+    front) goes into the floor. No pose names, no part lists, no tuned numbers. None when no height does (the whole-body lowest point is used)."""
+    v = np.asarray(verts, np.float64).reshape(-1, 3)
+    if len(v) < 3: return None
+    v = v[np.argsort(v[:, 2])]
+    if not com_inside(v[:, :2], com): return None
+    lo, hi = 2, len(v)   # the smallest k whose k lowest vertices surround the com (monotone: more points only grow the hull)
+    while lo < hi:
+        m = (lo + hi) // 2
+        if com_inside(v[:m, :2], com): hi = m
+        else: lo = m + 1
+    return float(v[lo - 1, 2])
+
+# touchpoint regions, per side (2026-10-31 David: "an average height across all possible touchpoints"); the 25 posed segments as BONE_PART_SEGS, left / right apart
+TOUCH_REGION_SEGS = {"hips": (0, 15, 20), "chest": (1, 2), "l forearm": (8,), "r forearm": (13,), "l hand": (9,), "r hand": (14,), "l thigh": (16,), "r thigh": (21,),
+                     "l shin": (17,), "r shin": (22,), "l foot": (18, 19), "r foot": (23, 24)}
+
+def touch_contact(verts, segs, com):
+    """the contact height = the AVERAGE of the lowest points of the touchpoint regions. Which regions touch is geometry, not pose names: the floor holds
+    her once the points under it surround her centre of mass (support_z); every region whose lowest point is at or below that height is a touchpoint.
+    No thresholds. -> (z, {region: lowest z}, support z) | None (no skeleton / nothing surrounds the com)"""
+    v = np.asarray(verts, np.float64).reshape(-1, 3); sz = support_z(v, com)
+    if sz is None or len(np.asarray(segs).reshape(-1, 2, 3)) != 25: return None
+    touch = {}
+    for name, ix in TOUCH_REGION_SEGS.items():   # a touchpoint: a region with a vertex at or below the support height; its height = its lowest 0.2 % (body_part_gaps' quantile: no stray vertex)
+        pv = assign_body_parts_idx(v, segs, ix)
+        if len(pv) >= PART_MIN_VERTS and pv[:, 2].min() <= sz: touch[name] = float(np.quantile(pv[:, 2], 0.002))
+    if not touch: return None
+    return float(np.mean(list(touch.values()))), touch, sz
+
+def assign_body_parts_idx(verts, segs, ix, chunk=40000):
+    """the vertices whose nearest of the 25 segments is one of `ix`"""
+    v = np.asarray(verts, np.float64).reshape(-1, 3); S = np.asarray(segs, np.float64).reshape(-1, 2, 3)
+    A, D = S[:, 0], S[:, 1] - S[:, 0]; DD = np.maximum((D * D).sum(1), 1e-12); out = []
+    for i in range(0, len(v), chunk):
+        P = v[i:i + chunk]; t = np.clip(((P[:, None, :] - A[None]) * D[None]).sum(2) / DD[None], 0.0, 1.0)
+        n = np.argmin((((A[None] + t[..., None] * D[None]) - P[:, None, :]) ** 2).sum(2), 1); out.append(P[np.isin(n, ix)])
+    return np.concatenate(out) if out else v[:0]
+
 HOVER_FLOOR_MISSING_M = 1.0
 def hover_floor_missing(gap, seated=False):
     """2026-10-31 14:34 login: the export at +23 s had 979 prims, not yet the floor she stands on (z 28.03), so the floor cast went through to
@@ -1636,7 +1686,17 @@ if SCENE:
     placed = [] if SELF_FLOOR else [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
     lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
-    HC = hover_check_z0(os.environ, g[2], lo[2], fl, M.get("agent_off"))   # 2026-10-23 hover check: real placement + her hover, floor from the scene (seated on an object: look.py leaves GT_HOVER_CHECK off, the sim's placement)
+    lo_c = lo[2]
+    if os.environ.get("GT_HOVER_CHECK") == "1" and M.get("pelvis") and not mst:   # her contact = where the floor would hold her up (support_z), not her lowest vertex
+        vs_ = []
+        for ob in obs:
+            if ob.type == "MESH" and len(ob.data.vertices):
+                a_ = np.empty(len(ob.data.vertices) * 3); ob.data.vertices.foreach_get("co", a_); m_ = np.array(ob.matrix_world)
+                vs_.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
+        tc_ = touch_contact(np.concatenate(vs_), M["bones"], M["pelvis"][:2]) if vs_ and M.get("bones") else None
+        if tc_ is not None:
+            print(f"GT: hover check touchpoints: " + ", ".join(f"{k} {z:+.3f}" for k, z in tc_[1].items()) + f" (mesh z; support height {tc_[2]:+.3f}), average {tc_[0]:+.3f}, lowest vertex {lo[2]:+.3f}", flush=True); lo_c = tc_[0]
+    HC = hover_check_z0(os.environ, g[2], lo_c, fl, M.get("agent_off"))   # 2026-10-23 hover check: real placement + her hover, floor from the scene (seated on an object: look.py leaves GT_HOVER_CHECK off, the sim's placement)
     if HC and hover_floor_missing(HC[1], mst):
         z0 = HC[0]; print(f"GT: hover check: no reading: the floor under her is not in the export yet (cast hit z {fl:.3f}, {HC[1]:+.3f} m below her lowest point; scene still loading)", flush=True)
     elif HC:

@@ -5,8 +5,8 @@ SRC = pathlib.Path(__file__).resolve().parents[1] / "cloud-render" / "render_mes
 def _rm():
     tree = ast.parse(SRC.read_text())
     body = [n for n in tree.body if (isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "HOVER_FLOOR_MISSING_M" for t in n.targets))
-            or (isinstance(n, ast.FunctionDef) and n.name in {"hover_floor_missing", "hover_check_z0"})]
-    ns = {}; exec(compile(ast.Module(body, []), "render_mesh", "exec"), ns); return ns
+            or (isinstance(n, ast.FunctionDef) and n.name in {"hover_floor_missing", "hover_check_z0", "com_inside", "support_z"})]
+    import numpy as np; ns = {"np": np}; exec(compile(ast.Module(body, []), "render_mesh", "exec"), ns); return ns
 
 def test_login_1434_three_metre_gap_is_no_reading():
     rm = _rm()

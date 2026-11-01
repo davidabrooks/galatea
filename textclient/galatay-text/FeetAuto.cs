@@ -215,6 +215,8 @@ internal sealed class FeetAuto
     /// <summary>2026-10-31 17:16: the foot pose (f1..f5) whose fit was VERIFIED since the last login / footwear change, else null.
     /// The stand hover check only measures (and saves per footwear) once this matches the footwear worn (Hover.StandFeetBlock).</summary>
     internal volatile string VerifiedFeet;
+    /// <summary>When VerifiedFeet was last set (the stand hover check waits StandSettleSec after it: the export lags the foot pose).</summary>
+    internal DateTime VerifiedFeetAt = DateTime.MinValue;
     /// <summary>Called after a verified fit (wired to a stand hover check), so the hover is measured on the settled feet.</summary>
     internal Action<string> FeetVerified;
     // 2026-10-31 17:32 (#384 live): f3 pressed at 17:32:02 but the fit was only verified at 17:32:49 (the informational close-ups took ~45 s),
@@ -301,7 +303,7 @@ internal sealed class FeetAuto
     {
         LastFitText = verified ? $"feet fit verified at {Now():HH:mm:ss} ({feet}): {why}" : $"FEET NOT VERIFIED at {Now():HH:mm:ss} ({feet}): {why}";
         h.Log("feet", verified ? "feet fit verified: " + why : "feet NOT verified: " + why);
-        VerifiedFeet = verified ? feet : null;
+        VerifiedFeet = verified ? feet : null; if (verified) VerifiedFeetAt = Now();
         if (verified) try { FeetVerified?.Invoke(feet); } catch { }
         return LastFitText;
     }

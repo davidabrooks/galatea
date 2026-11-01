@@ -440,6 +440,27 @@ internal sealed partial class Hover
         finally { poseGate.Release(); }
     }
 
+    internal const int HoverSamples = 3, HoverSampleGapMs = 1500;
+    internal const double HoverSampleSpreadMax = 0.03, StandSettleSec = 10;
+    /// <summary>Pure (tested): a stand check waits StandSettleSec after the feet fit is verified (the export lagged the foot pose: 17:33 read -0.169 at -0.08).</summary>
+    internal static string StandSettleBlock(double sinceFeetVerifiedSec)
+        => sinceFeetVerifiedSec < StandSettleSec ? $"feet verified {Math.Max(0, sinceFeetVerifiedSec):0} s ago: waiting {StandSettleSec:0} s for the foot pose and bake to settle" : null;
+    /// <summary>Pure (tested): the median gap of the samples, outliers (> HoverSampleSpreadMax from the median) dropped; null = not settled
+    /// (fewer than `need` readings, or fewer than two that agree, or the agreeing ones still spread more than HoverSampleSpreadMax).</summary>
+    internal static (double? median, string why) HoverSampleMedian(IReadOnlyList<double?> samples, int need)
+    {
+        var v = samples.Where(x => x.HasValue).Select(x => x!.Value).OrderBy(x => x).ToList();
+        if (v.Count < need) return (null, $"{v.Count} of {need} readings");
+        if (need <= 1) return (v[v.Count / 2], "one reading");
+        double Med(List<double> a) => a.Count % 2 == 1 ? a[a.Count / 2] : (a[a.Count / 2 - 1] + a[a.Count / 2]) / 2;
+        double m = Med(v); var keep = v.Where(x => Math.Abs(x - m) <= HoverSampleSpreadMax).ToList();
+        if (keep.Count < 2) return (null, $"readings disagree ({string.Join(", ", v.Select(x => x.ToString("+0.000;-0.000", CultureInfo.InvariantCulture)))})");
+        if (keep.Max() - keep.Min() > HoverSampleSpreadMax) return (null, $"agreeing readings still spread {keep.Max() - keep.Min():0.000} m");
+        int dropped = v.Count - keep.Count;
+        return (Math.Round(Med(keep), 4), dropped == 0 ? "all agree" : $"{dropped} outlier(s) dropped");
+    }
+    internal static string HoverSamplesText(IReadOnlyList<double?> s) => string.Join(", ", s.Select(x => x is double d ? d.ToString("+0.000;-0.000", CultureInfo.InvariantCulture) : "none"));
+
     /// <summary>Pure (tested): why a STAND hover check must not measure / fix / save now, or null. fwStart / fwNow = the foot pose the worn footwear
     /// calls for at the start of the check and now; verified = the foot pose whose fit FeetAuto verified since the last login or footwear change.</summary>
     internal static string StandFeetBlock(string fwStart, string fwNow, string verified)
@@ -466,6 +487,7 @@ internal sealed partial class Hover
         // A stand check now waits until the foot pose for the footwear worn is VERIFIED, and gives up if the footwear changes during the check.
         string fw0 = kind == "stand" ? Program.FootwearKeyNow() : null;
         if (kind == "stand" && StandFeetBlock(fw0, fw0, Program.feetSvc.VerifiedFeet) is string fb0) return fb0;
+        if (kind == "stand" && StandSettleBlock((DateTime.Now - Program.feetSvc.VerifiedFeetAt).TotalSeconds) is string sb0) return sb0;
         if (!await poseGate.WaitAsync(0)) return "a check is already running";
         try
         {
@@ -487,7 +509,32 @@ internal sealed partial class Hover
             if (size < 1) { h.Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
             double bias = PoseBiasFor(nums, android, kind, pose);
             var parts = SupportParts(kind, pose);   // which body parts support her in this pose (data: names only, never numbers); null = unlisted: the whole-body lowest gap
-            var (g1, img1) = await HoverCheckRender(dir, size, hov, bias, kind, parts: parts);   // render 1: the contact close-up (replaces the wide side view)
+            // 2026-10-31 (David: same boots, same floor, -0.25 / -0.001 / 0.089 / 0.091 vs the right 0.012): ONE render of ONE export drove each fix, and the
+            // "verification" re-rendered the SAME export at the new hover, so it always read gap 0 (arithmetic). Now: HoverSamples fresh exports + renders,
+            // the median of the agreeing ones drives the fix, a spread over HoverSampleSpreadMax = not settled (nothing changed, retry), and the verification
+            // after a fix is a NEW export.
+            var samples = new List<double?>(); (double? g, string img, Dictionary<string, double> pg, string dir)? rep = null; var all = new List<(double? g, string img, Dictionary<string, double> pg, string dir)>();
+            for (int si = 0; si < HoverSamples; si++)
+            {
+                if (si > 0)
+                {
+                    await Task.Delay(HoverSampleGapMs);
+                    if (!PoseStill(kind, pose)) { h.Log("posehover", $"{key}: pose changed between samples; skipped"); return null; }
+                    var exn = await h.SceneExport(new[] { "export", "4", "noenv" }); var sn = exn.Split('\n').Last();
+                    if (!sn.EndsWith("scene.json")) { h.Log("posehover", $"{key}: sample export {si + 1} failed: {exn}"); continue; }
+                    dir = Path.GetDirectoryName(sn)!;
+                }
+                var (gs, imgs) = await HoverCheckRender(dir, size, hov, bias, kind, parts: parts);
+                var pgs = hoverLastPartGaps; double? bs = gs is double gv ? (parts == null ? gv : SupportGap(parts, pgs) ?? gv) : null;
+                samples.Add(bs); all.Add((gs, imgs, pgs, dir));
+                if (kind != "stand" && si == 0) break;   // sit / kneel checks: unchanged (one render)
+            }
+            var (med, sampleWhy) = HoverSampleMedian(samples, kind == "stand" ? HoverSamples : 1);
+            if (med is not double medv) { var m0 = $"{key}: not settled: {sampleWhy}; nothing changed, retry"; h.Log("posehover", m0); hoverCheckResult = m0; return "not settled: " + sampleWhy; }
+            { int bi = 0; double bd = double.MaxValue; for (int i = 0; i < samples.Count; i++) if (samples[i] is double sv && Math.Abs(sv - medv) < bd) { bd = Math.Abs(sv - medv); bi = i; } rep = all[bi]; }
+            if (samples.Count > 1) h.Log("posehover", $"{key}: {samples.Count} samples at {hov:0.000}: {HoverSamplesText(samples)} -> median {medv:+0.000;-0.000} ({sampleWhy})");
+            hoverLastPartGaps = rep.Value.pg; dir = rep.Value.dir;
+            var (g1, img1) = (rep.Value.g, rep.Value.img);   // render 1: the representative contact close-up (the sample nearest the median)
             string finalImg = img1;
             bool nearFurn = h.InPeronaut && Program.InFurnitureMargin(h.Client.Self.SimPosition, h.HomeFootprints(), HoverFurnitureNearM) != null;
             if (g1 is not double gap || !PoseGapSane(gap, kind, nearFurn))
@@ -517,7 +564,7 @@ internal sealed partial class Hover
             string how; bool fixedHover = false, confirmRender = false;
             // the gap that drives the fix: the lowest SUPPORTING part's gap to the floor drawn in this render (hips, hands, chest, thighs ... as the pose lists them), else the whole-body lowest gap
             var partGaps1 = hoverLastPartGaps; double? sg1 = parts == null ? null : SupportGap(parts, partGaps1);
-            double basis = sg1 ?? gap, aim = sg1 != null ? SupportAim(parts) : 0.0, eg = basis - aim;
+            double basis = kind == "stand" ? medv : sg1 ?? gap, aim = sg1 != null ? SupportAim(parts) : 0.0, eg = basis - aim;
             string liftTxt = parts == null ? "" : sg1 == null ? $"; supporting parts {string.Join("+", parts)} not seen in the render: whole-body lowest gap used"
                 : $"; supporting parts {SupportGapsText(parts, partGaps1)}: hover aimed so the lowest is {aim:0.000} m above the floor{(aim > 0 ? " (hands never below it)" : "")}; no per-pose hover value, measured on this floor";
             if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, remeasured here"; h.Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, remeasuring on this pose"); }
@@ -543,6 +590,9 @@ internal sealed partial class Hover
                 // verify: the cap must now hold t (fresh GET), and the re-render is drawn at THAT value, not at the value we meant to set
                 var (eff2, src2) = await h.EffectiveHoverFresh();
                 bool applied = ok && eff2 is double e2 && Math.Abs(e2 - t) <= 0.002;
+                await Task.Delay(HoverSampleGapMs);
+                var exv = await h.SceneExport(new[] { "export", "4", "noenv" }); var sv2 = exv.Split('\n').Last();   // a FRESH export: the sim's placement at the new hover, not the old export re-drawn
+                if (sv2.EndsWith("scene.json")) dir = Path.GetDirectoryName(sv2)!; else h.Log("posehover", $"{key}: verification export failed ({exv}); re-rendering the old export");
                 var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias, kind, parts: parts);   // render 2 (only after a fix): the verification at the hover really in force
                 fixedHover = true; finalImg = img2;
                 double? basis2 = g2 is double g2r ? (parts == null || sg1 == null ? g2r : SupportGap(parts, hoverLastPartGaps) ?? g2r) : null;

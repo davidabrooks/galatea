@@ -202,22 +202,29 @@ public class FeetFitTests
         await Settle(f, h); await f.FeetTick(); Advance(f, h, 4); await f.FeetTick();
         Assert.Equal(2, h.Touches.Count); Assert.Equal("f3", File.ReadAllText(state));
     }
-    [Fact] public async Task NearBlackCloseUp_IsRetakenBrighter_ButTheMeshAloneDecides()
+    // 2026-10-31 17:32: f3 pressed 17:32:02, "feet fit verified" only at 17:32:49: ~15 s close-ups retaken 3x on "no usable close-up" before the confirm.
+    [Fact] public async Task MeshProof_ConfirmsWithoutAnyCloseUp_EvenWhenCloseUpsWouldBeBlack()
     {
         var (f, h, state) = Make(); h.Shown = "f3";
         h.DefaultCloseup = Img(ok: false, luma: 0.02, p95: 0.09, why: "near-black render");
         await Settle(f, h); await f.FeetTick(); Advance(f, h, 4); await f.FeetTick();
-        Assert.StartsWith("feet fit verified", f.LastFitText); Assert.Contains("no usable close-up (informational only)", f.LastFitText);   // the picture is not a proof
-        Assert.Equal(FeetAuto.FeetRetakeExposure.Take(FeetAuto.FeetRetakes), h.Exposures.Take(FeetAuto.FeetRetakes));   // retakes get brighter
-        Assert.True(FeetAuto.FeetRetakeExposure[1] > FeetAuto.FeetRetakeExposure[0]);
+        Assert.StartsWith("feet fit verified", f.LastFitText); Assert.Contains("no close-up needed", f.LastFitText);
+        Assert.Empty(h.Exposures);   // no render at all: the confirm is just the mesh read
     }
-    [Fact] public async Task NearBlackFirstThenUsable_IsVerifiedFromTheRetake()
+    [Fact] public async Task AfterAPress_TheMeshIsPolled_AndNoCloseUpIsTaken()
     {
-        var (f, h, state) = Make(); h.Shown = "f3";
-        h.Closeups.Enqueue(Img(ok: false, luma: 0.02, p95: 0.09, why: "near-black render")); h.DefaultCloseup = Img();
+        var (f, h, state) = Make(); h.DefaultCloseup = Img();
+        h.OnTouch = () => h.Shown = "f3";
         await Settle(f, h); await f.FeetTick(); Advance(f, h, 4); await f.FeetTick();
-        Assert.StartsWith("feet fit verified", f.LastFitText); Assert.Single(h.Touches);
-        Assert.Equal(2, h.Exposures.Count); Assert.True(h.Exposures[1] > h.Exposures[0]);   // the dark first take was retaken brighter and the retake decided
+        Assert.StartsWith("feet fit verified", f.LastFitText); Assert.Equal("f3", File.ReadAllText(state));
+        Assert.True(h.Exposures.Count <= FeetAuto.FeetRetakes);   // only the pre-press diagnostic (mesh showed f1); none after the press
+    }
+    [Fact] public async Task MeshMismatch_StillTakesTheBrighterRetakes_AsDiagnostics()
+    {
+        var (f, h, _) = Make(); h.DefaultCloseup = Img(ok: false, luma: 0.02, p95: 0.09, why: "near-black render");
+        await Settle(f, h); await f.FeetTick();
+        Assert.StartsWith("FEET NOT VERIFIED", f.LastFitText);
+        Assert.Equal(FeetAuto.FeetRetakeExposure.Take(FeetAuto.FeetRetakes), h.Exposures.Take(FeetAuto.FeetRetakes));
     }
     [Fact] public async Task FlatFootMeshShowing_WithBootsOn_IsNotVerified_EvenIfThePictureIsClean()
     {

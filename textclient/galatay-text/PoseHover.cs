@@ -9,7 +9,7 @@
 // remembered. Pose first, hover after: a request waits while she is moving, leashed/following, mid pose-entry/exit or just changed
 // posture. Only ever POSTs the hover: never sits or re-sits, and never presses the AO. The one exception: an implausible render gap while on / next to a furniture
 // footprint (HoverGapOnFurniture) stands her up (idle stop path, ground sit only), steps to clear floor and re-checks; the hover is never changed from an implausible render.
-// pose-hover.json now only holds the renderer's calibration (bias|... keys); any other key in it is ignored.
+// pose-hover.json is no longer read (2026-10-31: the per-posture render bias is gone; Firestorm placement only).
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -30,26 +30,6 @@ internal sealed partial class Hover
     readonly IHoverHost h;
     internal Hover(IHoverHost host) { h = host; }
     internal const double PoseHoverTol = 0.01;
-    // pure (tested): per-pose bias first (2026-10-23 17:33 VAMOSITG22: the sit bias tuned in VAMOSITG26 left her ~7 cm above the
-    // floor while the render said contact: the model's body-root error differs per animation), then the (form, kind) bias, then the default
-    internal static string PoseBiasPoseKey(bool android, string pose) => $"bias|{(android ? "android" : "human")}|{pose}";
-    internal static double PoseBiasFor(IReadOnlyDictionary<string, double> nums, bool android, string kind, string pose)
-        => nums.TryGetValue(PoseBiasPoseKey(android, pose), out var a) ? a : nums.TryGetValue(PoseBiasKey(android, kind), out var b) ? b : PoseBiasDefault(kind, android);
-    // pure (tested): David's photo is truth: the bias that makes the render's gap equal the real gap he sees
-    internal static double PoseBiasFromPhoto(double biasUsed, double renderGap, double realGap) => Math.Round(biasUsed + (renderGap - realGap), 4);
-    // pure (tested): has this pose / posture a bias that was set from David's own view (hover calibrate)? else the default is only a first guess
-    internal static bool BiasCalibrated(IReadOnlyDictionary<string, double> nums, bool android, string kind, string pose)
-        => nums != null && (nums.ContainsKey(PoseBiasPoseKey(android, pose ?? "")) || nums.ContainsKey(PoseBiasKey(android, kind)));
-    internal static string PoseBiasKey(bool android, string kind) => $"bias|{(android ? "android" : "human")}|{kind}";
-    // measured 2026-10-23 17:19 (android): stands render 0.2315 m high at the pin (the sim keeps her feet on the floor);
-    // ground sits -0.055 m at David's approved VAMOSITG26 -0.12 m
-    // 2026-10-29 21:36-21:40 (David's viewer is truth): the HUMAN form used these ANDROID numbers, so the render and his viewer disagreed:
-    // stand: render contact at +0.009, David sees contact at -0.04 (render floor ~4.9 cm high) -> 0.2315 - 0.049 = 0.1825;
-    // VAMOSITG12 ground sit: render contact at -0.30, David sees ~13 cm sunk there (contact ~ -0.17) -> -0.055 + 0.13 = 0.075.
-    // First guesses from David's eyes; `hover calibrate` still overrides per kind / pose.
-    internal const double HumanStandBiasDefault = 0.1825, HumanSitBiasDefault = 0.075;
-    internal static double PoseBiasDefault(string kind, bool android = true) =>
-        android ? (kind == "stand" ? 0.2315 : -0.055) : (kind == "stand" ? HumanStandBiasDefault : HumanSitBiasDefault);
     internal static bool PoseGapSane(double gap) => Math.Abs(gap) <= 0.25;
     // 2026-10-29 21:38 (David's own screenshot): VAMOSITG12 on clear Peronaut floor really floated +0.28 m; the 0.25 m cap rejected a correct render as
     // "implausible" and nothing was fixed. A ground sit on clear floor (not on / within HoverFurnitureNearM of a footprint) may apply up to GroundSitGapMax;
@@ -94,12 +74,12 @@ internal sealed partial class Hover
     // simHover = the hover in her own AvatarAppearance (AppearanceHover.Z): the sim moves her agent z by it, so the renderer takes it back out of agent z.
     // 2026-10-31 18:26: after a relog the sim's appearance hover became the login POST -0.08 and her agent z dropped 28.953 -> 28.873 at the same spot;
     // the render (z - size/2 + hover in force) drew her 8 cm sunk, read -0.062 at the right 0.012, and set 0.074 (David: floating).
-    internal static Dictionary<string, string> HoverCheckEnv(double size, double hover, double bias, string[] parts = null, double simHover = 0)
+    internal static Dictionary<string, string> HoverCheckEnv(double size, double hover, string[] parts = null, double simHover = 0)
     {
         var env = new Dictionary<string, string>
         {
             ["GT_HOVER_CHECK"] = "1", ["GT_AGENT_SIZE"] = size.ToString("0.000", CultureInfo.InvariantCulture),
-            ["GT_HOVER"] = hover.ToString("0.000", CultureInfo.InvariantCulture), ["GT_HOVER_BIAS"] = bias.ToString("0.0000", CultureInfo.InvariantCulture),
+            ["GT_HOVER"] = hover.ToString("0.000", CultureInfo.InvariantCulture),
             ["GT_SIM_HOVER"] = simHover.ToString("0.000", CultureInfo.InvariantCulture),
         };
         if (parts is { Length: > 0 }) env["GT_HC_PARTS"] = string.Join(",", parts);
@@ -217,11 +197,11 @@ internal sealed partial class Hover
     }
 
     // ONE render, ONE image. kind (stand|sit) only labels what the close-up frames
-    async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, double bias, string kind = null, bool seat = false, string[] parts = null)
+    async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, string kind = null, bool seat = false, string[] parts = null)
     {
         var psi = new ProcessStartInfo(h.LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add(h.LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
-        foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, bias, parts, Program.SimHoverNow())) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
+        foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, parts, Program.SimHoverNow())) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
         foreach (var kv in ContactEnv(seat ? "seat" : kind)) psi.Environment[kv.Key] = kv.Value;
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
@@ -295,16 +275,6 @@ internal sealed partial class Hover
             : $"{why}: gave up after {attempts} tries ({lastRetry})";
     internal volatile string HoverGaveUp = null; internal DateTime HoverGaveUpAt = DateTime.MinValue;
 
-    // pure (tested): only the renderer's calibration is read from pose-hover.json; a saved hover height under any other key
-    // ("android|VAMOSITG24", "android|stand", ...) is ignored, never applied
-    internal static Dictionary<string, double> PoseBiasNums(IReadOnlyDictionary<string, double> all)
-        => (all ?? new Dictionary<string, double>()).Where(kv => kv.Key.StartsWith("bias|", StringComparison.OrdinalIgnoreCase)).ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
-    internal Dictionary<string, double> PoseNums()
-    {
-        try { return PoseBiasNums(JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(PoseHoverFile))); }
-        catch { return new(); }
-    }
-    string PoseHoverFile => Program.Env("GT_POSE_HOVER", Path.Combine(Path.GetDirectoryName(h.LogPath) ?? ".", "pose-hover.json"));
     internal static string PoseHoverKey(bool android, string anim) => (android ? "android|" : "human|") + (anim ?? "").Trim();
 
     // ---- when a visual hover check is requested ----
@@ -468,7 +438,7 @@ internal sealed partial class Hover
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { h.Log("posehover", $"seat check: export failed: {ex}"); return "seat check: export failed"; }
             if (h.Client.Self.SittingOn == 0) return "seat check: she is no longer sitting on an object";
-            var (gap, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, 0, "seat", seat: true);
+            var (gap, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, "seat", seat: true);
             var r = $"seat: {SeatCheckVerdict(gap)}; hover left alone; renders 1; close-up of {HoverContactLabel("seat")}: {img}";
             h.Log("posehover", r); hoverCheckResult = r; return r;
         }
@@ -515,7 +485,6 @@ internal sealed partial class Hover
         if (!h.LoggedIn || !PoseStill(kind, pose)) return "not in that pose";
         if (!FormCertainNow()) return "form not known yet (attachments still loading)";
         bool android = h.AndroidFormNow(); var key = PoseHoverKey(android, pose);
-        var nums = PoseNums();
         double pin = h.PinnedHover();
         // 2026-10-31 17:16 (David: "your hover check broke your good hover height"): the login stand check measured while the Moca boots' foot pose (f3) was
         // still unpressed (feet read f1, the f3 press landed 2 s later), fixed to -0.25 off that render and saved it for f3; she stood 0.25 m sunk.
@@ -540,9 +509,7 @@ internal sealed partial class Hover
             // POST, so every re-render drew her at 0 and "contact confirmed" was arithmetic (David: sunk below the ground at the "confirmed" -0.186)
             var (effHov, effSrc) = await h.EffectiveHoverFresh();
             double hov = effHov ?? pin, size = h.SelfAv()?.Scale.Z ?? 0;
-            bool calibrated = BiasCalibrated(nums, android, kind, pose);
             if (size < 1) { h.Log("posehover", $"{key}: agent size unknown; skipped"); return null; }
-            double bias = PoseBiasFor(nums, android, kind, pose);
             string[] parts = null;   // which body parts support her in this pose (data: names only, never numbers); unlisted ground sit: hips + thighs (never the shoes)
             // 2026-10-31 (David: same boots, same floor, -0.25 / -0.001 / 0.089 / 0.091 vs the right 0.012): ONE render of ONE export drove each fix, and the
             // "verification" re-rendered the SAME export at the new hover, so it always read gap 0 (arithmetic). Now: HoverSamples fresh exports + renders,
@@ -559,7 +526,7 @@ internal sealed partial class Hover
                     if (!sn.EndsWith("scene.json")) { h.Log("posehover", $"{key}: sample export {si + 1} failed: {exn}"); continue; }
                     dir = Path.GetDirectoryName(sn)!;
                 }
-                var (gs, imgs) = await HoverCheckRender(dir, size, hov, bias, kind, parts: parts);
+                var (gs, imgs) = await HoverCheckRender(dir, size, hov, kind, parts: parts);
                 var pgs = hoverLastPartGaps; double? bs = gs is double gv ? (parts == null ? gv : SupportGap(parts, pgs) ?? gv) : null;
                 samples.Add(bs); all.Add((gs, imgs, pgs, dir));
                 if (kind != "stand" && si == 0) break;   // sit / kneel checks: unchanged (one render)
@@ -576,7 +543,7 @@ internal sealed partial class Hover
             {
                 if (g1 == null && hoverLastFloorMissing) { h.Log("posehover", $"{key}: the floor under her is not in the scene yet (still loading); no reading, retry ({img1})"); return "floor not loaded yet"; }
                 if (g1 is double bg) return await HoverGapOnFurniture(kind, key, bg, img1);   // moved off the furniture (retry reason) or left unresolved (logged, null = finished)
-                var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the calibration is off for this pose (needs a per-pose bias, see PoseBiasFromPhoto); nothing changed ({img1})"; h.Log("posehover", bad); hoverCheckResult = bad; return null;
+                var bad = $"{key}: render gap {g1?.ToString("+0.000;-0.000") ?? "none"} is implausible: the render and the floor disagree; nothing changed ({img1})"; h.Log("posehover", bad); hoverCheckResult = bad; return null;
             }
             // the guard: a fix is only ever computed from a render that shows the pose the client believes (never post on a standing render for a "sit")
             {
@@ -611,7 +578,7 @@ internal sealed partial class Hover
                 var t = PoseHoverFromGap(hov, eg);
                 if (HoverFixNeedsConfirm(eg))   // a large fix (> 0.12 m): only after a second render at the same hover agrees
                 {
-                    var (gc, imgc) = await HoverCheckRender(dir, size, hov, bias, kind, parts: parts); confirmRender = true;
+                    var (gc, imgc) = await HoverCheckRender(dir, size, hov, kind, parts: parts); confirmRender = true;
                     double? gcBasis = gc is double gcr ? (parts == null ? gcr : SupportGap(parts, hoverLastPartGaps) ?? gcr) : null;
                     if (gcBasis is not double gc2 || !HoverFixConfirmed(basis, gc2))
                     {
@@ -630,7 +597,7 @@ internal sealed partial class Hover
                 await Task.Delay(HoverSampleGapMs);
                 var exv = await h.SceneExport(new[] { "export", "4", "noenv" }); var sv2 = exv.Split('\n').Last();   // a FRESH export: the sim's placement at the new hover, not the old export re-drawn
                 if (sv2.EndsWith("scene.json")) dir = Path.GetDirectoryName(sv2)!; else h.Log("posehover", $"{key}: verification export failed ({exv}); re-rendering the old export");
-                var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, bias, kind, parts: parts);   // render 2 (only after a fix): the verification at the hover really in force
+                var (g2, img2) = await HoverCheckRender(dir, size, eff2 ?? t, kind, parts: parts);   // render 2 (only after a fix): the verification at the hover really in force
                 fixedHover = true; finalImg = img2;
                 double? basis2 = g2 is double g2r ? (parts == null || sg1 == null ? g2r : SupportGap(parts, hoverLastPartGaps) ?? g2r) : null;
                 bool good = applied && basis2 is double gg && SupportConfirmed(gg - aim, aim);

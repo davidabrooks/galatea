@@ -279,7 +279,7 @@ public class IdlePoseTests
     }
     [Fact] public void HoverCheckRender_AppliesHoverAndDrawsFloor()   // 2026-10-23 17:15 David "Fix it"
     {
-        var env = Hover.HoverCheckEnv(1.566, -0.11, -0.055);
+        var env = Hover.HoverCheckEnv(1.566, -0.11);
         Assert.Equal("1", env["GT_HOVER_CHECK"]); Assert.Equal("-0.110", env["GT_HOVER"]); Assert.Equal("1.566", env["GT_AGENT_SIZE"]);
         Assert.Equal(-0.003, Hover.HoverCheckGap("hover check gap -0.003 m (hover -0.110, size 1.566, floor 28.033)\n/x.jpg").Value, 3);
         Assert.Null(Hover.HoverCheckGap("look failed"));
@@ -292,19 +292,6 @@ public class IdlePoseTests
         Assert.Contains("if view == \"side\":", rm);
         var lk = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "vision/look.py"));
         Assert.Contains("a[1] == \"hovercheck\": a = [a[0], \"view\"", lk);    // scene mode: the real floor geometry is meshed
-    }
-    [Fact] public void PoseHover_PerPoseBias_PhotoIsTruth()   // 2026-10-23 17:33 VAMOSITG22 floated ~7 cm while the render said contact
-    {
-        var n = new System.Collections.Generic.Dictionary<string, double> { ["bias|android|sit"] = -0.055, ["bias|android|VAMOSITG22"] = 0.137 };
-        Assert.Equal(0.137, Hover.PoseBiasFor(n, true, "sit", "VAMOSITG22"), 3);     // its own bias wins
-        Assert.Equal(-0.055, Hover.PoseBiasFor(n, true, "sit", "VAMOSITG27"), 3);    // else the (form, kind) bias
-        Assert.Equal(0.2315, Hover.PoseBiasFor(n, true, "stand", "stand:x"), 4);     // else the default
-        Assert.Equal(Hover.HumanSitBiasDefault, Hover.PoseBiasFor(new System.Collections.Generic.Dictionary<string, double>(), false, "sit", "q"), 3);   // human form: its own default (2026-10-29)
-        // render said gap +0.267 at bias -0.055; the photo shows ~0.075 really: bias must rise by 0.192
-        Assert.Equal(0.137, Hover.PoseBiasFromPhoto(-0.055, 0.267, 0.075), 3);
-        // with the lowest body point (hand/back/thigh) the gap is already the minimum over every avatar vertex
-        var py = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "vision/cloud-render/render_mesh.py"));
-        Assert.Contains("z0 + lo_z - floor_z", py);
     }
     [Fact] public void CollarMenu_OneSessionAtATime_RightPageWaited()   // 2026-10-26 08:58 magic leash + pose switch crossed
     {

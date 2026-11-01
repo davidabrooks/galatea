@@ -216,7 +216,6 @@ public static partial class Program
             var (eff, src) = await EffectiveHoverFresh();
             return $"{old}; {info2}; hover in force now {(eff is double e ? I(e) : "unknown")} ({src}); not saved to hover.txt";
         }
-        if (a[0] == "calibrate") return await hoverSvc.HoverCalibrate(a[1..]);
         if (a[0] == "repin") return (await PostHover(PinnedHover(), "hover repin")).info;
         if (a[0] == "check")
         {
@@ -224,7 +223,7 @@ public static partial class Program
             var t = hoverSvc.HoverCheckRequest("manual", 500);
             return await Task.WhenAny(t, Task.Delay(120000)) == t ? await t : "visual hover check requested but still running after 120 s (see the posehover log for its close-up path)";
         }
-        return "usage: hover [get] | hover set <meters -2..2> (pins it in hover.txt) | hover apply <meters> (not saved) | hover repin | hover check | hover calibrate stand|sit|here <cm> | show | reset stand|sit|here";
+        return "usage: hover [get] | hover set <meters -2..2> (pins it in hover.txt) | hover apply <meters> (not saved) | hover repin | hover check|sit|here <cm> | show | reset stand|sit|here";
     }
 
     static string AnimCmd(string[] a)

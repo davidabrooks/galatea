@@ -9,14 +9,6 @@ public class HoverVisualCheckTests
     static string Root() { var d = new DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !Directory.Exists(Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
     static string Src(string f) => File.ReadAllText(Path.Combine(Root(), "textclient/galatay-text", f));
 
-    [Fact] public void SavedPerPoseHoverValues_AreIgnored_OnlyBiasCalibrationIsRead()
-    {
-        var file = new Dictionary<string, double> { ["android|VAMOSITG24"] = -0.02, ["android|stand"] = -0.013, ["android|stand:fba08491"] = 0.015, ["ref|android|stand"] = 0.63, ["bias|android|sit"] = -0.055 };
-        var nums = Hover.PoseBiasNums(file);
-        Assert.Single(nums); Assert.Equal(-0.055, nums["bias|android|sit"], 3);
-        Assert.Empty(Hover.PoseBiasNums(null));
-        Assert.Equal(-0.055, Hover.PoseBiasFor(nums, true, "sit", "VAMOSITG24"), 3);   // the stale per-pose hover never leaks in as a bias
-    }
     [Fact] public void NothingIsSavedOrAppliedPerPose_InSource()
     {
         var all = Src("PoseHover.cs") + Src("IdlePose.cs") + Src("AutoHover.cs") + Src("HeightGuard.cs") + Src("AttachWatch.cs");

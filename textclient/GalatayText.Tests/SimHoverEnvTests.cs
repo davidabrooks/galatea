@@ -8,9 +8,9 @@ public class SimHoverEnvTests
 {
     [Fact]
     public void Sim_hover_is_passed_to_the_renderer()
-        => Assert.Equal("-0.080", Hover.HoverCheckEnv(1.572, 0.012, 0.1, null, -0.08)["GT_SIM_HOVER"]);
+        => Assert.Equal("-0.080", Hover.HoverCheckEnv(1.572, 0.012, null, -0.08)["GT_SIM_HOVER"]);
 
     [Fact]
     public void Default_is_zero()
-        => Assert.Equal("0.000", Hover.HoverCheckEnv(1.572, 0.012, 0.1)["GT_SIM_HOVER"]);
+        => Assert.Equal("0.000", Hover.HoverCheckEnv(1.572, 0.012)["GT_SIM_HOVER"]);
 }

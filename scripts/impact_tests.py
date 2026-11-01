@@ -754,7 +754,7 @@ def run_plan(plan, root, full=False):
         out = os.path.join(os.environ.get("TMPDIR", "/tmp"), "impact-mesher")
         if sh(["dotnet", "build", "vision/scene-mesher/SceneMesher.csproj", "-c", "Release", "-o", out,
                f"-p:LMV={root}/textclient/src-libremetaverse", "--nologo", "-v", "q"], "scene-mesher build") == 0:
-            for f in ("--lod-selftest", "--skin-selftest"): sh(["dotnet", os.path.join(out, "SceneMesher.dll"), f], f"scene-mesher {f}")
+            for f in ("--lod-selftest", "--skin-selftest", "--bodysize-selftest"): sh(["dotnet", os.path.join(out, "SceneMesher.dll"), f], f"scene-mesher {f}")
     return rc
 
 

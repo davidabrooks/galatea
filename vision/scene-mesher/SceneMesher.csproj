@@ -13,4 +13,5 @@
     <ProjectReference Include="$(LMV)/LibreMetaverse/LibreMetaverse.csproj" />
     <ProjectReference Include="$(LMV)/LibreMetaverse.Rendering.MeshFoundry/LibreMetaverse.Rendering.MeshFoundry.csproj" />
   </ItemGroup>
+  <ItemGroup><None Include="testdata/**" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
 </Project>

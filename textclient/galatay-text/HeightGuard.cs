@@ -205,8 +205,9 @@ public static partial class Program
         }
         // `hover apply <m>`: POST only. Nothing is written to hover.txt (unlike `set`, which pins the value for every later login and region change).
         // 2026-10-26: this is the fix David asked for: a value is applied right then, never remembered.
-        if (a[0] == "apply" && a.Length == 2 && double.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var av2))
+        if (a[0] == "apply" && (a.Length == 2 || a.Length == 3 && a[2] == "force") && double.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var av2))
         {
+            if (Hover.HoverApplyBlock(hoverSvc.PoseNow().kind, client.Self.SittingOn != 0, a.Length == 3) is string blk) return blk;
             if (Math.Abs(av2) > HoverApplyMax) return $"hover apply: {I(av2)} m is beyond +-{HoverApplyMax} m";
             var old = $"in force {(EffectiveHoverNow() is double h ? I(h) : "?")}";
             try { File.AppendAllText(HoverHistory, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} apply (not saved): {old} -> {I(av2)}\n"); } catch { }

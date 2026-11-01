@@ -154,8 +154,8 @@ public static partial class Program
             // 2026-10-26: `hover apply <m>` sets only HER OWN hover, within +-0.5 m, and writes nothing to hover.txt (applied now, never remembered);
             // `hover repin` re-posts the normal pinned hover; `hover calibrate ...` only edits the renderer's bias file. `hover set` stays refused: it pins
             // the value in hover.txt for every later login and region change, which David's rule (no saved hover) forbids
-            case "hover" when rest is ["apply", _] && double.TryParse(rest[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hv) && Math.Abs(hv) <= HoverApplyMax:
-                return (true, "hover apply " + rest[1], null);
+            case "hover" when (rest is ["apply", _] || rest is ["apply", _, "force"]) && double.TryParse(rest[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hv) && Math.Abs(hv) <= HoverApplyMax:
+                return (true, "hover apply " + rest[1] + (rest.Length == 3 ? " force" : ""), null);   // force: also while sitting (Hover.HoverApplyBlock)
             case "hover" when rest.Length > 0 && rest[0] == "calibrate" && Hover.HoverCalibrateParse(rest[1..]).ok: return (true, "hover calibrate " + string.Join(" ", rest[1..]), null);
             case "height" or "diag" when rest.Length == 0: return (true, cmd, null);
             case "posehover" when rest is ["check"]: return (true, "hover check", null);

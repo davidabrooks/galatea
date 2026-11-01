@@ -11,14 +11,6 @@ public class PoseHoverFloorBiasTests
         Assert.False(Hover.PoseGapSane(0.28, "stand", nearFurniture: false));
         Assert.False(Hover.PoseGapSane(3.3, "sit", nearFurniture: false));
     }
-    [Fact] public void HumanFormHasItsOwnBiasesFromDavidsView()
-    {
-        Assert.Equal(0.2315, Hover.PoseBiasDefault("stand", android: true), 4);
-        Assert.Equal(-0.055, Hover.PoseBiasDefault("sit", android: true), 4);
-        Assert.Equal(0.1825, Hover.PoseBiasDefault("stand", android: false), 4);
-        Assert.Equal(0.075, Hover.PoseBiasDefault("sit", android: false), 4);
-        Assert.Equal(0.1825, Hover.PoseBiasFor(new System.Collections.Generic.Dictionary<string, double>(), false, "stand", "x"), 4);
-    }
 }
 public class McpWanderToolTests
 {

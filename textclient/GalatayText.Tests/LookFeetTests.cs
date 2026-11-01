@@ -64,7 +64,6 @@ public class LookFeetTests
         var big = chk[chk.IndexOf("if (HoverFixNeedsConfirm(eg))")..fixAt]; Assert.Equal(1, Regex.Matches(big, @"await HoverCheckRender\(").Count);   // the extra render sits only inside the large-fix branch
         Assert.Contains("HoverCheckRenderCount(fixedHover, confirmRender)", chk);
         Assert.DoesNotContain("HoverCheckRequest(", chk);                       // nothing re-requests a check (no render loop)
-        var cal = Src("HoverCalibrate.cs"); Assert.Equal(2, Regex.Matches(cal, @"await HoverCheckRender\(").Count);   // calibrate: measure + confirm, only when David asks
     }
     [Fact] public void ManualHoverCheck_WaitsAndReturnsTheCloseUpPathAndTheRenderCount()
     {

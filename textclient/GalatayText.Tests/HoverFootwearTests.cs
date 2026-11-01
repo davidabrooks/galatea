@@ -23,14 +23,4 @@ public class HoverFootwearTests
         Assert.Equal(-0.04, d["f1"]); Assert.Equal(-0.0091, d["f3"]);
     }
 
-    [Theory]
-    [InlineData("show", null)]
-    [InlineData("show stand", "stand")]
-    [InlineData("show sit", "sit")]
-    [InlineData("show here", "here")]
-    public void Calibrate_show_accepts_an_optional_target(string words, string target)
-    {
-        var r = GalatayText.Hover.HoverCalibrateParse(words.Split(' '));
-        Assert.True(r.ok, r.err); Assert.Equal("show", r.action); Assert.Equal(target, r.target);
-    }
 }

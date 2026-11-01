@@ -1367,11 +1367,10 @@ def hover_floor_missing(gap, seated=False):
     return (not seated) and gap is not None and gap > HOVER_FLOOR_MISSING_M
 
 def hover_check_detail(env, agent_z, agent_off, lo_z, floor_z, hov):
-    """one diagnostic line for the hover check: the bias used, calibrated against David's viewer or the default, and the gap the viewer's own
-    placement formula (mesh z 0 = agent z + agent_off, scene-mesher) would give at the same hover; (no commands read it, `look` logs it)"""
-    bias = float(env.get("GT_HOVER_BIAS", "0")); cal = env.get("GT_HOVER_CAL", "default")
+    """one diagnostic line for the hover check: the gap of her lowest vertex under the viewer's own placement formula (mesh z 0 = agent z +
+    agent_off, scene-mesher) at the same hover; (no commands read it, `look` logs it)"""
     ll = "n/a" if agent_off is None else f"{agent_z + agent_off + hov + lo_z - floor_z:+.3f} m"
-    return f"GT: hover check detail: bias {bias:+.4f} ({cal}), viewer-formula gap {ll}, hover drawn {hov:+.3f} (the hover in force: AgentPreferences)"
+    return f"GT: hover check detail: lowest-vertex gap {ll}, hover drawn {hov:+.3f} (the hover in force: AgentPreferences)"
 
 def self_body_camera_spec(x, y, yaw_deg, deg, pts, floor_z, margin=1.08, lens=50.0, height=None):
     """`look self <side>` camera (2026-10-26): level, at half her height above the floor (so the floor reads as a band below

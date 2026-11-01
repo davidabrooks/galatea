@@ -103,8 +103,6 @@ public class McpSurfaceTests
     [InlineData("hover", "hover")] [InlineData("hover get", "hover get")] [InlineData("Hover CHECK", "hover check")]
     [InlineData("height", "height")] [InlineData("diag", "diag")]
     [InlineData("hover repin", "hover repin")] [InlineData("Hover APPLY -0.075", "hover apply -0.075")] [InlineData("hover apply 0.5", "hover apply 0.5")]
-    [InlineData("hover calibrate stand 4", "hover calibrate stand 4")] [InlineData("hover calibrate SIT -3.5cm", "hover calibrate sit -3.5cm")] [InlineData("hover calibrate here 0", "hover calibrate here 0")]
-    [InlineData("hover calibrate show", "hover calibrate show")] [InlineData("hover calibrate reset sit", "hover calibrate reset sit")]
     [InlineData("posehover check", "hover check")] [InlineData("posehover status", "posehover status")] [InlineData("posehover", "posehover status")]
     public void ClientCmdGate_AllowsTheReadOnlyCommands(string line, string run)
     {
@@ -112,7 +110,7 @@ public class McpSurfaceTests
     }
     [Theory]
     [InlineData("say hello")] [InlineData("im David hi")] [InlineData("pay object x 5")] [InlineData("logout")] [InlineData("login")] [InlineData("sit abc")] [InlineData("stand")]
-    [InlineData("hover set 0.1")] [InlineData("hover apply 0.9")] [InlineData("hover apply x")] [InlineData("hover apply")] [InlineData("hover calibrate")] [InlineData("hover calibrate stand 99")] [InlineData("hover calibrate foo 1")] [InlineData("hover repin now")] [InlineData("height now")] [InlineData("posehover set 1")] [InlineData("photo hd self")] [InlineData("rlv clear")]
+    [InlineData("hover set 0.1")] [InlineData("hover apply 0.9")] [InlineData("hover apply x")] [InlineData("hover apply")] [InlineData("hover calibrate")] [InlineData("hover calibrate stand 99")] [InlineData("hover calibrate stand 4")] [InlineData("hover calibrate foo 1")] [InlineData("hover repin now")] [InlineData("height now")] [InlineData("posehover set 1")] [InlineData("photo hd self")] [InlineData("rlv clear")]
     [InlineData("")] [InlineData("   ")] [InlineData("look self\nsay hi")] [InlineData("teleport Home 1 1 1")] [InlineData("accept")] [InlineData("wear add x")] [InlineData("touch abc")]
     public void ClientCmdGate_RefusesEverythingElse(string line)
     {

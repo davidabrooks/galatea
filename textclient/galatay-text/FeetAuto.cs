@@ -197,11 +197,11 @@ internal sealed class FeetAuto
 
     /// <summary>Pure: is the foot fit proven? The ONLY proof is the body's own foot mesh: the pair showing must be the wanted one. A missing / unreadable proof is a failure, never a pass.
     /// The close-up is informational (its path goes in the text); it neither passes nor fails a fit. Neither feet-state.txt nor the press log is an input.</summary>
-    internal static FeetVerdict FeetFit(string wanted, string shown, string meshWhy, FeetImage img)
+    internal static FeetVerdict FeetFit(string wanted, string shown, string meshWhy, FeetImage img, bool closeupSkipped = false)
     {
         if (shown == null) return new(FeetKind.Failed, $"no proof of the foot pose: {meshWhy}");
         if (shown != wanted) return new(FeetKind.Failed, $"the body shows foot {shown} but {wanted} is wanted for the worn footwear");
-        var pic = img == null || FeetImageInvalid(img) ? "no usable close-up (informational only)" : $"close-up (informational only, not a proof): {img.Path}";
+        var pic = closeupSkipped ? "no close-up needed (the mesh is the proof)" : img == null || FeetImageInvalid(img) ? "no usable close-up (informational only)" : $"close-up (informational only, not a proof): {img.Path}";
         return new(FeetKind.Verified, $"the body's foot mesh pair for {wanted} is the one visible; {pic}");
     }
 
@@ -306,12 +306,13 @@ internal sealed class FeetAuto
         return LastFitText;
     }
 
-    /// <summary>Evidence of the fit now: the visible foot mesh pair (the proof), plus one informational close-up (retaken brighter when near-black, bounded).</summary>
+    /// <summary>Evidence of the fit now. The foot mesh pair is the proof and is read first: when it already shows the wanted pair the fit is verified at once,
+    /// with no close-up (2026-10-31 17:32: f3 pressed 17:32:02, verified 17:32:49 because ~15 s close-ups were retaken up to 3x). Only when the mesh does NOT
+    /// prove the fit is a close-up taken (retaken brighter when near-black, bounded) as diagnostic evidence for the failure text.</summary>
     async Task<FeetVerdict> VerifyFit(string feet, FeetRules rules)
     {
-        List<(string name, float alpha)> mesh = null;
-        try { mesh = await h.FootMeshAlphas(); } catch (Exception ex) { h.Log("feet", "foot mesh read failed: " + ex.GetBaseException().Message); }
-        var (shown, meshWhy) = FeetShownFromMesh(mesh);
+        var (shown, meshWhy) = await ReadMesh();
+        if (shown == feet) return FeetFit(feet, shown, meshWhy, null, closeupSkipped: true);
         FeetImage img = null;
         for (int take = 0; take < FeetRetakes; take++)
         {
@@ -320,6 +321,23 @@ internal sealed class FeetAuto
             if (take + 1 < FeetRetakes) await Delay(2000);
         }
         return FeetFit(feet, shown, meshWhy, img);
+    }
+    async Task<(string shown, string why)> ReadMesh()
+    {
+        List<(string name, float alpha)> mesh = null;
+        try { mesh = await h.FootMeshAlphas(); } catch (Exception ex) { h.Log("feet", "foot mesh read failed: " + ex.GetBaseException().Message); }
+        return FeetShownFromMesh(mesh);
+    }
+    /// <summary>After a press: poll the foot mesh every FeetMeshPollMs (from FeetMeshFirstMs) until the wanted pair shows, at most FeetMeshWaitMs; no fixed 4 s wait.</summary>
+    internal const int FeetMeshFirstMs = 1000, FeetMeshPollMs = 500, FeetMeshWaitMs = 6000;
+    async Task WaitForMesh(string feet)
+    {
+        await Delay(FeetMeshFirstMs);
+        for (int waited = FeetMeshFirstMs; waited < FeetMeshWaitMs; waited += FeetMeshPollMs)
+        {
+            if ((await ReadMesh()).shown == feet) return;
+            await Delay(FeetMeshPollMs);
+        }
     }
     async Task<string> SafeCloseup(double exposure) { try { return await h.FeetCloseupJson(exposure); } catch (Exception ex) { h.Log("feet", "close-up failed: " + ex.GetBaseException().Message); return null; } }
 
@@ -335,7 +353,7 @@ internal sealed class FeetAuto
                 var (touched, r) = await PressFeetOnce(feet, why, rules);
                 if (!touched) return r;   // not ready / HUD missing: nothing pressed, not a failed round
                 try { FeetPressed?.Invoke(feet); } catch { }
-                await Delay(4000);        // the body restarts its feet animations
+                await WaitForMesh(feet);  // the body swaps its foot mesh: confirmed as soon as the wanted pair shows (~1-2 s), capped
                 var v = await VerifyFit(feet, rules);
                 last = v.Why;
                 if (v.Kind == FeetKind.Verified)

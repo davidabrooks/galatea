@@ -8,7 +8,9 @@
 // Adult means: only in a human outfit, alone on our parcel, after changing to Naked; the outfit is put back afterwards
 // (AdultRedress.cs). A future catalog replaces the defaults below by an optional JSON file (GT_POSE_RULES, default
 // <routes>/_pose-rules.json): {"sexual_words": "<regex>", "adult_menu": "<regex>", "adult_seat": "<regex>",
-// "plain_menu_words": [..] (replaces), "extra_plain_menu_words": [..] (adds), "adult_names": [..], "pg_names": [..]}
+// "plain_menu_words": [..] (replaces), "extra_plain_menu_words": [..] (adds), "adult_names": [..], "pg_names": [..],
+// "not_solo_names": [..] (adds exact pose names that need a partner; never picked for a solo sit)}. The file is re-read when its
+// modification time changes, so an edit applies to the running client on the next pose pick.
 // Conversation poses (Talk, Chat ...; Reiley Net Chair PG: SINGLE* > Talk) are for talking to David from the paired seat: the solo
 // picker skips them unless David sits next to her ("conversation_pose": "<regex>" replaces the default, "extra_conversation_names": [..] adds exact names).
 // adult_names / pg_names are exact bare pose or menu names (case-insensitive): adult_names are always adult, pg_names are
@@ -32,6 +34,10 @@ internal sealed class PoseRuleSet
     HashSet<string> conversationNames = new(StringComparer.OrdinalIgnoreCase);
     Regex adultSeat = new(DefaultAdultSeat, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     HashSet<string> plain = new(DefaultPlainMenuWords, StringComparer.OrdinalIgnoreCase);
+    // 2026-11-02 David ("not singular"): exact bare pose names that need another person, never picked for a solo sit.
+    public static readonly string[] DefaultNotSoloNames = { "Peeking" };
+    HashSet<string> notSolo = new(DefaultNotSoloNames, StringComparer.OrdinalIgnoreCase);
+    public bool IsNotSoloName(string raw) => notSolo.Contains(Bare(raw));
     HashSet<string> adultNames = new(StringComparer.OrdinalIgnoreCase), pgNames = new(StringComparer.OrdinalIgnoreCase);
     public string Source { get; private set; } = "built-in defaults";
 
@@ -73,6 +79,7 @@ internal sealed class PoseRuleSet
         if (o.TryGetProperty("conversation_pose", out var cv) && cv.ValueKind == JsonValueKind.String) r.conversation = new Regex(cv.GetString()!, ro);
         var cn = L("extra_conversation_names"); if (cn != null) foreach (var w in cn) r.conversationNames.Add(Bare(w));
         var an = L("adult_names"); if (an != null) foreach (var w in an) r.adultNames.Add(Bare(w));
+        var ns = L("not_solo_names"); if (ns != null) foreach (var w in ns) r.notSolo.Add(Bare(w));
         var pn = L("pg_names"); if (pn != null) foreach (var w in pn) r.pgNames.Add(Bare(w));
         r.Source = source; return r;
     }
@@ -81,17 +88,23 @@ internal sealed class PoseRuleSet
 internal static class PoseRules
 {
     static PoseRuleSet current;
+    static DateTime currentStamp = DateTime.MinValue, nextCheck = DateTime.MinValue;
     static readonly object gate = new();
     public static string FilePath => Environment.GetEnvironmentVariable("GT_POSE_RULES") is { Length: > 0 } p ? p : Path.Combine(Environment.GetEnvironmentVariable("GT_ROUTE_DIR") ?? "/home/box/viewers/textclient/routes", "_pose-rules.json");
     public static PoseRuleSet Current
     {
         get
         {
-            if (current != null) return current;
+            var f = FilePath;
+            if (current != null && DateTime.UtcNow < nextCheck) return current;
+            nextCheck = DateTime.UtcNow.AddSeconds(2);
+            DateTime stamp; try { stamp = File.Exists(f) ? File.GetLastWriteTimeUtc(f) : DateTime.MinValue; } catch { stamp = DateTime.MinValue; }
+            if (current != null && stamp == currentStamp) return current;
             lock (gate)
             {
-                if (current != null) return current;
-                try { var f = FilePath; current = File.Exists(f) ? PoseRuleSet.FromJson(File.ReadAllText(f), f) : new PoseRuleSet(); }
+                if (current != null && stamp == currentStamp) return current;
+                currentStamp = stamp;
+                try { current = File.Exists(f) ? PoseRuleSet.FromJson(File.ReadAllText(f), f) : new PoseRuleSet(); }
                 catch (Exception ex) { current = new PoseRuleSet(); Program.Log("pose", $"pose rules file {FilePath} unusable ({ex.GetBaseException().Message}); using the built-in rules"); }
                 return current;
             }

@@ -53,10 +53,12 @@ public class SexualPoseRuleTests
         Assert.True(Program.PosePathIsSexual(new[] { "Solo*", "Solo Adult*", "Feeling" }));
         Assert.False(Program.PosePathIsSexual(new[] { "Solo*", "Solo Couch*", "Meh" }));
         // with permission the picker may choose it; couples names stay out
-        var menu = new List<string> { "Sexy sit", "Together", "Cuddles*" };
+        var menu = new List<string> { "Sexy sit", "Meh" };
         bool sawSexy = false;
-        for (int i = 0; i < 100; i++) { var p = Program.PickPoseButton(menu, null, new Random(i), inSubmenu: true, allowSexual: true).pick; Assert.NotEqual("Together", p); Assert.NotEqual("Cuddles*", p); sawSexy |= p == "Sexy sit"; }
+        for (int i = 0; i < 100; i++) sawSexy |= Program.PickPoseButton(menu, null, new Random(i), inSubmenu: true, allowSexual: true).pick == "Sexy sit";
         Assert.True(sawSexy);
+        // 2026-11-02 (SoloPartnerMenuTests): a submenu that lists couples poses is a partner menu; its other entries are not solo picks
+        for (int i = 0; i < 100; i++) Assert.Null(Program.PickPoseButton(new List<string> { "Sexy sit", "Together", "Cuddles*" }, null, new Random(i), inSubmenu: true, allowSexual: true).pick);
     }
 
     [Fact]

@@ -490,6 +490,8 @@ public static partial class Program
         return PoseControlOnlySkip.IsMatch(l) || PoseControlOnlySkip.IsMatch(bare);
     }
     static bool PoseIsCouplesNamed(string raw) => PoseCouplesName.IsMatch(PoseBare(raw));
+    // strictly one person (no 'sit' / 'relax': those words also name halves of partner poses, e.g. Pictures* > Check Sit)
+    internal static readonly Regex PoseStrictSoloName = new(@"(?<![a-z])(?:singles?|solo|alone|one\s*p|1p)(?![a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static bool PoseIsSoloMenu(string raw) => PoseSoloMenuName.IsMatch(PoseBare(raw));
     // David 2026-10-12 15:24 (Lalou Ultra Sofa: Solo > Solo Couch > Sexy sit picked by solo wander): sexual / suggestive
     // pose and menu NAMES are never auto-picked, even inside a Solo menu. Word list from the Lalou catalogue's sexual names;
@@ -626,7 +628,7 @@ public static partial class Program
     // inSubmenu: already inside a submenu she chose (depth > 0); the "no clearly solo option" rule is for the top menu.
     internal static (string pick, bool submenu, string why) PickPoseButton(List<string> labels, string current, Random rnd, bool couplesMode = false, bool inCouplesMenu = false, bool preferPgSolo = false, bool inSubmenu = false, bool allowSexual = false, bool inSexualMenu = false, bool adultSeat = false, bool conversationOk = false)
     {
-        var ok = new List<string>(); var skipped = new List<string>(); bool risky = false;
+        var ok = new List<string>(); var skipped = new List<string>(); bool risky = false, partnerSibling = false;
         bool seatSel = PoseMenuLooksLikeSeatSelect(labels);
         foreach (var raw in labels ?? new())
         {
@@ -653,7 +655,10 @@ public static partial class Program
             else
             {
                 // solo mode: never couples / adult / intimate names (19:39 Adults* > 5Adults)
-                if (PoseIsCouplesNamed(l)) { skipped.Add(l); risky = true; continue; }
+                if (PoseIsCouplesNamed(l)) { skipped.Add(l); risky = true; partnerSibling = true; continue; }
+                // 2026-11-02 15:46 David: "not singular" (Xplicit Makeup Table: Solo* > Pictures* > Peeking). Names on the not-solo list
+                // (PoseRules not_solo_names: built-in + _pose-rules.json) are never picked for a solo sit.
+                if (PoseRules.Current.IsNotSoloName(l)) { skipped.Add(l); continue; }
                 if (PoseIsAdultMenu(l) && !allowSexual) { skipped.Add(l); risky = true; continue; }
             }
             ok.Add(l);
@@ -662,6 +667,16 @@ public static partial class Program
         {
             var mode = couplesMode ? (inCouplesMenu ? "couples submenu" : "couples (explicit)") : "solo";
             return (null, false, $"no suitable {mode} option (skipped: {string.Join(", ", skipped)})");
+        }
+        // 2026-11-02 15:46 (Xplicit Makeup Table: Solo* > Pictures* > [Reach | Couple | Couple2 | Check Sit | Coy | Peeking ...]
+        // picked Peeking, a partner pose): a submenu that also lists couples-named poses is a pairs menu: its plain-named entries
+        // are the halves of two-person poses. Inside it only a clearly solo-named entry is picked, else none (keep the current pose).
+        if (!couplesMode && !inCouplesMenu && inSubmenu && partnerSibling)
+        {
+            var soloOnly = ok.Where(l => PoseStrictSoloName.IsMatch(PoseBare(l))).ToList();   // 'Check Sit' there is a partner half too
+            if (soloOnly.Count == 0)
+                return (null, false, $"submenu lists couples poses, so its other entries are partner poses (skipped: {string.Join(", ", skipped)}; partner: {string.Join(", ", ok)}); no clearly solo option");
+            ok = soloOnly;
         }
         if (!couplesMode && !inCouplesMenu && !inSubmenu)
         {

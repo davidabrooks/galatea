@@ -165,6 +165,7 @@ public static partial class Program
                 if (e.Type != ChatType.OwnerSay || string.IsNullOrEmpty(e.Message) || e.Message[0] == '@' || e.OwnerID != client.Self.AgentID || e.SourceType != ChatSourceType.Object) return;
                 if (!Regex.IsMatch(e.Message, "leash|follow|strict|length|anchor|yank|beckon", RegexOptions.IgnoreCase)) return;
                 RlvLog($"leash: collar said ('{e.FromName}'): {e.Message}");
+                if (Regex.IsMatch(e.Message, "leash|yank|beckon", RegexOptions.IgnoreCase)) leashEvidenceAt = DateTime.Now;
                 if (LeashLengthFromText(e.Message) is float len && len != leashLength) { leashLength = len; RlvLog($"leash: length {len:F1} m read from the collar"); RlvSaveState(); }
                 var t = LeashFromText(e.Message); if (t == null) return;
                 switch (t.Value.kind)
@@ -274,7 +275,9 @@ public static partial class Program
     {
         var sim = client.Network.CurrentSim;
         var pt = LeashParticleTarget() ?? LeashForeignTarget();
+        if (pt != null) leashEvidenceAt = DateTime.Now;
         var l = leash;
+        if (pt == null && l?.mode == "leash" && PullLeashStale(l.how, DateTime.Now, lastPullAt, leashEvidenceAt)) { leashNoPullStartUntil = DateTime.Now.AddSeconds(20); LeashEnd($"no pull and no collar leash evidence for {PullOnlyStaleSec:F0} s (pull-only guess)"); return; }
         if (pt is { } t)
         {
             leashMissScans = 0;

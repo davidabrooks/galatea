@@ -240,9 +240,15 @@ public static partial class Program
     internal static bool GroundSitStandNeeded(IEnumerable<UUID> playing, bool sittingOnObject) => AoForceSitOn(playing, sittingOnObject);
     internal static bool AoShouldToggleOff(bool forceSitOn) => forceSitOn;
     // 2026-10-23 (David): only HIS stand (stand tool, idle_pose stop) starts the 30 min cooldown; an internal stand
-    // (logout, shutdown, deploy) never does, and a new login clears any cooldown.
+    // (logout, shutdown, deploy) never does. 2026-11-02 (12:39 idle_pose stop, 12:40 relog, idle sit at 12:47): the cooldown SURVIVES a relog: its end time
+    // is persisted in run/idle-nosit-until.txt and honoured after login, alongside the 2x idle wait (IdleLoginHoldActive); an expired one is dropped.
     internal static bool IdleStandStartsCooldown(string why) => why is "stand command" or "manual stop";
-    internal static DateTime IdleCooldownAfterLogin() => DateTime.MinValue;
+    internal static DateTime IdleCooldownAfterLogin(DateTime saved, DateTime now) => saved > now ? saved : DateTime.MinValue;
+    static readonly string IdleNoSitFile = Env("GT_IDLE_NOSIT_FILE", "/home/box/viewers/textclient/run/idle-nosit-until.txt");
+    internal static string IdleNoSitFormat(DateTime until) => until.ToUniversalTime().ToString("o");
+    internal static DateTime IdleNoSitParse(string text) => DateTime.TryParse(text?.Trim(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var t) ? t.ToLocalTime() : DateTime.MinValue;
+    static void IdleNoSitSave() { try { File.WriteAllText(IdleNoSitFile, IdleNoSitFormat(idleNoSitUntil)); } catch { } }
+    static DateTime IdleNoSitLoad() { try { return File.Exists(IdleNoSitFile) ? IdleNoSitParse(File.ReadAllText(IdleNoSitFile)) : DateTime.MinValue; } catch { return DateTime.MinValue; } }
     // 2026-10-31 18:07 (David): a slow login let her auto-sit 106 s after the veil came off. After login the idle sit waits at least
     // TWICE the normal idle time (the drawn threshold, 90-300 s), counted from the later of login and veil-off; veil still on = wait.
     internal const double IdleLoginFactor = 2;
@@ -260,7 +266,7 @@ public static partial class Program
         string a = idlePosed != null ? await IdlePoseExit(why) : "not posed";
         string b = await AoGroundSitEnsureOff(why);
         string c = ""; try { c = await IdleRepinAfterStand(why); } catch { }
-        if (cool) idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec);
+        if (cool) { idleNoSitUntil = DateTime.Now.AddSeconds(IdleStandCooldownSec); IdleNoSitSave(); }
         Log("idlepose", $"stand ({why}): {a}; {b}{c}; {(cool ? $"no idle sit until {idleNoSitUntil:HH:mm}" : "no cooldown (internal stand)")}");
         return cool ? $"{a}; {b}{c}; no idle sit/kneel for 30 min" : $"{a}; {b}{c}";
     }
@@ -379,6 +385,8 @@ public static partial class Program
     // while the status said off; only the second press turned it off).
     static int aoPressBusy;
     static ForceSitState aoForceSitInferred = ForceSitState.Unknown; static string aoLastPressReport = null; static DateTime aoLastPressAt = DateTime.MinValue;
+    // 2026-11-02 13:03:30: status paired the new press time (13:03:26, a correct login-reset stand) with the 12:47 read-back "now ON": a press clears the old report
+    internal static string PressPendingReport() => "pressed, read-back pending";
     static async Task<string> AoGroundSitToggle(string why)
     {
         var (r, readback) = await AoGroundSitPress(why);
@@ -398,7 +406,7 @@ public static partial class Program
             before = SelfAnims().ToList();
             r = await Exec($"touch-attachment \"ao\" \"{spot.link}\" {spot.face} st={spot.st}");
             Log("idlepose", $"AO force sitg toggled ({why}): {r}");
-            aoLastPressAt = DateTime.Now; aoSitTransitionUntil = DateTime.Now.AddSeconds(StuckSitWaitMs / 1000.0 + 20);
+            aoLastPressAt = DateTime.Now; aoLastPressReport = PressPendingReport(); aoSitTransitionUntil = DateTime.Now.AddSeconds(StuckSitWaitMs / 1000.0 + 20);
         }
         catch { Interlocked.Exchange(ref aoPressBusy, 0); throw; }
         var readback = Task.Run(async () =>
@@ -555,7 +563,7 @@ public static partial class Program
     static DateTime idleLoginAt;
     static void IdlePoseLoginStart()
     {
-        idleLoginAt = DateTime.Now; IdleNoteActivity(); try { AoSitHook(); } catch { } idleNoSitUntil = IdleCooldownAfterLogin();   // a cooldown never survives a relog
+        idleLoginAt = DateTime.Now; IdleNoteActivity(); try { AoSitHook(); } catch { } idleNoSitUntil = IdleCooldownAfterLogin(IdleNoSitLoad(), DateTime.Now);   // his stand cooldown survives a relog (2026-11-02)
         _ = Task.Run(async () =>
         {
             try

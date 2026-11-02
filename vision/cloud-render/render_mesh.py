@@ -1338,12 +1338,29 @@ def support_z(verts, com):
 TOUCH_REGION_SEGS = {"hips": (0, 15, 20), "chest": (1, 2), "l forearm": (8,), "r forearm": (13,), "l hand": (9,), "r hand": (14,), "l thigh": (16,), "r thigh": (21,),
                      "l shin": (17,), "r shin": (22,), "l foot": (18, 19), "r foot": (23, 24)}
 
+HAND_SEGS = (9, 14)   # scene-mesher Bones(): mWrist -> mHandMiddle1 (the middle knuckle), i.e. the palm; the skeleton has no finger segments
+
+def finger_mask(verts, segs, chunk=40000):
+    """True for the FINGER vertices (2026-11-02, David: "look at your palms; fingers are not strong enough to support us"). Weight-bearing = palms (heel
+    of the hand), seat, heels / soles, knees / shins; fingers weigh 0. From the skeleton, no pose names or numbers: a vertex nearest a hand segment
+    (wrist -> middle knuckle) whose projection falls past the knuckle (t > 1) is a finger; the palm is the part between the wrist and the knuckles."""
+    v = np.asarray(verts, np.float64).reshape(-1, 3); S = np.asarray(segs, np.float64).reshape(-1, 2, 3); out = np.zeros(len(v), bool)
+    if len(S) != 25 or not len(v): return out
+    A, D = S[:, 0], S[:, 1] - S[:, 0]; DD = np.maximum((D * D).sum(1), 1e-12)
+    for i in range(0, len(v), chunk):
+        P = v[i:i + chunk]; tr = ((P[:, None, :] - A[None]) * D[None]).sum(2) / DD[None]; t = np.clip(tr, 0.0, 1.0)
+        n = np.argmin((((A[None] + t[..., None] * D[None]) - P[:, None, :]) ** 2).sum(2), 1)
+        out[i:i + chunk] = np.isin(n, HAND_SEGS) & (tr[np.arange(len(P)), n] > 1.0)
+    return out
+
 def touch_contact(verts, segs, com):
     """the contact height = the AVERAGE of the lowest points of the touchpoint regions. Which regions touch is geometry, not pose names: the floor holds
     her once the points under it surround her centre of mass (support_z); every region whose lowest point is at or below that height is a touchpoint.
     No thresholds. -> (z, {region: lowest z}, support z) | None (no skeleton / nothing surrounds the com)"""
-    v = np.asarray(verts, np.float64).reshape(-1, 3); sz = support_z(v, com)
-    if sz is None or len(np.asarray(segs).reshape(-1, 2, 3)) != 25: return None
+    v = np.asarray(verts, np.float64).reshape(-1, 3)
+    if len(np.asarray(segs).reshape(-1, 2, 3)) != 25: return None
+    v = v[~finger_mask(v, segs)]; sz = support_z(v, com)   # weight-bearing parts only (David 2026-11-02): fingers can't hold her up
+    if sz is None: return None
     touch = {}
     for name, ix in TOUCH_REGION_SEGS.items():   # a touchpoint: a region with a vertex at or below the support height; its height = its lowest 0.2 % (body_part_gaps' quantile: no stray vertex)
         pv = assign_body_parts_idx(v, segs, ix)

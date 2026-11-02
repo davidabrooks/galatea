@@ -397,6 +397,7 @@ public static partial class Program
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
         IdlePoseLoginStart(); // clear a leftover collar pose / AO ground sit (IdlePose.cs)
         LoginJoinStart(); // walk over to David myself + measured placement for the david_login wake (LoginJoin.cs)
+        _ = Task.Run(LoginFaceHim); // after the join walk: face David if he is within 20 m (IdlePose.cs)
         _ = Task.Run(AfterQuickLogin); // quick relog: floor spot beside the furniture, never re-sit (LoginStart.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);

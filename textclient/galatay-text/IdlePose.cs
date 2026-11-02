@@ -201,6 +201,7 @@ public static partial class Program
             {
                 var beforeAnims = SelfAnims().ToHashSet(); aoSitTransitionUntil = DateTime.Now.AddSeconds(30);
                 var r = await AoGroundSitSwitch();
+                await IdleFaceHim("after the pose switch", 3);
                 try { AoLearnSits(SelfAnims().Where(a => !beforeAnims.Contains(a)).Select(a => a.ToString()), beforeAnims); } catch { }
                 idleRotate = IdleRotateSec(Random.Shared.NextDouble());
                 idlePosed = cur with { pose = r.StartsWith("ground sit ") ? r : cur.pose, since = DateTime.Now }; IdleSave();
@@ -427,25 +428,55 @@ public static partial class Program
     }
 
     // 2026-10-23 (David): before a kneel or ground sit, turn to face the leash holder (else David) when he is nearby.
-    internal const float IdleFaceRadius = 10f;
+    // 2026-11-02 (David: "it would be nicer if you faced me after you logged in and when you sit down"): the 13:28 sit logged "facing David" but she
+    // did not visibly face him: one TurnToward + one AgentUpdate, never checked. Now: radius 20 m (same region), the turn is re-sent until her
+    // SimRotation reads within FaceToleranceDeg (or tries run out), again once the sit has landed and after each pose switch, and once after login.
+    internal const float IdleFaceRadius = 20f;
+    internal const float FaceToleranceDeg = 15f;
     // pure (tested): whom to face: the leash holder if within the radius, else David if within it, else nobody
     internal static Vector3? IdleFaceTarget(Vector3 me, Vector3? holder, Vector3? david, float radius = IdleFaceRadius)
     {
         bool near(Vector3? p) { if (p is not Vector3 v || v == Vector3.Zero) return false; var d = Vector3.Distance(new Vector3(v.X, v.Y, 0), new Vector3(me.X, me.Y, 0)); return d > 0.05f && d <= radius; }
         return near(holder) ? holder : near(david) ? david : null;
     }
-    static async Task IdleFaceHim()
+    // pure (tested): horizontal angle (deg, 0..180) between her body's forward axis and the direction to the target
+    internal static float FacingErrorDeg(Quaternion rot, Vector3 me, Vector3 target)
+    {
+        var f = Vector3.UnitX * rot; var a = new Vector2(f.X, f.Y); var b = new Vector2(target.X - me.X, target.Y - me.Y);
+        if (a.Length() < 1e-4f || b.Length() < 1e-4f) return 0f;
+        var c = Math.Clamp(Vector2.Dot(Vector2.Normalize(a), Vector2.Normalize(b)), -1f, 1f);
+        return (float)(Math.Acos(c) * 180.0 / Math.PI);
+    }
+    static async Task IdleFaceHim(string when = "before posing", int tries = 4)
     {
         try
         {
+            if (client.Self.SittingOn != 0) return;   // on furniture the seat sets her heading
             var l = leash; var me = client.Self.SimPosition;
             Vector3? hp = l != null && l.holder != UUID.Zero ? Avatars().Where(a => a.av.ID == l.holder && a.dist >= 0).Select(a => (Vector3?)a.pos).FirstOrDefault() : null;
             if (IdleFaceTarget(me, hp, DavidPos()) is not Vector3 t) return;
-            client.Self.Movement.TurnToward(new Vector3(t.X, t.Y, me.Z)); client.Self.Movement.SendUpdate(true);
-            Log("idlepose", $"facing {(hp == t ? l.holderName : "David")} before posing ({Vector3.Distance(me, t):F1} m)");
-            await Task.Delay(600);   // let the turn land before the pose locks the body
+            var tgt = new Vector3(t.X, t.Y, me.Z); float err = FacingErrorDeg(client.Self.SimRotation, me, tgt); int n = 0;
+            while (err > FaceToleranceDeg && n < tries)
+            {
+                n++; client.Self.Movement.TurnToward(tgt); client.Self.Movement.SendUpdate(true);
+                await Task.Delay(500);   // let the turn land (and the sim echo her rotation) before the pose locks the body
+                err = FacingErrorDeg(client.Self.SimRotation, client.Self.SimPosition, tgt);
+            }
+            Log("idlepose", $"facing {(hp == t ? l.holderName : "David")} {when} ({Vector3.Distance(me, t):F1} m): {(n == 0 ? "already facing" : $"{n} turn(s)")}, off by {err:F0} deg");
         }
         catch (Exception ex) { Log("idlepose", "face-him error " + ex.GetBaseException().Message); }
+    }
+    // after login (and David's join walk): face him once if he is near and she is standing free
+    static async Task LoginFaceHim()
+    {
+        try
+        {
+            await Task.WhenAny(loginJoinDone.Task, Task.Delay(100000));
+            await Task.Delay(2000);
+            if (!LoggedIn || idlePosed != null || client.Self.SittingOn != 0) return;
+            await IdleFaceHim("after login");
+        }
+        catch (Exception ex) { Log("idlepose", "login face error " + ex.GetBaseException().Message); }
     }
     // ---- ground sit entry (2026-10-28): pose first, then sit once ----
     // pure (tested): did the pre-pick land? Only the AO's own confirmation line counts ("ground sit 7 -> 5 NAME (of 10)"); the failure texts of AoGroundSitSwitch
@@ -522,6 +553,7 @@ public static partial class Program
             hoverDelayMs = GroundSitEntry.HoverDelayMs(entry.poseSeen, (DateTime.Now - hoverSvc.PostureChangedAt).TotalMilliseconds);
             var added = SelfAnims().Where(a => !before.Contains(a)).Select(a => a.ToString()).ToList();
             AoLearnSits(added, before);
+            await IdleFaceHim("after sitting", 3);   // the AO sit may land at another heading: a ground sit can still turn
             idlePosed = new("groundsit", "force sitg", added, DateTime.Now); IdleSave(); hoverSvc.AutoHoverKick("ground sit");
             hoverAfter = true;   // requested after the lock is released (a request made inside it waits for the 8 s retry)
             return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")}; pose {aoSitCurrentName ?? "?"})";

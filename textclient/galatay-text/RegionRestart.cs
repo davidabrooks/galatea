@@ -431,13 +431,15 @@ public static partial class Program
     {
         if (Interlocked.Exchange(ref embeddedReloginRunning, 1) == 1) return;
         var gen = Interlocked.Read(ref reloginGen);   // LoginHealth.cs: a manual login or logout after this cancels it
+        bool afterFork = VmForkRecent(Interlocked.Read(ref lastVmForkTicks), Environment.TickCount64);   // VmForkWatch.cs
+        if (afterFork) Log("disconnect", $"disconnect follows a {LastVmForkEvent}: fast relogin");
         _ = Task.Run(async () =>
         {
             try
             {
                 for (int n = 1; n <= EmbeddedReloginMax; n++)
                 {
-                    var d = EmbeddedReloginDelay(n, kicked);
+                    var d = EmbeddedReloginDelayAfter(n, kicked, afterFork);
                     Log("disconnect", $"auto-relogin {n}/{EmbeddedReloginMax} in {d.TotalSeconds:F0} s (MCP connector: no supervisor relaunch)");
                     await Task.Delay(d);
                     var go = EmbeddedReloginDecision(DeliberateStopRequested(), LoggedIn, gen, Interlocked.Read(ref reloginGen), loginGate.CurrentCount == 0);

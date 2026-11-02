@@ -21,6 +21,18 @@ public static partial class Program
         return best?.id;
     }
 
+    // 2026-11-02 (David: "I did not leash you"): her own home-wander leg (route steering, no AGENT_CONTROL flags) and the
+    // momentum right after a stand/leg end read as a collar pull toward David. Own movement now also covers a route leg,
+    // a manual walk, and the few seconds after either ended; and a pull alone starts a leash only with collar evidence.
+    internal const double OwnMoveCoastSec = 4, LeashEvidenceSec = 120, PullOnlyStaleSec = 90;
+    internal static DateTime lastOwnMoveAt = DateTime.MinValue, leashEvidenceAt = DateTime.MinValue;
+    // pure (tested): moving under my own steam now, or still coasting from it
+    internal static bool OwnMoveOrCoast(bool ownNow, DateTime now, DateTime lastOwn) => ownNow || (now - lastOwn).TotalSeconds < OwnMoveCoastSec;
+    // pure (tested): a pull starts an (invisible) leash only when the collar showed leash evidence lately (its chain particles or leash text)
+    internal static bool PullLeashHasEvidence(DateTime now, DateTime evidenceAt) => (now - evidenceAt).TotalSeconds <= LeashEvidenceSec;
+    // pure (tested): a leash inferred from a pull alone ends when no pull and no collar evidence for a while
+    internal static bool PullLeashStale(string how, DateTime now, DateTime lastPull, DateTime evidenceAt) =>
+        (how ?? "").StartsWith("collar pull", StringComparison.Ordinal) && (now - lastPull).TotalSeconds > PullOnlyStaleSec && (now - evidenceAt).TotalSeconds > PullOnlyStaleSec;
     static int pullTicks; static UUID pullId; internal static DateTime lastPullAt = DateTime.MinValue;
     // pure (tested): a lost particle chain ends the leash only when the collar has not pulled me lately (invisible leash)
     internal static bool LeashChainLossEnds(DateTime now, DateTime lastPull) => (now - lastPull).TotalSeconds > 30;
@@ -34,7 +46,8 @@ public static partial class Program
                 if (!LoggedIn || client.Self.SittingOn != 0) { pullTicks = 0; continue; }
                 var ctl = client.Self.Movement.AgentControls;
                 bool own = (ctl & (uint) (AgentManager.ControlFlags.AGENT_CONTROL_AT_POS | AgentManager.ControlFlags.AGENT_CONTROL_AT_NEG | AgentManager.ControlFlags.AGENT_CONTROL_NUDGE_AT_POS
-                    | AgentManager.ControlFlags.AGENT_CONTROL_LEFT_POS | AgentManager.ControlFlags.AGENT_CONTROL_LEFT_NEG | AgentManager.ControlFlags.AGENT_CONTROL_UP_POS)) != 0 || followId != UUID.Zero;
+                    | AgentManager.ControlFlags.AGENT_CONTROL_LEFT_POS | AgentManager.ControlFlags.AGENT_CONTROL_LEFT_NEG | AgentManager.ControlFlags.AGENT_CONTROL_UP_POS)) != 0 || followId != UUID.Zero || routeState != "idle" || ManualWalkActive;
+                var nowT = DateTime.Now; if (own) lastOwnMoveAt = nowT; own = OwnMoveOrCoast(own, nowT, lastOwnMoveAt);
                 var avs = Avatars().Where(a => a.av != null).Select(a => (a.av.ID, a.av.Position)).ToList();
                 var t = LeashPullToward(client.Self.SimPosition, client.Self.Velocity, avs, own);
                 if (t is UUID id)
@@ -43,6 +56,7 @@ public static partial class Program
                     if (pullTicks == 1) RlvLog($"leash-diag: PULL toward {id} (speed {client.Self.Velocity.Length():F1} m/s, no own movement)");
                     if (pullTicks == 3 && (leash == null || leash.mode != "leash") && LeashPullStartAllowed(DateTime.Now, leashNoPullStartUntil))
                     {
+                        if (!PullLeashHasEvidence(DateTime.Now, leashEvidenceAt)) { RlvLog($"leash-diag: pull toward {id} but no collar leash evidence in {LeashEvidenceSec:F0} s: not a leash"); continue; }
                         var av = Avatars().FirstOrDefault(a => a.av?.ID == id);
                         LeashStart("leash", id, av.av?.Name ?? id.ToString(), false, "collar pull (invisible leash?)");
                     }

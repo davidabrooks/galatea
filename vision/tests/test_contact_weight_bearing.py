@@ -2,11 +2,11 @@
 palms; fingers are not strong enough to support us"). Fingers (past the wrist->middle-knuckle hand segment) weigh 0; the palm sets the hand's level."""
 import ast, pathlib, numpy as np
 SRC = pathlib.Path(__file__).resolve().parents[1] / "cloud-render" / "render_mesh.py"
-NAMES = {"finger_mask", "touch_contact", "support_z", "com_inside", "assign_body_parts_idx"}
+NAMES = {"finger_mask", "touch_contact", "part_thickness", "contact_level", "support_z", "com_inside", "assign_body_parts_idx"}
 
 def _ns():
     t = ast.parse(SRC.read_text()); ns = {"np": np}
-    keep = [n for n in t.body if (isinstance(n, ast.FunctionDef) and n.name in NAMES) or (isinstance(n, ast.Assign) and any(getattr(x, "id", "") in ("HAND_SEGS", "TOUCH_REGION_SEGS", "PART_MIN_VERTS") for x in n.targets))]
+    keep = [n for n in t.body if (isinstance(n, ast.FunctionDef) and n.name in NAMES) or (isinstance(n, ast.Assign) and any(getattr(x, "id", "") in ("HAND_SEGS", "TOUCH_REGION_SEGS", "PART_MIN_VERTS", "WEIGHT_BEARING", "SINK_FRACTION") for x in n.targets))]
     exec(compile(ast.Module(keep, []), "rm", "exec"), ns); return ns
 
 def _segs():

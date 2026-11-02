@@ -1353,20 +1353,40 @@ def finger_mask(verts, segs, chunk=40000):
         out[i:i + chunk] = np.isin(n, HAND_SEGS) & (tr[np.arange(len(P)), n] > 1.0)
     return out
 
-def touch_contact(verts, segs, com):
-    """the contact height = the AVERAGE of the lowest points of the touchpoint regions. Which regions touch is geometry, not pose names: the floor holds
-    her once the points under it surround her centre of mass (support_z); every region whose lowest point is at or below that height is a touchpoint.
-    No thresholds. -> (z, {region: lowest z}, support z) | None (no skeleton / nothing surrounds the com)"""
+WEIGHT_BEARING = ("hips", "l hand", "r hand", "l thigh", "r thigh", "l shin", "r shin", "l foot", "r foot")   # David 2026-11-02: seat, palms, heels / soles, knees / shins (fingers masked; chest and forearms don't hold her up)
+SINK_FRACTION = 0.5   # a part may sink at most half its own thickness: its top surface stays at least half its thickness above the floor, so the
+                      # larger half of it stays visible (David: "we need to be able to see some of them"); the midplane of a thin part (the palm's bones) never goes under
+
+def part_thickness(pv):
+    """a body part's own thickness from the mesh: the 5-95 % extent along its thinnest principal axis (a palm: back of the hand to palm, ~3.5 cm)"""
+    q = pv - pv.mean(0); e = np.linalg.svd(q, full_matrices=False)[2][-1]; d = q @ e
+    return float(np.quantile(d, 0.95) - np.quantile(d, 0.05))
+
+def contact_level(touch, thick, f=SINK_FRACTION):
+    """the true average of the touchpoints' lowest points, clamped so no part sinks deeper than f of its own thickness -> (z, clamped?)"""
+    avg = float(np.mean(list(touch.values()))); cap = min(touch[k] + f * thick[k] for k in touch)
+    return (cap, True) if avg > cap else (avg, False)
+
+def touch_contact(verts, segs, com, detail=None):
+    """the contact height (2026-11-02, David: "since they are quite a bit too high, I would expect your hands to be more sunk into the floor, but it can't be
+    too much"): the AVERAGE of the lowest points of the weight-bearing parts that touch, clamped so no part sinks more than SINK_FRACTION of its own measured
+    thickness. Which parts touch is geometry, not pose names: support_z = the height at which the points under it surround her centre of mass; a part touches
+    when its lowest point is within its own thickness of that height (it can reach the floor without the floor passing through it). Fingers and clothing
+    weigh 0. -> (z, {part: lowest z}, support z) | None; detail (dict) gets thickness, sink per part and whether the clamp engaged"""
     v = np.asarray(verts, np.float64).reshape(-1, 3)
     if len(np.asarray(segs).reshape(-1, 2, 3)) != 25: return None
-    v = v[~finger_mask(v, segs)]; sz = support_z(v, com)   # weight-bearing parts only (David 2026-11-02): fingers can't hold her up
+    v = v[~finger_mask(v, segs)]; sz = support_z(v, com)
     if sz is None: return None
-    touch = {}
-    for name, ix in TOUCH_REGION_SEGS.items():   # a touchpoint: a region with a vertex at or below the support height; its height = its lowest 0.2 % (body_part_gaps' quantile: no stray vertex)
-        pv = assign_body_parts_idx(v, segs, ix)
-        if len(pv) >= PART_MIN_VERTS and pv[:, 2].min() <= sz: touch[name] = float(np.quantile(pv[:, 2], 0.002))
+    touch, thick = {}, {}
+    for name in WEIGHT_BEARING:   # a part's height = its lowest 0.2 % (no stray vertex)
+        pv = assign_body_parts_idx(v, segs, TOUCH_REGION_SEGS[name])
+        if len(pv) < PART_MIN_VERTS: continue
+        lo, t = float(np.quantile(pv[:, 2], 0.002)), part_thickness(pv)
+        if lo <= sz + t: touch[name], thick[name] = lo, t
     if not touch: return None
-    return float(np.mean(list(touch.values()))), touch, sz
+    z, clamped = contact_level(touch, thick)
+    if detail is not None: detail.update(thickness=thick, sink={k: z - touch[k] for k in touch}, clamped=clamped)
+    return z, touch, sz
 
 def contact_obs(obs):
     """the meshes whose vertices can be touchpoints (2026-11-02 VAMOSITG24, David's photo: bare feet ON the floor while the check had them 5 cm under, because
@@ -1719,9 +1739,9 @@ if SCENE:
         for ob in contact_obs(obs):
                 a_ = np.empty(len(ob.data.vertices) * 3); ob.data.vertices.foreach_get("co", a_); m_ = np.array(ob.matrix_world)
                 vs_.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
-        tc_ = touch_contact(np.concatenate(vs_), M["bones"], M["pelvis"][:2]) if vs_ and M.get("bones") else None
+        td_ = {}; tc_ = touch_contact(np.concatenate(vs_), M["bones"], M["pelvis"][:2], td_) if vs_ and M.get("bones") else None
         if tc_ is not None:
-            print(f"GT: hover check touchpoints: " + ", ".join(f"{k} {z:+.3f}" for k, z in tc_[1].items()) + f" (mesh z; support height {tc_[2]:+.3f}), average {tc_[0]:+.3f}, lowest vertex {lo[2]:+.3f}", flush=True); lo_c = tc_[0]
+            print(f"GT: hover check touchpoints: " + ", ".join(f"{k} {z:+.3f}" for k, z in tc_[1].items()) + f" (mesh z; support height {tc_[2]:+.3f}), average {tc_[0]:+.3f}, lowest vertex {lo[2]:+.3f}; sink/thickness " + ", ".join(f"{k} {td_['sink'][k]:+.3f}/{td_['thickness'][k]:.3f}" for k in tc_[1]) + f"; clamp {'engaged' if td_['clamped'] else 'off'}", flush=True); lo_c = tc_[0]
     HC = hover_check_z0(os.environ, g[2], lo_c, fl, M.get("agent_off"))   # 2026-10-23 hover check: real placement + her hover, floor from the scene (seated on an object: look.py leaves GT_HOVER_CHECK off, the sim's placement)
     if HC and hover_floor_missing(HC[1], mst):
         z0 = HC[0]; print(f"GT: hover check: no reading: the floor under her is not in the export yet (cast hit z {fl:.3f}, {HC[1]:+.3f} m below her lowest point; scene still loading)", flush=True)

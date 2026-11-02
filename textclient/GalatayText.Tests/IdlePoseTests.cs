@@ -173,18 +173,36 @@ public class IdlePoseTests
             }
         Assert.Equal(1, Program.AoSitPick(1, 1, 0.5));
     }
-    [Fact] public void StandCooldown_OnlyHisStand_NotLogoutOrDeploy_NotAcrossRelog()   // 2026-10-23 regression
+    [Fact] public void StandCooldown_OnlyHisStand_NotLogoutOrDeploy_SurvivesRelog()   // 2026-10-23 regression
     {
         Assert.True(Program.IdleStandStartsCooldown("stand command"));
         Assert.True(Program.IdleStandStartsCooldown("manual stop"));
         Assert.False(Program.IdleStandStartsCooldown("logout"));
         Assert.False(Program.IdleStandStartsCooldown("shutdown"));
-        Assert.False(Program.IdleCooldownActive(System.DateTime.Now, Program.IdleCooldownAfterLogin()));
+        var now = System.DateTime.Now;   // 2026-11-02: his cooldown survives a relog; an expired one doesn't
+        Assert.True(Program.IdleCooldownActive(now, Program.IdleCooldownAfterLogin(now.AddMinutes(20), now)));
+        Assert.False(Program.IdleCooldownActive(now, Program.IdleCooldownAfterLogin(now.AddMinutes(-1), now)));
+        Assert.False(Program.IdleCooldownActive(now, Program.IdleCooldownAfterLogin(System.DateTime.MinValue, now)));
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
         var login = src[src.IndexOf("static void IdlePoseLoginStart()")..]; login = login[..login.IndexOf("Task.Run")];
-        Assert.Contains("idleNoSitUntil = IdleCooldownAfterLogin()", login);
+        Assert.Contains("idleNoSitUntil = IdleCooldownAfterLogin(IdleNoSitLoad(), DateTime.Now)", login);
+        Assert.Contains("IdleNoSitSave()", src[src.IndexOf("static async Task<string> IdleExplicitStand")..]);
         var prog = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/Program.cs"));
         Assert.Contains("IdleExplicitStand(\"logout\")", prog);   // the logout stand passes "logout" (no cooldown)
+    }
+    [Fact] public void StandCooldown_PersistedEndTime_RoundTrips()   // 2026-11-02 12:47 idle sit 8 min after a 12:39 stop + 12:40 relog
+    {
+        var t = new System.DateTime(2026, 11, 2, 13, 9, 0, System.DateTimeKind.Local);
+        Assert.Equal(t, Program.IdleNoSitParse(Program.IdleNoSitFormat(t)));
+        Assert.Equal(System.DateTime.MinValue, Program.IdleNoSitParse("garbage"));
+        Assert.Equal(System.DateTime.MinValue, Program.IdleNoSitParse(null));
+    }
+    [Fact] public void ForceSitPress_ClearsTheOldReadBack()   // 2026-11-02 13:03:30 status: new press time + stale "now ON" read-back
+    {
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var press = src[src.IndexOf("static async Task<(string r, Task<string> readback)> AoGroundSitPress")..]; press = press[..press.IndexOf("var readback")];
+        Assert.Contains("aoLastPressAt = DateTime.Now; aoLastPressReport = PressPendingReport();", press);
+        Assert.DoesNotContain("ON", Program.PressPendingReport());
     }
     [Fact] public void CollarVisibility_UnknownAfterRelog_IsHidden()   // 2026-10-23 regression: hidden collar read as visible after relog
     {

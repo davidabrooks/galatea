@@ -52,7 +52,9 @@ internal static class LoginVeil
         }
         return s;
     }
-    internal const int CollarStealthMaxMs = 20000, EvoxHideMaxMs = 25000;
+    // 2026-11-02 (David): the collar step at logout is capped at ~3 s (menu: 2 quick touches of 1 s) so it can never delay the veil;
+    // Oct 31 23:17 the menu failed, 11 s went by and the network dropped before the veil went on (11:09 Nov 2 login: no veil, naked)
+    internal const int CollarStealthMaxMs = 3000, CollarLogoutMenuWaitMs = 1000, CollarLogoutTouches = 2, EvoxHideMaxMs = 25000;
 
     /// <summary>Pure-ish (tested with fakes): the veil-off order. Layer out of the library's wearables, known COF link(s) deleted, bake requested,
     /// and only then the (slow, at login) confirmation. Returns whether the links call succeeded and whether the bake was confirmed.
@@ -101,8 +103,11 @@ internal static class LoginVeil
     /// <summary>Pure-ish (tested with fakes): the logout order. Collar Stealth first (to its end, capped), then the veil; the stash only when the
     /// veil is verified on. 14:01 relog (David): the collar disappeared last, because the stealth ran beside the veil and the stash.</summary>
     internal static async Task<bool> LogoutCore(Func<Task> collarStealth, int collarMaxMs, Func<Task<bool>> veilOn, Func<Task> stash, Func<Task> looseHeadPartsFirst = null,
-                                                Func<Task> hideHeadFaces = null, int hideHeadFacesMaxMs = EvoxHideMaxMs)
+                                                Func<Task> hideHeadFaces = null, int hideHeadFacesMaxMs = EvoxHideMaxMs, Func<bool> connected = null, Action<string> veilMissed = null)
     {
+        // 2026-11-02: a disconnect mid-logout (Oct 31 23:17:51 NetworkTimeout) used to skip the veil without a word; now each step checks the
+        // connection and a skipped veil is reported (the caller logs it and writes run/veil-missed for the next login)
+        bool Gone(string step) { if (connected == null || connected()) return false; try { veilMissed?.Invoke(step); } catch { } return true; }
         // 15:31:45 logout (David): hair, teeth and earrings still floated alone at the end although our client got their KillObject 1.4 s before
         // the head's. Observers get those kills later than we do, so they now come off FIRST, while the head and body are still fully shown;
         // collar stealth and the veil bake (~6 s at 15:31:36-42) then run before the head and clothes go: a late kill shows a bald, whole avatar.
@@ -115,8 +120,11 @@ internal static class LoginVeil
         if (hideHeadFaces != null) { try { await Task.WhenAny(hideHeadFaces(), Task.Delay(hideHeadFacesMaxMs)); } catch { } }
         // 15:31:45 logout: hair, teeth and earrings floated alone at the end (observers get their kills late), so they still come off
         // before the veil and the head / clothes stash.
+        if (Gone("after the collar / ear-lash steps")) return false;
         if (looseHeadPartsFirst != null) { try { await looseHeadPartsFirst(); } catch { } }
+        if (Gone("before the veil")) return false;
         bool ok = await veilOn();
+        if (!ok && Gone("during the veil")) return false;
         if (ok) await stash();
         return ok;
     }
@@ -302,6 +310,9 @@ internal static class LoginVeil
     /// viewer to draw it; nothing to wait for (purposely naked) releases at once; MaxHold always releases.</summary>
     /// <summary>Pure (tested): start a background COF refresh in the release loop? Every 5 s once the veil link is known, every 1 s until then, never two at once.</summary>
     internal const int VeilLinksWaitMs = 1500;
+    /// <summary>Pure (tested): hold the release for every garment really Ready (known-silent shortcut off)? When the last logout's veil was
+    /// missed (run/veil-missed), or the Current Outfit was read and holds no veil link (2026-11-02 11:09 login).</summary>
+    internal static bool VeilMissedHold(bool missedMarker, bool cofRead, bool veilLinkFound) => missedMarker || (cofRead && !veilLinkFound);
     internal static bool CofRefreshDue(bool haveVeilLink, double sinceLastSec, bool inFlight) => !inFlight && sinceLastSec > (haveVeilLink ? 5 : 1);
     internal static (bool release, string why) Release(IEnumerable<Garment> garments, double nowSec, bool stashed = false, ICollection<string> knownSilent = null)
     {
@@ -374,11 +385,18 @@ public static partial class Program
         // alpha is saved with it on logout, so it also rezzes hidden at the next login.
         loginVeilEarlyStash = new();
         logoutHoverFreeze = true;   // HoverFootwear.cs: no footwear hover saved from a logout render
-        await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarStealthMaxMs, LoginVeilOnVerified, LoginVeilStashForLogout, LoginVeilLooseHeadPartsFirst, LoginVeilEvoxHideForLogout);
+        await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarStealthMaxMs, LoginVeilOnVerified, LoginVeilStashForLogout, LoginVeilLooseHeadPartsFirst, LoginVeilEvoxHideForLogout,
+            connected: () => LoggedIn && client?.Network?.Connected == true, veilMissed: LoginVeilMissedWrite);
         // the logout hold must never outlive an aborted logout: the outfit send would skip those items for the rest of the session
         _ = Task.Run(async () => { await Task.Delay(120000); if (LoggedIn && Volatile.Read(ref loginVeilGen) == gen0) { loginVeilHeld.Clear(); logoutHoverFreeze = false; } });
     }
 
+    static readonly string LoginVeilMissedPath = Env("GT_VEIL_MISSED", "/home/box/viewers/textclient/run/veil-missed");
+    static void LoginVeilMissedWrite(string step)
+    {
+        Log("login-veil", $"veil NOT on for logout: disconnected {step}; the next login holds the release until every garment is Ready");
+        try { File.WriteAllText(LoginVeilMissedPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} disconnected {step}\n"); } catch (Exception ex) { Log("warn", "veil-missed marker write failed: " + ex.Message); }
+    }
     static List<LoginVeil.Stashed> loginVeilEarlyStash = new();
     static List<LoginVeil.Stashed> LoginVeilStashCandidates(List<Primitive> prims)
     {
@@ -447,7 +465,7 @@ public static partial class Program
         try
         {
             if (!WornPrims().Any(p => AttachItemId(p) == N9CollarItem)) { Log("login-veil", "collar: not worn, nothing to hide"); return; }
-            var (r, wasOn) = await CollarStealthSet(true, "logout veil");
+            var (r, wasOn) = await CollarStealthSet(true, "logout veil", LoginVeil.CollarLogoutMenuWaitMs, LoginVeil.CollarLogoutTouches);
             var m = LoginVeil.CollarMarker(wasOn, r);
             File.WriteAllText(LoginVeilCollarFile, m + "\n");
             Log("login-veil", $"collar for logout: {r} (was {(wasOn == null ? "unknown" : wasOn.Value ? "already hidden" : "visible")}; login: {(m == "show" ? "show it after the veil-off bake" : "leave as is")})");
@@ -608,6 +626,11 @@ public static partial class Program
                 // veil decision came at +15.5 s for clothes Ready at +12.3 s. Now the attach runs beside the loop; the loop never waits on it.
                 if (id == UUID.Zero) { if (early.Count > 0) { await Task.Delay(1000, ct); LoginVeilAttachDirect(early, "login"); } why = "no veil configured"; return; }
                 var silent = LoginSilentGarments(); string lastWaitKey = null;
+                // 2026-11-02 11:09 login: the Oct 31 23:17 logout lost the network before the veil went on; the login released at +5.4 s on the
+                // known-silent shortcut with no veil at all. A veil-missed marker, or a Current Outfit read without the veil link, now holds
+                // the release until every garment is really Ready (no known-silent shortcut).
+                bool missedMarker = File.Exists(LoginVeilMissedPath); bool strictLogged = false;
+                if (missedMarker) Log("login-veil", "veil-missed marker from the last logout: " + File.ReadAllText(LoginVeilMissedPath).Trim() + "; holding the release until every garment is Ready");
                 if (silent.Count > 0) Log("login-veil", $"known silent garments (waited {LoginVeil.KnownSilentTimeoutSec:F0} s, not {LoginVeil.ReadyTimeoutSec:F0} s): {string.Join("; ", silent)}");
                 bool retried = false, fellBack = false; List<InventoryItem> links = null; DateTime linksAt = DateTime.MinValue; UUID cofId = UUID.Zero; Task cofRefresh = null;
                 await LoginVeil.BesideLoop(early.Count == 0 ? null : async () => { await Task.Delay(1000, ct); LoginVeilAttachDirect(early, $"login, +{(DateTime.Now - t0).TotalSeconds:F1} s"); }, async () => {
@@ -646,7 +669,8 @@ public static partial class Program
                         worn.Contains(l.Item) ? (loginSeenAt.TryGetValue(l.Item, out var s) ? (s - t0).TotalSeconds : 0) : null,
                         loginReadyAt.TryGetValue(l.Name, out var r) ? (r - t0).TotalSeconds : null)).ToList();
                     var heads = LoginVeil.HeadsNotAttached((links?.Select(l => (l.AssetUUID, l.Name)) ?? Enumerable.Empty<(UUID, string)>()).Concat(stash.Select(x => (x.Item, x.Name))), worn);
-                    var (rel, w) = src == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.ReleaseWithHead(garments, now, stash.Count > 0, heads, silent);
+                    var (rel, w) = src == null && now < LoginVeil.MaxHoldSec ? (false, "Current Outfit not readable yet") : LoginVeil.ReleaseWithHead(garments, now, stash.Count > 0, heads, LoginVeil.VeilMissedHold(missedMarker, links != null, veilLinks?.Count > 0) ? null : silent);
+                    if (!strictLogged && !missedMarker && LoginVeil.VeilMissedHold(false, links != null, veilLinks?.Count > 0)) { strictLogged = true; Log("login-veil", $"veil link not in the Current Outfit at +{now:F1} s: no veil on; holding the release until every garment is Ready"); }
                     // 13:13 login: the release came ~4 s after the last garment was done and nothing said why: log each new wait reason
                     var wKey = System.Text.RegularExpressions.Regex.Replace(w, @"[\d.]+ s", "#");
                     if (!rel && wKey != lastWaitKey) { lastWaitKey = wKey; Log("login-veil", $"waiting at +{now:F1} s: {w}"); }
@@ -670,6 +694,7 @@ public static partial class Program
                 if (off && gen == loginVeilGen) await LoginVeilHoldForEvox(t0);
                 if (off && gen == loginVeilGen) confirmed = await LoginVeilOff(id, t0, why, itemTask.IsCompleted ? await itemTask : null, cofId, veilLinks, burst);
                 else if (!off) Log("login-veil", $"veil KEPT ON at +{(DateTime.Now - t0).TotalSeconds:F1} s: {why}");
+                if (missedMarker && off) { try { File.Delete(LoginVeilMissedPath); } catch { } }
                 if (off) { revealed = true; await LoginVeilReveal(late, t0, confirmed, ct, pre); }   // hair, teeth, eyes: only after the skin is drawn
             }
             catch (Exception ex)

@@ -436,12 +436,13 @@ public static partial class Program
     {
         CancelPendingRelogin("logout: " + why);
         if (shuttingDown) return; shuttingDown = true;
+        bool wasLoggedIn = LoggedIn;   // 2026-11-02: a session lost during the stand still owes the next login a covered start
         try { if (LoggedIn) await Task.WhenAny(IdleExplicitStand("logout"), Task.Delay(15000)); } catch { }   // IdlePose.cs: stand up (pose + AO force sit off) before every logout
         bool deliberate = why == "logout command" || DeliberateStopRequested();
         // 2026-09-26: a signal without a stop request (hang monitor's TERM, a stray kill) exits 75 so the supervisor relaunches
         ExitCode = ShutdownExitCode(why, deliberate, ExitCode);
         try { WanderOnShutdown(deliberate); } catch { }
-        try { if (LoggedIn) await LoginVeilOnForLogout(); } catch { }   // LoginVeil.cs: the next login starts with the body hidden
+        try { if (LoggedIn) await LoginVeilOnForLogout(); else if (wasLoggedIn) LoginVeilMissedWrite("before the veil step (session lost during the stand)"); } catch { }   // LoginVeil.cs: the next login starts with the body hidden
         try { ObjectDiskCache.SaveAll(); } catch { }
         try { await VoiceShutdown(); } catch { } // leave voice (Voice.cs); the sidecar finishes its transcript on its own
         if (deliberate && ExitOnLogout) MarkDeliberateStop(why); // daemon only: a logout command also keeps her down across a reboot

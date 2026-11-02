@@ -90,7 +90,7 @@ public static partial class Program
     }
     static Task<string> CollarStealthOn(string why) => CollarStealthSet(true, why).ContinueWith(t => t.Result.result);
     // collar main menu -> About -> press "Stealth" only if its state differs from `want`. wasOn = state before (null = unknown)
-    static async Task<(string result, bool? wasOn)> CollarStealthSet(bool want, string why)
+    static async Task<(string result, bool? wasOn)> CollarStealthSet(bool want, string why, int menuWaitMs = 10000, int menuTouches = 1)
     {
         var broken = LoginBrokenStop("collar");
         if (broken != null) { Log("collar", broken); return (broken, null); }
@@ -129,12 +129,14 @@ public static partial class Program
                 if (CollarTouchRetry(t, attempt)) { await Task.Delay(2000); continue; }
                 // every retry used and still no name resolved: the session has no inventory (13:57 seed 404), say so plainly
                 if (WornNamesUnresolved(t)) { var m = $"collar stopped: no worn attachment name has resolved after {attempt} tries ({t}); the session has no inventory, a fresh login is needed"; Log("collar", m); return (m, null); }
-                main = await CollarDialogAfter(prev, 10000);
+                main = await CollarDialogAfter(prev, menuWaitMs);
+                // 2026-11-02 (David): at logout the menu gets one quick second touch instead of a 10 s wait (23:17:29 Oct 31: no menu, 11 s lost)
+                if ((main == null || !(main.ButtonLabels ?? new()).Contains("About")) && attempt < menuTouches) { Log("collar", $"stealth ({why}): no menu after {menuWaitMs} ms, touching again"); continue; }
                 break;
             }
             if (main == null || !(main.ButtonLabels ?? new()).Contains("About")) return ($"collar menu did not open ({t})", null);
             await Exec("dialog About");
-            var about = await CollarDialogAfter(main, 10000);
+            var about = await CollarDialogAfter(main, menuWaitMs);
             if (about == null) return ("collar About menu did not open", null);
             var (label, on) = StealthButton(about.ButtonLabels);
             if (label == null) return ("no Stealth button in the collar's About menu", null);

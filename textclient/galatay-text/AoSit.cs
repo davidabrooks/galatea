@@ -90,6 +90,12 @@ public static partial class Program
     }
     // pure (tested): AO-sourced animations that are in NEITHER list. Never treated as stands: status says "unclassified, may be a sit", the stand
     // verifier acts on them, the hover check does not run (2026-10-26 2941ee1d)
+    // pure (tested): does an unlisted animation count as an AO unknown? the AO's own, or my attachment's when not known as a non-AO pose
+    // pure (tested): "already off" needs a fresh standing render or a fully classified animation list (every non-builtin animation from my
+    // attachments, child prims included, is a known stand / non-AO pose). Returns null when "already off" may be said, else the NOT VERIFIED text.
+    internal static string AoOffVerdict(bool renderStanding, bool renderFresh, bool allClassified)
+        => renderStanding || allClassified ? null : $"NOT VERIFIED standing: {(renderFresh ? "the render does not show her standing" : "no fresh render")} and an animation from my attachments is unclassified; run `idle_pose verify` and look at her";
+    internal static bool AoUnknownCandidate(bool fromAoHud, bool fromOwnAttachment, bool knownOther) => fromAoHud || (fromOwnAttachment && !knownOther);
     internal static List<UUID> AoUnclassified(IEnumerable<UUID> playing, Func<UUID, bool> fromAo, IEnumerable<UUID> standIds, IEnumerable<UUID> sitIds)
     {
         var st = new HashSet<UUID>(standIds ?? Enumerable.Empty<UUID>()); var si = new HashSet<UUID>(sitIds ?? Enumerable.Empty<UUID>());
@@ -175,6 +181,13 @@ public static partial class Program
         return $"real state: {real}; sim says {sim}{(mismatch ? " (MISMATCH: the AO is the authority)" : "")}";
     }
 
+    // every non-builtin animation playing from my own attachments (child prims included) is a classified stand or a known non-AO pose
+    static bool AoAllOwnAnimsClassified()
+    {
+        AoClassEnsureLoaded(); HashSet<UUID> known; lock (aoClassLock) { known = new(aoStandIds); known.UnionWith(aoOtherIds); }
+        Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = new(ownAnims);
+        return SelfAnims().Where(u => !BuiltinAnims.ContainsKey(u) && cur.TryGetValue(u, out var e) && IsOwnAttachmentSource(e.src)).All(known.Contains);
+    }
     // learned sit animations only (the raw animations of a pose include AO stand animations that restart during it)
     static DateTime aoSitSeenAt = DateTime.MinValue;
     static bool AoSitReallyOn() { var r = AoSitPlaying(SelfAnims(), client.Self.SittingOn != 0, AoSitIdsNow()); if (r) aoSitSeenAt = DateTime.Now; return r; }
@@ -183,7 +196,10 @@ public static partial class Program
     {
         AoClassEnsureLoaded(); HashSet<UUID> st, si; lock (aoClassLock) { st = new(aoStandIds); si = new(aoSitIds); }
         Dictionary<UUID, (int seq, UUID src)> cur; lock (animLock) cur = new(ownAnims);
-        return AoUnclassified(playing ?? SelfAnims(), u => cur.TryGetValue(u, out var e) && IsAoHudSource(e.src), st, si);
+        HashSet<UUID> other; lock (aoClassLock) other = new(aoOtherIds);
+        // 2026-11-02: an animation from ANY prim of my own attachments that is in no list counts as unknown (never a stand), unless it is
+        // a known non-AO animation (the collar's own poses)
+        return AoUnclassified(playing ?? SelfAnims(), u => cur.TryGetValue(u, out var e) && AoUnknownCandidate(IsAoHudSource(e.src), IsOwnAttachmentSource(e.src), other.Contains(u)), st, si);
     }
 
     // entry / rotation: the animations the AO added are its sit animations (minus known stand ones)
@@ -231,14 +247,21 @@ public static partial class Program
         {
             // 2026-10-28: "already off" came from the animation list alone while the render showed her sitting on the ground. The render is evidence too: ask it (one scene export,
             // not at logout) and when it says sitting, that is NOT "already off": say MISMATCH, stand once through the sim, never press the AO toggle on a guess (it turns force sit ON when off)
-            if (why != "logout" && hoverSvc.RenderEvidenceNow().call == null) try { await Task.WhenAny(hoverSvc.PoseProbe(), Task.Delay(20000)); } catch { }
+            // 2026-11-02 11:10:07 login: "already off ... no fresh render" while the AO's force sit played from a HUD child prim. At login the
+            // render is retried (attachments still loading at +20 s) so a sitting render is never skipped there.
+            for (int tries = 0; why != "logout" && hoverSvc.RenderEvidenceNow().call == null && tries < (why == "login" ? 3 : 1); tries++)
+            {
+                try { await Task.WhenAny(hoverSvc.PoseProbe(), Task.Delay(20000)); } catch { }
+                if (hoverSvc.RenderEvidenceNow().call == null && why == "login") await Task.Delay(10000);
+            }
             if (hoverSvc.RenderEvidenceNow() is { call: PoseCall.Sitting } rr)
             {
                 try { client.Self.Stand(); } catch { }
                 var mm = $"NOT VERIFIED standing: MISMATCH: render says sitting ({rr.detail}), the animation list shows no AO sit; sim stand sent once, force-sit button NOT pressed (a press on a guess can turn force sit ON); run `idle_pose verify` and look at her";
                 Log("idlepose", $"verified stand ({why}): {mm}"); return mm;
             }
-            return "AO force sit already off (no AO sit animation playing, only classified AO stands" + (hoverSvc.RenderEvidenceNow().call == PoseCall.Standing ? "; the render shows her standing)" : "; no fresh render)");
+            var rc = hoverSvc.RenderEvidenceNow().call;
+            return AoOffVerdict(rc == PoseCall.Standing, rc != null, AoAllOwnAnimsClassified()) is { } v ? v : "AO force sit already off (no AO sit animation playing, only classified AO stands" + (rc == PoseCall.Standing ? "; the render shows her standing)" : "; every animation from my attachments is classified)");
         }
         bool believed = AoBelievedSitting(idlePosed?.kind, aoSitSeenAt, DateTime.Now);
         bool mayToggle = AoStandMayToggle(idlePosed?.kind, SelfAnims().Any(a => a == Animations.SIT_GROUND || a == Animations.SIT_GROUND_staticRAINED), AoSitReallyOn());

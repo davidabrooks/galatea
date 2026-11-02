@@ -195,9 +195,7 @@ public static partial class Program
         if (seatOffObjectIds.ContainsKey(src)) return true;
         try
         {
-            var sim = client.Network.CurrentSim; if (sim == null) return false;
-            var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == src);
-            if (p == null || p.ParentID != client.Self.LocalID) return false;
+            var p = AttachRootPrim(src); if (p == null) return false;   // child prims of a seat-off HUD count too (2026-11-02)
             var item = AttachItemId(p);
             if (item != UUID.Zero && SeatOffItems().ContainsKey(item)) { seatOffObjectIds[src] = 1; return true; }
             var n = p.Properties?.Name ?? "";
@@ -215,25 +213,43 @@ public static partial class Program
         try { var it = AoItem; return it != UUID.Zero && SeatOffItems().ContainsKey(it); } catch { return true; }
     }
     // an animation source that is one of MY attachments but not the AO (the collar at the chin...): its animations are never the AO's sit / stand
+    // pure (tested): the attachment ROOT of a prim attached to me. A HUD / attachment child prim's parent is the attachment's root prim,
+    // not my avatar; 2026-11-02 11:09 login: the AO's force ground sit (08630d35, 08d66d19) played 'from object childprim' e6a05fec, a
+    // child of the VISTA AO HUD, and the old ParentID == my LocalID check called it "not the AO": status said standing while she sat.
+    // Returns the root's local id, or 0 when the chain does not end at selfLocal (not attached to me). Bounded against loops.
+    internal static uint AttachRootLocal(uint localId, Func<uint, uint?> parentOf, uint selfLocal)
+    {
+        if (localId == 0 || selfLocal == 0) return 0;
+        uint cur = localId;
+        for (int i = 0; i < 64; i++)
+        {
+            var par = parentOf(cur); if (par == null || par.Value == 0) return 0;
+            if (par.Value == selfLocal) return cur;
+            cur = par.Value;
+        }
+        return 0;
+    }
+    static Primitive AttachRootPrim(UUID src)
+    {
+        if (src == UUID.Zero) return null;
+        var sim = client.Network.CurrentSim; if (sim == null) return null;
+        var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == src); if (p == null) return null;
+        uint root = AttachRootLocal(p.LocalID, l => sim.ObjectsPrimitives.TryGetValue(l, out var q) && q != null ? q.ParentID : null, client.Self.LocalID);
+        if (root == 0) return null;
+        return sim.ObjectsPrimitives.TryGetValue(root, out var r) ? r : null;
+    }
+    // any prim (root or child) of one of my attachments
+    static bool IsOwnAttachmentSource(UUID src) { try { return AttachRootPrim(src) != null; } catch { return false; } }
+    // an animation source that is one of MY attachments but not the AO (the collar at the chin...): its animations are never the AO's sit / stand
     static bool IsOwnNonAoAttachment(UUID src)
     {
-        if (src == UUID.Zero) return false;
-        try
-        {
-            var sim = client.Network.CurrentSim; if (sim == null) return false;
-            var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == src);
-            return p != null && p.ParentID == client.Self.LocalID && !IsAoHudSource(src);
-        }
-        catch { return false; }
+        try { return AttachRootPrim(src) != null && !IsAoHudSource(src); } catch { return false; }
     }
     static bool IsAoHudSource(UUID src)
     {
-        if (src == UUID.Zero) return false;
         try
         {
-            var sim = client.Network.CurrentSim; if (sim == null) return false;
-            var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == src);
-            if (p == null || p.ParentID != client.Self.LocalID) return false;
+            var p = AttachRootPrim(src); if (p == null) return false;
             if ((p.Properties?.Name ?? "").Contains(AoNameMatch, StringComparison.OrdinalIgnoreCase)) return true;
             var it = AttachItemId(p); return it != UUID.Zero && it == AoItem;
         }

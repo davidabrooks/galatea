@@ -41,7 +41,7 @@ public class PoseRenderGuardTests
         Assert.Contains("IsOwnNonAoAttachment(src)) { AoNoteOther(id); return; }", ao);          // AoNoteStarted: an animation started by the collar is recorded
         Assert.Contains("[\"other\"] =", ao);                                                     // persisted
         Assert.Contains("AoSitLearnable(added, before, aoStandIds, aoOtherIds)", ao);
-        var aw = Src("AttachWatch.cs"); Assert.Contains("p.ParentID == client.Self.LocalID && !IsAoHudSource(src)", aw);
+        var aw = Src("AttachWatch.cs"); Assert.Contains("AttachRootPrim(src) != null && !IsAoHudSource(src)", aw);   // 2026-11-02: any prim of my attachments (child prims too)
     }
     [Fact] public void StandingWithCollarAnimations_IsNotAnAoSit_OnceTheListIsClean()
     {

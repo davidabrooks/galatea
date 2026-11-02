@@ -152,6 +152,35 @@ public class IdlePoseTests
         Assert.Null(Program.IdleFaceTarget(me, null, new LibreMetaverse.Vector3(40, 10, 20)));           // nobody nearby
         Assert.Null(Program.IdleFaceTarget(me, LibreMetaverse.Vector3.Zero, null));                      // unknown position
     }
+    [Fact] public void FaceHim_Radius20m_SameRegion()
+    {
+        var me = new LibreMetaverse.Vector3(10, 10, 20);
+        Assert.Equal(20f, Program.IdleFaceRadius);
+        Assert.NotNull(Program.IdleFaceTarget(me, null, new LibreMetaverse.Vector3(28, 10, 20)));   // 18 m: faces him (was ignored at 10 m)
+        Assert.Null(Program.IdleFaceTarget(me, null, new LibreMetaverse.Vector3(31, 10, 20)));      // 21 m: keeps her heading
+    }
+    [Fact] public void FacingError_MeasuresHeadingToTarget()
+    {
+        var me = new LibreMetaverse.Vector3(10, 10, 20);
+        var east = LibreMetaverse.Quaternion.Identity;
+        Assert.True(Program.FacingErrorDeg(east, me, new LibreMetaverse.Vector3(15, 10, 20)) < 0.5f);
+        Assert.InRange(Program.FacingErrorDeg(east, me, new LibreMetaverse.Vector3(10, 15, 20)), 89.5f, 90.5f);
+        Assert.InRange(Program.FacingErrorDeg(east, me, new LibreMetaverse.Vector3(5, 10, 20)), 179.5f, 180f);
+        var north = LibreMetaverse.Quaternion.CreateFromAxisAngle(LibreMetaverse.Vector3.UnitZ, MathF.PI / 2);
+        Assert.True(Program.FacingErrorDeg(north, me, new LibreMetaverse.Vector3(10, 15, 25)) < 0.5f);   // height ignored
+    }
+    [Fact] public void FaceHim_AfterLogin_AfterSitLands_AndAfterPoseSwitch()
+    {
+        var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        var enter = src[src.IndexOf("static async Task<string> IdlePoseEnter(")..];
+        int after = enter.IndexOf("await IdleFaceHim(\"after sitting\"");
+        Assert.True(after > enter.IndexOf("GroundSitEntry.Run(") && after < enter.IndexOf("idlePosed = new(\"groundsit\""));
+        var rot = src[src.IndexOf("static async Task<string> IdlePoseRotate(")..];
+        Assert.True(rot.IndexOf("await IdleFaceHim(\"after the pose switch\"") > rot.IndexOf("AoGroundSitSwitch()"));
+        var prog = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/Program.cs"));
+        Assert.Contains("_ = Task.Run(LoginFaceHim);", prog);
+        Assert.Contains("loginJoinDone.Task", src[src.IndexOf("static async Task LoginFaceHim(")..]);
+    }
     [Fact] public void FaceHim_BeforeEitherPose()
     {
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));

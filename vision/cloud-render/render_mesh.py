@@ -1354,8 +1354,10 @@ def finger_mask(verts, segs, chunk=40000):
     return out
 
 WEIGHT_BEARING = ("hips", "l hand", "r hand", "l thigh", "r thigh", "l shin", "r shin", "l foot", "r foot")   # David 2026-11-02: seat, palms, heels / soles, knees / shins (fingers masked; chest and forearms don't hold her up)
-SINK_FRACTION = 0.5   # a part may sink at most half its own thickness: its top surface stays at least half its thickness above the floor, so the
-                      # larger half of it stays visible (David: "we need to be able to see some of them"); the midplane of a thin part (the palm's bones) never goes under
+SINK_FRACTION = 0.75   # a part may sink at most 3/4 of its own measured thickness, so its top quarter stays above the floor (David 2026-11-02: "we need to
+                       # be able to see some of them"; at 0.5, 12:23: "you can sink more of your hands into the floor"). A quarter of a palm's thickness is still a
+                       # visible rim at any camera distance a side view uses, while the part's midplane (its bones) goes under, as a hand pressed into soft ground does.
+                       # A fraction of each part's own thickness, not a distance: a thin palm and a thick seat get the same rule
 
 def part_thickness(pv):
     """a body part's own thickness from the mesh: the 5-95 % extent along its thinnest principal axis (a palm: back of the hand to palm, ~3.5 cm)"""

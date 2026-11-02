@@ -21,3 +21,7 @@ def test_thin_hand_clamps_the_average():
 def test_thickness_is_the_thin_axis():
     r = np.random.default_rng(0); slab = np.c_[r.uniform(0, .08, 4000), r.uniform(0, .10, 4000), r.uniform(0, .03, 4000)]
     assert abs(_ns()["part_thickness"](slab) - 0.027) < 0.003
+
+def test_a_quarter_of_each_part_stays_above_the_floor():
+    """2026-11-02 12:25 David at 0.5: "you can sink more of your hands into the floor"; deeper, but some of the hand must show"""
+    f = _ns()["SINK_FRACTION"]; assert 0.5 < f <= 0.75

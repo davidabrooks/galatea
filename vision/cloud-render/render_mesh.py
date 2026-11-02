@@ -468,6 +468,7 @@ def build(group, bones=None, lining=True):
         ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs, hold))
         obs.append(ob)
         if group.startswith("avatar"): ob["gt_avatar"] = 1   # avatar key light (photo hd under a roof) links to these
+        if b["tex"].startswith("bake:"): ob["gt_skin"] = 1   # Bakes-on-Mesh face = the body's own skin (body, feet, head); clothing / attachments carry their own textures
         if HD and group.startswith("avatar"):
             # 2026-10-21 profile headshot: a crisp grey "squiggle" beside her mouth (and nowhere in the bake, normal or spec map, or in
             # an emission-only render) = Cycles' shadow terminator: SL avatar meshes are low-poly with smoothed normals, so shadow rays
@@ -1350,6 +1351,16 @@ def touch_contact(verts, segs, com):
     if not touch: return None
     return float(np.mean(list(touch.values()))), touch, sz
 
+def contact_obs(obs):
+    """the meshes whose vertices can be touchpoints (2026-11-02 VAMOSITG24, David's photo: bare feet ON the floor while the check had them 5 cm under, because
+    the loose jeans hems were the low points): only her BODY touches the floor. In SL clothing and attachments are rigged shells with no solidity (the sim's
+    collision is the avatar capsule; a hem drapes over / through the floor in Firestorm too), so they weigh 0. The body is what is textured with her
+    Bakes-on-Mesh skin (tex "bake:*": Maitreya body, feet, head): a fact of the outfit, no names or constants. No skin mesh at all (system body, old
+    export) -> everything she wears, as before."""
+    m = [ob for ob in obs if ob.type == "MESH" and len(ob.data.vertices)]
+    skin = [ob for ob in m if ob.get("gt_skin")]
+    return skin or m
+
 def assign_body_parts_idx(verts, segs, ix, chunk=40000):
     """the vertices whose nearest of the 25 segments is one of `ix`"""
     v = np.asarray(verts, np.float64).reshape(-1, 3); S = np.asarray(segs, np.float64).reshape(-1, 2, 3)
@@ -1688,8 +1699,7 @@ if SCENE:
     lo_c = lo[2]
     if os.environ.get("GT_HOVER_CHECK") == "1" and M.get("pelvis") and not mst:   # her contact = where the floor would hold her up (support_z), not her lowest vertex
         vs_ = []
-        for ob in obs:
-            if ob.type == "MESH" and len(ob.data.vertices):
+        for ob in contact_obs(obs):
                 a_ = np.empty(len(ob.data.vertices) * 3); ob.data.vertices.foreach_get("co", a_); m_ = np.array(ob.matrix_world)
                 vs_.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
         tc_ = touch_contact(np.concatenate(vs_), M["bones"], M["pelvis"][:2]) if vs_ and M.get("bones") else None
@@ -1782,7 +1792,11 @@ if SCENE:
         want_parts = [q for q in os.environ.get("GT_HC_PARTS", "").split(",") if q]; part_cp = None
         if HC and not mst and M.get("bones") and len(M["bones"]) == 25:   # the hover check: the gap under every body part, against the floor drawn here (the client picks the supporting ones)
             segs_w = [[tuple(to_world(b[:3], (x, y, z0), yaw)), tuple(to_world(b[3:], (x, y, z0), yaw))] for b in M["bones"]]
-            pv_ = assign_body_parts(allv, segs_w)
+            skin_ = contact_obs(obs)   # the parts' gaps from her body only, like the touchpoints (contact_obs: clothing weighs 0)
+            sv_ = []
+            for o_ in skin_:
+                a_ = np.empty(len(o_.data.vertices) * 3, np.float64); o_.data.vertices.foreach_get("co", a_); m_ = np.array(o_.matrix_world, np.float64); sv_.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
+            pv_ = assign_body_parts(np.concatenate(sv_) if sv_ else allv, segs_w)
             if pv_:
                 print(hover_parts_line(body_part_gaps(pv_, floor)), flush=True)
                 zs_, cps_ = [], []

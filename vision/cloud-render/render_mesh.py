@@ -1367,6 +1367,12 @@ def contact_level(touch, thick, f=SINK_FRACTION):
     avg = float(np.mean(list(touch.values()))); cap = min(touch[k] + f * thick[k] for k in touch)
     return (cap, True) if avg > cap else (avg, False)
 
+def live_sink(sink, gap):
+    """2026-11-02 12:13: the per-part sink from touch_contact is measured from the CONTACT LEVEL (where the check would put the floor), not the floor drawn
+    at the hover in force; at hover 0.077 the level sat 2.7 cm above the floor, so "r hand +0.017" was really 1 cm above it. Sink under the live hover and
+    floor = sink at the level minus the render's gap (gap > 0 = the level floats above the floor) -> {part: sink, > 0 = under the floor}"""
+    return {k: s - gap for k, s in sink.items()}
+
 def touch_contact(verts, segs, com, detail=None):
     """the contact height (2026-11-02, David: "since they are quite a bit too high, I would expect your hands to be more sunk into the floor, but it can't be
     too much"): the AVERAGE of the lowest points of the weight-bearing parts that touch, clamped so no part sinks more than SINK_FRACTION of its own measured
@@ -1733,7 +1739,7 @@ if SCENE:
     placed = [] if SELF_FLOOR else [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
     lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
-    lo_c = lo[2]
+    lo_c = lo[2]; tc_ = None; td_ = {}
     if os.environ.get("GT_HOVER_CHECK") == "1" and M.get("pelvis") and not mst:   # her contact = where the floor would hold her up (support_z), not her lowest vertex
         vs_ = []
         for ob in contact_obs(obs):
@@ -1741,12 +1747,13 @@ if SCENE:
                 vs_.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
         td_ = {}; tc_ = touch_contact(np.concatenate(vs_), M["bones"], M["pelvis"][:2], td_) if vs_ and M.get("bones") else None
         if tc_ is not None:
-            print(f"GT: hover check touchpoints: " + ", ".join(f"{k} {z:+.3f}" for k, z in tc_[1].items()) + f" (mesh z; support height {tc_[2]:+.3f}), average {tc_[0]:+.3f}, lowest vertex {lo[2]:+.3f}; sink/thickness " + ", ".join(f"{k} {td_['sink'][k]:+.3f}/{td_['thickness'][k]:.3f}" for k in tc_[1]) + f"; clamp {'engaged' if td_['clamped'] else 'off'}", flush=True); lo_c = tc_[0]
+            print(f"GT: hover check touchpoints: " + ", ".join(f"{k} {z:+.3f}" for k, z in tc_[1].items()) + f" (mesh z; support height {tc_[2]:+.3f}), average {tc_[0]:+.3f}, lowest vertex {lo[2]:+.3f}; sink at the contact level/thickness " + ", ".join(f"{k} {td_['sink'][k]:+.3f}/{td_['thickness'][k]:.3f}" for k in tc_[1]) + f"; clamp {'engaged' if td_['clamped'] else 'off'}", flush=True); lo_c = tc_[0]
     HC = hover_check_z0(os.environ, g[2], lo_c, fl, M.get("agent_off"))   # 2026-10-23 hover check: real placement + her hover, floor from the scene (seated on an object: look.py leaves GT_HOVER_CHECK off, the sim's placement)
     if HC and hover_floor_missing(HC[1], mst):
         z0 = HC[0]; print(f"GT: hover check: no reading: the floor under her is not in the export yet (cast hit z {fl:.3f}, {HC[1]:+.3f} m below her lowest point; scene still loading)", flush=True)
     elif HC:
         z0 = HC[0]; print(f"GT: hover check gap {HC[1]:+.3f} m (hover {HC[2]:+.3f}, size {HC[3]:.3f}, floor {fl:.3f})", flush=True)
+        if tc_ is not None and td_.get("sink"): print("GT: hover check live sink (at the hover in force, under the drawn floor): " + ", ".join(f"{k} {d:+.3f}/{td_['thickness'][k]:.3f}" for k, d in live_sink(td_["sink"], HC[1]).items()) + f"; suggested hover {HC[2] - HC[1]:+.3f}", flush=True)
         # diagnostics for the calibration (2026-10-26): the bias in use, whether David's viewer ever confirmed it, and where the viewer's own
         # placement formula (scene-mesher agent_off, LLVOAvatar::computeBodySize) would have put her: the gap between the two is the raw model error
         print(hover_check_detail(os.environ, M.get("agent_z", g[2]), M.get("agent_off"), lo[2], fl, HC[2]), flush=True)

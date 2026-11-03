@@ -142,6 +142,7 @@
     <Compile Include="../galatay-text/LevelDwell.cs" Link="Core/LevelDwell.cs" />
     <Compile Include="../galatay-text/StayWithDavid.cs" Link="Core/StayWithDavid.cs" />
     <Compile Include="../galatay-text/WashHands.cs" Link="Core/WashHands.cs" />
+    <Compile Include="../galatay-text/WanderSit.cs" Link="Core/WanderSit.cs" />
     <Compile Include="../galatay-text/FeetAuto.cs" Link="Core/FeetAuto.cs" />
     <Compile Include="../galatay-text/Kiss.cs" Link="Core/Kiss.cs" />
     <Compile Include="../galatay-text/Boats.cs" Link="Core/Boats.cs" />

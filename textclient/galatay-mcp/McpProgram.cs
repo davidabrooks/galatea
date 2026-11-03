@@ -258,6 +258,8 @@ public sealed class SlTools
     public static Task<string> IdlePose([Description("status | on | off | now [collar|groundsit] | stop | idle <s> | aomap <face> <u,v>")] string action = "status") => R("idlepose " + Clean(action));
     [McpServerTool(Name = "wander"), Description("Wander at home (the text client's wander command, WanderCmds): action on | off | status. The state persists in wander-state.json.")]
     public static Task<string> Wander([Description("on | off | status")] string action = "status") => R("wander " + Clean(action));
+    [McpServerTool(Name = "wander_sit"), Description("ONE home wander visit to a chosen seat from the seat list, the full wander way (walk, special undress/toilet flow, pose pick, body check, stay, stand, redress). seat = place (tub, sofa, bed, toilet...), uuid or name substring. Adult seats only when David is near and no one else is. Works with wander off; a running wander resumes after.")]
+    public static Task<string> WanderSit([Description("place, uuid or name substring")] string seat) => R("wander sit " + Clean(seat));
     [McpServerTool(Name = "groups_list"), Description("READ-ONLY: my current Second Life groups (uuid, name, title, flags) and the active group.")]
     public static Task<string> GroupsList() => R("group list");
     [McpServerTool(Name = "group_leave"), Description("Leave ONE group I am in, by its exact name or uuid (see groups_list). Logged; verified by a fresh group list. Ambiguous or unknown names send nothing.")]

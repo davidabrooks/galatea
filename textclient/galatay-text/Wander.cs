@@ -317,7 +317,7 @@ public static partial class Program
         lock (wLock)
         {
             was = WanderOn;
-            wanderCts?.Cancel(); legCts?.Cancel();
+            wanderCts?.Cancel(); legCts?.Cancel(); wSitCts?.Cancel();
             if (clearFlag) SaveWanderFlag(false, why);
             else if (was) SaveWanderFlag(true, why, stopKind);
         }
@@ -1702,6 +1702,7 @@ public static partial class Program
                 if (client.Self.SittingOn == 0 && !AoStateNow().active) { AoLog("wander resume REFUSED: " + AoStateNow().why); return "refused: AO not active (" + AoStateNow().why + "); staying paused"; }
                 WLog($"RESUME by command (was {wanderPause})"); if (wRestUntil != null) wRestUntil = DateTime.Now; wanderPause = null;   // a rest ends now (stands up)
                 return "wander resumed";
+            case "sit": case "go": return await WanderSitCmd(string.Join(" ", a.Skip(1)));
             case "status": return WanderStatus();
             case "selftest": return GreetSelfTest() + "\n" + QuietSelfTest() + "\n" + PoseSelfTest() + "\n" + AoSelfTest() + "\n" + WatchdogSelfTest() + "\n" + ResumeSelfTest();
             case "resumetest": return ResumeSelfTest();
@@ -1720,7 +1721,7 @@ public static partial class Program
                 var c2 = await WanderSeats(g2, dbg2);
                 return $"{dbg2.Count} rejected seat-named objects:\n{string.Join("\n", dbg2)}\n{c2.Count} candidate seats within 45 m:\n" + string.Join("\n", c2.OrderBy(x => x.fromMe).Select(x => $"  '{x.name}' {x.p.ID} {P3(x.p.Position)} me {x.fromMe:F0} m, path {x.fromPath:F1} m, nearest avatar {(x.quiet > 900 ? "-" : x.quiet.ToString("F0", IC))} m"));
             }
-            default: return "usage: wander start|stop|pause|hold|resume|status|seats|selftest|resumetest";
+            default: return "usage: wander start|stop|pause|hold|resume|status|sit <place|uuid|name>|seats|selftest|resumetest";
         }
     }
 }

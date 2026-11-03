@@ -88,6 +88,7 @@ internal sealed partial class Hover
     // pure (tested): render_mesh found no floor under her in the export (scene still loading, 2026-10-31 14:34): no reading, retry
     internal static bool HoverFloorMissing(string stdout) => (stdout ?? "").Contains("hover check: no reading: the floor under her is not in the export", StringComparison.Ordinal);
     volatile bool hoverLastFloorMissing;
+    volatile SeatAdjust.SupportReading hoverLastSupport;
     internal static double? HoverCheckGap(string stdout)
     {
         var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "", @"hover check gap ([+-]?\d+\.\d+) m");
@@ -207,6 +208,7 @@ internal sealed partial class Hover
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
         var text = await o; await e;
         hoverLastFloorMissing = !seat && HoverFloorMissing(text);
+        hoverLastSupport = seat ? SeatAdjust.Parse(text) : null;   // what bears her weight on the furniture (SeatAdjust.cs)
         hoverLastPartGaps = seat ? new() : HoverCheckPartGaps(text);   // read by the check that made this render (under poseGate)
         return (seat ? SeatContactGap(text) : HoverCheckGap(text), text.Split('\n').FirstOrDefault(l => l.EndsWith(".jpg"))?.Trim() ?? "no image");
     }
@@ -425,6 +427,24 @@ internal sealed partial class Hover
         => posed is { kind: "collar" } && !seated ? ("kneel", posed.pose) : aoSit ? ("sit", aoSitName ?? "sit") : unclassified ? ("unknown", "unknown") : ("stand", "stand");
     /// <summary>Pure (tested): still in the collar pose the check was started for?</summary>
     internal static bool KneelStill(Program.IdlePoseState posed, string pose, float speed) => posed is { kind: "collar" } && string.Equals(posed.pose, pose, StringComparison.OrdinalIgnoreCase) && speed < 0.1f;
+
+    // SeatAdjust.cs: ONE seated render; the weight-bearing reading (null = export failed / not seated / a check is running) and the close-up path
+    internal async Task<(SeatAdjust.SupportReading r, string img, string why)> SupportRender()
+    {
+        if (!h.LoggedIn || h.Client.Self.SittingOn == 0) return (null, null, "not sitting on an object");
+        if (!await poseGate.WaitAsync(0)) return (null, null, "a check is already running");
+        try
+        {
+            var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
+            var scene = ex.Split('\n').Last();
+            if (!scene.EndsWith("scene.json")) return (null, null, "export failed");
+            if (h.Client.Self.SittingOn == 0) return (null, null, "no longer sitting");
+            hoverLastSupport = null;
+            var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, "seat", seat: true);
+            return (hoverLastSupport, img, hoverLastSupport == null ? "the render printed no support line" : null);
+        }
+        finally { poseGate.Release(); }
+    }
 
     // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): ONE render of the hips against the seat;
     // reports the gap and the close-up path; changes nothing (the AO, the hover and the furniture stay as they are)

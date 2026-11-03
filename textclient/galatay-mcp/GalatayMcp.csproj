@@ -60,6 +60,8 @@
     <Compile Include="../galatay-text/RlvAdjustHeight.cs" Link="Core/RlvAdjustHeight.cs" />
     <Compile Include="../galatay-text/IdlePose.cs" Link="Core/IdlePose.cs" />
     <Compile Include="../galatay-text/PoseHover.cs" Link="Core/PoseHover.cs" />
+    <Compile Include="../galatay-text/SeatAdjust.cs" Link="Core/SeatAdjust.cs" />
+    <Compile Include="../galatay-text/SeatAdjustRun.cs" Link="Core/SeatAdjustRun.cs" />
     <Compile Include="../galatay-text/AutoHover.cs" Link="Core/AutoHover.cs" />
     <Compile Include="../galatay-text/HoverHost.cs" Link="Core/HoverHost.cs" />
     <Compile Include="../galatay-text/CrashGuard.cs" Link="Core/CrashGuard.cs" />

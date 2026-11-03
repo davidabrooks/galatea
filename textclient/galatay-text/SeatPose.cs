@@ -905,7 +905,7 @@ public static partial class Program
                         return m + $"; overlap ({ov}) - no free pose, stood up";
                     }
                 }
-                WLog("POSE " + m); HandPoseForPathAsync(path, $"{seatName}: {string.Join(" > ", path)}"); return m;
+                WLog("POSE " + m); HandPoseForPathAsync(path, $"{seatName}: {string.Join(" > ", path)}"); SeatAdjustAfterPoseAsync(seat, seatName, string.Join(" > ", path)); return m;
             }
             d = await WaitSeatDialog(seat, t1, 5000, ct);
             if (d == null) { var m = $"'{seatName}': submenu '{pick}' did not open"; WLog("POSE " + m); return m; }

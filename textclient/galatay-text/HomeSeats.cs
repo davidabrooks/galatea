@@ -15,7 +15,8 @@ public static partial class Program
 {
     internal sealed record HomeSeatInfo(UUID Id, string Name, Vector3 Pos, string Level, string Group, string Special,
                                         List<string> MenuFixed, List<string> MenuChoice, UUID TouchChild, bool Wander, Vector3? ChangeSpot = null,
-                                        (int min, int max)? StayS = null, Vector3? StandSpot = null, Vector3? Approach = null, string Mode = null);
+                                        (int min, int max)? StayS = null, Vector3? StandSpot = null, Vector3? Approach = null, string Mode = null,
+                                        string Place = null, bool Adult = false);
 
     internal static List<HomeSeatInfo> ParseHomeSeats(string json)
     {
@@ -57,7 +58,8 @@ public static partial class Program
                 stay = (smin, smax);
             var mode = Str("mode") ?? (arrName == "boats" ? BoatMode : null);
             if (mode == BoatMode && BoatExcluded(Str("name"))) wander = false;   // never the submarine, whatever the file says
-            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss, ap, mode));
+            res.Add(new HomeSeatInfo(id, Str("name") ?? "?", pos, Str("level") ?? "", Str("group"), Str("special"), fixedSteps, choice, touch, wander, cs, stay, ss, ap, mode,
+                Str("place"), s.TryGetProperty("adult", out var adv) && adv.ValueKind == JsonValueKind.True));
         }
         }
         return res;

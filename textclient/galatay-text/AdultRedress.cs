@@ -34,9 +34,10 @@ public static partial class Program
         if (string.IsNullOrWhiteSpace(pending)) return (false, "nothing pending");
         if (flowBusy) return (false, "the Naked flow is still running");
         if (outfitBusy) return (false, "another outfit change is running");
-        if (seated && sexualPoseNow) return (false, "the adult pose is still running");
-        if (seated && sinceNakedS < 20) return (false, "pose choice still settling");
-        return (true, seated ? "the pose is no longer sexual" : "stood up");
+        // 2026-11-03 14:48 David: a pose switch on the same seat (adult -> adult, or adult -> PG) never re-dresses; the outfit
+        // goes back on only when she leaves the seat (NakedRedressBeforeStand at the end of the stay, or here once standing)
+        if (seated) return (false, sexualPoseNow ? "the adult pose is still running" : "still on the seat: re-dress only after standing up");
+        return (true, "stood up");
     }
 
     static Primitive SeatedSeatRoot()
@@ -70,6 +71,7 @@ public static partial class Program
         try
         {
             if (name == null) return;
+            await TheVFaceStop("re-dress (takes The V HUD off)");
             WLog($"REDRESS: adult pose over ({why}); putting '{name}' back on{(client.Self.SittingOn != 0 ? " (seated)" : "")}");
             var r = BikiniNameRx.IsMatch(name) ? await BikiniOn() : await WearOutfitWithHuds(name, keepColor: true);
             nakedRedressOutfit = null;

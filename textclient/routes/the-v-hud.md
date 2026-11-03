@@ -97,3 +97,10 @@ Blond on her fair skin is subtle in the 640 px `look self front`. Use a 1280x204
 - Outfit "Naked" under My Outfits = body, head, skin, shape, hair, rings, The V, Play HUD (+ AO as in every outfit).
 - Do not press HUD buttons beyond the settings above without David's OK. No animations/sounds/fluids in public.
 - HUD only shows on her own screen (nobody else sees HUDs), so it is never "in the way" for others.
+
+## Face: Pure Pleasure on adult poses (TheVFace.cs, 2026-11-03)
+David: an adult pose plays the "Pure Pleasure" face; The V STOP when the pose ends (non-adult switch, stand, leave).
+In the face atlas (texture 2ad8d281, 5 per row) Pure Pleasure is row 4, column 2 (17th on page 1, between Roar and Ectasy).
+The touch buttons come from `routes/the-v-face.json` (`pleasure` prim+face, optional `open` touches, `stop` prim+face).
+Not mapped yet: the overlay prim/face for that cell and the STOP face need one live check (touch, render the face).
+Unmapped buttons are skipped and logged, never guessed.

@@ -147,9 +147,9 @@ public class ClearFloorTests
     }
 
     [Fact]
-    public void Redress_is_due_while_seated_once_the_pose_is_not_sexual_any_more()
+    public void Redress_waits_until_she_leaves_the_seat()
     {
-        Assert.True(NakedRedressDue("Black dress", false, true, false, 30, false).due);          // seated, safe pose, settled: re-dress in place
+        Assert.False(NakedRedressDue("Black dress", false, true, false, 30, false).due);         // 2026-11-03: seated, PG pose: still no re-dress
         Assert.False(NakedRedressDue("Black dress", false, true, true, 30, false).due);          // adult pose still running
         Assert.False(NakedRedressDue("Black dress", true, true, false, 30, false).due);          // Naked flow still running
         Assert.False(NakedRedressDue("Black dress", false, true, false, 5, false).due);          // pose choice settling

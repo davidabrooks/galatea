@@ -104,7 +104,7 @@ public class AdultPoseClassifyTests
         Assert.False(Program.NakedRedressDue("X", false, false, false, 99, true).due);                  // another outfit change
         Assert.True(Program.NakedRedressDue("X", false, false, true, 0, false).due);                    // stood up
         var sw = Program.NakedRedressDue("X", false, true, false, 30, false);
-        Assert.True(sw.due); Assert.Contains("no longer sexual", sw.why);                                // switched to a PG pose (stranger on the parcel / David left)
+        Assert.False(sw.due); Assert.Contains("only after standing", sw.why);                          // 2026-11-03: a pose switch on the seat never re-dresses
     }
 
     [Fact]

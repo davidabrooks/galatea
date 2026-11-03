@@ -285,4 +285,30 @@ public class CofPurgeTests
         Assert.Equal(2, stray.Count);
         Assert.DoesNotContain(stray, s => s.Target == keep || s.Target == skin);   // outfit alphas and non-alpha layers stay
     }
+
+    [Fact] // 2026-11-02 16:33 toilet undress: jeans off, bikini top still on -> groin is uncovered, The V stays
+    public void ToiletUndress_BikiniTopDoesNotCoverGroin()
+    {
+        var worn = new[] { "TETRA - Spicy Bikini Top - LaraX Petite", "The V - Bento for Maitreya LaraX - SCULPTED - V1.61", ":: No 9 :: Premium Collar" };
+        Assert.False(Program.GroinCovered(worn, new (WearableType, string)[0]));
+        Assert.True(Program.ChestCovered(worn, new (WearableType, string)[0]));
+        Assert.Null(Program.VDecision(false, true, "Bikini top jeans", false, stripping: true));
+        Assert.Null(Program.VDecision(false, true, "Bikini top jeans", false));
+        Assert.True(Program.GroinCovered(new[] { "TETRA - Spicy Bikini Top - LaraX Petite", "Maitreya LaraX Vintage Jeans Low-Waist #3 (Flat)" }, new (WearableType, string)[0]));
+    }
+    [Fact]
+    public void BikiniBottomDoesNotCoverChest_FullSwimsuitCoversBoth()
+    {
+        Assert.False(Program.ChestCovered(new[] { "Spicy Bikini Bottom" }, new (WearableType, string)[0]));
+        Assert.True(Program.GroinCovered(new[] { "Spicy Bikini Bottom" }, new (WearableType, string)[0]));
+        Assert.True(Program.ChestCovered(new[] { "Red Swimsuit" }, new (WearableType, string)[0]));
+        Assert.True(Program.GroinCovered(new[] { "Red Swimsuit" }, new (WearableType, string)[0]));
+    }
+    [Fact]
+    public void StripInProgress_NeverDetachesVOrRings_ButStillWears()
+    {
+        Assert.Null(Program.VDecision(true, true, "Bikini top jeans", false, stripping: true));
+        Assert.Equal("wear", Program.VDecision(false, false, "Bikini top jeans", false, stripping: true));
+        Assert.Equal("detach", Program.VDecision(true, true, "Bikini top jeans", false, stripping: false));
+    }
 }

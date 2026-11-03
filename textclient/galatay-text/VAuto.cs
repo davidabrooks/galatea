@@ -15,11 +15,17 @@ public static partial class Program
     internal static volatile bool lastOutfitHasRings, lastOutfitHasV;
     static volatile string preStripOutfit;   // the outfit worn when a strip started; 'redress' and 'get dressed' go back to it
 
+    // 2026-11-02 (David, toilet undress): 'TETRA - Spicy Bikini Top' matched "bikini" and counted as a groin cover, so The V
+    // came off on the toilet. A piece named as a top only covers the chest, a piece named as a bottom only the groin.
+    static readonly Regex TopOnlyRx = new(@"\b(tops?|bra|bras|bralette|tube|crop|halter|bustier|pasties)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Regex BottomOnlyRx = new(@"\b(bottoms?|panties|panty|pantie|thong|briefs?|knickers|g-?string|shorts|skirt|pants|jeans|trousers|leggings)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    internal static bool PieceCoversGroin(string n) => GroinCoverRx.IsMatch(n ?? "") && !(TopOnlyRx.IsMatch(n ?? "") && !BottomOnlyRx.IsMatch(n ?? ""));
+    internal static bool PieceCoversChest(string n) => ChestCoverRx.IsMatch(n ?? "") && !(BottomOnlyRx.IsMatch(n ?? "") && !TopOnlyRx.IsMatch(n ?? ""));
     // pure (tested): does anything worn cover the chest?
     internal static bool ChestCovered(IEnumerable<string> attachmentNames, IEnumerable<(WearableType t, string name)> layers) =>
-        attachmentNames.Any(n => ChestCoverRx.IsMatch(n ?? "") && !(n ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase))
+        attachmentNames.Any(n => PieceCoversChest(n) && !(n ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase))
         || layers.Any(l => l.t is WearableType.Shirt or WearableType.Undershirt or WearableType.Jacket
-                           || (l.t == WearableType.Tattoo && IsClothingLayer(l.name, "") && ChestCoverRx.IsMatch(l.name ?? "")));
+                           || (l.t == WearableType.Tattoo && IsClothingLayer(l.name, "") && PieceCoversChest(l.name)));
     // pure (tested): the outfit a strip started from (null = keep the one already noted, or not a real outfit)
     // 2026-10-21 (David): redress must NEVER go back into Naked (or an Android outfit); fall back to the last clothed outfit
     internal static bool IsClothedOutfitName(string n) => !string.IsNullOrWhiteSpace(n) && !IsAndroidOutfit(n) && !Regex.IsMatch(n, @"^\s*naked\b", RegexOptions.IgnoreCase);
@@ -44,15 +50,18 @@ public static partial class Program
     // pure (tested): does anything worn cover the groin? attachments by name (HUDs excluded by the caller), layers by type,
     // tattoo layers only when they are clothing (panties)
     internal static bool GroinCovered(IEnumerable<string> attachmentNames, IEnumerable<(WearableType t, string name)> layers) =>
-        attachmentNames.Any(n => GroinCoverRx.IsMatch(n ?? "") && !(n ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase))
+        attachmentNames.Any(n => PieceCoversGroin(n) && !(n ?? "").Contains("HUD", StringComparison.OrdinalIgnoreCase))
         || layers.Any(l => l.t is WearableType.Underpants or WearableType.Pants or WearableType.Skirt
-                           || (l.t == WearableType.Tattoo && IsClothingLayer(l.name, "") && GroinCoverRx.IsMatch(l.name ?? "")));
+                           || (l.t == WearableType.Tattoo && IsClothingLayer(l.name, "") && PieceCoversGroin(l.name)));
 
     // pure (tested): "wear" / "detach" / null
-    internal static string VDecision(bool covered, bool vWorn, string outfit, bool outfitHasV)
+    // stripping: a strip / toilet undress is in progress (pre-strip outfit noted, not yet redressed): never take it off then;
+    // the redress / toilet restore takes it off itself
+    internal static string VDecision(bool covered, bool vWorn, string outfit, bool outfitHasV, bool stripping = false)
     {
         if (IsAndroidOutfit(outfit)) return null;
         if (!covered && !vWorn) return "wear";
+        if (stripping) return null;
         if (covered && vWorn && !outfitHasV && !Regex.IsMatch(outfit ?? "", @"^\s*naked\b", RegexOptions.IgnoreCase)) return "detach";
         return null;
     }
@@ -74,14 +83,14 @@ public static partial class Program
                 { var it = await FetchItemRO(w.ItemID, cts.Token); layers.Add((w.WearableType, it?.Name ?? "")); }
                 bool covered = GroinCovered(atts, layers);
                 bool vWorn = roots.Any(r => AttachItemId(r) == TheVItem);
-                var outfit = currentOutfit ?? lastNamedOutfit ?? "";
+                var outfit = currentOutfit ?? lastNamedOutfit ?? ""; bool stripping = preStripOutfit != null;
                 bool chest = ChestCovered(atts, layers); bool rWorn = roots.Any(r => AttachItemId(r) == NippleRingsItem);
-                var dr = VDecision(chest, rWorn, outfit, lastOutfitHasRings);
+                var dr = VDecision(chest, rWorn, outfit, lastOutfitHasRings, stripping);
                 RlvLog($"Nipple rings ({why}): chest {(chest ? "covered" : "uncovered")}, rings {(rWorn ? "worn" : "off")}, outfit '{outfit}'{(lastOutfitHasRings ? " (includes them)" : "")} -> {dr ?? "no change"}");
                 if (dr == "wear") RlvLog("Nipple rings: " + await Exec("wear add " + NippleRingsItem));
                 else if (dr == "detach") RlvLog("Nipple rings: " + await DetachItemAsync(NippleRingsItem, "rings auto"));
-                var d = VDecision(covered, vWorn, outfit, lastOutfitHasV);
-                RlvLog($"The V ({why}): groin {(covered ? "covered" : "uncovered")}, The V {(vWorn ? "worn" : "off")}, outfit '{outfit}'{(lastOutfitHasV ? " (includes The V)" : "")} -> {d ?? "no change"}");
+                var d = VDecision(covered, vWorn, outfit, lastOutfitHasV, stripping);
+                RlvLog($"The V ({why}): groin {(covered ? "covered" : "uncovered")}, The V {(vWorn ? "worn" : "off")}, outfit '{outfit}'{(lastOutfitHasV ? " (includes The V)" : "")} {(stripping ? " (strip in progress)" : "")} -> {d ?? "no change"}");
                 if (d == "wear" && VAutoPaused()) RlvLog("The V: auto-wear paused (v pause), not re-attaching");
                 else if (d == "wear") RlvLog("The V: " + await Exec("wear add " + TheVItem));
                 else if (d == "detach") RlvLog("The V: " + await DetachItemAsync(TheVItem, "the v auto"));

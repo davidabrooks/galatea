@@ -207,7 +207,7 @@ public static partial class Program
     }
 
     // ---- entry / leave watcher -----------------------------------------------------------------------------------------
-    static void ParcelWatchTick() { if (LoggedIn) ParcelWatchEval("tick"); try { NakedRedressTick(); } catch (Exception ex) { Log("outfit", "redress tick error: " + ex.GetBaseException().Message); } }
+    static void ParcelWatchTick() { if (LoggedIn) ParcelWatchEval("tick"); try { NakedRedressTick(); } catch (Exception ex) { Log("outfit", "redress tick error: " + ex.GetBaseException().Message); } try { TheVFaceTick(); } catch (Exception ex) { Log("thev", "face tick error: " + ex.GetBaseException().Message); } }
 
     static void ParcelWatchEval(string src)
     {

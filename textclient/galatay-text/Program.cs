@@ -352,6 +352,7 @@ public static partial class Program
         HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
         HookParcelWatch(); // our parcel + who is on it, entry/leave events (ParcelWatch.cs)
         StartVmForkWatch(); // VmForkWatch.cs (idempotent)
+        StartSeatAdjustWatch(); // SeatAdjustRun.cs: every sit gets a render check (idempotent)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
         HookQuiet(); // other avatars' ground-sit animations for the session detector (Quiet.cs)
         HookAnimClock(); // every avatar's playing animations + since when, for scene export / look (SceneExport.cs)

@@ -1682,7 +1682,7 @@ public static partial class Program
         var quiet = DateTime.Now - (wLastIncoming > wLastOwnChat ? wLastIncoming : wLastOwnChat);
         return $"wander ON since {wStarted:HH:mm:ss}; phase: {wanderPhase}{(wanderPause != null ? $"; PAUSED ({wanderPause}{(wanderPause == "chat" ? $", speaker {wSpeakerName}, quiet {quiet.TotalSeconds:F0}/180 s" : "")})" : "")}; " +
                $"target {wTarget ?? "(next leg)"}; {(InPeronaut ? WanderLevelStatus() + "; " : "")}legs {wLegs}, loops {wLoops}, sits {wSits}, greetings {wGreets}, fails in a row {wFails}; next sit in {Math.Max(0, wLegsUntilSit)} leg(s); " +
-               $"last leg {wLastLeg}; last sit {wLastSit}; last pose {wLastPose}; last greeting {wLastGreetTxt}; route: {routeState}; {QuietShort()} [quiet={QuietFlag()}]; ao={AoFlag()} (last guard event {aoLastEvent})";
+               $"last leg {wLastLeg}; last sit {wLastSit}; last pose {wLastPose};{(seatAdjustUnsaved != null ? $" seatadjust {seatAdjustUnsaved};" : "")} last greeting {wLastGreetTxt}; route: {routeState}; {QuietShort()} [quiet={QuietFlag()}]; ao={AoFlag()} (last guard event {aoLastEvent})";
     }
 
     static async Task<string> WanderCmds(string[] a)

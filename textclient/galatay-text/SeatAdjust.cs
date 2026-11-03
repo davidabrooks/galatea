@@ -14,7 +14,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 namespace GalatayText;
 
-internal static class SeatAdjust
+internal static partial class SeatAdjust
 {
     internal sealed record SupportReading(string Kind, string[] Bearing, double? Gap, Dictionary<string, double> Parts)
     {

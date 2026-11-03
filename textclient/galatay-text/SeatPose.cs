@@ -731,7 +731,16 @@ public static partial class Program
     }
 
     // couplesMode only when explicitCouples (David asked). recovery: restore path or leave/solo — never couples.
+    // 2026-11-02 17:14: a pose pick in progress holds every seat-adjust check (the sit watcher ran mid-pick with the tub's stale pose label); the pick's own
+    // SeatAdjustAfterPoseAsync starts the check for the pose really chosen
+    internal static int seatPosePicking;
     static async Task<string> SeatPose(Primitive seat, string seatName, DateTime since, bool change, CancellationToken ct, bool explicitCouples = false, bool recovery = false, bool preferPgSolo = false, int overlapTry = 0)
+    {
+        Interlocked.Increment(ref seatPosePicking); Interlocked.Increment(ref seatAdjustGen);
+        try { return await SeatPoseCore(seat, seatName, since, change, ct, explicitCouples, recovery, preferPgSolo, overlapTry); }
+        finally { Interlocked.Decrement(ref seatPosePicking); }
+    }
+    static async Task<string> SeatPoseCore(Primitive seat, string seatName, DateTime since, bool change, CancellationToken ct, bool explicitCouples = false, bool recovery = false, bool preferPgSolo = false, int overlapTry = 0)
     {
         // 2026-10-09 David: on a listed boat only the boat allowlist ever presses buttons (never SYSTEM*/drive controls)
         if (LoadHomeSeats().Any(i => i.Id == seat.ID && IsBoat(i)))
@@ -844,6 +853,8 @@ public static partial class Program
             }
             var menuLabels = SeatPoseFilter(seat.ID, d.ButtonLabels);
             if (!couplesMode) menuLabels = PoseLabelsFree(seat, menuLabels, seatName);   // SeatOccupancy.cs
+            // 2026-11-02: poses found broken on THIS furniture (SeatAdjustGate.cs; _pose-rules.json bugged_poses) are never picked again here
+            menuLabels = menuLabels.Where(l => l.TrimEnd().EndsWith("*") || !PoseRules.Current.IsBugged(seatName, l)).ToList();
             if (PoseNoteSeatMenu(seat.ID.ToString(), d.ButtonLabels) && !adultSeat) { adultSeat = true; WLog($"POSE '{seatName}': a menu with an adult name was seen on this seat; its unclear submenu names count as adult"); }
             var (pick, sub, why) = PickPoseButton(menuLabels, current, wRnd, couplesMode, inCouples, preferPgSolo: recovery || preferPgSolo, inSubmenu: depth > 0, allowSexual: allowSexual, inSexualMenu: PosePathIsSexual(path, adultSeat), adultSeat: adultSeat, conversationOk: DavidSeatedNearNow());
             if (pick == null)
@@ -876,7 +887,7 @@ public static partial class Program
                 if (nfAbort != null) { WLog("POSE " + nfAbort); return nfAbort; }
                 var m2 = $"'{seatName}' {seat.ID}: chose {string.Join(" > ", full)} (naked first; {why}): {r}";
                 wLastPose = $"{DateTime.Now:HH:mm:ss} '{seatName}' {seat.ID}: {string.Join(" > ", full)} [solo, sexual allowed]";
-                WLog("POSE " + m2); HandPoseForPathAsync(full, seatName); return m2;
+                WLog("POSE " + m2); HandPoseForPathAsync(full, seatName); SeatAdjustAfterPoseAsync(seat, seatName, string.Join(" > ", full)); return m2;
             }
             var idx = d.ButtonLabels.IndexOf(pick);
             if (!sub) ClearKeptPoseCopies();

@@ -11,7 +11,7 @@ def _rm():
     src = SRC.read_text(); tree = ast.parse(src)
     consts = {"CONTACT_BAND", "SIT_HIPS_R", "SEAT_HIPS_R", "SEAT_PLANE_BELOW", "SEAT_TOP_NEAR", "SEAT_RAY_START"}
     body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in consts for t in n.targets)] + \
-           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"contact_points", "feet_camera_spec", "seat_contact", "seat_hips", "seat_top_under", "seat_cutaway", "cutaway_mask", "ground_sit_contact"}]
+           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"contact_points", "feet_camera_spec", "seat_contact", "seat_hips", "seat_top_under", "seat_top_hits", "seat_cutaway", "cutaway_mask", "ground_sit_contact"}]
     ns = {"np": np, "math": math}; exec(compile(ast.Module(body, []), "render_mesh", "exec"), ns)
     return ns
 

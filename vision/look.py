@@ -411,7 +411,7 @@ def client_line(l):
     """Pure (tested): the render line look.py forwards on stdout for the client, else None. Gap lines lose their "GT: " prefix
     (PoseHover parses them bare); the furniture support line keeps it, because SeatAdjust.Parse matches "GT: furniture support:".
     2026-11-02: it was never forwarded, so every live seat adjust logged "the render printed no support line"."""
-    if l.startswith("GT: furniture support:"): return l
+    if l.startswith(("GT: furniture support:", "GT: support quality:")): return l
     if l.startswith(("GT: hover check", "GT: contact close-up", "GT: seat contact")): return l[4:]
     return None
 

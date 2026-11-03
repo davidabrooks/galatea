@@ -58,9 +58,9 @@ public class LoginNakedSitTests
             connected: () => up, veilMissed: s => missed = s);
         Assert.True(ok); Assert.Equal(new[] { "collar", "veil", "stash" }, steps); Assert.Null(missed);
     }
-    [Fact] public async Task AStuckCollarMenu_CannotDelayTheVeilPastAbout3s()
+    [Fact] public async Task AStuckCollarMenu_CannotDelayTheVeilPastTheCap()
     {
-        Assert.InRange(LoginVeil.CollarStealthMaxMs, 1000, 3500);
+        Assert.InRange(LoginVeil.CollarStealthMaxMs, 1000, 12000);
         Assert.True(LoginVeil.CollarLogoutTouches >= 2);
         var sw = System.Diagnostics.Stopwatch.StartNew(); var steps = new List<string>();
         await LoginVeil.LogoutCore(() => new TaskCompletionSource().Task, LoginVeil.CollarStealthMaxMs, () => { steps.Add("veil"); return Task.FromResult(true); }, () => Task.CompletedTask);

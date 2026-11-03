@@ -19,14 +19,40 @@ public static partial class Program
 
     static async Task<ScriptDialogEventArgs> CollarDialogAfter(ScriptDialogEventArgs prev, int ms)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         for (int i = 0; i < ms / 250; i++)
         {
             var d = lastDialog;
-            if (d != null && !ReferenceEquals(d, prev) && d.ObjectName == "Collar" && d.OwnerID == client.Self.AgentID) return d;
+            if (d != null && !ReferenceEquals(d, prev) && d.ObjectName == "Collar" && d.OwnerID == client.Self.AgentID) { CollarLatencyNote((int)sw.ElapsedMilliseconds); return d; }
             await Task.Delay(250);
         }
         return null;
     }
+
+    // 2026-11-02 16:24:53 logout: the About page came ~1 s after 'dialog About' but the logout waited only 1000 ms, gave up, and went to the
+    // veil with Stealth unconfirmed ("was unknown"). Waits now come from the collar's observed answer times (this session's, plus the
+    // log's history: About answered in 0-2 s 88 of 91 times, worst 7 s), and the last state the collar SHOWED us is kept.
+    static readonly object collarLatLock = new();
+    static readonly Queue<int> collarLatencies = new();
+    static void CollarLatencyNote(int ms) { lock (collarLatLock) { collarLatencies.Enqueue(ms); while (collarLatencies.Count > 20) collarLatencies.Dequeue(); } }
+    static int[] CollarLatencySnapshot() { lock (collarLatLock) return collarLatencies.ToArray(); }
+    internal const int CollarWaitDefaultMs = 2500, CollarWaitMinMs = 1500, CollarWaitMaxMs = 4000;
+    /// <summary>Pure (tested): one collar menu wait from observed answer times: 1.5x the slowest recent answer, within 1.5-4 s
+    /// (default 2.5 s until 3 answers are seen: the log's About answers were 0-2 s at 1 s resolution). A slower page is caught by the retry.</summary>
+    internal static int CollarWaitMs(IEnumerable<int> observedMs)
+    {
+        var l = (observedMs ?? Array.Empty<int>()).Where(x => x >= 0).ToList();
+        if (l.Count < 3) return CollarWaitDefaultMs;
+        return Math.Clamp((int)Math.Round(l.Max() * 1.5), CollarWaitMinMs, CollarWaitMaxMs);
+    }
+    /// <summary>The collar's Stealth state as last READ from its About page (or confirmed after a press), by any flow: the collar_stealth
+    /// command, the leash show/hide, outfits, login. Null = never seen this session.</summary>
+    internal static volatile CollarSeen collarSeen;
+    internal sealed record CollarSeen(bool On, DateTime At, string Why);
+    static void CollarSeenSet(bool on, string why) => collarSeen = new CollarSeen(on, DateTime.Now, why);
+    internal static void CollarSeenReset() => collarSeen = null;
+    /// <summary>Pure (tested): the "was" state for the login marker: the page read now, else the last state the collar showed us.</summary>
+    internal static bool? CollarWasOn(bool? readNow, CollarSeen seen) => readNow ?? seen?.On;
 
     // pure (tested): should the Stealth button be pressed to reach `want`? (null = no button / unknown -> never press)
     internal static bool StealthNeedsPress(string label, bool on, bool want) => label != null && on != want;
@@ -90,7 +116,7 @@ public static partial class Program
     }
     static Task<string> CollarStealthOn(string why) => CollarStealthSet(true, why).ContinueWith(t => t.Result.result);
     // collar main menu -> About -> press "Stealth" only if its state differs from `want`. wasOn = state before (null = unknown)
-    static async Task<(string result, bool? wasOn)> CollarStealthSet(bool want, string why, int menuWaitMs = 10000, int menuTouches = 1)
+    static async Task<(string result, bool? wasOn)> CollarStealthSet(bool want, string why, int menuWaitMs = 10000, int menuTouches = 1, int aboutTries = 1)
     {
         var broken = LoginBrokenStop("collar");
         if (broken != null) { Log("collar", broken); return (broken, null); }
@@ -107,6 +133,7 @@ public static partial class Program
                     var (_, nowOn2) = StealthButton(back?.ButtonLabels);
                     if (back != null && nowOn2 == want)
                     {
+                        CollarSeenSet(nowOn2, why);
                         Log("collar", $"stealth {(want ? "on" : "off")} ({why}): pressed '{prep.Label}' on the page opened under the veil -> {(nowOn2 ? "on" : "off")}");
                         string W2(bool x) => x ? "invisible (Stealth on)" : "visible (Stealth off)";
                         return ($"collar now {W2(want)}", prep.On);
@@ -135,16 +162,24 @@ public static partial class Program
                 break;
             }
             if (main == null || !(main.ButtonLabels ?? new()).Contains("About")) return ($"collar menu did not open ({t})", null);
-            await Exec("dialog About");
-            var about = await CollarDialogAfter(main, menuWaitMs);
-            if (about == null) return ("collar About menu did not open", null);
+            // the About page: wait, then wait once more for a late page (16:24:54 it came just after the wait), then press About again
+            ScriptDialogEventArgs about = null;
+            for (int a = 1; a <= aboutTries && about == null; a++)
+            {
+                if (a == 1 || a % 2 == 1) await Exec("dialog About");
+                about = await CollarDialogWhere(main, d => StealthButton(d.ButtonLabels).label != null, menuWaitMs);
+                if (about == null && a < aboutTries) Log("collar", $"stealth ({why}): no About page after {menuWaitMs} ms (try {a}/{aboutTries}), {(a % 2 == 1 ? "waiting again" : "pressing About again")}");
+            }
+            if (about == null) return ($"collar About menu did not open ({aboutTries} tries of {menuWaitMs} ms)", null);
             var (label, on) = StealthButton(about.ButtonLabels);
             if (label == null) return ("no Stealth button in the collar's About menu", null);
+            CollarSeenSet(on, why + " (read)");
             string W(bool x) => x ? "invisible (Stealth on)" : "visible (Stealth off)";
             if (!StealthNeedsPress(label, on, want)) { Log("collar", $"stealth {(want ? "on" : "off")} ({why}): already ('{label}'), nothing pressed"); return ($"collar already {W(on)}", on); }
             await Exec("dialog " + label);
-            var after = await CollarDialogAfter(about, 8000);
+            var after = await CollarDialogAfter(about, Math.Max(menuWaitMs, 8000));
             var (_, nowOn) = StealthButton(after?.ButtonLabels);
+            if (after != null && StealthButton(after.ButtonLabels).label != null) CollarSeenSet(nowOn, why + " (pressed)");
             Log("collar", $"stealth {(want ? "on" : "off")} ({why}): pressed '{label}' -> {(after == null ? "no menu back" : nowOn ? "on" : "off")}");
             return (after == null ? $"pressed '{label}' (no menu came back to confirm)" : nowOn == want ? $"collar now {W(want)}" : $"pressed Stealth but it still reads {(nowOn ? "on" : "off")}", on);
         }

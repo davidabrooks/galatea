@@ -10,7 +10,6 @@ namespace GalatayText;
 
 public static partial class Program
 {
-    internal const string PoseAdjustLog = "/workspace/secondlife/pose-adjust-log.md";
     internal const int SeatAdjustSettleMs = 8000;
     static int seatAdjustGen;
     internal static volatile string seatAdjustLast = "none yet";
@@ -20,7 +19,7 @@ public static partial class Program
     static void SeatAdjustAfterPoseAsync(Primitive seat, string seatName, string pose)
     {
         if (Env("GT_SEAT_ADJUST", "on") == "off") return;
-        int gen = Interlocked.Increment(ref seatAdjustGen);
+        int gen = Interlocked.Increment(ref seatAdjustGen); seatAdjustCheckedSeat = seat.LocalID;
         _ = Task.Run(async () =>
         {
             try
@@ -34,17 +33,51 @@ public static partial class Program
     }
     static bool SeatAdjustStill(Primitive seat, int gen) => gen == Volatile.Read(ref seatAdjustGen) && client.Self.SittingOn == seat.LocalID && !(WanderOn && wanderPause != null);
 
+    internal static volatile string seatAdjustUnsaved = null;   // the last UNSAVED line, shown in wander status until a later sit saves or needs nothing
+    static uint seatAdjustCheckedSeat, seatWatchPrev;
+    static Thread seatWatchThread;
+    // every sit on anything gets a check, also sits with no pose choice (manual sit, default pose, no menu). A pose choice resets it (newest wins).
+    static void StartSeatAdjustWatch()
+    {
+        if (Env("GT_SEAT_ADJUST", "on") == "off") return;
+        lock (typeof(SeatAdjust)) { if (seatWatchThread != null) return; seatWatchThread = new Thread(() =>
+        {
+            while (true)
+            {
+                try
+                {
+                    Thread.Sleep(2000);
+                    uint now = LoggedIn ? client.Self.SittingOn : 0, prev = seatWatchPrev; seatWatchPrev = now;
+                    if (now == 0) { seatAdjustCheckedSeat = 0; continue; }
+                    if (!SeatAdjust.SitNeedsCheck(prev, now, seatAdjustCheckedSeat)) continue;
+                    var seat = Sim?.ObjectsPrimitives.Values.FirstOrDefault(p => p != null && p.LocalID == now);
+                    if (seat == null) { seatWatchPrev = 0; continue; }   // not in view yet: retry next tick
+                    // a root's child prim: the sit is on the linkset; menus come from the root
+                    SeatAdjustAfterPoseAsync(seat, seat.Properties?.Name ?? seat.ID.ToString(), wLastPose ?? "(default pose)");
+                }
+                catch { }
+            }
+        }) { IsBackground = true, Name = "seatadjust-watch" }; }
+        seatWatchThread.Start();
+    }
+
+    static void SAUnsaved(string seatName, string pose, double applied, string why)
+    {
+        var line = SeatAdjust.UnsavedLine(seatName, pose, applied, why);
+        seatAdjustUnsaved = $"{DateTime.Now:HH:mm} {line}"; SALog(line);
+        try { Notify("seatadjust_unsaved", "Galatay (seatadjust)", client.Self.AgentID, line, null); } catch { }
+    }
+
     internal static async Task<string> SeatAdjustRun(Primitive seat, string seatName, string pose, int gen)
     {
-        bool mine = seat.OwnerID == client.Self.AgentID || seat.Properties?.OwnerID == client.Self.AgentID;
-        if (!SeatAdjust.MayAdjust(InPeronaut, mine)) { SALog($"'{seatName}' {pose}: not home furniture and not mine: no adjust"); return seatAdjustLast; }
         if (!SeatAdjustStill(seat, gen)) return "moved on";
         var (r0, img0, w0) = await hoverSvc.SupportRender();
         if (r0 is not { Conclusive: true }) { SALog($"'{seatName}' {pose}: render inconclusive ({w0 ?? SeatAdjust.Describe(r0)}): nothing pressed ({img0})"); return seatAdjustLast; }
         if (SeatAdjust.InBand(r0)) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)}: contact good, no adjust ({img0})"); return seatAdjustLast; }
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150)); var ct = cts.Token;
         var d = await SeatAdjustOpenPersonal(seat, ct);
-        if (d == null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)} but no AVsitter personal adjust menu (nPose / other system): logged, skipped ({img0})"); return seatAdjustLast; }
+        if (d == null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)} but this furniture's menus have no adjust controls I can find (no AVsitter personal adjust, no up/down or Z+/Z- buttons): nothing pressed ({img0})"); return seatAdjustLast; }
+        if (SeatAdjust.Classify(d.Message, d.ButtonLabels) == SeatAdjust.Menu.Generic) return await SeatAdjustGeneric(seat, seatName, pose, gen, d, r0, ct);
         double applied = 0; var before = r0; var cur = r0; SeatAdjust.Verdict v = SeatAdjust.Verdict.Continue;
         for (int it = 0; it < SeatAdjust.MaxIterations && v == SeatAdjust.Verdict.Continue; it++)
         {
@@ -63,29 +96,77 @@ public static partial class Program
         if (v == SeatAdjust.Verdict.Save && d != null && SeatAdjust.Decide(before, cur) == SeatAdjust.Verdict.Save && SeatAdjustStill(seat, gen))
         {
             int si = d.ButtonLabels.FindIndex(b => b.Trim() == "[SAVE]");
-            client.Self.ReplyToScriptDialog(d.Channel, si, d.ButtonLabels[si], d.ObjectID);
-            outcome = "SAVED ([SAVE]: AVsitter personal offset for this pose)";
+            var t = DateTime.Now; client.Self.ReplyToScriptDialog(d.Channel, si, d.ButtonLabels[si], d.ObjectID);
+            var after = await WaitSeatDialog(seat, t, 5000, ct);   // AVsitter answers a save by re-showing its menu
+            if (after == null) SAUnsaved(seatName, pose, applied, "the [SAVE] press got no answer from the furniture (save not confirmed)");
+            else seatAdjustUnsaved = null;
+            outcome = after != null ? "SAVED ([SAVE]: AVsitter personal offset for this pose)" : "pressed [SAVE], not confirmed";
         }
         else
         {
             if (applied != 0 && d != null) d = await SeatAdjustPressZ(seat, d, -applied, ct);   // undo: nothing unproven stays
+            if (applied != 0 && d == null) SAUnsaved(seatName, pose, applied, "the undo presses failed, so an unproven nudge may still be on");
             outcome = $"not saved ({v}); {(applied != 0 ? $"undid Z {-applied:+0.00;-0.00}" : "nothing moved")}";
-            applied = 0;
         }
         SALog($"'{seatName}' {pose}: {outcome}: before {SeatAdjust.Describe(before)}, after {SeatAdjust.Describe(cur)}");
-        try
+        return seatAdjustLast;
+    }
+
+    // non-AVsitter adjust (nPose and the like): the step per press is unknown, so it is MEASURED: one press, re-render, gap change = step
+    static async Task<string> SeatAdjustGeneric(Primitive seat, string seatName, string pose, int gen, ScriptDialogEventArgs d, SeatAdjust.SupportReading r0, CancellationToken ct)
+    {
+        var (up, down, save) = SeatAdjust.GenericButtons(d.ButtonLabels);
+        int net = 0; var before = r0; var cur = r0; SeatAdjust.Verdict v = SeatAdjust.Verdict.Continue; double? step = null;
+        async Task<bool> Press(int n)
         {
-            if (!File.Exists(PoseAdjustLog)) File.WriteAllText(PoseAdjustLog, "# Pose adjust log (SeatAdjust.cs)\n\n| when | object | pose | offset | before | after | outcome |\n|---|---|---|---|---|---|---|\n");
-            File.AppendAllText(PoseAdjustLog, SeatAdjust.LogRow(DateTime.Now, $"{seatName} ({seat.ID})", pose, applied, before, cur, outcome) + "\n");
+            for (int i = 0; i < Math.Abs(n); i++)
+            {
+                d = await SeatAdjustPress(seat, d, n > 0 ? up : down, ct); if (d == null) return false;
+                net += Math.Sign(n);
+            }
+            return true;
         }
-        catch (Exception ex) { SALog("log write failed: " + ex.Message); }
+        for (int it = 0; it < SeatAdjust.MaxIterations + 1 && v == SeatAdjust.Verdict.Continue; it++)
+        {
+            double dz = SeatAdjust.CorrectionZ(cur); if (dz == 0) break;
+            int n = step is double s ? SeatAdjust.GenericPresses(dz, s) : Math.Sign(dz);
+            if (n == 0) break;
+            if (!await Press(n)) { v = SeatAdjust.Verdict.Inconclusive; break; }
+            await Task.Delay(2500, ct);
+            if (!SeatAdjustStill(seat, gen)) { v = SeatAdjust.Verdict.Inconclusive; break; }
+            var (r, img, _) = await hoverSvc.SupportRender();
+            SALog($"'{seatName}' {pose}: pressed {(n > 0 ? up : down)} x{Math.Abs(n)} (net {net:+0;-0}): {SeatAdjust.Describe(cur)} -> {SeatAdjust.Describe(r)} ({img})");
+            if (step == null && r is { Conclusive: true } && cur.Gap is double g0 && r.Gap is double g1) step = (g0 - g1) / n;   // gap shrinks as she moves toward the surface
+            v = SeatAdjust.Decide(cur, r);
+            if (step is double st && Math.Abs(st) < 0.003) v = SeatAdjust.Verdict.Inconclusive;   // presses do not move her measurably
+            if (v is SeatAdjust.Verdict.Save or SeatAdjust.Verdict.Continue) cur = r;
+        }
+        double appliedM = before.Gap is double b && cur.Gap is double c ? b - c : 0;
+        string outcome;
+        if (v == SeatAdjust.Verdict.Save && SeatAdjust.Decide(before, cur) == SeatAdjust.Verdict.Save && SeatAdjustStill(seat, gen))
+        {
+            if (save != null)
+            {
+                d = await SeatAdjustPress(seat, d, save, ct);
+                if (d == null) SAUnsaved(seatName, pose, appliedM, $"the '{save}' press got no answer (save not confirmed)"); else seatAdjustUnsaved = null;
+                outcome = d != null ? $"SAVED ('{save}')" : $"pressed '{save}', not confirmed";
+            }
+            else { SAUnsaved(seatName, pose, appliedM, "this furniture's adjust menu has no Save button"); outcome = "kept, no Save button"; }
+        }
+        else
+        {
+            if (net != 0 && d != null && !await Press(-net)) d = null;
+            if (net != 0 && d == null) SAUnsaved(seatName, pose, appliedM, "the undo presses failed, so an unproven nudge may still be on");
+            outcome = $"not kept ({v}); {(net != 0 ? "undid the presses" : "nothing moved")}";
+        }
+        SALog($"'{seatName}' {pose}: {outcome}: before {SeatAdjust.Describe(before)}, after {SeatAdjust.Describe(cur)}");
         return seatAdjustLast;
     }
 
     // `seatadjust` command: run the check now on the seat she is on (status: the last result)
     static async Task<string> SeatAdjustCmd(string[] a)
     {
-        if (a.Length > 0 && a[0] == "status") return "seatadjust: " + seatAdjustLast;
+        if (a.Length > 0 && a[0] == "status") return "seatadjust: " + seatAdjustLast + (seatAdjustUnsaved != null ? "; " + seatAdjustUnsaved : "");
         var seat = Sim?.ObjectsPrimitives.Values.FirstOrDefault(p => p != null && p.LocalID == client.Self.SittingOn);
         if (seat == null) return "seatadjust: not sitting on an object";
         int gen = Interlocked.Increment(ref seatAdjustGen);
@@ -111,6 +192,8 @@ public static partial class Program
                     return d != null && SeatAdjust.PersonalState(d.ButtonLabels).position && SeatAdjust.PersonalState(d.ButtonLabels).step != null ? d : null;
                 case SeatAdjust.Menu.Options: d = await SeatAdjustPress(seat, d, "[POSE]", ct); break;
                 case SeatAdjust.Menu.PoseMenu: d = await SeatAdjustPress(seat, d, "[ADJUST]", ct); break;
+                case SeatAdjust.Menu.Generic: return d;
+                case SeatAdjust.Menu.Entry: d = await SeatAdjustPress(seat, d, SeatAdjust.EntryButton(d.ButtonLabels), ct); break;
                 default: return null;
             }
         }

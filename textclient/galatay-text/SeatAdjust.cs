@@ -56,19 +56,38 @@ internal static class SeatAdjust
         if (Math.Abs(after.Gap!.Value) > Math.Abs(before.Gap!.Value) - ImproveMin) return Verdict.Revert;
         return InBand(after) ? Verdict.Save : Verdict.Continue;
     }
-    // pure (tested): may she adjust (and save) on this furniture? Home (Peronaut, David rents it) or her own object only
-    internal static bool MayAdjust(bool inPeronaut, bool ownedByMe) => inPeronaut || ownedByMe;
+    // pure (tested): should the sit watcher start a check? a new seat that no pose choice already covered (David 2026-11-02: every sit, no path skipped)
+    internal static bool SitNeedsCheck(uint prevSeat, uint nowSeat, uint lastCheckedSeat) => nowSeat != 0 && nowSeat != prevSeat && nowSeat != lastCheckedSeat;
+    // pure (tested): the line surfaced when an adjustment stays on but could not be saved
+    internal static string UnsavedLine(string seatName, string pose, double applied, string why) => $"UNSAVED '{seatName}' {pose}: kept Z {applied:+0.00;-0.00} m from the render but {why}: David should check it";
 
     // ---- AVsitter 2 dialogs ([AV]sitA.lsl: options_menu "Adjust:", adjust_pose_menu "Personal adjustment:") ----
-    internal enum Menu { None, PoseMenu, Options, Personal }
+    internal enum Menu { None, PoseMenu, Options, Personal, Generic, Entry }
+    // ---- other systems (nPose and the like): found by button NAMES, never per-object offsets ----
+    static readonly System.Text.RegularExpressions.Regex UpRx = new(@"^\W*(z\s*\+|up|raise|higher)\W*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static readonly System.Text.RegularExpressions.Regex DownRx = new(@"^\W*(z\s*-|down|lower)\W*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static readonly System.Text.RegularExpressions.Regex SaveRx = new(@"^\W*(save|remember|store|save\s*pos(ition)?|save\s*pose)\W*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static readonly System.Text.RegularExpressions.Regex EntryRx = new(@"^\W*(adjust|adjustment|offset|offsets|position|adjust\s*pos(ition)?|tweak)\W*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    // pure (tested): the up / down / save buttons of a non-AVsitter adjust menu (null = absent)
+    internal static (string up, string down, string save) GenericButtons(IReadOnlyList<string> labels)
+    {
+        var l = (labels ?? Array.Empty<string>()).Select(x => x.Trim()).ToList();
+        return (l.FirstOrDefault(x => UpRx.IsMatch(x)), l.FirstOrDefault(x => DownRx.IsMatch(x)), l.FirstOrDefault(x => SaveRx.IsMatch(x)));
+    }
+    // pure (tested): the button that opens an adjust menu on a non-AVsitter menu (null = none)
+    internal static string EntryButton(IReadOnlyList<string> labels) => (labels ?? Array.Empty<string>()).Select(x => x.Trim()).FirstOrDefault(x => EntryRx.IsMatch(x));
+    // pure (tested): presses of a measured step (metres of gap change per press, from the renders) to cover dz; 0 when it would overshoot by more than half a step
+    internal static int GenericPresses(double dz, double stepPerPress) => Math.Abs(stepPerPress) < 0.003 ? 0 : (int)Math.Round(dz / stepPerPress);
     static readonly string[] PersonalButtons = { "X+", "Y+", "Z+", "X-", "Y-", "Z-", "[SAVE]" };
     // pure (tested)
     internal static Menu Classify(string message, IReadOnlyList<string> labels)
     {
         var l = (labels ?? Array.Empty<string>()).Select(x => x.Trim()).ToList();
         if (PersonalButtons.All(b => l.Contains(b))) return Menu.Personal;
-        if (l.Contains("[POSE]") && (message ?? "").TrimStart().StartsWith("Adjust", StringComparison.OrdinalIgnoreCase)) return Menu.Options;
+        if (l.Contains("[POSE]") && (message ?? "").Split('\n').Any(x => x.Trim().StartsWith("Adjust", StringComparison.OrdinalIgnoreCase))) return Menu.Options;   // AVsitter puts its "AVsitter™ 2.1" header line first
         if (l.Contains("[ADJUST]")) return Menu.PoseMenu;
+        var g = GenericButtons(l); if (g.up != null && g.down != null) return Menu.Generic;
+        if (EntryButton(l) != null) return Menu.Entry;
         return Menu.None;
     }
     // pure (tested): the personal menu's state: position (vs rotation) mode and the step in force (the step button names the current increment)
@@ -100,7 +119,4 @@ internal static class SeatAdjust
     }
     internal static string Fmt(double? g) => g is double d ? d.ToString("+0.000;-0.000", CultureInfo.InvariantCulture) : "?";
     internal static string Describe(SupportReading r) => r is not { Conclusive: true } ? "inconclusive" : $"{r.Kind} on {string.Join("+", r.Bearing)} gap {Fmt(r.Gap)} m";
-    // pure (tested): the pose-adjust-log.md row
-    internal static string LogRow(DateTime at, string obj, string pose, double offsetZ, SupportReading before, SupportReading after, string outcome)
-        => $"| {at:yyyy-MM-dd HH:mm} PT | {obj} | {pose} | Z {offsetZ:+0.00;-0.00} m | {Describe(before)} | {Describe(after)} | {outcome} |";
 }

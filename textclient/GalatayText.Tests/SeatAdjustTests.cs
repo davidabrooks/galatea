@@ -51,16 +51,13 @@ public class SeatAdjustTests
         Assert.Equal(SeatAdjust.Verdict.Save, SeatAdjust.Decide(before, R("sitting", 0.005, "hips")));
         Assert.Equal(SeatAdjust.Verdict.Save, SeatAdjust.Decide(R("kneeling", 0.08, "shins"), R("kneeling+hands", 0.0, "shins", "hands")));
     }
-    [Fact] public void MayAdjust_HomeOrOwnOnly()
-    {
-        Assert.True(SeatAdjust.MayAdjust(true, false)); Assert.True(SeatAdjust.MayAdjust(false, true)); Assert.False(SeatAdjust.MayAdjust(false, false));
-    }
     [Fact] public void Classify_AvsitterMenus()
     {
         Assert.Equal(SeatAdjust.Menu.Personal, SeatAdjust.Classify("Personal adjustment:", Personal));
         Assert.Equal(SeatAdjust.Menu.Options, SeatAdjust.Classify("Adjust:", new List<string> { "[BACK]", "[SECURITY]", "[POSE]" }));
         Assert.Equal(SeatAdjust.Menu.PoseMenu, SeatAdjust.Classify("Pose: [Relax]", new List<string> { "[ADJUST]", "[<<]", "[>>]", "Relax", "[BACK]" }));
-        Assert.Equal(SeatAdjust.Menu.None, SeatAdjust.Classify("nPose", new List<string> { "Sit", "Options", "Adjust" }));
+        Assert.Equal(SeatAdjust.Menu.Entry, SeatAdjust.Classify("nPose", new List<string> { "Sit", "Options", "Adjust" }));
+        Assert.Equal(SeatAdjust.Menu.None, SeatAdjust.Classify("nPose", new List<string> { "Sit", "Options", "Stand" }));
     }
     [Fact] public void PersonalState_ReadsModeAndStep()
     {
@@ -78,11 +75,6 @@ public class SeatAdjustTests
         Assert.Equal(0.31, moved, 6);
         Assert.Empty(SeatAdjust.PlanZ(0.004, 0.05).presses);
     }
-    [Fact] public void LogRow_HasObjectPoseOffsetAndBeforeAfter()
-    {
-        var row = SeatAdjust.LogRow(new DateTime(2026, 11, 2, 16, 30, 0), "Rocking chair (abc)", "Solo* > Relax", -0.08, R("sitting", 0.08, "hips", "thighs"), R("sitting", 0.004, "hips", "thighs"), "SAVED");
-        Assert.Contains("Rocking chair (abc)", row); Assert.Contains("Z -0.08 m", row); Assert.Contains("gap +0.080", row); Assert.Contains("gap +0.004", row); Assert.Contains("SAVED", row);
-    }
     [Fact] public void Wiring_SeatPoseStartsTheAdjust_AndItNeverTouchesTheHover()
     {
         var d = new DirectoryInfo(AppContext.BaseDirectory); while (d != null && !Directory.Exists(Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent;
@@ -91,5 +83,38 @@ public class SeatAdjustTests
         var run = Src("SeatAdjustRun.cs");
         Assert.DoesNotContain("SetHover", run); Assert.DoesNotContain("PostHover", run);
         Assert.Contains("SeatAdjust.Decide(before, cur) == SeatAdjust.Verdict.Save", run);   // SAVE needs a better-than-the-first-render result too
+    }
+    [Fact] public void Classify_AdjustMenuAfterAvsitterHeaderLine()
+    {
+        // Mirage bed 2026-11-02: message is "AVsitter™ 2.1\n\nAdjust:" and was read as no AVsitter menu
+        Assert.Equal(SeatAdjust.Menu.Options, SeatAdjust.Classify("AVsitter™ 2.1\n\nAdjust:", new List<string> { "[BACK]", "[HELPER]", "[POSE]" }));
+        Assert.Equal(SeatAdjust.Menu.PoseMenu, SeatAdjust.Classify("AVsitter™2.1\n\nPress Ctrl S to resync Animations", new List<string> { "selfie", "[ADJUST]", "[BACK]" }));
+    }
+    [Fact] public void Generic_FindsUpDownSaveByName()
+    {
+        var l = new List<string> { "<<", "Up", "Down", "Fwd", "Back", "Save", "Menu" };
+        Assert.Equal(SeatAdjust.Menu.Generic, SeatAdjust.Classify("nPose adjust", l));
+        Assert.Equal(("Up", "Down", "Save"), SeatAdjust.GenericButtons(l));
+        Assert.Equal(("Z+", "Z-", (string)null), SeatAdjust.GenericButtons(new List<string> { "X+", "Z+", "Z-" }));
+        Assert.Equal(SeatAdjust.Menu.Personal, SeatAdjust.Classify("Personal adjustment:", new List<string> { "X-", "Y-", "Z-", "X+", "Y+", "Z+", "[DEFAULT]", "[SAVE]", "[SAVE ALL]", "[BACK]", "Position", "0.05m" }));
+    }
+    [Fact] public void GenericPresses_FromMeasuredStep()
+    {
+        Assert.Equal(-4, SeatAdjust.GenericPresses(-0.04, 0.01));
+        Assert.Equal(2, SeatAdjust.GenericPresses(0.05, 0.025));
+        Assert.Equal(0, SeatAdjust.GenericPresses(0.05, 0.001));   // presses do not move her measurably
+    }
+    [Fact] public void SitWatcher_EverySitOnce()
+    {
+        Assert.True(SeatAdjust.SitNeedsCheck(0, 42, 0));       // new sit, no pose choice yet
+        Assert.False(SeatAdjust.SitNeedsCheck(0, 42, 42));     // a pose choice already started the check
+        Assert.False(SeatAdjust.SitNeedsCheck(42, 42, 0));     // still on the same seat
+        Assert.False(SeatAdjust.SitNeedsCheck(42, 0, 0));      // stood
+        Assert.True(SeatAdjust.SitNeedsCheck(42, 43, 42));     // moved to another seat
+    }
+    [Fact] public void UnsavedLine_NamesFurnitureAndPose()
+    {
+        var l = SeatAdjust.UnsavedLine("Mirage bed", "texting", -0.04, "no Save button");
+        Assert.StartsWith("UNSAVED 'Mirage bed' texting", l); Assert.Contains("-0.04", l); Assert.Contains("no Save button", l);
     }
 }

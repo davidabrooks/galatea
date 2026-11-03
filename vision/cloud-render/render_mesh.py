@@ -1549,6 +1549,51 @@ def seat_contact(verts, pelvis, cast, r=SEAT_HIPS_R, below=0.30, above=0.15, ban
     seat_z = seat_top_under(patch, zlow, cast) if cast is not None else None
     return zlow, cp, seat_z, (None if seat_z is None else zlow - seat_z)
 
+# 2026-11-02 (David: furniture poses can be standing, sitting, kneeling, lying or hand-supported; adjust with the furniture's own ADJUST, never a fudge):
+# the pose kind is read from the RENDER: which body parts rest lowest on the surface under them. Every part gets the surface under its own lowest patch
+# (cast, like the seat top), its gap = its lowest vertex - that surface. The parts within CONTACT_BAND of the lowest gap are the resting set; the kind
+# follows from that set (no per-pose table), and the weight-bearing parts of that kind are averaged into ONE support gap the client corrects with.
+SUPPORT_SOFT = ("hips", "thighs", "chest")   # parts that sink into cushions (the client's tolerance), the rest are hard contacts (soles, knees, palms)
+
+def furniture_support_parts(parts, cast, quantile=0.002):
+    """parts = {part: (m, 3) world vertices of her BODY (contact_obs)}, cast = seat_cast. -> {part: (zlow, surface z or None, gap or None)}"""
+    out = {}
+    for k, p in parts.items():
+        p = np.asarray(p, dtype=np.float64).reshape(-1, 3)
+        if len(p) == 0: continue
+        zlow = float(np.quantile(p[:, 2], quantile)); patch = [tuple(r) for r in p[p[:, 2] <= zlow + 0.03]] or [tuple(p[0])]
+        surf = seat_top_under(patch, zlow, cast) if cast is not None else None
+        out[k] = (zlow, surf, None if surf is None else zlow - surf)
+    return out
+
+def classify_support(info, band=CONTACT_BAND):
+    """info from furniture_support_parts -> (kind, weight-bearing parts, their mean gap) | (None, [], None) when no part has a surface under it.
+    resting = the parts whose gap is within `band` of the lowest gap (so a floating or sunk pose is still classified by what is lowest).
+    kind: chest resting -> lying (back / front on the surface); else hips or thighs -> sitting; else shins -> kneeling; else feet -> standing;
+    hands or forearms resting with any of those -> "<kind>+hands" (hands bear weight too); hands / forearms alone -> hand-supported.
+    weight-bearing: lying chest+hips+thighs, sitting hips+thighs, kneeling shins (+ feet resting), standing feet, + hands when they rest (fingertips
+    alone never count: a hand that is not within the band is not resting)."""
+    g = {k: v[2] for k, v in info.items() if v[2] is not None}
+    if not g: return None, [], None
+    lo = min(g.values()); rest = {k for k, v in g.items() if v <= lo + band}
+    hands = [k for k in ("hands", "forearms") if k in rest]
+    if "chest" in rest: kind, bear = "lying", [k for k in ("chest", "hips", "thighs") if k in rest]
+    elif rest & {"hips", "thighs"}: kind, bear = "sitting", [k for k in ("hips", "thighs") if k in rest]
+    elif "shins" in rest: kind, bear = "kneeling", [k for k in ("shins", "feet") if k in rest]
+    elif "feet" in rest: kind, bear = "standing", ["feet"]
+    elif hands: kind, bear = "hand-supported", []
+    else: return None, [], None
+    if hands and kind != "hand-supported": kind += "+hands"
+    bear = bear + hands
+    return kind, bear, float(np.mean([g[k] for k in bear]))
+
+def furniture_support_line(info, kind, bear, gap):
+    """the line the client parses (SeatAdjust.cs SupportReadingParse)"""
+    order = list(BONE_PART_SEGS)
+    pp = ", ".join(f"{k} {info[k][2]:+.3f}" for k in order if k in info and info[k][2] is not None)
+    if kind is None: return f"GT: furniture support: unknown (no surface under any part){'; parts ' + pp if pp else ''}"
+    return f"GT: furniture support: {kind}; bearing {','.join(bear)}; gap {gap:+.3f} m; parts {pp}"
+
 def seat_cutaway(tgt, loc, contact, width, zbot, res=(640, 400), margin=0.05, pad=0.12):
     """the corridor between the close-up camera and her hips (2026-10-26, #314 live test: the chair's near side frame, arm and rocker runners hid the hips).
     Everything of the seat object inside it is cut away: from `margin` past the near edge of her hips' contact patch (cp of seat_contact; so the seat under and beside her stays) out to the camera,
@@ -1861,6 +1906,15 @@ if SCENE:
                 return None
             bpy.context.view_layer.update()
             sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None)
+            if prim_under and M.get("bones") and len(M["bones"]) == 25:   # what bears her weight on the furniture, from her body mesh (clothing weighs 0)
+                try:
+                    segs_s = [[tuple(to_world(b[:3], (x, y, z0), yaw)), tuple(to_world(b[3:], (x, y, z0), yaw))] for b in M["bones"]]
+                    sk_ = []
+                    for o_ in contact_obs(obs):
+                        a_ = np.empty(len(o_.data.vertices) * 3, np.float64); o_.data.vertices.foreach_get("co", a_); m_ = np.array(o_.matrix_world, np.float64); sk_.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
+                    inf_ = furniture_support_parts(assign_body_parts(np.concatenate(sk_) if sk_ else allv, segs_s), seat_cast)
+                    print(furniture_support_line(inf_, *classify_support(inf_)), flush=True)
+                except Exception as ex_: print(f"GT: furniture support: unknown (error {ex_})", flush=True)
         if sc_:
             zlow, cp, seat_z, gap = sc_; floor = seat_z if seat_z is not None else zlow   # the seat's top is the plane; none found -> frame the hips' own bounding area
             loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=0.8)

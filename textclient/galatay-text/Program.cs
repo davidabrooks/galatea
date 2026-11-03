@@ -2092,6 +2092,7 @@ public static partial class Program
             case "feet": return await feetSvc.FeetCmd(a);
             case "kiss": return KissCmd(rest);
             case "hands": return await HandsCmd(a);
+            case "seatadjust": return await SeatAdjustCmd(a);
             case "outfit" when a.Length >= 2 && a[0] == "wear":
             {
                 bool force = a.Any(x => x.Equals("force", StringComparison.OrdinalIgnoreCase)); a = a.Where(x => !x.Equals("force", StringComparison.OrdinalIgnoreCase)).ToArray();

@@ -9,7 +9,7 @@ def _rm():
     tree = ast.parse(SRC.read_text())
     consts = {"CONTACT_BAND", "SEAT_PLANE_BELOW", "SEAT_TOP_NEAR", "SEAT_RAY_START", "BONE_PART_SEGS", "SUPPORT_SOFT"}
     body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in consts for t in n.targets)] + \
-           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"seat_top_under", "furniture_support_parts", "classify_support", "furniture_support_line"}]
+           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"seat_top_under", "seat_top_hits", "furniture_support_parts", "classify_support", "furniture_support_line"}]
     ns = {"np": np, "math": math}; exec(compile(ast.Module(body, []), "render_mesh", "exec"), ns); return ns
 
 R = _rm()
@@ -62,3 +62,40 @@ def test_line_format():
     inf = _info({"hips": SURF + 0.03, "thighs": SURF + 0.04})
     line = R["furniture_support_line"](inf, *R["classify_support"](inf))
     assert line.startswith("GT: furniture support: sitting; bearing hips,thighs; gap +0.0") and "parts hips +0.0" in line
+
+# 2026-11-02 tub 'shave': the quality evidence the client gates a nudge / Save on
+R2 = None
+def _rq():
+    import ast as _a
+    tree = _a.parse(SRC.read_text())
+    keep = {"seat_top_under", "seat_top_hits", "seat_top_hits", "furniture_support_parts", "classify_support", "support_quality_line", "wide_support_points"}
+    consts = {"CONTACT_BAND", "SEAT_PLANE_BELOW", "SEAT_TOP_NEAR", "SEAT_RAY_START", "BONE_PART_SEGS", "SUPPORT_SOFT"}
+    body = [n for n in tree.body if isinstance(n, _a.Assign) and any(getattr(t, "id", "") in consts for t in n.targets)] + [n for n in tree.body if isinstance(n, _a.FunctionDef) and n.name in keep]
+    ns = {"np": np, "math": math}; exec(compile(_a.Module(body, []), "render_mesh", "exec"), ns); return ns
+
+def test_quality_line_reports_hits_surface_and_frame():
+    Q = _rq(); rng = np.random.default_rng(2)
+    inf = Q["furniture_support_parts"]({"shins": _part(rng, 0.47, 0.6), "feet": _part(rng, 0.46, 0.5, x=0.3)}, flat)
+    assert all(v[3] >= 3 for v in inf.values())
+    l = Q["support_quality_line"](inf, 0.39, 0.89, False)
+    assert l.startswith("GT: support quality: frame z 0.390..0.890; seat not found; hits shins ")
+    assert "surface shins 0.450" in l
+
+def test_no_surface_no_hits():
+    Q = _rq(); rng = np.random.default_rng(3)
+    inf = Q["furniture_support_parts"]({"shins": _part(rng, 1.5, 1.6)}, flat)   # 1 m over the surface: outside the ray window
+    assert inf["shins"][1] is None and inf["shins"][3] == 0
+    assert "hits none" in Q["support_quality_line"](inf, 1.4, 1.9, False)
+
+def test_wide_points_hold_the_part_and_its_surface():
+    Q = _rq(); rng = np.random.default_rng(4)
+    inf = Q["furniture_support_parts"]({"shins": _part(rng, 0.52, 0.6)}, flat)
+    pts = Q["wide_support_points"](inf, ["shins"])
+    assert len(pts) == 2 and abs(pts[1][2] - 0.45) < 1e-9 and pts[0][2] > 0.5
+
+def test_render_quality_stats():
+    import importlib.util, pathlib as _p
+    sp = importlib.util.spec_from_file_location("rq", _p.Path(__file__).resolve().parents[1] / "render_quality.py"); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+    o, d, c = m.stats([(255, 255, 255)] * 60 + [(100, 90, 80)] * 40)
+    assert abs(o - 0.6) < 1e-9 and d == 0 and c > 0.1
+    assert m.line(0.46, 0, 0.2) == "GT: render quality: overexposed 0.460; dark 0.000; contrast 0.200"

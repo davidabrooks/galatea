@@ -38,6 +38,12 @@ internal sealed class PoseRuleSet
     public static readonly string[] DefaultNotSoloNames = { "Peeking" };
     HashSet<string> notSolo = new(DefaultNotSoloNames, StringComparer.OrdinalIgnoreCase);
     public bool IsNotSoloName(string raw) => notSolo.Contains(Bare(raw));
+    // 2026-11-02 (David: "we will need a way to detect bugged poses"): poses found broken from evidence (SeatAdjustGate.cs BuggedReason), PER FURNITURE:
+    // "bugged_poses": [{"seat": "<object name>", "pose": "<leaf pose name>", "path": "Solo* > shave", "reason": "...", "when": "..."}]. Never picked again on that seat.
+    readonly HashSet<string> bugged = new(StringComparer.OrdinalIgnoreCase);
+    static string BugKey(string seat, string pose) => (seat ?? "").Trim() + "\u0001" + Bare(pose);
+    public bool IsBugged(string seatName, string poseLabel) => bugged.Contains(BugKey(seatName, poseLabel));
+    public int BuggedCount => bugged.Count;
     HashSet<string> adultNames = new(StringComparer.OrdinalIgnoreCase), pgNames = new(StringComparer.OrdinalIgnoreCase);
     public string Source { get; private set; } = "built-in defaults";
 
@@ -80,6 +86,9 @@ internal sealed class PoseRuleSet
         var cn = L("extra_conversation_names"); if (cn != null) foreach (var w in cn) r.conversationNames.Add(Bare(w));
         var an = L("adult_names"); if (an != null) foreach (var w in an) r.adultNames.Add(Bare(w));
         var ns = L("not_solo_names"); if (ns != null) foreach (var w in ns) r.notSolo.Add(Bare(w));
+        if (o.TryGetProperty("bugged_poses", out var bp) && bp.ValueKind == JsonValueKind.Array)
+            foreach (var e in bp.EnumerateArray())
+                if (e.ValueKind == JsonValueKind.Object && e.TryGetProperty("seat", out var se) && e.TryGetProperty("pose", out var po)) r.bugged.Add(BugKey(se.GetString(), po.GetString()));
         var pn = L("pg_names"); if (pn != null) foreach (var w in pn) r.pgNames.Add(Bare(w));
         r.Source = source; return r;
     }
@@ -109,5 +118,24 @@ internal static class PoseRules
                 return current;
             }
         }
+    }
+}
+
+internal static class PoseBugList
+{
+    // pure (tested): the rules JSON with one more bugged_poses entry (other keys kept; an existing seat+pose entry is not duplicated)
+    public static string Add(string json, string seat, string pose, string path, string reason, DateTime when)
+    {
+        var root = string.IsNullOrWhiteSpace(json) ? new System.Text.Json.Nodes.JsonObject() : System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        if (root["bugged_poses"] is not System.Text.Json.Nodes.JsonArray arr) { arr = new System.Text.Json.Nodes.JsonArray(); root["bugged_poses"] = arr; }
+        string bare = (pose ?? "").Trim().TrimEnd('*').Trim();
+        if (!arr.Any(e => string.Equals((string)e?["seat"], seat, StringComparison.OrdinalIgnoreCase) && string.Equals(((string)e?["pose"] ?? "").Trim().TrimEnd('*').Trim(), bare, StringComparison.OrdinalIgnoreCase)))
+            arr.Add(new System.Text.Json.Nodes.JsonObject { ["seat"] = seat, ["pose"] = bare, ["path"] = path, ["reason"] = reason, ["when"] = when.ToString("yyyy-MM-dd HH:mm") });
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+    public static void AddToFile(string seat, string pose, string path, string reason)
+    {
+        var f = PoseRules.FilePath; var old = File.Exists(f) ? File.ReadAllText(f) : "";
+        var tmp = f + ".tmp"; File.WriteAllText(tmp, Add(old, seat, pose, path, reason, DateTime.Now)); File.Move(tmp, f, true);   // hot reload: PoseRules re-reads on mtime change
     }
 }

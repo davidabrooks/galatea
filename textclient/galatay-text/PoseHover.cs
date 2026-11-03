@@ -89,6 +89,7 @@ internal sealed partial class Hover
     internal static bool HoverFloorMissing(string stdout) => (stdout ?? "").Contains("hover check: no reading: the floor under her is not in the export", StringComparison.Ordinal);
     volatile bool hoverLastFloorMissing;
     volatile SeatAdjust.SupportReading hoverLastSupport;
+    volatile string hoverLastSeatText;
     internal static double? HoverCheckGap(string stdout)
     {
         var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "", @"hover check gap ([+-]?\d+\.\d+) m");
@@ -198,17 +199,18 @@ internal sealed partial class Hover
     }
 
     // ONE render, ONE image. kind (stand|sit) only labels what the close-up frames
-    async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, string kind = null, bool seat = false, string[] parts = null)
+    async Task<(double? gap, string img)> HoverCheckRender(string exportDir, double size, double hover, string kind = null, bool seat = false, string[] parts = null, IReadOnlyDictionary<string, string> extraEnv = null)
     {
         var psi = new ProcessStartInfo(h.LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add(h.LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
         foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, parts, Program.SimHoverNow())) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
         foreach (var kv in ContactEnv(seat ? "seat" : kind)) psi.Environment[kv.Key] = kv.Value;
+        if (extraEnv != null) foreach (var kv in extraEnv) psi.Environment[kv.Key] = kv.Value;
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
         if (!await Task.Run(() => pr.WaitForExit(180000))) { try { pr.Kill(); } catch { } return (null, "timed out"); }
         var text = await o; await e;
         hoverLastFloorMissing = !seat && HoverFloorMissing(text);
-        hoverLastSupport = seat ? SeatAdjust.Parse(text) : null;   // what bears her weight on the furniture (SeatAdjust.cs)
+        hoverLastSupport = seat ? SeatAdjust.Parse(text) : null; hoverLastSeatText = seat ? text : null;   // what bears her weight on the furniture (SeatAdjust.cs)
         hoverLastPartGaps = seat ? new() : HoverCheckPartGaps(text);   // read by the check that made this render (under poseGate)
         return (seat ? SeatContactGap(text) : HoverCheckGap(text), text.Split('\n').FirstOrDefault(l => l.EndsWith(".jpg"))?.Trim() ?? "no image");
     }
@@ -429,21 +431,37 @@ internal sealed partial class Hover
     internal static bool KneelStill(Program.IdlePoseState posed, string pose, float speed) => posed is { kind: "collar" } && string.Equals(posed.pose, pose, StringComparison.OrdinalIgnoreCase) && speed < 0.1f;
 
     // SeatAdjust.cs: ONE seated render; the weight-bearing reading (null = export failed / not seated / a check is running) and the close-up path
-    internal async Task<(SeatAdjust.SupportReading r, string img, string why)> SupportRender()
+    // wide = the retake after a failed quality gate (GT_SUPPORT_WIDE=1: the bearing parts AND the surface under them in frame, wider, level from the side)
+    internal async Task<(SeatAdjust.SupportReading r, string img, string why, SeatAdjust.Quality q)> SupportRender(bool wide = false)
     {
-        if (!h.LoggedIn || h.Client.Self.SittingOn == 0) return (null, null, "not sitting on an object");
-        if (!await poseGate.WaitAsync(0)) return (null, null, "a check is already running");
+        if (!h.LoggedIn || h.Client.Self.SittingOn == 0) return (null, null, "not sitting on an object", null);
+        if (!await poseGate.WaitAsync(0)) return (null, null, "a check is already running", null);
         try
         {
             var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
             var scene = ex.Split('\n').Last();
-            if (!scene.EndsWith("scene.json")) return (null, null, "export failed");
-            if (h.Client.Self.SittingOn == 0) return (null, null, "no longer sitting");
-            hoverLastSupport = null;
-            var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, "seat", seat: true);
-            return (hoverLastSupport, img, hoverLastSupport == null ? "the render printed no support line" : null);
+            if (!scene.EndsWith("scene.json")) return (null, null, "export failed", null);
+            if (h.Client.Self.SittingOn == 0) return (null, null, "no longer sitting", null);
+            hoverLastSupport = null; hoverLastSeatText = null;
+            var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, "seat", seat: true, extraEnv: wide ? new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1" } : null);
+            var text = (hoverLastSeatText ?? "") + "\n" + await RenderQualityText(img);
+            return (hoverLastSupport, img, hoverLastSupport == null ? "the render printed no support line" : null, SeatAdjust.ParseQuality(text));
         }
         finally { poseGate.Release(); }
+    }
+    // vision/render_quality.py: the exposure of the close-up (overexposed / dark share)
+    async Task<string> RenderQualityText(string img)
+    {
+        try
+        {
+            if (img == null || !File.Exists(img)) return "";
+            var psi = new ProcessStartInfo(h.LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            psi.ArgumentList.Add(Path.Combine(Path.GetDirectoryName(h.LookPy)!, "render_quality.py")); psi.ArgumentList.Add(img);
+            using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
+            if (!await Task.Run(() => pr.WaitForExit(30000))) { try { pr.Kill(); } catch { } return ""; }
+            await e; return await o;
+        }
+        catch { return ""; }
     }
 
     // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): ONE render of the hips against the seat;

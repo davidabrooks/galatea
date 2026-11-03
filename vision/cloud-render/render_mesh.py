@@ -1531,11 +1531,17 @@ def seat_top_under(patch, zlow, cast, start=SEAT_RAY_START, near=SEAT_TOP_NEAR, 
     vertex at up to `n` points of the patch; rays that fall between slats (no hit, or a rail far below) are dropped. The MEDIAN of the hits within `near`
     under her lowest vertex (else within `far`) is the seat top; fewer than `min_hits` hits -> None (seat surface not found)."""
     pts = list(patch); pts = pts[::max(1, len(pts) // n)][:n]
+    z, _ = seat_top_hits(pts, zlow, cast, start, near, far, min_hits)
+    return z
+
+def seat_top_hits(pts, zlow, cast, start=SEAT_RAY_START, near=SEAT_TOP_NEAR, far=SEAT_PLANE_BELOW, min_hits=3):
+    """seat_top_under's rays over the given points -> (median surface z or None, how many rays hit it): the hit count is the render-quality evidence
+    that a real surface lies under the part (2026-11-02 tub 'shave': a pose floating over the tub was nudged from a reading with no tub in frame)"""
     hits = [z for z in (cast(q[0], q[1], zlow + start) for q in pts) if z is not None]
     for lo in (near, far):
         sel = [z for z in hits if zlow - lo <= z <= zlow + start]
-        if len(sel) >= min_hits: return float(np.median(sel))
-    return None
+        if len(sel) >= min_hits: return float(np.median(sel)), len(sel)
+    return None, 0
 
 def seat_contact(verts, pelvis, cast, r=SEAT_HIPS_R, below=0.30, above=0.15, band=CONTACT_BAND):
     """her hips against a seat (2026-10-26, David: sitting on furniture, check the hips, never the feet). verts = world (n, 3) vertices of everything
@@ -1562,8 +1568,10 @@ def furniture_support_parts(parts, cast, quantile=0.002):
         p = np.asarray(p, dtype=np.float64).reshape(-1, 3)
         if len(p) == 0: continue
         zlow = float(np.quantile(p[:, 2], quantile)); patch = [tuple(r) for r in p[p[:, 2] <= zlow + 0.03]] or [tuple(p[0])]
-        surf = seat_top_under(patch, zlow, cast) if cast is not None else None
-        out[k] = (zlow, surf, None if surf is None else zlow - surf)
+        pts = patch[::max(1, len(patch) // 48)][:48]
+        surf, nh = seat_top_hits(pts, zlow, cast) if cast is not None else (None, 0)
+        cx, cy = (float(np.mean([q[0] for q in patch])), float(np.mean([q[1] for q in patch])))
+        out[k] = (zlow, surf, None if surf is None else zlow - surf, nh, (cx, cy))
     return out
 
 def classify_support(info, band=CONTACT_BAND):
@@ -1593,6 +1601,25 @@ def furniture_support_line(info, kind, bear, gap):
     pp = ", ".join(f"{k} {info[k][2]:+.3f}" for k in order if k in info and info[k][2] is not None)
     if kind is None: return f"GT: furniture support: unknown (no surface under any part){'; parts ' + pp if pp else ''}"
     return f"GT: furniture support: {kind}; bearing {','.join(bear)}; gap {gap:+.3f} m; parts {pp}"
+
+def support_quality_line(info, frame_lo, frame_hi, seat_found):
+    """the render-quality evidence the client gates a nudge / Save on (SeatAdjust.cs ParseQuality): the close-up frame's z range, whether the seat
+    top under her hips was found, and per part the rays that hit its surface and that surface's z.
+    "GT: support quality: frame z 20.100..20.600; seat found; hits shins 12, feet 9; surface shins 20.150, feet 20.140" """
+    order = list(BONE_PART_SEGS)
+    ks = [k for k in order if k in info and info[k][1] is not None]
+    hs = ", ".join(f"{k} {info[k][3] if len(info[k]) > 3 else 0}" for k in ks)
+    zs = ", ".join(f"{k} {info[k][1]:.3f}" for k in ks)
+    return f"GT: support quality: frame z {frame_lo:.3f}..{frame_hi:.3f}; seat {'found' if seat_found else 'not found'}; hits {hs or 'none'}; surface {zs or 'none'}"
+
+def wide_support_points(info, bear):
+    """GT_SUPPORT_WIDE=1 (the retake after a failed quality gate): the frame must hold the bearing parts AND the surface under them -> [(x, y, z)]"""
+    pts = []
+    for k in bear or []:
+        v = info.get(k)
+        if not v or v[1] is None or len(v) < 5: continue
+        (cx, cy) = v[4]; pts += [(cx, cy, v[0]), (cx, cy, v[1])]
+    return pts
 
 def seat_cutaway(tgt, loc, contact, width, zbot, res=(640, 400), margin=0.05, pad=0.12):
     """the corridor between the close-up camera and her hips (2026-10-26, #314 live test: the chair's near side frame, arm and rocker runners hid the hips).
@@ -1905,7 +1932,7 @@ if SCENE:
                     o_ = l_ - Vector((0, 0, 0.002))
                 return None
             bpy.context.view_layer.update()
-            sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None)
+            sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None); sup_info = None
             if prim_under and M.get("bones") and len(M["bones"]) == 25:   # what bears her weight on the furniture, from her body mesh (clothing weighs 0)
                 try:
                     segs_s = [[tuple(to_world(b[:3], (x, y, z0), yaw)), tuple(to_world(b[3:], (x, y, z0), yaw))] for b in M["bones"]]
@@ -1913,11 +1940,19 @@ if SCENE:
                     for o_ in contact_obs(obs):
                         a_ = np.empty(len(o_.data.vertices) * 3, np.float64); o_.data.vertices.foreach_get("co", a_); m_ = np.array(o_.matrix_world, np.float64); sk_.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
                     inf_ = furniture_support_parts(assign_body_parts(np.concatenate(sk_) if sk_ else allv, segs_s), seat_cast)
-                    print(furniture_support_line(inf_, *classify_support(inf_)), flush=True)
+                    cls_ = classify_support(inf_); sup_info = (inf_, cls_[1])
+                    print(furniture_support_line(inf_, *cls_), flush=True)
                 except Exception as ex_: print(f"GT: furniture support: unknown (error {ex_})", flush=True)
         if sc_:
             zlow, cp, seat_z, gap = sc_; floor = seat_z if seat_z is not None else zlow   # the seat's top is the plane; none found -> frame the hips' own bounding area
-            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=0.8)
+            wide_ = os.environ.get("GT_SUPPORT_WIDE") == "1" and sup_info is not None
+            if wide_:   # the retake: frame the bearing parts and the surface under them, wider, from the side at floor level
+                wp_ = wide_support_points(*sup_info)
+                if wp_: cp = list(cp) + wp_; floor = min([floor] + [q[2] for q in wp_])
+            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=1.6 if wide_ else 0.8, max_width=3.0 if wide_ else 1.4)
+            if sup_info is not None:
+                zb_ = min(floor, zlow) - 0.06
+                print(support_quality_line(sup_info[0], zb_, zb_ + width * min(res) / max(res), seat_z is not None), flush=True)
             print(f"GT: contact close-up: hips against the seat, {len(cp)} hip vertices within {CONTACT_BAND:g} m of the lowest, hips z {zlow:.3f}, "
                   f"{'seat top z %.3f (median of the rays under the lowest patch)' % seat_z if seat_z is not None else 'seat surface not found (hips area only)'}, frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
             print("GT: seat contact gap " + (f"{gap:+.3f} m (hips above the seat +, sunk into it -)" if gap is not None else "unknown (seat surface not found)"), flush=True)

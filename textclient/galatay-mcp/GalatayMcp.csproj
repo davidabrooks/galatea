@@ -62,6 +62,7 @@
     <Compile Include="../galatay-text/PoseHover.cs" Link="Core/PoseHover.cs" />
     <Compile Include="../galatay-text/SeatAdjust.cs" Link="Core/SeatAdjust.cs" />
     <Compile Include="../galatay-text/SeatAdjustRun.cs" Link="Core/SeatAdjustRun.cs" />
+    <Compile Include="../galatay-text/SeatAdjustGate.cs" Link="Core/SeatAdjustGate.cs" />
     <Compile Include="../galatay-text/AutoHover.cs" Link="Core/AutoHover.cs" />
     <Compile Include="../galatay-text/HoverHost.cs" Link="Core/HoverHost.cs" />
     <Compile Include="../galatay-text/CrashGuard.cs" Link="Core/CrashGuard.cs" />

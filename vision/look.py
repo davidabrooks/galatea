@@ -407,6 +407,14 @@ LAYER_STATS = []   # per pass: {"pass", "peak_mb", "seconds", ...} for the summa
 
 _RESUME_VOLATILE = ("GT_TEX_BIAS", "GT_TEX_BUDGET_MB", "GT_HD_BANDS", "GT_TILE", "GT_TEX_LIMIT", "GT_BVH_COMPACT", "GT_LAYER", "GT_LOOK_", "GT_MEM_")
 
+def client_line(l):
+    """Pure (tested): the render line look.py forwards on stdout for the client, else None. Gap lines lose their "GT: " prefix
+    (PoseHover parses them bare); the furniture support line keeps it, because SeatAdjust.Parse matches "GT: furniture support:".
+    2026-11-02: it was never forwarded, so every live seat adjust logged "the render printed no support line"."""
+    if l.startswith("GT: furniture support:"): return l
+    if l.startswith(("GT: hover check", "GT: contact close-up", "GT: seat contact")): return l[4:]
+    return None
+
 RESUME_CODE = [f"{HERE}/cloud-render/render_mesh.py", f"{HERE}/cloud-render/hdr_post.py", f"{HERE}/layers.py", os.path.abspath(__file__)]
 _ENV_DEFAULT = re.compile(r"""os\.environ\.get\(\s*["'](GT_[A-Z0-9_]+)["']\s*,\s*["']([^"']*)["']""")
 
@@ -789,7 +797,8 @@ def main(a):
             hdr_files = [x for l in lines if l.startswith("GT: hdr master") for x in l.split()[3:5]]   # photo hd: EXR + .hdr masters
             rend = [float(l.split()[3]) for l in lines if l.startswith("GT: render seconds")]
             for l in lines:
-                if l.startswith(("GT: hover check", "GT: contact close-up", "GT: seat contact")): print(l[4:])   # hovercheck: the measured gap, on stdout for the client
+                fl = client_line(l)
+                if fl is not None: print(fl)   # hovercheck: the measured gap (and the seat's support reading), on stdout for the client
             build = next((float(l.split()[3]) for l in lines if l.startswith("GT: build seconds")), None)
             if r.returncode or not got: sys.exit(f"blender {kind} failed: " + "\n".join((r.stdout + r.stderr).splitlines()[-8:]))
         if hd:   # the PNG is the photo (David 2026-10-13: small but lossless); a quality-95 JPG next to it, secondary

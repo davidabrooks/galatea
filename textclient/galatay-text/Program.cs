@@ -2310,8 +2310,13 @@ public static partial class Program
                 if (a.Length > 0 && a[0].Equals("debounce", StringComparison.OrdinalIgnoreCase)) return a.Length > 1 && a[1] == "selftest" ? await GalatayMcp.Webhook.DebounceSelfTest() : GalatayMcp.Webhook.DebounceCmd(a[1..]);
                 return GalatayMcp.Webhook.ConfigSummary();
             case "logout": case "quit": case "exit":
-                _ = Task.Run(async () => { await Task.Delay(200); await Shutdown("logout command"); });
-                return "logging out";
+            {
+                // 2026-11-02: the collar Stealth outcome (confirmed, or NOT CONFIRMED) goes into the logout result
+                var rep = logoutCollarReport = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                _ = Task.Run(async () => { await Task.Delay(200); await Shutdown("logout command"); rep.TrySetResult("collar step did not run (not logged in, not worn, or turned off)"); });
+                var done = await Task.WhenAny(rep.Task, Task.Delay(15000 + LoginVeil.CollarStealthMaxMs + 3000));
+                return "logging out; " + (done == rep.Task ? rep.Task.Result : "collar step still running (no answer yet)");
+            }
             default:
                 return $"unknown command '{cmd}'. Try 'help'.";
         }

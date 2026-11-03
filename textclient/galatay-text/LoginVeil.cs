@@ -54,7 +54,20 @@ internal static class LoginVeil
     }
     // 2026-11-02 (David): the collar step at logout is capped at ~3 s (menu: 2 quick touches of 1 s) so it can never delay the veil;
     // Oct 31 23:17 the menu failed, 11 s went by and the network dropped before the veil went on (11:09 Nov 2 login: no veil, naked)
-    internal const int CollarStealthMaxMs = 3000, CollarLogoutMenuWaitMs = 1000, CollarLogoutTouches = 2, EvoxHideMaxMs = 25000;
+    // 2026-11-02 16:24:53 logout: the 1 s About wait gave up ~0.5 s before the page came, so Stealth went unconfirmed. Each wait is now
+    // Program.CollarWaitMs (from the collar's observed answer times), with 2 touches and 3 About tries (wait, wait again, press again);
+    // the whole step stays capped so a dead collar still cannot hold the veil for long.
+    internal const int CollarStealthMaxMs = 12000, CollarLogoutTouches = 2, CollarLogoutAboutTries = 3, EvoxHideMaxMs = 25000;
+    /// <summary>Pure (tested): the collar step's cap from one menu wait: every touch and About try plus the press read-back, at most CollarStealthMaxMs.</summary>
+    internal static int CollarLogoutBudgetMs(int waitMs) => Math.Min(CollarStealthMaxMs, (CollarLogoutTouches + CollarLogoutAboutTries + 1) * waitMs);
+    /// <summary>Pure (tested): the logout report line for the collar step: confirmed hidden, or a loud NOT CONFIRMED with what is known.</summary>
+    internal static (bool confirmed, string line) CollarLogoutReport(string result, bool? lastSeenOn)
+    {
+        var r = result ?? "no result (the step hit its cap)";
+        bool ok = r.Contains("now invisible") || r.Contains("already invisible");
+        return (ok, ok ? $"collar Stealth confirmed on ({r})"
+                       : $"WARNING: collar Stealth NOT confirmed before the veil ({r}); last state the collar showed: {(lastSeenOn == null ? "never seen this session" : lastSeenOn.Value ? "Stealth on" : "Stealth off (visible)")}");
+    }
 
     /// <summary>Pure-ish (tested with fakes): the veil-off order. Layer out of the library's wearables, known COF link(s) deleted, bake requested,
     /// and only then the (slow, at login) confirmation. Returns whether the links call succeeded and whether the bake was confirmed.
@@ -385,7 +398,7 @@ public static partial class Program
         // alpha is saved with it on logout, so it also rezzes hidden at the next login.
         loginVeilEarlyStash = new();
         logoutHoverFreeze = true;   // HoverFootwear.cs: no footwear hover saved from a logout render
-        await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarStealthMaxMs, LoginVeilOnVerified, LoginVeilStashForLogout, LoginVeilLooseHeadPartsFirst, LoginVeilEvoxHideForLogout,
+        await LoginVeil.LogoutCore(LoginVeilCollarStealthForLogout, LoginVeil.CollarLogoutBudgetMs(CollarWaitMs(CollarLatencySnapshot())), LoginVeilOnVerified, LoginVeilStashForLogout, LoginVeilLooseHeadPartsFirst, LoginVeilEvoxHideForLogout,
             connected: () => LoggedIn && client?.Network?.Connected == true, veilMissed: LoginVeilMissedWrite);
         // the logout hold must never outlive an aborted logout: the outfit send would skip those items for the rest of the session
         _ = Task.Run(async () => { await Task.Delay(120000); if (LoggedIn && Volatile.Read(ref loginVeilGen) == gen0) { loginVeilHeld.Clear(); logoutHoverFreeze = false; } });
@@ -465,13 +478,20 @@ public static partial class Program
         try
         {
             if (!WornPrims().Any(p => AttachItemId(p) == N9CollarItem)) { Log("login-veil", "collar: not worn, nothing to hide"); return; }
-            var (r, wasOn) = await CollarStealthSet(true, "logout veil", LoginVeil.CollarLogoutMenuWaitMs, LoginVeil.CollarLogoutTouches);
+            int w = CollarWaitMs(CollarLatencySnapshot());
+            var seen0 = collarSeen;
+            var (r, read) = await CollarStealthSet(true, "logout veil", w, LoginVeil.CollarLogoutTouches, LoginVeil.CollarLogoutAboutTries);
+            var wasOn = CollarWasOn(read, seen0);
             var m = LoginVeil.CollarMarker(wasOn, r);
             File.WriteAllText(LoginVeilCollarFile, m + "\n");
-            Log("login-veil", $"collar for logout: {r} (was {(wasOn == null ? "unknown" : wasOn.Value ? "already hidden" : "visible")}; login: {(m == "show" ? "show it after the veil-off bake" : "leave as is")})");
+            var (ok, line) = LoginVeil.CollarLogoutReport(r, collarSeen?.On);
+            Log(ok ? "login-veil" : "warn", $"collar for logout: {line} (waits {w} ms; was {(wasOn == null ? "unknown" : wasOn.Value ? "already hidden" : "visible")}{(read == null && wasOn != null ? $" per the last read, {seen0.Why} at {seen0.At:HH:mm:ss}" : "")}; login: {(m == "show" ? "show it after the veil-off bake" : "leave as is")})");
+            logoutCollarReport.TrySetResult(line);
         }
-        catch (Exception ex) { Log("login-veil", "collar stealth for logout failed: " + ex.GetBaseException().Message); }
+        catch (Exception ex) { Log("warn", "collar stealth for logout failed: " + ex.GetBaseException().Message); logoutCollarReport.TrySetResult("WARNING: collar Stealth step failed: " + ex.GetBaseException().Message); }
     }
+    /// <summary>The logout command's result waits for this (Program.cs): the collar step's outcome, NOT CONFIRMED said plainly.</summary>
+    internal static TaskCompletionSource<string> logoutCollarReport = new(TaskCreationOptions.RunContinuationsAsynchronously);
     /// <summary>Login, under the veil: open the collar's About page now so at the reveal only the Stealth press remains (14:47 login: touch,
     /// main menu, About, press took ~3 s after the veil-off). Nothing is pressed here: the collar stays hidden under the veil.</summary>
     static async Task LoginVeilCollarPrepare(DateTime t0)

@@ -79,6 +79,13 @@ def test_ground_sit_and_stand_framing_are_unchanged_by_the_seat_work():
     zlow, cp = ns["contact_points"](stand); loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, 0.0)
     assert abs(width - 0.6) < 1e-6 and loc[2] < 0.25 and abs(tgt[0] - 0.05) < 0.1     # same numbers as test_look_scope.py: min_width default stays 0.6
 
+def test_the_seated_closeup_says_the_hover_is_in_the_placement():
+    src = SRC.read_text()
+    # 2026-11-03: a seat check read a render that left the viewer's hover out and called a sunk pose "contact good"
+    assert 'placement: sim seated position + hover in force {seat_hover(os.environ):+.3f} m, as the viewer draws it' in src
+    assert 'seat_hover(os.environ) if mst else 0.0' in src          # it is actually in z0, not just printed
+    assert 'def seat_hover(env)' in src and 'GT_SEAT_HOVER' in src
+
 def test_the_renderer_uses_the_seat_branch_only_when_seated_on_an_object():
     src = SRC.read_text()
     assert 'prim_under = sc.ray_cast(dg, Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))[0]' in src

@@ -9,9 +9,9 @@ SRC = pathlib.Path(__file__).resolve().parents[1] / "cloud-render" / "render_mes
 
 def _rm():
     src = SRC.read_text(); tree = ast.parse(src)
-    consts = {"CONTACT_BAND", "SIT_HIPS_R", "SEAT_HIPS_R", "SEAT_PLANE_BELOW", "SEAT_TOP_NEAR", "SEAT_RAY_START"}
+    consts = {"CONTACT_BAND", "SIT_HIPS_R", "SEAT_HIPS_R", "SEAT_PLANE_BELOW", "SEAT_TOP_NEAR", "SEAT_RAY_START", "CONTACT_VIEW_DEGS", "SUPPORT_SOFT"}
     body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in consts for t in n.targets)] + \
-           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"contact_points", "feet_camera_spec", "seat_contact", "seat_hips", "seat_top_under", "seat_top_hits", "seat_cutaway", "cutaway_mask", "ground_sit_contact"}]
+           [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"contact_points", "feet_camera_spec", "seat_contact", "seat_hips", "seat_top_under", "seat_top_hits", "seat_cutaway", "cutaway_mask", "ground_sit_contact", "seat_view_deg", "contact_frame_width", "furniture_support_parts", "classify_support"}]
     ns = {"np": np, "math": math}; exec(compile(ast.Module(body, []), "render_mesh", "exec"), ns)
     return ns
 
@@ -207,3 +207,35 @@ def test_stand_and_seat_framing_are_unchanged_by_the_ground_sit_fix():
     stand = np.vstack([_box(rng, 400, -0.1, 0.2, 0.0, 0.10), _box(rng, 3000, -0.1, 0.1, 0.1, 1.5)])
     zlow, cp = ns["contact_points"](stand); loc, tgt, d, width = ns["feet_camera_spec"](0.0, 0.0, 0.0, 90.0, cp, zlow, 0.0)
     assert abs(width - 0.6) < 1e-6                                                             # soles: 0.6 m as in #313
+
+
+# 2026-11-03 Lalou sofa (#418/#420): with the viewer's hover drawn, her hips sit INSIDE the cushion, so the seat rays that started 0.10 m over
+# the LOWEST hip vertex started under the cushion top and found nothing ("no furniture surface under her hips"). A soft part (hips, thighs,
+# chest) now has its rays start above its own top and a surface above the lowest vertex reads as a SINK (negative gap); a hard part never
+# takes a surface above its lowest patch (a cushion over a dangling shin is not the shin's surface).
+def test_seat_rays_find_a_cushion_that_swallowed_her_hips():
+    ns = _rm(); hits = ns["seat_top_hits"]
+    cushion = 1.25                                     # the cushion top: 15 cm above her lowest hip vertex (1.10), so the old ray start (1.20) was inside it
+    cast = lambda x, y, z: cushion if z > cushion else None   # a ray that starts AT the cushion top is inside it (the real ray_cast does not see it)
+    z, n = hits([(0, 0, 1.10)] * 8, 1.10, cast, top=1.30)          # soft: rays start over her whole hips
+    assert n == 8 and abs(z - cushion) < 1e-9
+    z2, n2 = hits([(0, 0, 1.10)] * 8, 1.10, cast)                  # hard part (no top): unchanged, no surface above its lowest patch
+    assert z2 is None and n2 == 0
+    assert abs((1.10 - z) - (-0.15)) < 1e-9                        # the gap is a sink (negative), not a float
+
+
+def test_the_seat_camera_turns_until_the_contact_is_not_blocked():
+    ns = _rm(); pick, degs = ns["seat_view_deg"], ns["CONTACT_VIEW_DEGS"]
+    assert pick({degs[0]: 3, degs[1]: 2, degs[2]: 0}) == degs[2]              # the first CLEAR angle, not just the clearest
+    assert pick({degs[0]: 5, degs[1]: 2, degs[2]: 4}) == degs[1]              # nothing clear: the fewest blockers
+    assert pick({degs[0]: 2, degs[1]: 2}) == degs[0]                          # a tie keeps the plain side view
+    assert pick({}) == degs[0] and degs[0] == 90.0                            # the side view stays the default
+    assert pick({42.0: 0}) == 42.0                                            # an angle outside the orbit list still works
+
+
+def test_the_contact_frame_zooms_on_the_contact_not_the_whole_seat():
+    ns = _rm(); w = ns["contact_frame_width"]
+    assert abs(w([(0, 0, 0), (0.3, 0, 0)], 0.3, 0.55, 1.1) - 0.6) < 1e-9     # her own contact extent + pad
+    assert w([(0, 0, 0), (0.01, 0, 0)], 0.3, 0.55, 1.1) == 0.55               # never tighter than the minimum
+    assert w([(0, 0, 0), (5, 0, 0)], 0.3, 0.55, 1.1) == 1.1                   # never wider than the maximum
+    assert w([], 0.3, 0.55, 1.1) == 0.55

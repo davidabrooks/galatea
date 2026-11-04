@@ -43,6 +43,85 @@ public class LevelDwellTests
     }
 
     [Fact]
+    public void Restart_on_the_same_level_keeps_the_clock()
+    {
+        // 2026-11-04: the beach never came up because every wander restart began the count again
+        var (l, since, why) = Program.LevelRestore("upper", T0, "upper", T0.AddMinutes(12));
+        Assert.Equal(("upper", T0), (l, since));
+        Assert.Contains("kept", why);
+        Assert.Equal("beach", Program.LevelToPick(l, since, T0.AddMinutes(20), 20, true, true));   // 20 min of 20: switch
+        // a saved clock made on the beach survives a relog on the beach
+        var (lb, sb, _) = Program.LevelRestore("beach", T0, "beach", T0.AddMinutes(9));
+        Assert.Equal(("beach", T0), (lb, sb));
+        Assert.Equal("beach", Program.LevelToPick(lb, sb, T0.AddMinutes(8), 20, true, true));
+    }
+
+    [Fact]
+    public void Restart_on_the_other_level_starts_fresh()
+    {
+        // saved as upper, but she is on the beach now (walked down, or a teleport): a new clock from now
+        var (l, since, why) = Program.LevelRestore("upper", T0, "beach", T0.AddMinutes(15));
+        Assert.Equal(("beach", T0.AddMinutes(15)), (l, since));
+        Assert.Contains("now on the beach", why);
+        Assert.Equal("beach", Program.LevelToPick(l, since, T0.AddMinutes(16), 20, true, true));
+        // ... and the other way round
+        var (u, us, _) = Program.LevelRestore("beach", T0, "upper", T0.AddMinutes(15));
+        Assert.Equal(("upper", T0.AddMinutes(15)), (u, us));
+    }
+
+    [Fact]
+    public void Missing_or_corrupt_state_starts_fresh()
+    {
+        foreach (var bad in new[] { null, "", "   ", "not json", "{}", "{\"level\":\"attic\",\"since\":\"nope\"}",
+                                    "{\"level\":\"upper\"}", "{\"level\":null,\"since\":null}" })
+        {
+            Assert.False(Program.ParseLevelDwell(bad, out _, out _), $"'{bad}' is not usable");
+            var (l, since, why) = Program.LevelRestore(null, DateTime.MinValue, "upper", T0);
+            Assert.Equal(("upper", T0, "no saved level"), (l, since, why));
+            // and the same fallback through the file parser
+            var (l2, s2, _) = Program.LevelRestore(null, DateTime.MinValue, "beach", T0.AddMinutes(3));
+            Assert.Equal(("beach", T0.AddMinutes(3)), (l2, s2));
+        }
+    }
+
+    [Fact]
+    public void A_stale_or_future_clock_starts_fresh()
+    {
+        // older than the 6 h ceiling: not trusted (a long outage, yesterday's file)
+        var (l, since, why) = Program.LevelRestore("upper", T0, "upper", T0.AddHours(6) + TimeSpan.FromMinutes(1));
+        Assert.Equal(("upper", T0.AddHours(6) + TimeSpan.FromMinutes(1)), (l, since));
+        Assert.Contains("too old", why);
+        // exactly at the ceiling is still kept
+        Assert.Equal(T0, Program.LevelRestore("upper", T0, "upper", T0.AddHours(6)).since);
+        // a clock in the future (a clock change, a bad file) is not trusted
+        var (lf, sf, whyf) = Program.LevelRestore("upper", T0.AddMinutes(5), "upper", T0);
+        Assert.Equal(("upper", T0), (lf, sf));
+        Assert.Contains("future", whyf);
+    }
+
+    [Fact]
+    public void Saved_state_round_trips_through_the_json_shape()
+    {
+        var json = Program.LevelDwellJson("beach", new DateTime(2026, 11, 4, 9, 49, 12));
+        Assert.Contains("\"level\":\"beach\"", json);
+        Assert.Contains("\"since\":\"2026-11-04T09:49:12", json);
+        Assert.True(Program.ParseLevelDwell(json, out var level, out var since));
+        Assert.Equal("beach", level);
+        Assert.Equal(new DateTime(2026, 11, 4, 9, 49, 12), since);
+        // a UTC stamp comes back as local time, so the comparison against DateTime.Now is honest
+        // (the local value depends on the machine's zone, so compare against the zone's own conversion)
+        Assert.True(Program.ParseLevelDwell("{\"level\":\"Upper\",\"since\":\"2026-11-04T17:49:12Z\"}", out var lu, out var su));
+        Assert.Equal("upper", lu);
+        var utcStamp = new DateTime(2026, 11, 4, 17, 49, 12, DateTimeKind.Utc);
+        Assert.Equal(utcStamp.ToLocalTime(), su);
+        Assert.Equal(DateTimeKind.Local, su.Kind);
+        Assert.Equal(TimeSpan.Zero, utcStamp - su.ToUniversalTime());
+        // the restored pair then drives the pick as usual
+        Assert.Equal("upper", Program.LevelToPick(lu, su, su.AddMinutes(10), 20, true, true));
+        Assert.Equal("beach", Program.LevelToPick(lu, su, su.AddMinutes(20), 20, true, true));
+    }
+
+    [Fact]
     public void Empty_level_falls_back_to_the_other()
     {
         Assert.Equal("upper", Program.LevelToPick("upper", T0, T0.AddMinutes(40), 30, false, true));  // nothing on the beach

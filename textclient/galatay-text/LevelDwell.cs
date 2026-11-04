@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json.Nodes;
 using LibreMetaverse;
 
 namespace GalatayText;
@@ -18,6 +20,9 @@ namespace GalatayText;
 // MIRAGE bed and the side-room-1 doorway), changes there, then heads down. On the way back up she walks straight to
 // the same spot, changes back into the remembered outfit (colors kept), then goes on. While the home wander runs, the
 // outfit-zone tick leaves that restore to the wander. When the wander is off or paused, she still changes back anywhere indoors.
+// 2026-11-04: the clock survives wander restarts. level-dwell.json ({level, since}) sits next to the wander flag but in its
+// own file, because that flag is rewritten every ~60 s; a restart (start / resume / relog) on the same level keeps the
+// saved `since`, and only a real arrival on the other level (LevelArrive) starts a new one.
 public static partial class Program
 {
     internal const double DefaultLevelDwellMin = 30;
@@ -80,20 +85,110 @@ public static partial class Program
         return a == "restore" && nowUtc < deferRestoreUntilUtc ? "wait-guard" : a;
     }
 
+    // 2026-11-04 David: the dwell clock kept resetting on every wander restart (a pause/resume, a `wander start`, an
+    // auto-resume after a daemon restart, a relog), so the 20/30 min never elapsed and the beach was never picked. The
+    // level and the moment its clock started are now kept in their own small file, separate from the wander flag (which
+    // is rewritten every ~60 s while the wander is on, so it would race it). Only a real arrival on the other level
+    // resets the clock; a restart within the same level keeps the elapsed time.
+    static readonly string LevelDwellStateFile = Env("GT_LEVEL_DWELL_STATE", "/home/box/viewers/textclient/level-dwell.json");
+    // a saved clock older than this is not trusted (a long outage, a stale file from another day): start fresh
+    internal static readonly TimeSpan LevelDwellMaxAge = TimeSpan.FromHours(6);
+
+    // pure: may a saved clock be kept across a restart? Same level, a real past time, not absurdly old.
+    internal static (string level, DateTime since, string why) LevelRestore(string savedLevel, DateTime savedSince, string levelNow, DateTime now)
+    {
+        if (savedLevel != LevelBeach && savedLevel != LevelUpper) return (levelNow, now, "no saved level");
+        if (savedLevel != levelNow) return (levelNow, now, $"was on the {savedLevel} level, now on the {levelNow}");
+        if (savedSince > now) return (levelNow, now, $"saved clock {savedSince:HH:mm:ss} is in the future");
+        var age = now - savedSince;
+        if (age > LevelDwellMaxAge) return (levelNow, now, $"saved clock is too old ({age.TotalHours:F1} h)");
+        return (savedLevel, savedSince, $"kept, {(int)Math.Max(0, age.TotalMinutes)} min elapsed");
+    }
+
+    // pure: the state file's content for a level and its clock
+    internal static string LevelDwellJson(string level, DateTime since) =>
+        new JsonObject { ["level"] = level, ["since"] = since.ToString("o", CultureInfo.InvariantCulture) }.ToJsonString();
+
+    // pure: read saved state; false when it is missing, corrupt, or not a level we know
+    internal static bool ParseLevelDwell(string json, out string level, out DateTime since)
+    {
+        level = null; since = DateTime.MinValue;
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            var j = JsonNode.Parse(json);
+            var l = ((string)j?["level"])?.Trim().ToLowerInvariant();
+            var raw = (string)j?["since"];
+            if (l != LevelBeach && l != LevelUpper || string.IsNullOrWhiteSpace(raw)) return false;
+            var t = DateTime.Parse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+            if (t.Kind == DateTimeKind.Utc) t = t.ToLocalTime();
+            level = l; since = t; return true;
+        }
+        catch { return false; }
+    }
+
+    // the saved state, or null when there is none we can use (a bad file never throws)
+    static (string level, DateTime since)? LoadLevelDwell()
+    {
+        try
+        {
+            if (!File.Exists(LevelDwellStateFile)) return null;
+            if (ParseLevelDwell(File.ReadAllText(LevelDwellStateFile), out var level, out var since)) return (level, since);
+            WLog("level dwell: saved state is unreadable: starting fresh");
+            return null;
+        }
+        catch (Exception ex) { WLog("level dwell: state read failed (" + ex.Message + "): starting fresh"); return null; }
+    }
+    // atomic write (.tmp + move), so a crash mid-write cannot leave half a file
+    static void SaveLevelDwell()
+    {
+        if (wLevel != LevelBeach && wLevel != LevelUpper) return;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(LevelDwellStateFile)!);
+            var tmp = LevelDwellStateFile + ".tmp";
+            File.WriteAllText(tmp, LevelDwellJson(wLevel, wLevelSince));
+            File.Move(tmp, LevelDwellStateFile, true);
+        }
+        catch (Exception ex) { WLog("level dwell: state write failed: " + ex.Message); }
+    }
+
     static string wLevel; static DateTime wLevelSince;
     static double LevelDwellMin => CurrentWanderRule().LevelDwellMin;
 
+    // wander start / auto-resume / relog: keep the clock when she is still on the level it was started on
     static void WanderLevelReset()
     {
-        wLevel = HomeLevelOf(client.Self.SimPosition); wLevelSince = DateTime.Now;
-        WLog($"level dwell: starting on the {wLevel} level ({LevelDwellMin:0.#} min before switching)");
+        var now = DateTime.Now;
+        var levelNow = HomeLevelOf(client.Self.SimPosition);
+        var saved = LoadLevelDwell();
+        if (saved == null)
+        {
+            wLevel = levelNow; wLevelSince = now;
+            WLog($"level dwell: starting on the {wLevel} level ({LevelDwellMin:0.#} min before switching)");
+        }
+        else
+        {
+            var (level, since, why) = LevelRestore(saved.Value.level, saved.Value.since, levelNow, now);
+            bool kept = level == saved.Value.level && since == saved.Value.since;
+            wLevel = level; wLevelSince = since;
+            WLog(kept
+                ? $"level dwell: resuming the {wLevel} level at {(int)(now - since).TotalMinutes} min of {LevelDwellMin:0.#} (kept across a restart)"
+                : $"level dwell: starting on the {wLevel} level ({LevelDwellMin:0.#} min before switching; {why})");
+        }
+        SaveLevelDwell();
     }
     static void WanderNoteLevel()
     {
-        var now = HomeLevelOf(client.Self.SimPosition);
+        var now = DateTime.Now;
+        var levelNow = HomeLevelOf(client.Self.SimPosition);
         var prev = wLevel;
-        (wLevel, wLevelSince) = LevelArrive(wLevel, wLevelSince, now, DateTime.Now);
-        if (prev != wLevel) WLog($"level dwell: arrived on the {wLevel} level (from {prev ?? "-"}); staying {LevelDwellMin:0.#} min");
+        (wLevel, wLevelSince) = LevelArrive(wLevel, wLevelSince, levelNow, now);
+        if (wLevel != prev)
+        {
+            SaveLevelDwell();   // an actual arrival on the other level: a new clock, saved
+            WLog($"level dwell: arrived on the {wLevel} level (from {prev ?? "-"}); staying {LevelDwellMin:0.#} min");
+        }
     }
     static string WanderLevelStatus() => wLevel == null ? "level -" :
         $"level {wLevel} for {(DateTime.Now - wLevelSince).TotalMinutes:F0}/{LevelDwellMin:0.#} min";
@@ -105,6 +200,7 @@ public static partial class Program
         bool beachAny = LevelEnds(g, LevelBeach).Count + beachSeats > 0, upperAny = LevelEnds(g, LevelUpper).Count + upperSeats > 0;
         var pick = LevelToPick(wLevel, wLevelSince, DateTime.Now, LevelDwellMin, beachAny, upperAny);
         if (pick != wLevel) WLog($"level dwell: {(DateTime.Now - wLevelSince).TotalMinutes:F0} min on the {wLevel} level: picking from the {pick} level now");
+        SaveLevelDwell();   // cheap: keeps the saved clock in step with the in-memory one
         return pick;
     }
 

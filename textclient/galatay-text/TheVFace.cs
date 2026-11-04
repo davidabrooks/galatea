@@ -20,6 +20,20 @@ public static partial class Program
     static volatile bool theVFaceOn;
     static DateTime theVNotAdultSince = DateTime.MinValue;
     static int theVFaceBusy;
+    static volatile string theVFacePose = "";   // the pose path the face was (re)started for
+
+    // 2026-11-03, David: the face stops when the adult pose changes and pressing Pure Pleasure again brings it back -> restart it on every adult pose change.
+    // pure: "restart" when it plays for an older adult pose than the one running now
+    internal static string TheVFaceRestart(bool faceOn, bool seated, bool adultPoseNow, bool flowBusy, string facePose, string poseNow)
+        => faceOn && seated && adultPoseNow && !flowBusy && !string.IsNullOrEmpty(poseNow) && !string.Equals(facePose ?? "", poseNow, StringComparison.OrdinalIgnoreCase) ? "restart" : null;
+    static string PoseKeyNow() => string.Join(" > ", wLastPosePath ?? new());
+
+    // 2026-11-03, David: STOP the face before anything else when the adult pose ends: every stand-up goes through here
+    static void StandFaceFirst(string why = "standing up")
+    {
+        if (theVFaceOn) { try { TheVFaceStop(why).Wait(4000); } catch { } }
+        client.Self.Stand();
+    }
 
     internal static TheVFaceMap ParseTheVFaceMap(string json)
     {
@@ -52,22 +66,24 @@ public static partial class Program
         bool seated = client.Self.SittingOn != 0, adult = SexualPoseRunningNow();
         if (adult || !theVFaceOn) theVNotAdultSince = DateTime.Now;
         var act = TheVFaceAction(theVFaceOn, seated, adult, nakedFlowBusy, (DateTime.Now - theVNotAdultSince).TotalSeconds);
+        if (act == null && TheVFaceRestart(theVFaceOn, seated, adult, nakedFlowBusy, theVFacePose, PoseKeyNow()) != null) act = "restart";
         if (act == "start") _ = Task.Run(() => TheVFaceStart("adult pose selected"));
+        else if (act == "restart") _ = Task.Run(() => TheVFaceStart("adult pose changed: " + PoseKeyNow(), restart: true));
         else if (act == "stop") _ = Task.Run(() => TheVFaceStop(seated ? "the pose is not adult any more" : "stood up"));
     }
 
     static async Task<string> TheVTouch(TheVButton b) => await TouchAttachment($"\"{TheVHudName}\" {b.Prim} {b.Face}");
 
-    static async Task TheVFaceStart(string why)
+    static async Task TheVFaceStart(string why, bool restart = false)
     {
         if (Interlocked.Exchange(ref theVFaceBusy, 1) == 1) return;
         try
         {
             var m = LoadTheVFaceMap();
-            theVFaceOn = true;   // also when unmapped: one log line per adult pose, not one per tick
+            theVFaceOn = true; theVFacePose = PoseKeyNow();   // also when unmapped: one log line per adult pose, not one per tick
             if (m.Pleasure == null) { Log("thev", $"face: Pure Pleasure button not mapped in {TheVFaceFile}; skipped ({why})"); return; }
             foreach (var o in m.Open) { await TheVTouch(o); await Task.Delay(700); }
-            Log("thev", $"face: Pure Pleasure ON ({why}): " + (await TheVTouch(m.Pleasure)).Split('\n')[0]);
+            Log("thev", $"face: Pure Pleasure {(restart ? "RESTART" : "ON")} ({why}): " + (await TheVTouch(m.Pleasure)).Split('\n')[0]);
         }
         catch (Exception ex) { Log("thev", "face start failed: " + ex.GetBaseException().Message); }
         finally { theVFaceBusy = 0; }
@@ -80,7 +96,7 @@ public static partial class Program
         if (Interlocked.Exchange(ref theVFaceBusy, 1) == 1) return;
         try
         {
-            theVFaceOn = false;
+            theVFaceOn = false; theVFacePose = "";
             var m = LoadTheVFaceMap();
             if (m.Stop == null) { Log("thev", $"face: STOP button not mapped in {TheVFaceFile}; skipped ({why})"); return; }
             Log("thev", $"face: STOP ({why}): " + (await TheVTouch(m.Stop)).Split('\n')[0]);

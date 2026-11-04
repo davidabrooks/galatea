@@ -574,7 +574,7 @@ public static partial class Program
                 info = await AoGroundSitEnsureOff("exit: " + why);
                 // 2026-10-23 16:57: since entry sits with SitOnGround() first (#297), AO force sit off alone left her sitting on the
                 // ground (idle pose cleared, body still seated); stand for real. Internal stand: no 30-min cooldown.
-                if (GroundSitStandNeeded(SelfAnims(), client.Self.SittingOn != 0)) { try { client.Self.Stand(); } catch { } info += "; stood up (SitOnGround cleared)"; }
+                if (GroundSitStandNeeded(SelfAnims(), client.Self.SittingOn != 0)) { try { StandFaceFirst(); } catch { } info += "; stood up (SitOnGround cleared)"; }
                 try { if (EffectiveHoverNow() is double hv && Math.Abs(hv - PinnedHover()) > 0.005) await PostHover(PinnedHover(), "ground sit ended: back to normal hover"); } catch { }
             }
             idlePosed = null; IdleSave(); IdleNoteActivity(); hoverSvc.AutoHoverKick("pose cleared");

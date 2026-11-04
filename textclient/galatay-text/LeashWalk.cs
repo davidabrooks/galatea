@@ -143,7 +143,7 @@ partial class Program
             if (LeashMustStand(l != null, idlePosed != null || groundSat, holderMoving, new Vector3(holderVel.X, holderVel.Y, 0).Length(), dist, leashLength))
             {
                 if (idlePosed != null) _ = IdlePoseExitAsync("leash: he walks away");
-                else { try { client.Self.Stand(); } catch { } RlvLog("leash-walk: stood up from the ground: he walks away"); }
+                else { try { StandFaceFirst(); } catch { } RlvLog("leash-walk: stood up from the ground: he walks away"); }
             }
             var o = LeashControl(leashDriving, moveCounts, LeashHolderStopped(holderSlowSince, DateTime.Now), dist, leashLength, can, vToward, leashPrevVToward, leashFwdWas);
             leashPrevVToward = vToward;

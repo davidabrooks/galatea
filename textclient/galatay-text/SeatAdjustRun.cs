@@ -94,13 +94,13 @@ public static partial class Program
         try { if (leaf.Length > 0 && !leaf.StartsWith("(")) PoseBugList.AddToFile(seatName, leaf, pose, reason); } catch (Exception ex) { SALog($"'{seatName}' {pose}: could not write the bugged-pose list: {ex.Message}"); }
         var line = $"BUGGED POSE '{seatName}' {pose}: {reason}; denylisted for this furniture ({img})";
         SALog(line); try { Notify("bugged_pose", "Galatay (seatadjust)", client.Self.AgentID, line, null); } catch { }
-        if (++seatBuggedSwitches > 6) { seatBuggedSwitches = 0; client.Self.Stand(); SALog($"'{seatName}': too many bugged poses in a row; stood up"); return seatAdjustLast; }
+        if (++seatBuggedSwitches > 6) { seatBuggedSwitches = 0; StandFaceFirst(); SALog($"'{seatName}': too many bugged poses in a row; stood up"); return seatAdjustLast; }
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         var res = await SeatPose(seat, seatName, DateTime.Now, true, cts.Token);
         if (res == null || !res.Contains(" chose "))
         {
             SALog($"'{seatName}': no other solo pose left after denylisting {pose} ({res}); standing up");
-            seatBuggedSwitches = 0; if (client.Self.SittingOn != 0) client.Self.Stand();
+            seatBuggedSwitches = 0; if (client.Self.SittingOn != 0) StandFaceFirst();
         }
         else SALog($"'{seatName}': switched away from bugged {pose}: {res}");
         return seatAdjustLast;

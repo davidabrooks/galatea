@@ -256,7 +256,7 @@ public static partial class Program
             }
             if (hoverSvc.RenderEvidenceNow() is { call: PoseCall.Sitting } rr)
             {
-                try { client.Self.Stand(); } catch { }
+                try { StandFaceFirst(); } catch { }
                 var mm = $"NOT VERIFIED standing: MISMATCH: render says sitting ({rr.detail}), the animation list shows no AO sit; sim stand sent once, force-sit button NOT pressed (a press on a guess can turn force sit ON); run `idle_pose verify` and look at her";
                 Log("idlepose", $"verified stand ({why}): {mm}"); return mm;
             }
@@ -268,7 +268,7 @@ public static partial class Program
         int stands = 0, toggles = 0; string trail = "";
         while (AoStandNext(AoSitReallyOn(), stands + toggles, mayToggle) is var step && step is AoStandStep.Stand or AoStandStep.Toggle)
         {
-            if (step == AoStandStep.Stand) { stands++; try { client.Self.Stand(); } catch { } trail += " stand"; await WaitFor(() => !AoSitReallyOn(), 1500); }
+            if (step == AoStandStep.Stand) { stands++; try { StandFaceFirst(); } catch { } trail += " stand"; await WaitFor(() => !AoSitReallyOn(), 1500); }
             else { toggles++; await AoGroundSitToggle($"off: {why} (AO sit still playing, toggle {toggles})"); trail += " toggle"; await WaitFor(() => !AoSitReallyOn(), 2500); }
         }
         // 2026-10-26: verify with anim_list that only CLASSIFIED AO stands play. An unclassified AO animation is not a stand: stand twice, then (only
@@ -277,7 +277,7 @@ public static partial class Program
         string unkNote = "";
         if (unk.Count > 0)
         {
-            for (int i = 0; i < 2 && unk.Count > 0; i++) { stands++; try { client.Self.Stand(); } catch { } trail += " stand"; await WaitFor(() => AoUnclassifiedNow().Count == 0, 1500); unk = AoUnclassifiedNow(); }
+            for (int i = 0; i < 2 && unk.Count > 0; i++) { stands++; try { StandFaceFirst(); } catch { } trail += " stand"; await WaitFor(() => AoUnclassifiedNow().Count == 0, 1500); unk = AoUnclassifiedNow(); }
             if (unk.Count > 0 && AoUnknownToggleOk(true, believed, toggles))
             {
                 var before = unk; toggles++; await AoGroundSitToggle($"off: {why} (unclassified AO animation {string.Join(",", before.Select(x => x.ToString()[..8]))} still playing, one toggle)"); trail += " toggle(unclassified)";

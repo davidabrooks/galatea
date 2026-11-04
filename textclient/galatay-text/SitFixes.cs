@@ -42,7 +42,7 @@ public static partial class Program
         if (BikiniSwapSkippedNow()) { Log("outfit-zone", $"{why}: android body: no bikini change"); zoneBedroomRetryAt = DateTime.UtcNow.AddMinutes(10); return; }
         zoneBedroomRetryAt = DateTime.UtcNow.AddMinutes(3);
         Log("outfit-zone", $"{why}: not in the bedroom (at {back.X:F1},{back.Y:F1},{back.Z:F1}): walking to the bedroom to change, never in place");
-        if (client.Self.SittingOn != 0) { client.Self.Stand(); await Task.Delay(2500); }
+        if (client.Self.SittingOn != 0) { StandFaceFirst(); await Task.Delay(2500); }
         var g = LoadGraph(sim.Name);
         if (g == null) { Log("outfit-zone", "no path graph: no change"); return; }
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));

@@ -43,4 +43,26 @@ public class TheVFaceTests
         Assert.False(Program.NakedRedressDue("TETRA Chill T-Shirt shorts", false, true, true, 93, false).due);
         Assert.True(Program.NakedRedressDue("TETRA Chill T-Shirt shorts", false, false, false, 93, false).due);
     }
+
+    [Fact]
+    public void Face_restarts_on_every_adult_pose_change()
+    {
+        Assert.Equal("restart", Program.TheVFaceRestart(true, true, true, false, "Solo* > Solo Adult* > Backhand", "Solo* > Solo Adult* > Pleasure"));
+        Assert.Null(Program.TheVFaceRestart(true, true, true, false, "Solo* > Solo Adult* > Pleasure", "Solo* > Solo Adult* > Pleasure")); // same pose: once
+        Assert.Null(Program.TheVFaceRestart(false, true, true, false, "", "Solo* > Solo Adult* > Pleasure"));  // not on yet: that is a start
+        Assert.Null(Program.TheVFaceRestart(true, true, false, false, "a", "Solo* > Sit"));                      // non-adult: that is a stop
+        Assert.Null(Program.TheVFaceRestart(true, true, true, true, "a", "b"));                                  // flow still busy
+        Assert.Null(Program.TheVFaceRestart(true, false, true, false, "a", "b"));                                // stood up
+    }
+
+    [Fact]
+    public void No_stand_bypasses_the_face_stop()
+    {
+        var dir = System.IO.Path.Combine(AppContext.BaseDirectory, "../../../../galatay-text");
+        foreach (var f in System.IO.Directory.GetFiles(dir, "*.cs"))
+        {
+            if (f.EndsWith("TheVFace.cs")) continue;
+            Assert.DoesNotContain("client.Self.Stand()", System.IO.File.ReadAllText(f));
+        }
+    }
 }

@@ -109,13 +109,16 @@ public class LevelDwellTests
         Assert.Equal("beach", level);
         Assert.Equal(new DateTime(2026, 11, 4, 9, 49, 12), since);
         // a UTC stamp comes back as local time, so the comparison against DateTime.Now is honest
+        // (the local value depends on the machine's zone, so compare against the zone's own conversion)
         Assert.True(Program.ParseLevelDwell("{\"level\":\"Upper\",\"since\":\"2026-11-04T17:49:12Z\"}", out var lu, out var su));
         Assert.Equal("upper", lu);
-        Assert.Equal(new DateTime(2026, 11, 4, 9, 49, 12), su);
+        var utcStamp = new DateTime(2026, 11, 4, 17, 49, 12, DateTimeKind.Utc);
+        Assert.Equal(utcStamp.ToLocalTime(), su);
         Assert.Equal(DateTimeKind.Local, su.Kind);
+        Assert.Equal(TimeSpan.Zero, utcStamp - su.ToUniversalTime());
         // the restored pair then drives the pick as usual
-        Assert.Equal("upper", Program.LevelToPick(lu, su, new DateTime(2026, 11, 4, 10, 0, 0), 20, true, true));
-        Assert.Equal("beach", Program.LevelToPick(lu, su, new DateTime(2026, 11, 4, 10, 9, 12), 20, true, true));
+        Assert.Equal("upper", Program.LevelToPick(lu, su, su.AddMinutes(10), 20, true, true));
+        Assert.Equal("beach", Program.LevelToPick(lu, su, su.AddMinutes(20), 20, true, true));
     }
 
     [Fact]

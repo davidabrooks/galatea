@@ -843,10 +843,11 @@ public static partial class Program
         double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
         try
         {
-            while ((DateTime.Now - t0).TotalSeconds < stay && wanderPause == null && client.Self.SittingOn != 0)
+            // a seat adjustment in progress holds the sit and its pose change (SeatAdjust.SitKeepsSitting / SitChangesPose)
+            while (SeatAdjust.SitKeepsSitting((DateTime.Now - t0).TotalSeconds, stay, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
             {
                 await Task.Delay(1000, ct);
-                if (!changed && (DateTime.Now - t0).TotalSeconds >= changeAt && wanderPause == null && client.Self.SittingOn != 0)
+                if (SeatAdjust.SitChangesPose((DateTime.Now - t0).TotalSeconds, changeAt, changed, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
                 {
                     changed = true;
                     try { if (boat) WLog($"BOAT POSE change '{c.name}': {(await BoatPose(c.p, c.name, ct)).msg}"); else await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
@@ -1262,10 +1263,11 @@ public static partial class Program
         }
         catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
         double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
-        while ((DateTime.Now - t0).TotalSeconds < stay && wanderPause == null && client.Self.SittingOn != 0)
+        // a seat adjustment in progress holds the sit and its pose change (SeatAdjust.SitKeepsSitting / SitChangesPose)
+        while (SeatAdjust.SitKeepsSitting((DateTime.Now - t0).TotalSeconds, stay, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
         {
             await Task.Delay(1000, ct);
-            if (!changed && (DateTime.Now - t0).TotalSeconds >= changeAt && wanderPause == null && client.Self.SittingOn != 0)
+            if (SeatAdjust.SitChangesPose((DateTime.Now - t0).TotalSeconds, changeAt, changed, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
             {
                 changed = true;
                 try { await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }

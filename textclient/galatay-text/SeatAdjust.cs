@@ -75,6 +75,13 @@ internal static partial class SeatAdjust
     }
     // pure (tested): should the sit watcher start a check? a new seat that no pose choice already covered (David 2026-11-02: every sit, no path skipped)
     internal static bool SitNeedsCheck(uint prevSeat, uint nowSeat, uint lastCheckedSeat) => nowSeat != 0 && nowSeat != prevSeat && nowSeat != lastCheckedSeat;
+    // pure (tested): does a seated wander stay keep sitting? An adjustment in progress holds the sit (she must not stand up mid-adjust,
+    // David 2026-11-04), so the stay no longer ends it; a pause still interrupts even while adjusting.
+    internal static bool SitKeepsSitting(double elapsed, double stay, bool seated, bool paused, bool adjusting)
+        => seated && !paused && (adjusting || elapsed < stay);
+    // pure (tested): may the stay change her pose? The pose change waits for the adjustment to finish, then happens on a later tick.
+    internal static bool SitChangesPose(double elapsed, double changeAt, bool changed, bool seated, bool paused, bool adjusting)
+        => !changed && seated && !paused && !adjusting && elapsed >= changeAt;
     // pure (tested): the line surfaced when an adjustment stays on but could not be saved
     internal static string UnsavedLine(string seatName, string pose, double applied, string why) => $"UNSAVED '{seatName}' {pose}: kept Z {applied:+0.00;-0.00} m from the render but {why}: David should check it";
 

@@ -1,7 +1,8 @@
 // McpSurface.cs (2026-10-26, David): what the MCP connector needs to see and check her height without the old daemon socket.
 //   look      - `look` over MCP: the saved image paths (LookCmd; no new renderer), every render option (vision/look_scope.py)
 //   seat_info - the object she sits on, its position / rotation, her position and her offset from the seat (before / after an AVsitter adjust)
-//   client_cmd- an allow-list of the text-client commands the daemon socket used to give her: look, hover (get|check|repin|apply), height / diag, posehover (status|check)
+//   client_cmd- an allow-list of the text-client commands the daemon socket used to give her: look, hover (get|check|repin|apply), height / diag, posehover (status|check),
+//               seatadjust (z <m>|status) — 2026-11-03: a manual seat-height nudge through the furniture's own AVsitter adjust, one command instead of button by button
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -159,8 +160,13 @@ public static partial class Program
             case "height" or "diag" when rest.Length == 0: return (true, cmd, null);
             case "posehover" when rest is ["check"]: return (true, "hover check", null);
             case "posehover" when rest is ["status"] or []: return (true, "posehover status", null);
+            // `seatadjust z <dz>`: ONE narrow manual seat-height move through the furniture's own AVsitter adjust (SeatAdjust.PlanZ lays out the
+            // presses). `seatadjust status` only reports. Never saves (SeatAdjust.Run's Save rule alone may), never spends, never touches the hover.
+            case "seatadjust" when rest is ["status"]: return (true, "seatadjust status", null);
+            case "seatadjust" when rest.Length == 2 && rest[0] == "z" && SeatAdjust.ParseZ(new[] { rest[0], rest[1] }).ok:
+                return (true, "seatadjust z " + rest[1], null);
         }
-        return (false, null, $"refused: '{cmd}{(rest.Length > 0 ? " " + rest[0] : "")}' is not in the allow-list (look, hover [get|check|repin|apply <m, +-0.5>], height|diag, posehover status|check)");
+        return (false, null, $"refused: '{cmd}{(rest.Length > 0 ? " " + rest[0] : "")}' is not in the allow-list (look, hover [get|check|repin|apply <m, +-0.5>], height|diag, posehover status|check, seatadjust z <m, +-1>|status)");
     }
 
     static string PoseHoverTail(int n)

@@ -3,7 +3,7 @@ using System.Linq;
 using GalatayText;
 using Xunit;
 // 2026-10-26 (David: "when you're sitting, you should be checking your hips, not your feet"): sitting ON FURNITURE, the contact close-up frames the hips
-// against the seat (look `feet` view and the manual `hover check`), reports the gap, one render, and never touches the hover.
+// against the seat (look `feet` view and the manual `hover check`), reports the median gap of HoverSamples readings, and never touches the hover.
 public class SeatContactTests
 {
     static string Root() { var d = new DirectoryInfo(System.AppContext.BaseDirectory); while (d != null && !Directory.Exists(Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
@@ -36,13 +36,16 @@ public class SeatContactTests
         Assert.Contains("gap unknown", Hover.SeatCheckVerdict(null));
         Assert.DoesNotContain("hover set", up + dn); Assert.DoesNotContain("hover apply", up + dn);   // never tells her to move the hover
     }
-    [Fact] public void ManualHoverCheck_OnFurniture_IsOneSeatRender_AndNeverPostsTheHover()
+    [Fact] public void ManualHoverCheck_OnFurniture_SamplesTheSeatGap_AndNeverPostsTheHover()
     {
         var ph = Src("PoseHover.cs");
         Assert.Contains("if (why == \"manual\" && h.Client.Self.SittingOn != 0) return await SeatContactCheck();", ph);   // before the stand / sit check loop
         var chk = ph[ph.IndexOf("async Task<string> SeatContactCheck()")..]; chk = chk[..chk.IndexOf("// the visual check:")];
-        Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(chk, @"await HoverCheckRender\(").Count);       // ONE render
-        Assert.Contains("seat: true", chk); Assert.Contains("renders 1", chk); Assert.Contains("hover left alone", chk);
+        Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(chk, @"await HoverCheckRender\(").Count);       // one call site ...
+        Assert.Contains("for (int si = 0; si < HoverSamples; si++)", chk);                                          // ... HoverSamples times (2026-11-03: +0.043 / +0.021 / +0.019 at one fixed position)
+        Assert.Contains("var (med, sampleWhy) = HoverSampleMedian(gaps, HoverSamples);", chk);                      // and the gap reported is the median of the agreeing readings
+        Assert.Contains("seat: {SeatCheckVerdict(m)}", chk); Assert.Contains("hover left alone", chk); Assert.Contains("renders {gaps.Count}", chk);
+        Assert.Contains("seat: true", chk);
         foreach (var never in new[] { "PostHover(", "AoSit", "StandUp", "idle_pose", "HoverCheckRequest(" }) Assert.DoesNotContain(never, chk);   // no hover change, no AO / pose / seat action, no loop
         // the automatic check still skips furniture (it must not run unasked), and stand / ground-sit checks are the #313 path
         Assert.Equal((false, "skip: sitting on an object (the normal hover is restored there)"), Hover.HoverCheckReady("seat", 0f, false, false, false, 99, 99, true));
@@ -56,6 +59,7 @@ public class SeatContactTests
     [Fact] public void SeatCheck_ShowsInTheRenderCountDocs_AndTheStandAndSitPathsKeepTheirRenderCount()
     {
         Assert.Equal(1, Hover.HoverCheckRenderCount(false)); Assert.Equal(2, Hover.HoverCheckRenderCount(true));
+        Assert.Equal(3, Hover.HoverCheckRenderCount(false, false, 3)); Assert.Equal(4, Hover.HoverCheckRenderCount(true, false, 3));   // the samples are renders too
         var rend = Src("PoseHover.cs"); rend = rend[rend.IndexOf("async Task<(double? gap, string img)> HoverCheckRender(")..]; rend = rend[..rend.IndexOf("internal static bool FormCertain")];
         Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(rend, @"Process\.Start\(").Count);            // still one blender run per call
     }

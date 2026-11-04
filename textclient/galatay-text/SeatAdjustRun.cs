@@ -127,7 +127,9 @@ public static partial class Program
         if (r0 is not { Conclusive: true }) { SALog($"'{seatName}' {pose}: render inconclusive ({w0 ?? SeatAdjust.Describe(r0)}): nothing pressed ({img0})"); return seatAdjustLast; }
         if (SeatAdjust.InBand(r0) && g0 == null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)}: contact good, no adjust ({img0})"); return seatAdjustLast; }
         if (g0 != null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)} but the render cannot be trusted ({g0}): nothing pressed ({img0})"); return seatAdjustLast; }
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150)); var ct = cts.Token;
+        // 2026-11-03: one seat READING is HoverSamples renders now (the median), so the backstop the run had for ONE reading's worth of
+        // renders scales with it; it is a guard against a hung menu, never the normal end of a run
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150 * Hover.HoverSamples)); var ct = cts.Token;
         var d = await SeatAdjustOpenPersonal(seat, ct);
         if (d == null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)} but this furniture's menus have no adjust controls I can find (no AVsitter personal adjust, no up/down or Z+/Z- buttons): nothing pressed ({img0})"); return seatAdjustLast; }
         if (SeatAdjust.Classify(d.Message, d.ButtonLabels) == SeatAdjust.Menu.Generic) return await SeatAdjustGeneric(seat, seatName, pose, gen, d, r0, q0, ct);
@@ -238,6 +240,30 @@ public static partial class Program
         if (seat == null) return "seatadjust: not sitting on an object";
         // `seatadjust restore <dz>` (e.g. +0.08: undo a bad saved nudge) / `seatadjust default`: on the pose she is in NOW, through AVsitter's personal
         // adjust: move by dz (or press [DEFAULT]) and press [SAVE]. Only run when David / the parent asks for it; nothing calls it automatically.
+        // `seatadjust z <dz>`: ONE narrow manual move of her seat height through the furniture's own AVsitter adjust, laid out by the tested PlanZ
+        // (0.25 / 0.05 / 0.01 m presses, cycling the step button) instead of pressing buttons one at a time. It presses nothing else and never saves:
+        // nothing is measured here, so the check's own Save rule stays the only thing that may save. No hardcoded per-sofa / per-pose numbers.
+        if (a.Length > 0 && string.Equals(a[0], "z", StringComparison.OrdinalIgnoreCase))
+        {
+            var (zok, dz, zerr) = SeatAdjust.ParseZ(a);
+            if (!zok) return "seatadjust: " + zerr;
+            using var zcts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            var zd = await SeatAdjustOpenPersonal(seat, zcts.Token);
+            if (zd == null) return "seatadjust: no AVsitter personal adjust menu on this furniture (nothing pressed)";
+            if (SeatAdjust.Classify(zd.Message, zd.ButtonLabels) != SeatAdjust.Menu.Personal) return "seatadjust: this furniture's adjust is not AVsitter's personal menu (nothing pressed)";
+            var st0 = SeatAdjust.PersonalState(zd.ButtonLabels).step ?? 0.05;
+            var (presses, stepAfter) = SeatAdjust.PlanZ(dz, st0);
+            if (presses.Count == 0) return $"seatadjust: z {dz:+0.00;-0.00} m is under one {SeatAdjust.Step * 100:0} cm step: nothing pressed";
+            double moved = 0, st = st0;
+            foreach (var pr in presses)
+            {
+                zd = await SeatAdjustPress(seat, zd, pr, zcts.Token);
+                if (zd == null) { SALog($"'{seat.Properties?.Name ?? seat.ID.ToString()}' z {dz:+0.00;-0.00}: the presses stopped early after {moved:+0.00;-0.00} m (no answer from the furniture)"); return $"seatadjust: the presses got no answer after {moved:+0.00;-0.00} m; nothing saved"; }
+                if (pr is "Z+" or "Z-") moved += pr == "Z+" ? st : -st; else st = SeatAdjust.StepCycle[(Array.IndexOf(SeatAdjust.StepCycle, st) + 1) % 3];
+            }
+            var zm = $"'{seat.Properties?.Name}' {SeatAdjust.PoseLabelFor(wLastPose, SeatRootOf(seat).ID.ToString())}: pressed Z {moved:+0.00;-0.00} m in {presses.Count} press(es) (asked {dz:+0.00;-0.00}, step now {stepAfter:0.00} m): not measured, so the gap is unread; NOT saved";
+            SALog(zm); return "seatadjust: " + zm;
+        }
         if (a.Length > 0 && (a[0] == "restore" || a[0] == "default"))
         {
             var (ok, err) = SeatAdjust.ParseRestore(a);

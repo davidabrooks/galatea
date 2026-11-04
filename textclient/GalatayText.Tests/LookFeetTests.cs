@@ -56,13 +56,13 @@ public class LookFeetTests
         // exactly one blender launch per HoverCheckRender, one view (look_scope.hovercheck_view: the close-up INSTEAD of the wide side view)
         var rend = ph[ph.IndexOf("async Task<(double? gap, string img)> HoverCheckRender(")..]; rend = rend[..rend.IndexOf("internal static bool FormCertain")];
         Assert.Equal(1, Regex.Matches(rend, @"Process\.Start\(").Count); Assert.DoesNotContain("GT_VIEW", rend);
-        // the check: one render always, a second only inside the fix branch, after the POST, to verify; the close-up is never a third
+        // the check: HoverSamples renders per reading (3, all postures, 2026-11-03), a second only inside the fix branch after the POST to verify, and the close-up is never a third
         var chk = ph[ph.IndexOf("async Task<string> PoseHoverCheck(")..];
         Assert.Equal(3, Regex.Matches(chk, @"await HoverCheckRender\(").Count);      // render 1, the confirm render of a LARGE fix only (> 0.12 m), the verification after the fix
         int fixAt = chk.IndexOf("await h.PostHover(t,"), second = chk.IndexOf("await HoverCheckRender(", fixAt);
         Assert.True(fixAt > 0 && second > fixAt); Assert.Equal(2, Regex.Matches(chk[..fixAt], @"await HoverCheckRender\(").Count);
         var big = chk[chk.IndexOf("if (HoverFixNeedsConfirm(eg))")..fixAt]; Assert.Equal(1, Regex.Matches(big, @"await HoverCheckRender\(").Count);   // the extra render sits only inside the large-fix branch
-        Assert.Contains("HoverCheckRenderCount(fixedHover, confirmRender)", chk);
+        Assert.Contains("HoverCheckRenderCount(fixedHover, confirmRender, samples.Count)", chk);   // 3 samples + the verification (+ a confirm) are all renders
         Assert.DoesNotContain("HoverCheckRequest(", chk);                       // nothing re-requests a check (no render loop)
     }
     [Fact] public void ManualHoverCheck_WaitsAndReturnsTheCloseUpPathAndTheRenderCount()

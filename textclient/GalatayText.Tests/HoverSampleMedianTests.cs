@@ -26,7 +26,7 @@ public class HoverSampleMedianTests
     public void Missing_readings_are_not_settled()
     {
         Assert.Null(Hover.HoverSampleMedian(new double?[] { 0.01, null, 0.012 }, 3).median);
-        Assert.Equal(0.05, Hover.HoverSampleMedian(new double?[] { 0.05 }, 1).median!.Value, 3);   // sit / kneel: one render, unchanged
+        Assert.Equal(0.05, Hover.HoverSampleMedian(new double?[] { 0.05 }, 1).median!.Value, 3);   // a single-reading caller still reads that one reading
     }
 
     [Fact]

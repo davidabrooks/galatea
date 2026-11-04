@@ -467,6 +467,7 @@ def build(group, bones=None, lining=True):
         if not (hold and os.environ.get("GT_HOLD_FLAT", "1") == "1"): me.normals_split_custom_set_from_vertices(N.reshape(-1, 3))
         ob = bpy.data.objects.new(me.name, me); sc.collection.objects.link(ob); me.materials.append(material(b, imgs, hold))
         obs.append(ob)
+        if group == "seat": ob["gt_seat"] = 1   # the object she sits on (seat_surface_z)
         if group.startswith("avatar"): ob["gt_avatar"] = 1   # avatar key light (photo hd under a roof) links to these
         if b["tex"].startswith("bake:"): ob["gt_skin"] = 1   # Bakes-on-Mesh face = the body's own skin (body, feet, head); clothing / attachments carry their own textures
         if HD and group.startswith("avatar"):
@@ -1548,6 +1549,14 @@ def seat_hips(verts, pelvis, r=SEAT_HIPS_R, below=0.30, above=0.15):
     sel = v[(d <= r) & (v[:, 2] >= pelvis[2] - below) & (v[:, 2] <= pelvis[2] + above)]
     return sel if len(sel) >= 20 else v[d <= r * 1.5]
 
+def seat_surface_z(hits):
+    """the first surface of the object she SITS ON along a downward ray: hits = (z, kind) top-down, kind "me" (her body), "seat" (the seated
+    linkset, scene-mesher group "seat") or "other" (any other furniture, another avatar's chair, the floor). Everything that is not her seat is
+    passed through; None when the ray never meets her seat (2026-11-03 18:17: David's office chair next to the Dutchie desk was read as her seat)."""
+    for z, kind in hits:
+        if kind == "seat": return z
+    return None
+
 def seat_top_under(patch, zlow, cast, start=SEAT_RAY_START, near=SEAT_TOP_NEAR, far=SEAT_PLANE_BELOW, n=48, min_hits=3, top=None):
     """the top of the seat under her hips' lowest patch (2026-10-26, #314 live test on a slatted rocking chair: ONE ray at the agent position hit a slat edge).
     cast(x, y, z) = the z of the first surface under (x, y) at or below z (her own body skipped) or None. Rays go down from `start` above her lowest hip
@@ -1821,7 +1830,7 @@ def layer_plan():
     log("layer plan", len(plan), "avatars,", sum(1 for p in plan if p["visible"]), "in view")
 
 if SCENE:
-    build("scene"); memlog("scene built")
+    build("scene"); build("seat"); memlog("scene built")   # "seat": the linkset she sits on (scene-mesher), the only surface the seat check measures
     if LAYER != "batch": build("far")   # a batch pass only needs what can occlude / light its avatars: the backdrop is > 30 m out
     if not SELF_FLOOR and FLOOR_ON: terrain()   # `look self`: only when no prim floor is under her (below)
     if LAYER != "batch": water(); particle_systems()
@@ -1984,12 +1993,14 @@ if SCENE:
             pm = M.get("pelvis"); pel = to_world(pm, (x, y, z0), yaw) if pm else Vector((px, py, g[2]))
             def seat_cast(qx, qy, qz):   # first surface under (qx, qy) from qz down that is not her body (a slat, a cushion, a rail)
                 o_ = Vector((qx, qy, qz)); mine = {id(b_) for b_ in obs}
-                for _ in range(8):
-                    h_, l_, _n, _i, ob_, _m = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), o_, Vector((0, 0, -1)))
-                    if not h_: return None
-                    if id(ob_) not in mine and ob_.type == "MESH": return l_.z
-                    o_ = l_ - Vector((0, 0, 0.002))
-                return None
+                def hits_():
+                    p_ = o_
+                    for _ in range(8):
+                        h_, l_, _n, _i, ob_, _m = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), p_, Vector((0, 0, -1)))
+                        if not h_: return
+                        yield l_.z, ("me" if id(ob_) in mine else "seat" if ob_.type == "MESH" and ob_.get("gt_seat") else "other")
+                        p_ = l_ - Vector((0, 0, 0.002))
+                return seat_surface_z(hits_())
             bpy.context.view_layer.update()
             sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None); sup_info = None; seat_parts = None
             if prim_under and M.get("bones") and len(M["bones"]) == 25:   # what bears her weight on the furniture, from her body mesh (clothing weighs 0)
@@ -2197,7 +2208,7 @@ if SCENE:
         for o_ in sc.objects:
             if o_.type == "LIGHT": out["lights"].append({"type": o_.data.type, "px": px(o_.location), "color": [round(c, 2) for c in o_.data.color], "spot": round(math.degrees(o_.data.spot_size), 1) if o_.data.type == "SPOT" else None})
         for b_ in M["batches"]:
-            if b_["group"] in ("scene", "far") and ((b_.get("glow") or 0) > 0 or b_.get("fullbright")) and b_["nv"]:
+            if b_["group"] in ("scene", "seat", "far") and ((b_.get("glow") or 0) > 0 or b_.get("fullbright")) and b_["nv"]:
                 P_ = arrays(b_)[0].reshape(-1, 3); c_ = (P_.min(0) + P_.max(0)) / 2
                 out["glow"].append({"px": px(c_), "nv": b_["nv"], "glow": b_.get("glow"), "fb": bool(b_.get("fullbright")), "ext": [round(float(e), 2) for e in P_.max(0) - P_.min(0)], "rgba": [round(c, 2) for c in b_["rgba"]], "tex": b_["tex"][:8]})
         json.dump(out, open(os.environ["GT_DEBUG_PROJ"], "w"))

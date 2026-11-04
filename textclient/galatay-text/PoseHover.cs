@@ -102,7 +102,8 @@ internal sealed partial class Hover
     // pure (tested): what tells the renderer which close-up to draw: the label for the log and the posture kind (stand | sit = AO ground sit | seat | other).
     // 2026-10-26: a ground sit is framed on the hips-to-floor contact around her pelvis (render_mesh ground_sit_contact), not on the lowest 10 cm of her whole body
     internal static Dictionary<string, string> ContactEnv(string kind) => new() { ["GT_HC_POSTURE"] = HoverContactLabel(kind), ["GT_HC_KIND"] = kind ?? "" };
-    internal static Dictionary<string, string> SeatLookEnv() => new(ContactEnv("seat")) { ["GT_SEATED"] = "1", ["GT_SEAT_CHECK"] = "1" };
+    // seatHover = the hover in force: the viewer draws it on a seated avatar too (LLVOAvatar: pos += hover * seat rotation), so the render must (2026-11-03 Lalou sofa: 8 cm too high without it)
+    internal static Dictionary<string, string> SeatLookEnv(double seatHover) => new(ContactEnv("seat")) { ["GT_SEATED"] = "1", ["GT_SEAT_CHECK"] = "1", ["GT_SEAT_HOVER"] = seatHover.ToString("0.000", CultureInfo.InvariantCulture) };
     // 2026-10-26 live test on a slatted rocking chair: the render said -0.038 m and David's eye said "looks good": her butt sinks a few cm into slats and cushions in every
     // sit pose, so down to -0.06 m is ON the seat; floating more than 2 cm is not. The gap itself is the render's measurement (about +-2 cm: slat tops are uneven), David's eye decides
     internal const double SeatSinkTol = 0.06, SeatFloatTol = 0.02;
@@ -203,7 +204,7 @@ internal sealed partial class Hover
     {
         var psi = new ProcessStartInfo(h.LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add(h.LookPy); psi.ArgumentList.Add(exportDir); psi.ArgumentList.Add("hovercheck");
-        foreach (var kv in seat ? SeatLookEnv() : HoverCheckEnv(size, hover, parts, Program.SimHoverNow())) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement, no hover model
+        foreach (var kv in seat ? SeatLookEnv(hover) : HoverCheckEnv(size, hover, parts, Program.SimHoverNow())) psi.Environment[kv.Key] = kv.Value;   // seat: her real seated placement plus the hover in force
         foreach (var kv in ContactEnv(seat ? "seat" : kind)) psi.Environment[kv.Key] = kv.Value;
         if (extraEnv != null) foreach (var kv in extraEnv) psi.Environment[kv.Key] = kv.Value;
         using var pr = Process.Start(psi)!; var o = pr.StandardOutput.ReadToEndAsync(); var e = pr.StandardError.ReadToEndAsync();
@@ -443,7 +444,7 @@ internal sealed partial class Hover
             if (!scene.EndsWith("scene.json")) return (null, null, "export failed", null);
             if (h.Client.Self.SittingOn == 0) return (null, null, "no longer sitting", null);
             hoverLastSupport = null; hoverLastSeatText = null;
-            var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, "seat", seat: true, extraEnv: wide ? new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1" } : null);
+            var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, await Program.HoverForSeatRender(), "seat", seat: true, extraEnv: wide ? new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1" } : null);
             var text = (hoverLastSeatText ?? "") + "\n" + await RenderQualityText(img);
             return (hoverLastSupport, img, hoverLastSupport == null ? "the render printed no support line" : null, SeatAdjust.ParseQuality(text));
         }
@@ -476,7 +477,7 @@ internal sealed partial class Hover
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { h.Log("posehover", $"seat check: export failed: {ex}"); return "seat check: export failed"; }
             if (h.Client.Self.SittingOn == 0) return "seat check: she is no longer sitting on an object";
-            var (gap, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, 0, "seat", seat: true);
+            var (gap, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, await Program.HoverForSeatRender(), "seat", seat: true);
             var r = $"seat: {SeatCheckVerdict(gap)}; hover left alone; renders 1; close-up of {HoverContactLabel("seat")}: {img}";
             h.Log("posehover", r); hoverCheckResult = r; return r;
         }

@@ -1287,11 +1287,19 @@ def srgb_to_linear(c):
     c = max(0.0, float(c or 0.0))
     return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
 
-def z0_of(fl, ll, lo, seated=False):
-    """mesh z 0 for an avatar: seated -> the sim's placement (ll); standing -> lowest vertex on the floor unless ll is
-    more than 0.35 m off it (a seat / table / hover under her)"""
-    if seated and ll is not None: return ll
+def z0_of(fl, ll, lo, seated=False, hover=0.0):
+    """mesh z 0 for an avatar: seated -> the sim's placement (ll) plus her hover in force; standing -> lowest vertex on the floor unless ll is
+    more than 0.35 m off it (a seat / table / hover under her).
+    2026-11-03 (David on the Lalou sofa: "your render has you higher than what I see, you were sunk into the couch"): the LL viewer applies
+    the hover to a seated avatar too (LLVOAvatar::updateRootPositionAndRotation, sitting on an object: pos += getHoverOffset() * seat rotation),
+    and the seat auto-hover runs -0.08 there, so leaving it out drew her 8 cm above David's viewer. z only: seats sit upright."""
+    if seated and ll is not None: return ll + hover
     return fl - lo if ll is None or abs(ll + lo - fl) < 0.35 else ll
+
+def seat_hover(env):
+    """the hover in force while seated (GT_SEAT_HOVER, set by the client): the viewer draws it on furniture too"""
+    try: return float(env.get("GT_SEAT_HOVER", "0") or 0)
+    except ValueError: return 0.0
 
 def hover_check_z0(env, agent_z, lo_z, floor_z, agent_off=None):
     """Hover check: where David's Firestorm draws her, no per-pose bias (2026-10-31). Firestorm puts the avatar root at
@@ -1812,7 +1820,7 @@ if SCENE:
         terrain(); bpy.context.view_layer.update(); dg = bpy.context.evaluated_depsgraph_get()
     placed = [] if SELF_FLOOR else [(o, place(o, *o["pos"])) for o in M.get("others", [])]
     fl, ll, mst = place(M, x, y, g[2]); ll = None if av else ll
-    lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst)
+    lo, hi, obs = build("avatar", M.get("bones")); z0 = z0_of(fl, ll, lo[2], mst, seat_hover(os.environ) if mst else 0.0)
     lo_c = lo[2]; tc_ = None; td_ = {}
     if os.environ.get("GT_HOVER_CHECK") == "1" and M.get("pelvis") and not mst:   # her contact = where the floor would hold her up (support_z), not her lowest vertex
         vs_ = []
@@ -1831,7 +1839,7 @@ if SCENE:
         # diagnostics for the calibration (2026-10-26): the bias in use, whether David's viewer ever confirmed it, and where the viewer's own
         # placement formula (scene-mesher agent_off, LLVOAvatar::computeBodySize) would have put her: the gap between the two is the raw model error
         print(hover_check_detail(os.environ, M.get("agent_z", g[2]), M.get("agent_off"), lo[2], fl, HC[2]), flush=True)
-    elif SELF_FLOOR and mst: print("GT: self floor: seated on an object: the sim's own placement (no hover model); hover is not the fix on furniture, the furniture's own adjust is", flush=True)
+    elif SELF_FLOOR and mst: print(f"GT: self floor: seated on an object: the sim's own placement plus the hover in force ({seat_hover(os.environ):+.3f} m, as the viewer draws it); hover is not the fix on furniture, the furniture's own adjust is", flush=True)
     elif SELF_FLOOR: print("GT: self floor: no hover model (GT_HOVER_CHECK unset): her feet are snapped to the floor, so contact here says nothing about her hover", flush=True)
     for ob in obs: ob.location = (x, y, z0); ob.rotation_euler = (0, 0, math.radians(yaw))
     log("avatar at", round(x, 2), round(y, 2), "mesh z0", round(z0, 2), "floor", round(fl, 2), "LL", ll and round(ll, 2))

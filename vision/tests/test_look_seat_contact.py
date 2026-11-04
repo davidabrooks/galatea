@@ -265,7 +265,7 @@ def test_a_hard_part_buried_in_a_cushion_still_gets_a_surface_reading():
 def test_the_part_closeup_measures_palm_visibility_and_the_seat_reader_still_averages_bearing_parts():
     src = SRC.read_text()
     assert "GT: part contact at" in src and "visible above the surface {hiq_ - surfq_:+.3f} m" in src
-    assert '"GT: part contact:"' in (SRC.parents[1] / "look.py").read_text()   # forwarded to the client, not swallowed
+    assert '"GT: part contact")' in (SRC.parents[1] / "look.py").read_text()   # forwarded to the client, not swallowed (prefix: the line says "at ...")
     # the patch's own radius, so the OTHER hand (up at the groin) cannot decide what "the palm" is
     assert "the patch's OWN radius" in src
     # a hard part buried in a cushion is looked at again through its own top

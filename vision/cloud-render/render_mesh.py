@@ -1600,7 +1600,14 @@ def furniture_support_parts(parts, cast, quantile=0.002):
         if len(p) == 0: continue
         zlow = float(np.quantile(p[:, 2], quantile)); patch = [tuple(r) for r in p[p[:, 2] <= zlow + 0.03]] or [tuple(p[0])]
         pts = patch[::max(1, len(patch) // 48)][:48]
-        surf, nh = (seat_top_hits(pts, zlow, cast, top=float(np.max(p[:, 2]))) if k in SUPPORT_SOFT else seat_top_hits(pts, zlow, cast)) if cast is not None else (None, 0)
+        surf, nh = (None, 0)
+        if cast is not None:
+            surf, nh = (seat_top_hits(pts, zlow, cast, top=float(np.max(p[:, 2]))) if k in SUPPORT_SOFT else seat_top_hits(pts, zlow, cast))
+            # 2026-11-03 (Vibrator pose: she leans on her palm and the cushion swallowed it): a HARD part with no surface in the free window gets the
+            # same second look a soft one always gets, because a cushion surface can pass THROUGH a part (fingers press into it) rather than lie under it.
+            if surf is None:
+                surf, nh = seat_top_hits(pts, zlow, cast, top=float(np.max(p[:, 2])))
+
         cx, cy = (float(np.mean([q[0] for q in patch])), float(np.mean([q[1] for q in patch])))
         out[k] = (zlow, surf, None if surf is None else zlow - surf, nh, (cx, cy))
     return out
@@ -1984,15 +1991,17 @@ if SCENE:
                     o_ = l_ - Vector((0, 0, 0.002))
                 return None
             bpy.context.view_layer.update()
-            sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None); sup_info = None
+            sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None); sup_info = None; seat_parts = None
             if prim_under and M.get("bones") and len(M["bones"]) == 25:   # what bears her weight on the furniture, from her body mesh (clothing weighs 0)
                 try:
                     segs_s = [[tuple(to_world(b[:3], (x, y, z0), yaw)), tuple(to_world(b[3:], (x, y, z0), yaw))] for b in M["bones"]]
                     sk_ = []
                     for o_ in contact_obs(obs):
                         a_ = np.empty(len(o_.data.vertices) * 3, np.float64); o_.data.vertices.foreach_get("co", a_); m_ = np.array(o_.matrix_world, np.float64); sk_.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
-                    inf_ = furniture_support_parts(assign_body_parts(np.concatenate(sk_) if sk_ else allv, segs_s), seat_cast)
+                    sp_ = assign_body_parts(np.concatenate(sk_) if sk_ else allv, segs_s)
+                    inf_ = furniture_support_parts(sp_, seat_cast)
                     cls_ = classify_support(inf_); sup_info = (inf_, cls_[1])
+                    seat_parts = sp_   # kept for the part close-up (GT_HC_PARTS): the palm, a forearm, a shin
                     print(furniture_support_line(inf_, *cls_), flush=True)
                 except Exception as ex_: print(f"GT: furniture support: unknown (error {ex_})", flush=True)
             # 2026-11-03 (David: "average those contact points' gaps, the same way the floor-sit check does, do not read a single surface point"):
@@ -2000,6 +2009,30 @@ if SCENE:
             if sup_info is not None and classify_support(sup_info[0])[2] is not None:
                 _k, _b, _g = classify_support(sup_info[0])
                 if _b: sc_ = (sc_[0], sc_[1], sc_[2], _g) if sc_ else sc_
+        # 2026-11-03 (David: the pose leans on her palm; raise her until part of the palm is visible above the cushion): GT_HC_PARTS=hands (or
+        # forearms, shins ...) while seated frames the close-up on THAT part's own contact patch against the seat instead of the hips, and reports
+        # its gap, so a hand buried in the cushion can be looked at directly. Nothing about the furniture is assumed: the patch and the surface
+        # under it come from her body and the seat mesh, exactly as the hips reading does.
+        part_view = [q for q in (os.environ.get("GT_HC_PARTS") or "").split(",") if q and seat_parts is not None and q in seat_parts]
+        if part_view and sup_info is not None:
+            zs_, cps_ = [], []
+            for q in part_view:
+                zq_, cq_ = contact_points(seat_parts[q]); zs_.append(zq_); cps_ += cq_
+            if cps_:
+                zq_ = min(zs_); surfq_ = sup_info[0].get(part_view[0], (None, None))[1]
+                vq_ = np.concatenate([np.asarray(seat_parts[q], dtype=np.float64).reshape(-1, 3) for q in part_view])
+                gq_ = None if surfq_ is None else zq_ - surfq_
+                # the top of the part OVER ITS OWN CONTACT PATCH, not over the whole part: the other hand (up at her groin) would otherwise decide it.
+                # footprint = the patch's own horizontal extent plus its radius, so it is the hand that touches, measured where it touches.
+                px_, py_ = np.mean([q[0] for q in cps_]), np.mean([q[1] for q in cps_])
+                # the patch's OWN radius: how wide the touching area is, not how far the part reaches (the other hand is up at her groin)
+                rad_ = max(max(float(np.hypot(q[0] - px_, q[1] - py_)) for q in cps_), 0.01)
+                foot_ = vq_[np.hypot(vq_[:, 0] - px_, vq_[:, 1] - py_) <= rad_]
+                hiq_ = float(np.max(foot_[:, 2])) if len(foot_) else float(np.max(vq_[:, 2]))
+                # 2026-11-03 David: "raise me until part of my hand/palm is visible above the cushion surface - not buried". Visibility is geometry:
+                # any vertex above the seat plane shows. -> top z, and how much of it clears the plane (positive = part of the part shows)
+                print(f"GT: part contact at ({px_:.2f},{py_:.2f}) of {len(cps_)} pts: {','.join(part_view)} lowest z {zq_:.3f}, top z {hiq_:.3f}, seat surface under it " + (f"{surfq_:.3f}, gap {gq_:+.3f} m (+ above, - sunk), visible above the surface {hiq_ - surfq_:+.3f} m" if surfq_ is not None else "not found, gap unknown"), flush=True)
+                sc_ = (zq_, cps_, surfq_ if surfq_ is not None else sc_[2], gq_ if gq_ is not None else sc_[3])
         if sc_:
             zlow, cp, seat_z, gap = sc_; floor = seat_z if seat_z is not None else zlow   # the seat's top is the plane; none found -> frame the hips' own bounding area
             wide_ = os.environ.get("GT_SUPPORT_WIDE") == "1" and sup_info is not None
@@ -2008,8 +2041,9 @@ if SCENE:
                 if wp_: cp = list(cp) + wp_; floor = min([floor] + [q[2] for q in wp_])
             # 2026-11-03 (David): if the furniture under the contact is not visible from the side, turn around her; and zoom in on the contact itself
             deg = deg if (wide_ or not sup_info) else seat_deg_from_blockers(px, py, pyaw, deg, cp, zlow, floor, res, lens)
-            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=1.6 if wide_ else 0.55,
-                                                  max_width=3.0 if wide_ else 1.1)
+            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res,
+                                                  min_width=1.6 if wide_ else 0.35 if part_view else 0.55,
+                                                  max_width=3.0 if wide_ else 0.8 if part_view else 1.1)
             if sup_info is not None:
                 zb_ = min(floor, zlow) - 0.06
                 print(support_quality_line(sup_info[0], zb_, zb_ + width * min(res) / max(res), seat_z is not None), flush=True)

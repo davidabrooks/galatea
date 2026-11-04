@@ -246,3 +246,27 @@ def test_the_contact_frame_zooms_on_the_contact_not_the_whole_seat():
     assert w([(0, 0, 0), (0.01, 0, 0)], 0.3, 0.55, 1.1) == 0.55               # never tighter than the minimum
     assert w([(0, 0, 0), (5, 0, 0)], 0.3, 0.55, 1.1) == 1.1                   # never wider than the maximum
     assert w([], 0.3, 0.55, 1.1) == 0.55
+
+
+# 2026-11-03 (David, Vibrator pose: "the pose leans on my palm, raise me until part of my hand/palm is visible above the cushion"): a seat check can
+# frame ONE part's own contact instead of the hips, and report how much of that part clears the seat plane, so a buried palm is measurable, not guessed.
+def test_a_hard_part_buried_in_a_cushion_still_gets_a_surface_reading():
+    ns = _rm(); hits = ns["seat_top_hits"]
+    cushion = 1.25
+    cast = lambda x, y, z: cushion if z > cushion else None
+    # free window finds nothing (the palm's lowest vertex is 10 cm under the cushion top) -> top= gives the second look a hard part now gets
+    assert hits([(0, 0, 1.10)] * 8, 1.10, cast)[0] is None
+    z, n = hits([(0, 0, 1.10)] * 8, 1.10, cast, top=1.30)
+    assert n == 8 and abs(z - cushion) < 1e-9
+    # and the sink stays a sink: the palm reads 15 cm inside the cushion, it is not rounded up to "in contact"
+    assert abs((1.10 - z) + 0.15) < 1e-9
+
+
+def test_the_part_closeup_measures_palm_visibility_and_the_seat_reader_still_averages_bearing_parts():
+    src = SRC.read_text()
+    assert "GT: part contact at" in src and "visible above the surface {hiq_ - surfq_:+.3f} m" in src
+    assert '"GT: part contact:"' in (SRC.parents[1] / "look.py").read_text()   # forwarded to the client, not swallowed
+    # the patch's own radius, so the OTHER hand (up at the groin) cannot decide what "the palm" is
+    assert "the patch's OWN radius" in src
+    # a hard part buried in a cushion is looked at again through its own top
+    assert "if surf is None:" in src and src.index("if surf is None:") < src.index("def classify_support")

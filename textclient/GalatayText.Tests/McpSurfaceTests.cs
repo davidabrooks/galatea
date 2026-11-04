@@ -104,6 +104,7 @@ public class McpSurfaceTests
     [InlineData("height", "height")] [InlineData("diag", "diag")]
     [InlineData("hover repin", "hover repin")] [InlineData("Hover APPLY -0.075", "hover apply -0.075")] [InlineData("hover apply 0.5", "hover apply 0.5")]
     [InlineData("posehover check", "hover check")] [InlineData("posehover status", "posehover status")] [InlineData("posehover", "posehover status")]
+    [InlineData("seatadjust z -0.08", "seatadjust z -0.08")] [InlineData("SEATADJUST Z +0.05", "seatadjust z +0.05")] [InlineData("seatadjust status", "seatadjust status")]
     public void ClientCmdGate_AllowsTheReadOnlyCommands(string line, string run)
     {
         var (ok, l, err) = Program.ClientCmdGate(line); Assert.True(ok, err); Assert.Equal(run, l);
@@ -112,6 +113,8 @@ public class McpSurfaceTests
     [InlineData("say hello")] [InlineData("im David hi")] [InlineData("pay object x 5")] [InlineData("logout")] [InlineData("login")] [InlineData("sit abc")] [InlineData("stand")]
     [InlineData("hover set 0.1")] [InlineData("hover apply 0.9")] [InlineData("hover apply x")] [InlineData("hover apply")] [InlineData("hover calibrate")] [InlineData("hover calibrate stand 99")] [InlineData("hover calibrate stand 4")] [InlineData("hover calibrate foo 1")] [InlineData("hover repin now")] [InlineData("height now")] [InlineData("posehover set 1")] [InlineData("photo hd self")] [InlineData("rlv clear")]
     [InlineData("")] [InlineData("   ")] [InlineData("look self\nsay hi")] [InlineData("teleport Home 1 1 1")] [InlineData("accept")] [InlineData("wear add x")] [InlineData("touch abc")]
+    [InlineData("seatadjust")] [InlineData("seatadjust z")] [InlineData("seatadjust z 9")] [InlineData("seatadjust z abc")] [InlineData("seatadjust restore 0.08")]
+    [InlineData("seatadjust default")] [InlineData("seatadjust z -0.08 extra")] [InlineData("seatadjust z -0.08|say hi")]
     public void ClientCmdGate_RefusesEverythingElse(string line)
     {
         var (ok, l, err) = Program.ClientCmdGate(line); Assert.False(ok); Assert.Null(l); Assert.False(string.IsNullOrEmpty(err));
@@ -125,6 +128,16 @@ public class McpSurfaceTests
         foreach (var n in new[] { "look", "seat_info", "client_cmd" }) Assert.Contains($"[McpServerTool(Name = \"{n}\", ReadOnly = true)", m);
         Assert.Contains("Core.LookObj(", m); Assert.Contains("Core.SeatInfoObj()", m); Assert.Contains("Core.ClientCmd(command)", m);
         Assert.Contains("McpSurface.cs", Src("textclient", "galatay-mcp", "GalatayMcp.csproj"));
+    }
+    [Fact] public void TheSeatAdjustCommandIsNarrow_OneZMoveAndAStatus_NothingElse()
+    {
+        var (ok, run, _) = Program.ClientCmdGate("seatadjust z -0.08");
+        Assert.True(ok); Assert.Equal("seatadjust z -0.08", run);
+        // the gate takes exactly `z <dz>`: no save, no default reset, no extra words can ride along
+        foreach (var l in new[] { "seatadjust z +0.08 save", "seatadjust z 0.08 [SAVE]", "seatadjust z -0.08 force", "seatadjust" })
+            Assert.False(Program.ClientCmdGate(l).ok, l);
+        var m = Src("textclient", "galatay-mcp", "McpProgram.cs");
+        Assert.Contains("seatadjust z <m>", m);   // the connector's client_cmd description names it
     }
     [Fact] public void ClientCmd_RunsOnlyTheGatedLine()
     {

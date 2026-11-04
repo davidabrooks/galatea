@@ -121,6 +121,16 @@ internal static partial class SeatAdjust
         Menu.None => (labels ?? Array.Empty<string>()).Select(x => x.Trim()).FirstOrDefault(x => Regex.IsMatch(x, @"^\W*(back|<<|main|top|home)\W*$", RegexOptions.IgnoreCase)) is { } bk ? bk : null,
         _ => null,
     };
+    // pure (tested): `seatadjust z <dz metres>`: ONE manual height nudge through the furniture's own adjust (PlanZ lays the presses out and
+    // cycles AVsitter's step button). 2026-11-03: a manual nudge had to be driven button by button (the Dildo pose took 4 presses where 3 would do).
+    // Never saves: a manual move is not a measurement, so the seat check's own Save rule still decides.
+    internal static (bool ok, double dz, string err) ParseZ(string[] a)
+    {
+        if (a is { Length: 2 } && string.Equals(a[0]?.Trim(), "z", StringComparison.OrdinalIgnoreCase)
+            && double.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var dz) && Math.Abs(dz) >= Step / 2 && Math.Abs(dz) <= 1.0)
+            return (true, dz, null);
+        return (false, 0, "usage: seatadjust z <dz metres, e.g. -0.08 (+ is up, - is down; one AVsitter 1 cm step or more, up to 1 m)>");
+    }
     // pure (tested): `seatadjust restore <dz>` / `seatadjust default`
     internal static (bool ok, string err) ParseRestore(string[] a)
     {

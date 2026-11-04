@@ -56,6 +56,23 @@ internal static partial class SeatAdjust
         if (Math.Abs(after.Gap!.Value) > Math.Abs(before.Gap!.Value) - ImproveMin) return Verdict.Revert;
         return InBand(after) ? Verdict.Save : Verdict.Continue;
     }
+    // pure (tested): which of the sampled seat readings is the one to act on (its index), and why when none is. The reading nearest the median of the
+    // readings that agree within Hover.HoverSampleSpreadMax; the ones outside it are dropped as outliers (Hover.HoverSampleMedian's rule, the stand
+    // check's). 2026-11-03 Lalou sofa: at ONE fixed position three readings ran +0.043 .. +0.019 m with nothing moving, and a single one drove the nudge.
+    // Fewer than `need` readings, fewer than two that agree, or agreeing ones still spread more than that: -1 and nothing is pressed.
+    internal static (int index, double? median, string why) SampleMedian(IReadOnlyList<SupportReading> samples, int need)
+    {
+        var l = samples ?? Array.Empty<SupportReading>();
+        var withGap = l.Select((r, i) => (r, i)).Where(x => x.r is { Conclusive: true }).ToList();
+        var v = withGap.OrderBy(x => x.r.Gap!.Value).ToList();
+        if (v.Count < need) return (-1, null, $"{v.Count} of {need} conclusive readings");
+        var (med, why) = Hover.HoverSampleMedian(v.Select(x => (double?)x.r.Gap!.Value).ToList(), need);
+        if (med is not double m) return (-1, null, why);
+        // the representative: the sample nearest the median; on a tie the freshest (its parts and its render's quality are the ones used), so the
+        // reading acted on and the frame its gate judges always come from the same sample and the nudge is the median, never one reading
+        var rep = v.OrderBy(x => Math.Abs(x.r.Gap!.Value - m)).ThenByDescending(x => x.i).First();
+        return (rep.i, m, $"{why} (median {Fmt(m)})");
+    }
     // pure (tested): should the sit watcher start a check? a new seat that no pose choice already covered (David 2026-11-02: every sit, no path skipped)
     internal static bool SitNeedsCheck(uint prevSeat, uint nowSeat, uint lastCheckedSeat) => nowSeat != 0 && nowSeat != prevSeat && nowSeat != lastCheckedSeat;
     // pure (tested): the line surfaced when an adjustment stays on but could not be saved

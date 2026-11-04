@@ -147,8 +147,9 @@ internal sealed partial class Hover
     internal static bool HoverFixNeedsConfirm(double gap) => Math.Abs(gap) > HoverFixMax;
     internal static bool HoverFixConfirmed(double gap1, double gap2) => Math.Abs(gap1 - gap2) <= HoverConfirmTol;
     // pure (tested): renders one hover check costs. Each HoverCheckRender call is ONE blender run of ONE image (the contact close-up, which REPLACES the wide
-    // side view: look_scope.hovercheck_view). 1 when the contact is confirmed; 2 when a fix was applied (the re-render at the hover really in force is the verification)
-    internal static int HoverCheckRenderCount(bool fixApplied, bool confirmRender = false) => (fixApplied ? 2 : 1) + (confirmRender ? 1 : 0);
+    // side view: look_scope.hovercheck_view). samples = the readings the check took (HoverSamples: stand, sit, kneel and seat all sample now); plus 1 when a
+    // fix was applied (the re-render at the hover really in force is the verification) and 1 more for the confirm render of a large fix
+    internal static int HoverCheckRenderCount(bool fixApplied, bool confirmRender = false, int samples = 1) => samples + (fixApplied ? 1 : 0) + (confirmRender ? 1 : 0);
     // ---- 2026-10-27 09:12 / 09:15 (David): she stood / sat at 217.8,74.5 INSIDE the Mirage bed's footprint (the bed's collision hull held her ~0.6 m above the floor);
     // the check saw gaps of +0.712 / +0.479 ("implausible") and did nothing. An implausible gap with her XY inside (or within HoverFurnitureNearM of) a known footprint
     // now means "get off the furniture": stand up if ground sitting, step to the nearest clear floor spot, re-run the check there. The hover is NEVER changed from an implausible render.
@@ -439,14 +440,29 @@ internal sealed partial class Hover
         if (!await poseGate.WaitAsync(0)) return (null, null, "a check is already running", null);
         try
         {
-            var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
-            var scene = ex.Split('\n').Last();
-            if (!scene.EndsWith("scene.json")) return (null, null, "export failed", null);
-            if (h.Client.Self.SittingOn == 0) return (null, null, "no longer sitting", null);
-            hoverLastSupport = null; hoverLastSeatText = null;
-            var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, await Program.HoverForSeatRender(), "seat", seat: true, extraEnv: wide ? new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1" } : null);
-            var text = (hoverLastSeatText ?? "") + "\n" + await RenderQualityText(img);
-            return (hoverLastSupport, img, hoverLastSupport == null ? "the render printed no support line" : null, SeatAdjust.ParseQuality(text));
+            // 2026-11-03 (David): a seat nudge and its SAVE rode on ONE reading, and one fixed position on the Lalou sofa read +0.043, +0.021 and +0.019 m
+            // with nothing moving. Now HoverSamples fresh exports + renders and the reading nearest their median is the one acted on (SeatAdjust.SampleMedian,
+            // the stand check's outlier rule); readings that do not agree give no reading at all, so nothing is pressed. The returned image and quality are
+            // that same reading's own render: the gate must judge the frame the gap came from.
+            var readings = new List<SeatAdjust.SupportReading>(); var qs = new List<SeatAdjust.Quality>(); var imgs = new List<string>(); string bad = null;
+            var hover = await Program.HoverForSeatRender();
+            for (int si = 0; si < HoverSamples; si++)
+            {
+                if (si > 0) await Task.Delay(HoverSampleGapMs);
+                var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
+                var scene = ex.Split('\n').Last();
+                if (!scene.EndsWith("scene.json")) { bad ??= $"sample {si + 1}: export failed"; continue; }
+                if (h.Client.Self.SittingOn == 0) return (null, null, "no longer sitting", null);
+                hoverLastSupport = null; hoverLastSeatText = null;
+                var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, hover, "seat", seat: true, extraEnv: wide ? new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1" } : null);
+                var text = (hoverLastSeatText ?? "") + "\n" + await RenderQualityText(img);
+                readings.Add(hoverLastSupport); qs.Add(SeatAdjust.ParseQuality(text)); imgs.Add(img);
+                if (hoverLastSupport == null) bad ??= "the render printed no support line";
+            }
+            var (ri, med, whyNot) = SeatAdjust.SampleMedian(readings, HoverSamples);
+            hoverLastSupport = ri >= 0 ? readings[ri] with { Gap = med } : null;   // the median drives the nudge; kind / parts / quality stay that sample's own
+            if (ri >= 0) return (hoverLastSupport, imgs[ri], null, qs[ri]);
+            return (null, imgs.LastOrDefault(), $"not settled: {whyNot}{(bad != null ? $"; {bad}" : "")}", qs.LastOrDefault());
         }
         finally { poseGate.Release(); }
     }
@@ -465,20 +481,34 @@ internal sealed partial class Hover
         catch { return ""; }
     }
 
-    // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): ONE render of the hips against the seat;
-    // reports the gap and the close-up path; changes nothing (the AO, the hover and the furniture stay as they are)
+    // seated on an object (2026-10-26, David: "when you're sitting, you should be checking your hips, not your feet"): HoverSamples renders of the hips
+    // against the seat and the median of their agreeing gaps (2026-11-03: at one fixed position the same check read +0.043, +0.021 and +0.019 m with
+    // nothing moving); reports the gap and the close-up path; changes nothing (the AO, the hover and the furniture stay as they are)
     async Task<string> SeatContactCheck()
     {
         if (!h.LoggedIn || h.Client.Self.SittingOn == 0) return "seat check: not sitting on an object";
         if (!await poseGate.WaitAsync(0)) return "seat check: a check is already running";
         try
         {
-            var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
-            var scene = ex.Split('\n').Last();
-            if (!scene.EndsWith("scene.json")) { h.Log("posehover", $"seat check: export failed: {ex}"); return "seat check: export failed"; }
-            if (h.Client.Self.SittingOn == 0) return "seat check: she is no longer sitting on an object";
-            var (gap, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, await Program.HoverForSeatRender(), "seat", seat: true);
-            var r = $"seat: {SeatCheckVerdict(gap)}; hover left alone; renders 1; close-up of {HoverContactLabel("seat")}: {img}";
+            // its own sampled loop rather than SupportRender: this check reads the hips-to-seat gap, which the renderer prints even on furniture where
+            // the weight-bearing classification prints no support line at all (the BackBone sink) and SupportRender calls that "no reading"
+            var gaps = new List<double?>(); var imgs = new List<string>(); string bad = null; var hover = await Program.HoverForSeatRender();
+            for (int si = 0; si < HoverSamples; si++)
+            {
+                if (si > 0) await Task.Delay(HoverSampleGapMs);
+                var ex = await h.SceneExport(new[] { "export", "4", "noenv" });
+                var scene = ex.Split('\n').Last();
+                if (!scene.EndsWith("scene.json")) { bad ??= $"sample {si + 1}: export failed"; h.Log("posehover", $"seat check: sample export {si + 1} failed: {ex}"); continue; }
+                if (h.Client.Self.SittingOn == 0) return "seat check: she is no longer sitting on an object";
+                var (gap, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, hover, "seat", seat: true);
+                gaps.Add(gap); imgs.Add(img);
+            }
+            var (med, sampleWhy) = HoverSampleMedian(gaps, HoverSamples);
+            int bi = 0; if (med is double mv) for (int i = 0; i < gaps.Count; i++) if (gaps[i] is double gi && Math.Abs(gi - mv) < Math.Abs((gaps[bi] ?? double.MaxValue) - mv)) bi = i;
+            var img1 = imgs.Count > 0 ? imgs[Math.Min(bi, imgs.Count - 1)] : "no image";
+            var r = med is double m
+                ? $"seat: {SeatCheckVerdict(m)}; hover left alone; renders {gaps.Count}; samples {HoverSamplesText(gaps)} -> median {m:+0.000;-0.000} ({sampleWhy}); close-up of {HoverContactLabel("seat")}: {img1}"
+                : $"seat: NOT measured: {sampleWhy}{(bad != null ? $"; {bad}" : "")}; nothing changed, try again; renders {gaps.Count}; samples {HoverSamplesText(gaps)}; close-up of {HoverContactLabel("seat")}: {img1}";
             h.Log("posehover", r); hoverCheckResult = r; return r;
         }
         finally { poseGate.Release(); }
@@ -568,12 +598,15 @@ internal sealed partial class Hover
                 var (gs, imgs) = await HoverCheckRender(dir, size, hov, kind, parts: parts);
                 var pgs = hoverLastPartGaps; double? bs = gs is double gv ? (parts == null ? gv : SupportGap(parts, pgs) ?? gv) : null;
                 samples.Add(bs); all.Add((gs, imgs, pgs, dir));
-                if (kind != "stand" && si == 0) break;   // sit / kneel checks: unchanged (one render)
             }
-            var (med, sampleWhy) = HoverSampleMedian(samples, kind == "stand" ? HoverSamples : 1);
+            // 2026-11-03 (David: "seat checks need the same 3-sample median as the standing ones"): a seat / kneel check took ONE render and one
+            // reading drove the fix; on the Lalou sofa one fixed position read +0.043, +0.021 and +0.019 m with nothing moving. Every posture now
+            // takes HoverSamples fresh exports and uses the median of the agreeing ones (HoverSampleMedian drops an outlier; a spread over
+            // HoverSampleSpreadMax is "not settled" and changes nothing)
+            var (med, sampleWhy) = HoverSampleMedian(samples, HoverSamples);
             if (med is not double medv) { var m0 = $"{key}: not settled: {sampleWhy}; nothing changed, retry"; h.Log("posehover", m0); hoverCheckResult = m0; return "not settled: " + sampleWhy; }
             { int bi = 0; double bd = double.MaxValue; for (int i = 0; i < samples.Count; i++) if (samples[i] is double sv && Math.Abs(sv - medv) < bd) { bd = Math.Abs(sv - medv); bi = i; } rep = all[bi]; }
-            if (samples.Count > 1) h.Log("posehover", $"{key}: {samples.Count} samples at {hov:0.000}: {HoverSamplesText(samples)} -> median {medv:+0.000;-0.000} ({sampleWhy}; sim appearance hover {Program.SimHoverNow():0.000} taken out of agent z {h.Client.Self.SimPosition.Z:0.000})");
+            h.Log("posehover", $"{key}: {samples.Count} samples at {hov:0.000}: {HoverSamplesText(samples)} -> median {medv:+0.000;-0.000} ({sampleWhy}; sim appearance hover {Program.SimHoverNow():0.000} taken out of agent z {h.Client.Self.SimPosition.Z:0.000})");
             hoverLastPartGaps = rep.Value.pg; dir = rep.Value.dir;
             var (g1, img1) = (rep.Value.g, rep.Value.img);   // render 1: the representative contact close-up (the sample nearest the median)
             string finalImg = img1;
@@ -645,7 +678,7 @@ internal sealed partial class Hover
                 string verdict = good ? "contact confirmed" : !applied ? $"NOT verified: the hover in force is {(eff2 is double q ? q.ToString("0.000") : "unknown")} ({src2}), not {t:0.000}" : "NOT confirmed";
                 how = $"render gap {basis:+0.000} at {hov:0.000} -> {t:0.000}, re-render at {(eff2 ?? t):0.000} ({src2}) gap {(basis2 is double x ? x.ToString("+0.000;-0.000") : "?")} ({verdict}; {calTxt}{liftTxt}): {info}; {img2}";
             }
-            int renders = HoverCheckRenderCount(fixedHover, confirmRender);
+            int renders = HoverCheckRenderCount(fixedHover, confirmRender, samples.Count);
             h.Log("posehover", $"{key}: {how} in {sw.Elapsed.TotalSeconds:F0} s ({img1}); renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}");
             hoverCheckResult = $"{key}: {how}; renders {renders}; close-up of {HoverContactLabel(kind)}: {finalImg}" + (fixedHover ? $" (before the fix: {img1})" : "");
             return null;

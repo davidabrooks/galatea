@@ -8,6 +8,7 @@ using Xunit;
 public class SeatAdjustTests
 {
     static SeatAdjust.SupportReading R(string kind, double gap, params string[] bear) => new(kind, bear, gap, new());
+    static string Root() { var d = new DirectoryInfo(AppContext.BaseDirectory); while (d != null && !Directory.Exists(Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent; return d!.FullName; }
     static readonly List<string> Personal = new() { "[BACK]", "Position", "0.05m", "[DEFAULT]", "[SAVE]", "[SAVE ALL]", "X+", "Y+", "Z+", "X-", "Y-", "Z-" };
 
     [Fact] public void Parse_ReadsKindBearingGapAndParts()
@@ -116,6 +117,82 @@ public class SeatAdjustTests
         Assert.False(SeatAdjust.SitNeedsCheck(42, 42, 0));     // still on the same seat
         Assert.False(SeatAdjust.SitNeedsCheck(42, 0, 0));      // stood
         Assert.True(SeatAdjust.SitNeedsCheck(42, 43, 42));     // moved to another seat
+    }
+    // ---- FIX 1 (2026-11-03): a seat reading is the median of 3 samples, never one ----
+    [Fact] public void SampleMedian_ThreeAgreeingReadings_UsesTheirMiddle()
+    {
+        // the Lalou sofa, 2026-11-03, ONE fixed position and pose: +0.043 then +0.021 then +0.019 m, nothing moving
+        var rs = new List<SeatAdjust.SupportReading> { R("sitting", 0.043, "hips"), R("sitting", 0.021, "hips"), R("sitting", 0.019, "hips") };
+        var (i, med, why) = SeatAdjust.SampleMedian(rs, 3);
+        Assert.Equal(0.021, med!.Value, 6);
+        Assert.Equal(1, i); Assert.Contains("median", why);
+        Assert.Contains("all agree", why);                     // 2.2 cm is inside HoverSampleSpreadMax: kept, and the MIDDLE one is the reading
+    }
+    [Fact] public void SampleMedian_DropsOneOutlierAndNeverReturnsIt()
+    {
+        var rs = new List<SeatAdjust.SupportReading> { R("sitting", 0.010, "hips"), R("sitting", 0.012, "hips"), R("sitting", 0.090, "hips") };
+        var (i, med, why) = SeatAdjust.SampleMedian(rs, 3);
+        Assert.Equal(0.011, med!.Value, 6);                        // the middle of the two that agree
+        Assert.NotEqual(0.090, med!.Value, 6);                     // the outlier never drives the nudge
+        Assert.InRange(i, 0, 1); Assert.Contains("outlier", why);
+    }
+    [Fact] public void SampleMedian_ReadingsThatDisagree_GiveNoReading()
+    {
+        var wide = new List<SeatAdjust.SupportReading> { R("sitting", 0.10, "hips"), R("sitting", 0.00, "hips"), R("sitting", -0.10, "hips") };
+        Assert.Equal(-1, SeatAdjust.SampleMedian(wide, 3).index);   // nothing is pressed on a spread this wide
+        Assert.Null(SeatAdjust.SampleMedian(wide, 3).median);
+        var two = new List<SeatAdjust.SupportReading> { R("sitting", 0.010, "hips"), null, R("sitting", 0.012, "hips") };
+        Assert.Equal(-1, SeatAdjust.SampleMedian(two, 3).index);    // a failed sample is not a reading
+        var inconclusive = new List<SeatAdjust.SupportReading> { new(null, Array.Empty<string>(), null, new()), R("sitting", 0.010, "hips"), R("sitting", 0.011, "hips") };
+        Assert.Equal(-1, SeatAdjust.SampleMedian(inconclusive, 3).index);
+        Assert.Equal(-1, SeatAdjust.SampleMedian(null, 3).index);
+    }
+    [Fact] public void SampleMedian_NeedsTheSamplesItWasAskedFor()
+    {
+        var one = new List<SeatAdjust.SupportReading> { R("sitting", 0.02, "hips") };
+        Assert.Equal(-1, SeatAdjust.SampleMedian(one, 3).index);
+        Assert.Equal((0, (double?)0.02), (SeatAdjust.SampleMedian(one, 1).index, SeatAdjust.SampleMedian(one, 1).median));
+    }
+    [Fact] public void TheSeatedCheck_SamplesEveryPosture_NotJustStanding()
+    {
+        var ph = File.ReadAllText(Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
+        var loop = ph[ph.IndexOf("for (int si = 0; si < HoverSamples; si++)")..]; loop = loop[..loop.IndexOf("var (med, sampleWhy)")];
+        Assert.DoesNotContain("break;", loop);                                   // no "sit / kneel: one render, unchanged" early exit any more
+        Assert.Contains("HoverSampleMedian(samples, HoverSamples)", ph);         // every posture takes the median of 3
+        Assert.DoesNotContain("kind == \"stand\" ? HoverSamples : 1", ph);
+        // the reading a seat adjust acts on AND its quality gate come from the same sample
+        var sr = ph[ph.IndexOf("internal async Task<(SeatAdjust.SupportReading r, string img, string why, SeatAdjust.Quality q)> SupportRender(")..];
+        sr = sr[..sr.IndexOf("// vision/render_quality.py")];
+        Assert.Contains("for (int si = 0; si < HoverSamples; si++)", sr);
+        Assert.Contains("SeatAdjust.SampleMedian(readings, HoverSamples)", sr);
+        Assert.Contains("hoverLastSupport = ri >= 0 ? readings[ri] with { Gap = med } : null;", sr);   // the nudge is the median ...
+        Assert.Contains("return (hoverLastSupport, imgs[ri], null, qs[ri]);", sr);                    // ... and the gate judges that same sample's render
+    }
+
+    // ---- FIX 2 (2026-11-03): one narrow seatadjust command, reusing the tested PlanZ ----
+    [Theory] [InlineData("z", "-0.08", -0.08)] [InlineData("z", "+0.05", 0.05)] [InlineData("Z", "0.13", 0.13)] [InlineData("z", "-1.0", -1.0)]
+    public void ParseZ_TakesMetresUpOrDown(string verb, string dz, double expect)
+    {
+        var (ok, v, err) = SeatAdjust.ParseZ(new[] { verb, dz });
+        Assert.True(ok, err); Assert.Equal(expect, v, 6); Assert.Null(err);
+    }
+    [Fact] public void ParseZ_RefusesWhatItCannotDo()
+    {
+        foreach (var a in new[] { new[] { "z" }, new[] { "z", "abc" }, new[] { "z", "0.001" }, new[] { "z", "2" }, new[] { "z", "-0.08", "force" }, new[] { "restore", "0.08" }, Array.Empty<string>() })
+        {
+            var (ok, _, err) = SeatAdjust.ParseZ(a);
+            Assert.False(ok); Assert.Contains("usage: seatadjust z", err);
+        }
+    }
+    [Fact] public void SeatAdjustZ_PlansItsPressesWithPlanZ_AndNeverSaves()
+    {
+        var run = File.ReadAllText(Path.Combine(Root(), "textclient/galatay-text/SeatAdjustRun.cs"));
+        var z = run[run.IndexOf("if (a.Length > 0 && string.Equals(a[0], \"z\", StringComparison.OrdinalIgnoreCase))")..];
+        z = z[..z.IndexOf("if (a.Length > 0 && (a[0] == \"restore\" || a[0] == \"default\"))")];
+        Assert.Contains("SeatAdjust.ParseZ(a)", z); Assert.Contains("SeatAdjust.PlanZ(dz, st0)", z);   // the tested planner, not a second one
+        Assert.Contains("await SeatAdjustPress(seat, zd, pr, zcts.Token)", z);                        // the presses it lays out, one by one
+        Assert.Contains("NOT saved", z);
+        foreach (var never in new[] { "[SAVE]", "CorrectionZ", "SeatAdjustRun(", "PostHover", "SetHover" }) Assert.DoesNotContain(never, z);   // no save, no measurement, no full check, no hover
     }
     [Fact] public void UnsavedLine_NamesFurnitureAndPose()
     {

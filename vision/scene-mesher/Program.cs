@@ -542,6 +542,10 @@ static class Mesher
         void Count(string k) => stats.AddOrUpdate(k, 1, (_, v) => v + 1);
 
         var byLocal = ((OSDArray)doc["prims"]).Cast<OSDMap>().ToDictionary(o => o["localid"].AsUInteger());
+        // 2026-11-03 18:17 (David's office chair beside the Dutchie desk read as her seat): the linkset she sits on is meshed as its own "seat"
+        // group, so the seat check measures ONLY that object; 0 = not seated on a prim in this export
+        var mySitOn = ((OSDMap)doc["me"]).ContainsKey("sitting_on") ? ((OSDMap)doc["me"])["sitting_on"].AsUInteger() : 0u;
+        uint seatRoot = mySitOn != 0 && byLocal.TryGetValue(mySitOn, out var seatPrim) ? RootOf(seatPrim, byLocal) : 0u;
         var wearerAt = ((OSDArray)doc["avatars"]).Cast<OSDMap>().Where(av => av.ContainsKey("agent_id") && av.ContainsKey("pos"))
             .GroupBy(av => av["agent_id"].AsString()).ToDictionary(g => g.Key, g => g.First()["pos"].AsVector3());
         var avRank = wearerAt.OrderBy(kv => Vector3.Distance(kv.Value, focusR < 1e9f ? focus : me)).Select((kv, i) => (kv.Key, i)).ToDictionary(t => t.Key, t => t.i);
@@ -671,7 +675,7 @@ static class Mesher
                 lock (lights) lights.Add(new { pos = new[] { pos.X, pos.Y, pos.Z }, color = new[] { li.Color.R, li.Color.G, li.Color.B }, intensity = li.Intensity, radius = li.Radius, falloff = li.Falloff, proj = Projector(p.LightMap, rot) });
             if (!mine && bind != null) { Count("rigged_in_world_skipped"); return; }
             if (mine) { (bind != null ? rigged : unrigged).GetOrAdd(owner, _ => new()).Add((owner, p, fm)); return; }  // posed after all joint overrides are known
-            Emit(p, fm, nav ? $"nav:{p.LocalID}" : far ? "far" : "scene", null, null, pos, rot, o);
+            Emit(p, fm, nav ? $"nav:{p.LocalID}" : seatRoot != 0 && RootOf(o, byLocal) == seatRoot ? "seat" : far ? "far" : "scene", null, null, pos, rot, o);
         }
 
 

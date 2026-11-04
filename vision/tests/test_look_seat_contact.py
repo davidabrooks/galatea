@@ -161,7 +161,7 @@ def test_the_renderer_cuts_the_corridor_before_the_wall_check_and_never_touches_
     assert "cut_corridor(seat_cutaway(tgt, loc, cp, width," in src and src.index("cut_corridor(seat_cutaway(") < src.index("# a wall behind the camera: stop in front of it")
     cc = src[src.index("    def cut_corridor(box):"):src.index("    def contact_closeup(")]
     assert "ob_ in obs" in cc and '"floor-line"' in cc and "bmesh.ops.delete" in cc and "me_.copy()" in cc   # her own meshes and the floor line stay; shared mesh data is copied before editing
-    assert "def seat_cast(" in src and "id(ob_) not in mine" in src                                         # the seat rays skip her body
+    assert "def seat_cast(" in src and "id(ob_) in mine" in src                                         # the seat rays skip her body
 
 
 # ---- the AO ground sit (2026-10-26 live test): leaning back, legs forward, hands propped behind, heels on the floor: the close-up framed head to heels ------------

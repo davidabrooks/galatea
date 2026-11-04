@@ -891,8 +891,8 @@ public static partial class Program
             }
             var idx = d.ButtonLabels.IndexOf(pick);
             if (!sub) ClearKeptPoseCopies();
-            // 2026-11-03, David: STOP the face first when the next pose is not adult (before the switch, not seconds after)
-            if (!sub && theVFaceOn && !PosePathIsSexual(path.Append(pick.Trim()), PoseSeatIsAdult(SeatedSeatKey(), SeatedSeatName()))) await TheVFaceStop("switching to a non-adult pose");
+            // 2026-11-03, David: leaving an adult pose for a non-adult one = The V STOP, then re-dress, both BEFORE the switch (AdultExitStep)
+            if (!sub) await LeaveAdultPoseBeforeSwitch(PosePathIsSexual(path.Append(pick.Trim()), PoseSeatIsAdult(SeatedSeatKey(), SeatedSeatName())));
             var t1 = DateTime.Now;
             client.Self.ReplyToScriptDialog(d.Channel, idx, pick, d.ObjectID);
             path.Add(pick.Trim());
@@ -1076,8 +1076,8 @@ public static partial class Program
             var pick = d.ButtonLabels[idx];
             bool sub = pick.TrimEnd().EndsWith("*");
             if (!sub) ClearKeptPoseCopies();
-            // 2026-11-03, David: STOP the face first when the next pose is not adult (before the switch, not seconds after)
-            if (!sub && theVFaceOn && !PosePathIsSexual(path.Append(pick.Trim()), PoseSeatIsAdult(SeatedSeatKey(), SeatedSeatName()))) await TheVFaceStop("switching to a non-adult pose");
+            // 2026-11-03, David: leaving an adult pose for a non-adult one = The V STOP, then re-dress, both BEFORE the switch (AdultExitStep)
+            if (!sub) await LeaveAdultPoseBeforeSwitch(PosePathIsSexual(path.Append(pick.Trim()), PoseSeatIsAdult(SeatedSeatKey(), SeatedSeatName())));
             var t1 = DateTime.Now;
             client.Self.ReplyToScriptDialog(d.Channel, idx, pick, d.ObjectID);
             path.Add(pick.Trim());

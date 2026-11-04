@@ -34,8 +34,8 @@ public static partial class Program
         if (string.IsNullOrWhiteSpace(pending)) return (false, "nothing pending");
         if (flowBusy) return (false, "the Naked flow is still running");
         if (outfitBusy) return (false, "another outfit change is running");
-        // 2026-11-03 14:48 David: a pose switch on the same seat (adult -> adult, or adult -> PG) never re-dresses; the outfit
-        // goes back on only when she leaves the seat (NakedRedressBeforeStand at the end of the stay, or here once standing)
+        // 2026-11-03 14:48 David: adult -> adult on the same seat never re-dresses. 16:33 David: adult -> NON-adult re-dresses at the
+        // switch itself (LeaveAdultPoseBeforeSwitch, SeatPose.cs); this tick only covers leaving the seat
         if (seated) return (false, sexualPoseNow ? "the adult pose is still running" : "still on the seat: re-dress only after standing up");
         return (true, "stood up");
     }
@@ -80,6 +80,20 @@ public static partial class Program
         }
         catch (Exception ex) { nakedRetryAt = DateTime.Now.AddSeconds(30); WLog($"REDRESS in '{name}' failed (retry in 30 s): " + ex.GetBaseException().Message); }
         finally { nakedRedressBusy = 0; }
+    }
+
+    // pure (tested): what to do before a seat-menu pose switch. 2026-11-03 16:33 David: the mid-sit change went Vibrator -> Curled up,
+    // stopped the face but left her naked. Next pose not adult -> The V STOP then re-dress (NakedRedressRun stops the face first), before the switch.
+    internal static string AdultExitStep(bool nextSexual, bool redressPending, bool faceOn)
+        => nextSexual ? null : redressPending ? "redress" : faceOn ? "face-stop" : null;
+
+    static async Task LeaveAdultPoseBeforeSwitch(bool nextSexual)
+    {
+        switch (AdultExitStep(nextSexual, nakedRedressOutfit != null && !nakedFlowBusy, theVFaceOn))
+        {
+            case "redress": await NakedRedressRun("switching to a non-adult pose"); for (int k = 0; k < 240 && Volatile.Read(ref nakedRedressBusy) == 1; k++) await Task.Delay(250); break;
+            case "face-stop": await TheVFaceStop("switching to a non-adult pose"); break;
+        }
     }
 
     // wander's stay on the seat is over and the outfit is still pending: put it back while still seated, then she stands

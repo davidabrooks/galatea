@@ -3,7 +3,7 @@ using Xunit;
 
 namespace GalatayText.Tests;
 
-/// <summary>2026-11-03 David: Pure Pleasure face on an adult pose, The V STOP when it ends; no re-dress on a pose switch.</summary>
+/// <summary>2026-11-03 David: Pure Pleasure face on an adult pose, The V STOP when it ends; adult to adult never re-dresses, adult to non-adult re-dresses (AdultExitTests).</summary>
 public class TheVFaceTests
 {
     [Fact]

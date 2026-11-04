@@ -119,23 +119,36 @@ public static partial class Program
         List<FurnitureBox> boxes;
         try { var f = Path.Combine(RouteDir, "_graph-Peronaut.json"); boxes = File.Exists(f) ? ParseFurnitureBoxes(File.ReadAllText(f)) : new(); } catch { boxes = new(); }
         var fin = SeatFinalApproach(q, seat, approach, boxes);
-        if (fin != null) pts.Add(fin.Value);
+        // a point pushed out beyond the graph point replaces it (no walk up to the furniture and back)
+        if (fin != null) { if (approach == null && pts.Count > 0 && HDist(fin.Value, seat) > HDist(q, seat)) pts[^1] = fin.Value; else pts.Add(fin.Value); }
         return (pts, q, d, null);
     }
 
-    internal const float SeatApproachMargin = 0.3f;
-    // pure: the last point before sitting (null = the graph point is close enough). Never inside a furniture footprint
-    // (+ margin): the 1.2 m point is moved back toward the path until clear, or dropped.
+    // 2026-11-03 David ("when you are walking to the couch you are getting too close to it"): the Lalou sofa's graph point was 0.4 m
+    // from its footprint (y 66.6 vs end 67.0) and no step was computed (graph point within 2.2 m), so she stopped against it.
+    // The last walk point must clear every footprint by SeatApproachMargin: her half depth (~0.3 m) + the walk's overshoot (~0.3 m).
+    internal const float SeatApproachMargin = 0.6f, SeatPushOutMax = 1.5f;
+    // pure: the last point before sitting (null = the graph point is fine). Never inside a furniture footprint + margin:
+    // far from the seat: the 1.2 m point moved back toward the path until clear; near it: the graph point pushed straight
+    // away from the seat (the side she arrives on) until clear, at most SeatPushOutMax.
     internal static Vector3? SeatFinalApproach(Vector3 pathPt, Vector3 seat, Vector3? approach, IEnumerable<FurnitureBox> boxes)
     {
         if (approach != null) return HDist(pathPt, approach.Value) > 0.3f ? approach : null;
         float total = HDist(pathPt, seat);
-        if (total <= 2.2f) return null;
-        var dir = Vector3.Normalize(new Vector3(pathPt.X - seat.X, pathPt.Y - seat.Y, 0));
-        float z = Math.Min(pathPt.Z, seat.Z + 0.6f);
-        for (float r = 1.2f; r < total - 0.3f; r += 0.1f)
+        var dir = total < 0.01f ? Vector3.UnitX : Vector3.Normalize(new Vector3(pathPt.X - seat.X, pathPt.Y - seat.Y, 0));
+        if (total > 2.2f)
         {
-            var p = new Vector3(seat.X + dir.X * r, seat.Y + dir.Y * r, z);
+            float z = Math.Min(pathPt.Z, seat.Z + 0.6f);
+            for (float r = 1.2f; r < total - 0.3f; r += 0.1f)
+            {
+                var p = new Vector3(seat.X + dir.X * r, seat.Y + dir.Y * r, z);
+                if (InFurnitureMargin(p, boxes, SeatApproachMargin) == null) return p;
+            }
+        }
+        if (InFurnitureMargin(pathPt, boxes, SeatApproachMargin) == null) return null;
+        for (float k = 0.1f; k <= SeatPushOutMax + 0.001f; k += 0.05f)
+        {
+            var p = new Vector3(pathPt.X + dir.X * k, pathPt.Y + dir.Y * k, pathPt.Z);
             if (InFurnitureMargin(p, boxes, SeatApproachMargin) == null) return p;
         }
         return null;

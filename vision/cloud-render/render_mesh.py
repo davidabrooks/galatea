@@ -2013,7 +2013,9 @@ if SCENE:
             if sup_info is not None:
                 zb_ = min(floor, zlow) - 0.06
                 print(support_quality_line(sup_info[0], zb_, zb_ + width * min(res) / max(res), seat_z is not None), flush=True)
-            print(f"GT: contact close-up: hips against the seat, {len(cp)} hip vertices within {CONTACT_BAND:g} m of the lowest, hips z {zlow:.3f}, "
+            # 2026-11-03: say out loud that the viewer's hover is in this placement (a seat check used to look at a render that silently left it out)
+            print(f"GT: contact close-up: hips against the seat (placement: sim seated position + hover in force {seat_hover(os.environ):+.3f} m, as the viewer draws it), "
+                  f"{len(cp)} hip vertices within {CONTACT_BAND:g} m of the lowest, hips z {zlow:.3f}, "
                   f"{'seat top z %.3f (median of the rays under the lowest patch)' % seat_z if seat_z is not None else 'seat surface not found (hips area only)'}, frame {width:.2f} m wide, camera {d:.2f} m away", flush=True)
             print("GT: seat contact gap " + (f"{gap:+.3f} m (hips above the seat +, sunk into it -)" if gap is not None else "unknown (seat surface not found)"), flush=True)
             cut_corridor(seat_cutaway(tgt, loc, cp, width, min(floor, zlow) - 0.06, res))   # nothing of the seat between the camera and her hips

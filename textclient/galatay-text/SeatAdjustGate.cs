@@ -3,8 +3,9 @@
 // David: "never Save an adjustment unless confident it's correct", "we will need a way to detect bugged poses".)
 //  1) Quality gate: a reading is only acted on when the render shows the surface under every bearing part (rays hit it, its z is inside the frame),
 //     the seat top under her hips was found, and the image is not blown out. Else one wide retake (GT_SUPPORT_WIDE), else nothing is pressed.
-//  2) Save confidence: before AND after pass the gate, the same kind and bearing parts, after in band and measurably better. Better but not confident:
-//     the nudge stays UNSAVED and David is told; worse: undone.
+//  2) Save: David 2026-11-04 ("just save your adjustments anyway ... because you will always be checking them") reversed the 11-02 rule for an
+//     APPLIED nudge: whatever the re-render reads (a changed bearing pattern, a render not good enough to confirm it, better but out of band) it is
+//     SAVED, and the old confidence verdict is only told in the log line. What is still undone: a nudge the re-render shows to be WORSE than before.
 //  3) Bugged pose: evidence from OBJECT DATA (her body vs the seat linkset's box: floating high over it / buried under it), the render (a huge gap),
 //     the anims (no seat pose anim playing). A bugged pose goes on the per-furniture denylist (_pose-rules.json "bugged_poses"), another pose on the
 //     SAME furniture is picked; she only leaves when no solo pose is left. No per-object numbers anywhere: the thresholds are body-scale constants.
@@ -62,17 +63,41 @@ internal static partial class SeatAdjust
     }
     internal static bool SameClass(SupportReading a, SupportReading b) => a?.Kind == b?.Kind && a != null && b != null && a.Bearing.OrderBy(x => x).SequenceEqual(b.Bearing.OrderBy(x => x));
 
-    internal enum SaveCall { Save, KeepUnsaved, Revert }
-    // pure (tested): David 2026-11-02: never Save unless confident. Confident = both renders pass the gate, the same kind and bearing parts, after in band, measurably better.
+    // Save = press the furniture's Save button for this posed position. Revert = the presses are undone (nothing unproven stays). CannotSave =
+    // the run can no longer reach its Save button (she was stood up / the seat changed mid-run, the menu was lost, no press was applied): the
+    // caller reports it honestly instead of pretending to save.
+    internal enum SaveCall { Save, CannotSave, Revert }
+    // pure (tested): the ONLY things that may stop a Save (David 2026-11-04: an applied nudge is always saved), and never how the re-render reads.
+    // null = the run can still save. A pause in the wander is not on this list: the menu is still open, so the save still lands.
+    internal static string CannotSaveWhy(int pressesApplied, bool onSameSeat, bool menuAlive, bool saveButton = true)
+        => !onSameSeat ? "she was stood up (or the seat changed) mid-run, so the menu is gone"
+         : !menuAlive ? "the menu was lost (the presses got no answer)"
+         : pressesApplied == 0 ? "no presses were applied"
+         : !saveButton ? "this furniture's adjust menu has no Save button"
+         : null;
+    // pure (tested): David 2026-11-04: an APPLIED nudge is always Saved; the confidence reading is still made, but it is only the `why` the log tells
+    // ("the pose reads differently after the nudge ...", "better but still outside the contact band"). Undone is reserved for a nudge that is worse
+    // than before, or one resting on a first render that never passed the gate (nothing else may stand on an untrusted measurement).
     internal static (SaveCall call, string why) SaveConfidence(SupportReading before, Quality qb, SupportReading after, Quality qa)
     {
         if (after is { Conclusive: true } && before is { Conclusive: true } && Math.Abs(after.Gap!.Value) > Math.Abs(before.Gap!.Value) + ImproveMin) return (SaveCall.Revert, "the re-render is worse than before");
-        var fb = GateFail(before, qb); if (fb != null) return (SaveCall.Revert, "the first render was not good enough: " + fb);
-        var fa = GateFail(after, qa); if (fa != null) return (SaveCall.KeepUnsaved, "the re-render is not good enough to confirm it: " + fa);
-        if (!SameClass(before, after)) return (SaveCall.KeepUnsaved, $"the pose reads differently after the nudge ({Describe(before)} -> {Describe(after)})");
+        if (GateFail(before, qb) is string fb) return (SaveCall.Revert, "the first render was not good enough: " + fb);
+        if (GateFail(after, qa) is string fa) return (SaveCall.Save, "the re-render is not good enough to confirm it: " + fa);
+        if (!SameClass(before, after)) return (SaveCall.Save, $"the pose reads differently after the nudge ({Describe(before)} -> {Describe(after)})");
         if (Math.Abs(after.Gap!.Value) > Math.Abs(before.Gap!.Value) - ImproveMin) return (SaveCall.Revert, "no measurable improvement");
-        if (!InBand(after)) return (SaveCall.KeepUnsaved, "better but still outside the contact band");
+        if (!InBand(after)) return (SaveCall.Save, "better but still outside the contact band");
         return (SaveCall.Save, "confident: both renders pass the gate, same pose kind, in band");
+    }
+    // pure (tested): the whole decision a run makes after its presses, from the render verdict plus whether it can still reach the Save button.
+    // Nothing pressed = there is nothing to save and nothing to undo (CannotSave, never a pretend Revert). Losing the furniture only turns a Save
+    // into CannotSave: a nudge the re-render shows to be WORSE is still undone, whatever state the menu is in, so a run that could not land its
+    // undo still says so (PR #427).
+    internal static (SaveCall call, string why) SaveDecision(SupportReading before, Quality qb, SupportReading after, Quality qa,
+        int pressesApplied, bool onSameSeat, bool menuAlive, bool saveButton = true)
+    {
+        if (pressesApplied == 0) return (SaveCall.CannotSave, "no presses were applied");
+        var r = SaveConfidence(before, qb, after, qa);
+        return r.call == SaveCall.Save && CannotSaveWhy(pressesApplied, onSameSeat, menuAlive, saveButton) is string why ? (SaveCall.CannotSave, why) : r;
     }
 
     // ---- bugged pose detection ----

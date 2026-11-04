@@ -4,9 +4,10 @@
 // placement) reads what bears her weight (render_mesh.py classify_support: the pose kind - sitting, kneeling, standing, lying, hand-supported - comes from
 // which BODY parts rest lowest on the surface under them, never from the pose name) and the mean gap of those parts against that surface.
 // Outside the acceptance band she is moved with the furniture's OWN adjust (AVsitter 2: [ADJUST] > [POSE] > Z+/Z- in 0.25/0.05/0.01 m steps), by exactly
-// the measured gap (rounded to AVsitter's 1 cm step), re-rendered, and only when the new render is conclusive, the same kind, better than before and
-// inside the band does she press [SAVE] (AVsitter: a personal per-avatar, per-pose offset; any sitter may save it, it is not the owner's notecard).
-// Worse / inconclusive: the presses are undone and nothing is saved. Hover is never touched. Only on Peronaut furniture or her own. nPose / other: log and skip.
+// the measured gap (rounded to AVsitter's 1 cm step), re-rendered, and presses [SAVE] for it (AVsitter: a personal per-avatar, per-pose offset; any
+// sitter may save it, it is not the owner's notecard). 2026-11-04 David: every nudge that was applied is saved, because she always re-checks her
+// seat; the re-render's verdict is logged, not used to leave a nudge unsaved. A nudge the re-render shows to be WORSE is still undone, and nothing
+// is saved when the run lost the furniture (stood up, menu lost). Hover is never touched. Only on Peronaut furniture or her own. nPose / other: log and skip.
 using System;
 using System.Collections.Generic;
 using System.Globalization;

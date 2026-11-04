@@ -83,7 +83,7 @@ public class SeatAdjustTests
         Assert.Contains("SeatAdjustAfterPoseAsync(seat, seatName", Src("SeatPose.cs"));
         var run = Src("SeatAdjustRun.cs");
         Assert.DoesNotContain("SetHover", run); Assert.DoesNotContain("PostHover", run);
-        Assert.Contains("SeatAdjust.SaveConfidence(before, q0, cur, qcur)", run);   // SAVE only when confident (SeatAdjustGate.cs)
+        Assert.Contains("SeatAdjust.SaveDecision(before, q0, cur, qcur,", run);   // 2026-11-04: SAVED unless the run cannot save (SeatAdjustGate.cs)
         Assert.Contains("seatPosePicking) > 0) { seatWatchPrev = prev; continue; }", run);   // 17:14: the watcher never runs mid-pick
         Assert.Contains("SeatAdjust.PoseLabelFor(wLastPose", run);                               // ... nor with another seat's pose label
         var sp = Src("SeatPose.cs");

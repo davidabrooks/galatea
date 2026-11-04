@@ -1,4 +1,7 @@
-// SeatAdjustRun.cs: the live side of SeatAdjust.cs (render -> AVsitter Z nudge -> re-render -> [SAVE] only when measurably better and in band).
+// SeatAdjustRun.cs: the live side of SeatAdjust.cs (render -> AVsitter Z nudge -> re-render -> [SAVE] for every nudge that was applied).
+// 2026-11-04 David ("just save your adjustments anyway ... you will always be checking them"): the old save only on a measurably better, in-band,
+// same-kind re-render left nudges UNSAVED and pinged him to look. An applied nudge is now saved and the old confidence verdict is only in the log
+// line; what still stops a save is losing the furniture (stood up / seat changed / menu lost) or pressing nothing, reported honestly.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -38,6 +41,10 @@ public static partial class Program
         });
     }
     static bool SeatAdjustStill(Primitive seat, int gen) => gen == Volatile.Read(ref seatAdjustGen) && client.Self.SittingOn == seat.LocalID && !(WanderOn && wanderPause != null);
+    // the save's own test (David 2026-11-04): may the [SAVE] button still reach the pose this nudge was measured on? She must still be on the SAME
+    // seat, and no newer pose pick may have taken the menu (its own personal offset is a different one). A wander pause (David starts chatting
+    // mid-run) does NOT block it: the menu is still open on the same pose, so the nudge is still saved.
+    static bool SeatAdjustOnSeat(Primitive seat, int gen) => gen == Volatile.Read(ref seatAdjustGen) && seat != null && client.Self.SittingOn == seat.LocalID;
 
     internal static volatile string seatAdjustUnsaved = null;   // the last UNSAVED line, shown in wander status until a later sit saves or needs nothing
     static uint seatAdjustCheckedSeat, seatWatchPrev;
@@ -153,22 +160,25 @@ public static partial class Program
             cur = r; qcur = q;
             if (v is not (SeatAdjust.Verdict.Save or SeatAdjust.Verdict.Continue)) break;
         }
-        var (call, why) = SeatAdjust.SaveConfidence(before, q0, cur, qcur);
-        if (applied == 0) call = SeatAdjust.SaveCall.Revert;
+        // David 2026-11-04: an applied nudge is always SAVED. What still stops it is only the run losing its handle on the furniture (stood up,
+        // seat changed, menu lost) or having pressed nothing at all; the confidence rule is read for the log, never for the decision to save.
+        var (call, why) = SeatAdjust.SaveDecision(before, q0, cur, qcur,
+            (int)Math.Round(Math.Abs(applied) / SeatAdjust.Step), SeatAdjustOnSeat(seat, gen), d != null);
         string outcome;
-        if (call == SeatAdjust.SaveCall.Save && d != null && SeatAdjustStill(seat, gen))
+        if (call == SeatAdjust.SaveCall.Save)
         {
             int si = d.ButtonLabels.FindIndex(b => b.Trim() == "[SAVE]");
             var t = DateTime.Now; client.Self.ReplyToScriptDialog(d.Channel, si, d.ButtonLabels[si], d.ObjectID);
             var after = await WaitSeatDialog(seat, t, 5000, ct);   // AVsitter answers a save by re-showing its menu
             if (after == null) SAUnsaved(seatName, pose, applied, "the [SAVE] press got no answer from the furniture (save not confirmed)");
             else seatAdjustUnsaved = null;
-            outcome = after != null ? $"SAVED ([SAVE]: AVsitter personal offset for this pose; {why})" : "pressed [SAVE], not confirmed";
+            outcome = after != null ? $"saved ([SAVE]): {why}" : "pressed [SAVE], not confirmed";
         }
-        else if (call == SeatAdjust.SaveCall.KeepUnsaved && d != null)
+        else if (call == SeatAdjust.SaveCall.CannotSave)
         {
-            SAUnsaved(seatName, pose, applied, "I am not confident enough to Save it: " + why);
-            outcome = $"kept Z {applied:+0.00;-0.00} UNSAVED ({why})";
+            // honest: no button left to press. Nothing claims an undo either: the run never had one to make on a save it could reach.
+            if (applied != 0) SAUnsaved(seatName, pose, applied, why + ", so the nudge is still unsaved");
+            outcome = applied != 0 ? $"could not save ({why}); the nudge is still on" : $"not saved ({why}); nothing moved";
         }
         else
         {
@@ -219,22 +229,20 @@ public static partial class Program
             if (step is double st && Math.Abs(st) < 0.003) v = SeatAdjust.Verdict.Inconclusive;   // presses do not move her measurably
             if (v is SeatAdjust.Verdict.Save or SeatAdjust.Verdict.Continue) { cur = r; qcur = q; }
         }
-        var (call, why) = SeatAdjust.SaveConfidence(before, q0, cur, qcur); if (net == 0) call = SeatAdjust.SaveCall.Revert;
+        // David 2026-11-04: an applied press sequence is always SAVED (its own save button); only losing the furniture stops it
+        var (call, why) = SeatAdjust.SaveDecision(before, q0, cur, qcur, net, SeatAdjustOnSeat(seat, gen), d != null, save != null);
         double appliedM = before.Gap is double b && cur.Gap is double c ? b - c : 0;
         string outcome;
-        if (call == SeatAdjust.SaveCall.KeepUnsaved && d != null)
+        if (call == SeatAdjust.SaveCall.Save)
         {
-            SAUnsaved(seatName, pose, appliedM, "I am not confident enough to Save it: " + why); outcome = $"kept UNSAVED ({why})";
+            d = await SeatAdjustPress(seat, d, save, ct);
+            if (d == null) SAUnsaved(seatName, pose, appliedM, $"the '{save}' press got no answer (save not confirmed)"); else seatAdjustUnsaved = null;
+            outcome = d != null ? $"saved ('{save}'): {why}" : $"pressed '{save}', not confirmed";
         }
-        else if (call == SeatAdjust.SaveCall.Save && SeatAdjustStill(seat, gen))
+        else if (call == SeatAdjust.SaveCall.CannotSave)
         {
-            if (save != null)
-            {
-                d = await SeatAdjustPress(seat, d, save, ct);
-                if (d == null) SAUnsaved(seatName, pose, appliedM, $"the '{save}' press got no answer (save not confirmed)"); else seatAdjustUnsaved = null;
-                outcome = d != null ? $"SAVED ('{save}')" : $"pressed '{save}', not confirmed";
-            }
-            else { SAUnsaved(seatName, pose, appliedM, "this furniture's adjust menu has no Save button"); outcome = "kept, no Save button"; }
+            if (net != 0) SAUnsaved(seatName, pose, appliedM, why + ", so the nudge is still unsaved");
+            outcome = net != 0 ? $"could not save ({why}); the nudge is still on" : $"not saved ({why}); nothing moved";
         }
         else
         {

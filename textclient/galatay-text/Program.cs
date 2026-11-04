@@ -400,6 +400,7 @@ public static partial class Program
         IdlePoseLoginStart(); // clear a leftover collar pose / AO ground sit (IdlePose.cs)
         LoginJoinStart(); // walk over to David myself + measured placement for the david_login wake (LoginJoin.cs)
         _ = Task.Run(LoginFaceHim); // after the join walk: face David if he is within 20 m (IdlePose.cs)
+        if (QuickRelogClear(QuickRelogPath)) Log("login", "quick relog done: automatic re-dress after a stand is back on (AdultRedress.cs)");
         _ = Task.Run(AfterQuickLogin); // quick relog: floor spot beside the furniture, never re-sit (LoginStart.cs)
         _ = Task.Run(AfterLoginHeight); // pin hover + verify appearance/size (HeightGuard.cs)
         animLogUntil = DateTime.Now.AddMinutes(10);
@@ -2312,6 +2313,7 @@ public static partial class Program
                 return GalatayMcp.Webhook.ConfigSummary();
             case "logout": case "quit": case "exit":
             {
+                if (a.Length > 0 && a[0].Equals("quick", StringComparison.OrdinalIgnoreCase)) QuickRelogMark(QuickRelogPath, "logout quick");   // AdultRedress.cs: no re-dress on the way out
                 // 2026-11-02: the collar Stealth outcome (confirmed, or NOT CONFIRMED) goes into the logout result
                 var rep = logoutCollarReport = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 _ = Task.Run(async () => { await Task.Delay(200); await Shutdown("logout command"); rep.TrySetResult("collar step did not run (not logged in, not worn, or turned off)"); });

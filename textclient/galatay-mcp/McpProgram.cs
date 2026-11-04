@@ -66,8 +66,8 @@ public sealed class SlTools
     [McpServerTool(Name = "login"), Description("Log Galatay Resident into Second Life (start location 'last'). Refuses if Firestorm or another Galatay client is logged in. Password is read internally from the box secret store.")]
     public static Task<string> Login() => Detached("login");
 
-    [McpServerTool(Name = "logout"), Description("Log out of Second Life cleanly (the MCP server keeps running).")]
-    public static Task<string> Logout() => Detached("logout");
+    [McpServerTool(Name = "logout"), Description("Log out of Second Life cleanly (the MCP server keeps running). quick_relog=true: a quick relog, she is not re-dressed by the stand on the way out (cleared at the next login).")]
+    public static Task<string> Logout([Description("true for a quick relog: keep her outfit as it is (no automatic re-dress after the logout stand)")] bool quick_relog = false) => Detached(quick_relog ? "logout quick" : "logout");
 
     [McpServerTool(Name = "status"), Description("Connection state, region, position, seat, follow target, pending teleport offer, memory use.")]
     public static string Status() => Json(Core.StatusObj());

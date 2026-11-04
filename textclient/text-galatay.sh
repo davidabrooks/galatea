@@ -134,6 +134,8 @@ case "${1:-}" in
     done
     rm -f "$SUPF" ;;
   stop)
+    # 'stop quick' (2026-11-03): a quick relog, the logout stand does not re-dress her (AdultRedress.cs, cleared at the next login)
+    [[ "${2:-}" == quick ]] && echo "quick relog requested at $(date '+%F %T') by text-galatay.sh stop quick" > "$RUN/quick-relog"
     touch "$STOPF"
     echo "stopped deliberately at $(date '+%F %T') by text-galatay.sh stop (uid $(id -un))" > "$MARK"
     alog "deliberate-stop marker set by text-galatay.sh stop (autostart will not start her until a manual start)"

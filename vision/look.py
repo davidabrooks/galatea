@@ -238,6 +238,14 @@ def mesh_under_roof(meta, binpath, height=80.0):
         if np.any(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (hz > z) & (hz < z + height)): return True
     return False
 
+HOVERCHECK_EXPOSURE = -1.5   # stops: = render_mesh.QUICK_EXPOSURE
+
+def hovercheck_exposure():
+    """GT_EXPOSURE for the hover / seat check when the caller sets none. 2026-11-03 Lalou sofa: it was pinned to "0", which beat the
+    quick-look default of -1.5 (David Oct 14: "way too bright") because an explicit GT_EXPOSURE always wins in render_mesh.view_exposure,
+    so every seat close-up rendered 1.5 stops hot and the quality gate refused it (36 % / 53 % blown out)."""
+    return f"{HOVERCHECK_EXPOSURE:g}"
+
 def golden_hour_env(doc, env, portrait, sky):
     """2026-10-21 David's beach portrait exported after sunset: an outdoor photo hd portrait (self) with the sun below the horizon and
     no named sky gets golden hour instead of night: the `sunset` preset, its sun turned to the export's sun azimuth. None when it
@@ -646,7 +654,7 @@ def main(a):
     if not vw and opts["views"]: vw = opts["views"]   # a preset's default side list
     try: bviews = body_views(vw)
     except ValueError as e: sys.exit(str(e))
-    if len(a) >= 2 and a[1] == "hovercheck": a = [a[0], "view", *a[2:]]; fast = True; os.environ.update({"GT_HOVER_CHECK": "0" if os.environ.get("GT_SEAT_CHECK") == "1" else "1", "GT_VIEW_OVERRIDE": look_scope.hovercheck_view(os.environ), "GT_RES": "640x400", "GT_HC_SAMPLES": "32", "GT_EXPOSURE": os.environ.get("GT_EXPOSURE", "0")})
+    if len(a) >= 2 and a[1] == "hovercheck": a = [a[0], "view", *a[2:]]; fast = True; os.environ.update({"GT_HOVER_CHECK": "0" if os.environ.get("GT_SEAT_CHECK") == "1" else "1", "GT_VIEW_OVERRIDE": look_scope.hovercheck_view(os.environ), "GT_RES": "640x400", "GT_HC_SAMPLES": "32", "GT_EXPOSURE": os.environ.get("GT_EXPOSURE", hovercheck_exposure())})
     if len(a) < 2 or a[1] not in ("view", "self", "around", "at") or (a[1] == "at") != (len(a) > 2): sys.exit(__doc__)
     d, mode, target = a[0], a[1], " ".join(a[2:]).strip().lower()
     if headshot and hd_arg == "": hd_arg = "square"   # headshot default frame (--hd=landscape|portrait still wins)

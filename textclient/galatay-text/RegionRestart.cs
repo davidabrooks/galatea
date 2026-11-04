@@ -223,7 +223,7 @@ public static partial class Program
         if (client.Self.SittingOn != 0)
         {
             Interlocked.Increment(ref sitGen);
-            client.Self.Stand();
+            StandFaceFirst();
             for (int i = 0; i < 12 && client.Self.SittingOn != 0; i++) await Task.Delay(250, ct);
             RLog($"stood up ({(client.Self.SittingOn == 0 ? "standing" : "still reported seated")}); seat-off rule re-wears the AO");
             await Task.Delay(3000, ct);
@@ -369,7 +369,7 @@ public static partial class Program
         }
         var why = home == null ? "her pillow not in view" : occHome != null || occDav != null ? $"rock pillows taken (hers: {occHome ?? "free"}, David's: {occDav ?? "free"})" : "sit on her pillow failed";
         Log("sithome", why + " -> looking for another quiet seat (not the zendo)");
-        if (client.Self.SittingOn != 0) { Interlocked.Increment(ref sitGen); client.Self.Stand(); await Task.Delay(1500, ct); }
+        if (client.Self.SittingOn != 0) { Interlocked.Increment(ref sitGen); StandFaceFirst(); await Task.Delay(1500, ct); }
 
         var me = client.Self.SimPosition;
         var avs = sim.ObjectsAvatars.Values.Where(a => a != null && a.ID != client.Self.AgentID).Select(a => PositionHelper.GetAvatarPosition(sim, a)).Where(p => p != Vector3.Zero).ToList();

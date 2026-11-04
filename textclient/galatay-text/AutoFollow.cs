@@ -83,7 +83,7 @@ public static partial class Program
             afWanderWasOn = WanderOn;
             afWanderPause = WanderOn ? wanderPause : null; // capture before StopWander clears it
             if (afWanderWasOn) StopWander("auto-follow David (restores wander state when he leaves)", clearFlag: false);
-            if (client.Self.SittingOn != 0) client.Self.Stand();
+            if (client.Self.SittingOn != 0) StandFaceFirst();
             followDistThis = null; followId = DavidId; followName = av.Name; afEngaged = true; afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now;
             var wnote = !afWanderWasOn ? "" : afWanderPause is "hold" or "user" or "ao" ? $" (wander was on {afWanderPause}; will restore)" : " (wander stopped; resumes when he leaves)";
             AfLog($"David is {dist:F1} m away in {sim.Name}: following him{wnote}");

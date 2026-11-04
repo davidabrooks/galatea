@@ -244,7 +244,7 @@ public static partial class Program
         {
             await PoseSwitchToSoloAfterDavidLeft(gen, 0);
             if (client.Self.SittingOn != 0 && PosePathIsSexual(wLastPosePath) && !SexualPosesAllowedNow())
-            { Log("parcel", "still in a sexual pose after the switch: standing up"); client.Self.Stand(); }
+            { Log("parcel", "still in a sexual pose after the switch: standing up"); StandFaceFirst(); }
         });
     }
 

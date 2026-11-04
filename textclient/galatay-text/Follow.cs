@@ -280,7 +280,7 @@ public static partial class Program
         if (a.Length >= 2 && F(a[^1], out var dv)) { dist = ClampFollowDist(dv); name = string.Join(' ', a[..^1]); }
         var av = Avatars().FirstOrDefault(t => t.av.Name.Equals(name, StringComparison.OrdinalIgnoreCase) || t.av.Name.Equals(name + " Resident", StringComparison.OrdinalIgnoreCase));
         if (av.av == null) return $"'{name}' is not in view (must be in the same region and within draw distance)";
-        if (client.Self.SittingOn != 0) client.Self.Stand();
+        if (client.Self.SittingOn != 0) StandFaceFirst();
         followDistThis = dist;
         if (dist != null) FollowNoteDistChange();
         followId = av.av.ID; followName = av.av.Name;

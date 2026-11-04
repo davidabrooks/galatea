@@ -36,7 +36,7 @@ public static partial class Program
             if (!LoggedIn) return null;
             var dp = DavidPos();
             if (!JoinDavidNeedsBikini(AndroidWorn(), BikiniWorn(), client.Network.CurrentSim?.Name, dp)) return null;
-            if (client.Self.SittingOn != 0) { client.Self.Stand(); await Task.Delay(2500); }
+            if (client.Self.SittingOn != 0) { StandFaceFirst(); await Task.Delay(2500); }
             var g = LoadGraph("Peronaut");
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
             Log("outfit", $"join David on the beach ({what}): bedroom + bikini first (David at {dp.Value.X:F0},{dp.Value.Y:F0})");

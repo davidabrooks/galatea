@@ -236,7 +236,7 @@ public static partial class Program
         var s = LoadBoatSpot();
         wOnBoatLocal = 0;
         if (await BoatToPierBench(why)) return;
-        if (s == null) { WLog($"BOAT leave ({why}): no boat_spot in the seat list; standing instead"); client.Self.Stand(); return; }
+        if (s == null) { WLog($"BOAT leave ({why}): no boat_spot in the seat list; standing instead"); StandFaceFirst(); return; }
         wanderPhase = "teleporting off the boat to the pier";
         if (!await BoatTeleportToSpot(s, "leaving the boat: " + why))
         {

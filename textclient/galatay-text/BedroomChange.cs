@@ -30,7 +30,7 @@ public static partial class Program
             if (!LoggedIn) return null;
             var sim = client.Network.CurrentSim;
             if (!NeedsBedroomWalk(sim?.Name, client.Self.SimPosition, force)) return null;
-            if (client.Self.SittingOn != 0) { client.Self.Stand(); await Task.Delay(2500); }
+            if (client.Self.SittingOn != 0) { StandFaceFirst(); await Task.Delay(2500); }
             var g = LoadGraph(sim.Name);
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
             bool ok = await WalkToChangeSpot(g, $"to change ({what})", cts.Token);

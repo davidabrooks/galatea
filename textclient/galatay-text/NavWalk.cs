@@ -46,7 +46,7 @@ public static partial class Program
         if (client.Self.SittingOn != 0)
         {
             Interlocked.Increment(ref sitGen);
-            client.Self.Stand();
+            StandFaceFirst();
             Log("walk", "standing up to walk (AO is re-worn by the seat-off rule)");
             for (int i = 0; i < 12 && client.Self.SittingOn != 0; i++) await Task.Delay(250, ct);
             await Task.Delay(1500, ct);

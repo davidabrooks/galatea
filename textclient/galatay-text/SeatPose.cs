@@ -891,6 +891,8 @@ public static partial class Program
             }
             var idx = d.ButtonLabels.IndexOf(pick);
             if (!sub) ClearKeptPoseCopies();
+            // 2026-11-03, David: STOP the face first when the next pose is not adult (before the switch, not seconds after)
+            if (!sub && theVFaceOn && !PosePathIsSexual(path.Append(pick.Trim()), PoseSeatIsAdult(SeatedSeatKey(), SeatedSeatName()))) await TheVFaceStop("switching to a non-adult pose");
             var t1 = DateTime.Now;
             client.Self.ReplyToScriptDialog(d.Channel, idx, pick, d.ObjectID);
             path.Add(pick.Trim());
@@ -912,7 +914,7 @@ public static partial class Program
                         WLog($"POSE '{seatName}': overlap: {ov}; picking the next free pose ({overlapTry + 1}/{PoseOverlapRetries})");
                         if (overlapTry + 1 < PoseOverlapRetries)
                             return m + "; overlap -> " + await SeatPose(seat, seatName, DateTime.Now, true, ct, false, false, true, overlapTry + 1);
-                        if (client.Self.SittingOn != 0) { WLog($"POSE '{seatName}': still overlapping after {PoseOverlapRetries} tries; standing up"); client.Self.Stand(); }
+                        if (client.Self.SittingOn != 0) { WLog($"POSE '{seatName}': still overlapping after {PoseOverlapRetries} tries; standing up"); StandFaceFirst(); }
                         return m + $"; overlap ({ov}) - no free pose, stood up";
                     }
                 }
@@ -1074,6 +1076,8 @@ public static partial class Program
             var pick = d.ButtonLabels[idx];
             bool sub = pick.TrimEnd().EndsWith("*");
             if (!sub) ClearKeptPoseCopies();
+            // 2026-11-03, David: STOP the face first when the next pose is not adult (before the switch, not seconds after)
+            if (!sub && theVFaceOn && !PosePathIsSexual(path.Append(pick.Trim()), PoseSeatIsAdult(SeatedSeatKey(), SeatedSeatName()))) await TheVFaceStop("switching to a non-adult pose");
             var t1 = DateTime.Now;
             client.Self.ReplyToScriptDialog(d.Channel, idx, pick, d.ObjectID);
             path.Add(pick.Trim());
@@ -1131,7 +1135,7 @@ public static partial class Program
             var (act, why) = DavidLeftReaction(d0, d1, seated, Random.Shared.NextDouble());
             Log("height", $"pose: David left our seat: {why} -> {act}");
             if (act == "solo") { await PoseSwitchToSoloAfterDavidLeft(gen, 0); return; }
-            client.Self.Stand(); await Task.Delay(1200);
+            StandFaceFirst(); await Task.Delay(1200);
             if (dav != null && !WanderBlocksManualWalk)
                 Log("height", "pose: David left: " + await NavCmds("goto_avatar", dav.Value.av.Name, dav.Value.av.Name.Split(' ')));
         }

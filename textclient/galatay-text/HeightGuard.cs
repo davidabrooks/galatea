@@ -177,7 +177,7 @@ public static partial class Program
             {
                 msg += " -> re-sit once";
                 Log("height", msg); lastHeightCheck = $"{DateTime.Now:HH:mm:ss} {msg}";
-                client.Self.Stand(); await Task.Delay(1500);
+                StandFaceFirst(); await Task.Delay(1500);
                 if (gen != sitGen) return;
                 client.Self.RequestSit(seatId, Vector3.Zero); await Task.Delay(1200); client.Self.Sit();
                 _ = SitGuard(seatId, gen, false);

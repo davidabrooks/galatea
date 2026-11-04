@@ -325,7 +325,7 @@ public static partial class Program
             var block = RobeTpBlock(rname, robeOn, force);
             if (block != null) { Log("robe", $"WARNING landmark tp '{it.Name}' -> {rname} {block} ({robeHow})"); return block; }
             followId = UUID.Zero;
-            if (client.Self.SittingOn != 0) { client.Self.Stand(); await Task.Delay(1500, ct); }
+            if (client.Self.SittingOn != 0) { StandFaceFirst(); await Task.Delay(1500, ct); }
             var from = $"{client.Network.CurrentSim?.Name} {P3(client.Self.SimPosition)}";
             bool ok;
             if (byPos)

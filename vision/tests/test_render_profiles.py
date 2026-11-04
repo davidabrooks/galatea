@@ -38,4 +38,7 @@ def test_night_sky_display_values_to_linear():
 def test_seated_uses_sim_placement():
     z0 = ns["z0_of"]
     assert z0(28.64, 27.85, 0.56, True) == 27.85          # seated: sim's placement, no snap to the seat cushion
+    # 2026-11-03 Lalou sofa: the viewer adds the hover in force to a seated avatar (LLVOAvatar sitting branch), so the render must too
+    assert abs(z0(28.64, 27.85, 0.56, True, -0.08) - 27.77) < 1e-9
+    assert ns["seat_hover"]({"GT_SEAT_HOVER": "-0.080"}) == -0.08 and ns["seat_hover"]({}) == 0.0
     assert abs(z0(28.64, 28.2, 0.4) - 28.24) < 1e-9       # standing within 0.35 m: lowest vertex on the floor

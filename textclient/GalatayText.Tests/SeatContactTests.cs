@@ -16,9 +16,10 @@ public class SeatContactTests
     }
     [Fact] public void SeatLookEnv_UsesTheSeatedPlacement_NotTheHoverModel()
     {
-        var e = Hover.SeatLookEnv();
+        var e = Hover.SeatLookEnv(-0.08);
         Assert.Equal("1", e["GT_SEATED"]); Assert.Equal("1", e["GT_SEAT_CHECK"]); Assert.Equal("hips against the seat", e["GT_HC_POSTURE"]);
-        Assert.False(e.ContainsKey("GT_HOVER_CHECK")); Assert.False(e.ContainsKey("GT_HOVER")); Assert.False(e.ContainsKey("GT_HOVER_BIAS"));   // no hover is drawn or fixed on furniture
+        Assert.False(e.ContainsKey("GT_HOVER_CHECK")); Assert.False(e.ContainsKey("GT_HOVER")); Assert.False(e.ContainsKey("GT_HOVER_BIAS"));   // no hover MODEL or fix on furniture
+        Assert.Equal("-0.080", e["GT_SEAT_HOVER"]);   // 2026-11-03: but the hover in force is drawn, as the viewer draws it on a seated avatar
     }
     [Theory]
     [InlineData("GT: seat contact gap +0.012 m (hips above the seat +, sunk into it -)", 0.012)] [InlineData("seat contact gap -0.034 m (x)", -0.034)] [InlineData("seat contact gap +0.000 m", 0.0)]
@@ -50,7 +51,7 @@ public class SeatContactTests
     [Fact] public void LookSelf_WhileSeated_GetsTheSeatEnv_AndNotTheHoverModel()
     {
         var lk = Src("Look.cs"); var env = lk[lk.IndexOf("static async Task<Dictionary<string, string>> LookHoverEnv()")..]; env = env[..env.IndexOf("static async Task<string> LookCmd")];
-        Assert.True(env.IndexOf("client.Self.SittingOn != 0) return Hover.SeatLookEnv();") is > 0 and var at && at < env.IndexOf("HoverCheckEnv(")); // the seated branch comes first
+        Assert.True(env.IndexOf("client.Self.SittingOn != 0) return Hover.SeatLookEnv(await HoverForSeatRender());") is > 0 and var at && at < env.IndexOf("HoverCheckEnv(")); // the seated branch comes first
     }
     [Fact] public void SeatCheck_ShowsInTheRenderCountDocs_AndTheStandAndSitPathsKeepTheirRenderCount()
     {
@@ -70,6 +71,6 @@ public class SeatContactTests
     {
         Assert.Contains("ContactEnv(seat ? \"seat\" : kind)", Src("PoseHover.cs"));       // the hover check
         Assert.Contains("ContactEnv(kind)", Src("Look.cs"));                              // look self / feet
-        Assert.Equal("seat", Hover.SeatLookEnv()["GT_HC_KIND"]);                        // furniture keeps its own branch
+        Assert.Equal("seat", Hover.SeatLookEnv(0)["GT_HC_KIND"]);                        // furniture keeps its own branch
     }
 }

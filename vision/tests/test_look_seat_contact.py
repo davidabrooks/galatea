@@ -84,7 +84,7 @@ def test_the_renderer_uses_the_seat_branch_only_when_seated_on_an_object():
     assert 'prim_under = sc.ray_cast(dg, Vector((x, y, g[2] + 0.5)), Vector((0, 0, -1)))[0]' in src
     assert 'sc_ = seat_contact(allv, (pel.x, pel.y, pel.z), seat_cast if prim_under else None)' in src and "        if mst:" in src   # only a seated avatar; terrain is never the seat plane
     assert 'if sc_:' in src and 'zlow, cp = gs_ if gs_ else contact_points(allv)' in src                                                 # stand / ground sit / kneel: the #313 path
-    assert 'elif SELF_FLOOR and mst: print("GT: self floor: seated on an object' in src                                   # no hover model on furniture
+    assert 'elif SELF_FLOOR and mst: print(f"GT: self floor: seated on an object' in src                                   # no hover model on furniture
     look = (pathlib.Path(__file__).resolve().parents[1] / "look.py").read_text()
     assert '"GT_HOVER_CHECK": "0" if os.environ.get("GT_SEAT_CHECK") == "1" else "1"' in look and '"GT: seat contact"' in look
 

@@ -74,6 +74,8 @@ public static partial class Program
         try { using var t = new CancellationTokenSource(10000); var m = await client.Self.GetAgentPreferencesAsync(t.Token); return m == null ? null : (double?)m.HoverHeight; }
         catch { return null; }
     }
+    // the hover a seated render draws (the viewer applies hover on furniture too): in force, else the pin
+    internal static async Task<double> HoverForSeatRender() { var (v, _) = await EffectiveHoverFresh(); return v ?? PinnedHover(); }
     static async Task<(double? v, string src)> EffectiveHoverFresh()
     {
         var g = await PrefsHoverValue();

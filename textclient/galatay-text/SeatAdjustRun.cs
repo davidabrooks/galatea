@@ -12,6 +12,9 @@ public static partial class Program
 {
     internal const int SeatAdjustSettleMs = 8000;
     static int seatAdjustGen;
+    // wander holds the sit and its pose change while an adjust run is in progress (David, 2026-11-04); a counter, because runs can overlap
+    static int seatAdjustBusyCount;
+    internal static bool SeatAdjustBusy => Volatile.Read(ref seatAdjustBusyCount) > 0;
     internal static volatile string seatAdjustLast = "none yet";
     static void SALog(string m) { seatAdjustLast = $"{DateTime.Now:HH:mm:ss} {m}"; Log("seatadjust", m); }
 
@@ -22,6 +25,7 @@ public static partial class Program
         int gen = Interlocked.Increment(ref seatAdjustGen); seatAdjustCheckedSeat = seat.LocalID;
         _ = Task.Run(async () =>
         {
+            Interlocked.Increment(ref seatAdjustBusyCount);   // from the settle: wander must not stand her up or change pose mid-adjust
             try
             {
                 await Task.Delay(SeatAdjustSettleMs);
@@ -30,6 +34,7 @@ public static partial class Program
                 await SeatAdjustRun(seat, seatName, pose, gen);
             }
             catch (Exception ex) { SALog($"'{seatName}' {pose}: error {ex.GetBaseException().Message}"); }
+            finally { Interlocked.Decrement(ref seatAdjustBusyCount); }
         });
     }
     static bool SeatAdjustStill(Primitive seat, int gen) => gen == Volatile.Read(ref seatAdjustGen) && client.Self.SittingOn == seat.LocalID && !(WanderOn && wanderPause != null);
@@ -167,9 +172,18 @@ public static partial class Program
         }
         else
         {
-            if (applied != 0 && d != null) d = await SeatAdjustPressZ(seat, d, -applied, ct);   // undo: nothing unproven stays
-            if (applied != 0 && d == null) SAUnsaved(seatName, pose, applied, "the undo presses failed, so an unproven nudge may still be on");
-            outcome = $"not saved ({why}); {(applied != 0 ? $"undid Z {-applied:+0.00;-0.00}" : "nothing moved")}";
+            // undo: nothing unproven stays. 2026-11-04: when she is off the seat (or the menu is gone) there is no handle to press on, and that
+            // is NOT the presses failing: say which happened instead of claiming an undo that never reached the furniture
+            bool pressed = false;
+            if (applied != 0 && d != null) { d = await SeatAdjustPressZ(seat, d, -applied, ct); pressed = true; }
+            bool undid = pressed && d != null;
+            if (applied != 0 && !undid)
+            {
+                var noUndo = !pressed ? "she was stood up (or the menu was lost) before the undo, so nothing could be pressed" : "the undo presses failed";
+                SAUnsaved(seatName, pose, applied, noUndo + ", so an unproven nudge may still be on");
+                outcome = $"not saved ({why}); COULD NOT undo Z {-applied:+0.00;-0.00} ({noUndo})";
+            }
+            else outcome = $"not saved ({why}); {(applied != 0 ? $"undid Z {-applied:+0.00;-0.00}" : "nothing moved")}";
         }
         SALog($"'{seatName}' {pose}: {outcome}: before {SeatAdjust.Describe(before)}, after {SeatAdjust.Describe(cur)}");
         return seatAdjustLast;
@@ -248,35 +262,45 @@ public static partial class Program
             var (zok, dz, zerr) = SeatAdjust.ParseZ(a);
             if (!zok) return "seatadjust: " + zerr;
             using var zcts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-            var zd = await SeatAdjustOpenPersonal(seat, zcts.Token);
-            if (zd == null) return "seatadjust: no AVsitter personal adjust menu on this furniture (nothing pressed)";
-            if (SeatAdjust.Classify(zd.Message, zd.ButtonLabels) != SeatAdjust.Menu.Personal) return "seatadjust: this furniture's adjust is not AVsitter's personal menu (nothing pressed)";
-            var st0 = SeatAdjust.PersonalState(zd.ButtonLabels).step ?? 0.05;
-            var (presses, stepAfter) = SeatAdjust.PlanZ(dz, st0);
-            if (presses.Count == 0) return $"seatadjust: z {dz:+0.00;-0.00} m is under one {SeatAdjust.Step * 100:0} cm step: nothing pressed";
-            double moved = 0, st = st0;
-            foreach (var pr in presses)
+            Interlocked.Increment(ref seatAdjustBusyCount);   // wander holds the sit and its pose change for the whole press sequence
+            try
             {
-                zd = await SeatAdjustPress(seat, zd, pr, zcts.Token);
-                if (zd == null) { SALog($"'{seat.Properties?.Name ?? seat.ID.ToString()}' z {dz:+0.00;-0.00}: the presses stopped early after {moved:+0.00;-0.00} m (no answer from the furniture)"); return $"seatadjust: the presses got no answer after {moved:+0.00;-0.00} m; nothing saved"; }
-                if (pr is "Z+" or "Z-") moved += pr == "Z+" ? st : -st; else st = SeatAdjust.StepCycle[(Array.IndexOf(SeatAdjust.StepCycle, st) + 1) % 3];
+                var zd = await SeatAdjustOpenPersonal(seat, zcts.Token);
+                if (zd == null) return "seatadjust: no AVsitter personal adjust menu on this furniture (nothing pressed)";
+                if (SeatAdjust.Classify(zd.Message, zd.ButtonLabels) != SeatAdjust.Menu.Personal) return "seatadjust: this furniture's adjust is not AVsitter's personal menu (nothing pressed)";
+                var st0 = SeatAdjust.PersonalState(zd.ButtonLabels).step ?? 0.05;
+                var (presses, stepAfter) = SeatAdjust.PlanZ(dz, st0);
+                if (presses.Count == 0) return $"seatadjust: z {dz:+0.00;-0.00} m is under one {SeatAdjust.Step * 100:0} cm step: nothing pressed";
+                double moved = 0, st = st0;
+                foreach (var pr in presses)
+                {
+                    zd = await SeatAdjustPress(seat, zd, pr, zcts.Token);
+                    if (zd == null) { SALog($"'{seat.Properties?.Name ?? seat.ID.ToString()}' z {dz:+0.00;-0.00}: the presses stopped early after {moved:+0.00;-0.00} m (no answer from the furniture)"); return $"seatadjust: the presses got no answer after {moved:+0.00;-0.00} m; nothing saved"; }
+                    if (pr is "Z+" or "Z-") moved += pr == "Z+" ? st : -st; else st = SeatAdjust.StepCycle[(Array.IndexOf(SeatAdjust.StepCycle, st) + 1) % 3];
+                }
+                var zm = $"'{seat.Properties?.Name}' {SeatAdjust.PoseLabelFor(wLastPose, SeatRootOf(seat).ID.ToString())}: pressed Z {moved:+0.00;-0.00} m in {presses.Count} press(es) (asked {dz:+0.00;-0.00}, step now {stepAfter:0.00} m): not measured, so the gap is unread; NOT saved";
+                SALog(zm); return "seatadjust: " + zm;
             }
-            var zm = $"'{seat.Properties?.Name}' {SeatAdjust.PoseLabelFor(wLastPose, SeatRootOf(seat).ID.ToString())}: pressed Z {moved:+0.00;-0.00} m in {presses.Count} press(es) (asked {dz:+0.00;-0.00}, step now {stepAfter:0.00} m): not measured, so the gap is unread; NOT saved";
-            SALog(zm); return "seatadjust: " + zm;
+            finally { Interlocked.Decrement(ref seatAdjustBusyCount); }
         }
         if (a.Length > 0 && (a[0] == "restore" || a[0] == "default"))
         {
             var (ok, err) = SeatAdjust.ParseRestore(a);
             if (!ok) return "seatadjust: " + err;
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-            var d = await SeatAdjustOpenPersonal(seat, cts.Token);
-            if (d == null) return "seatadjust: no AVsitter personal adjust menu on this furniture";
-            if (a[0] == "default") d = await SeatAdjustPress(seat, d, "[DEFAULT]", cts.Token);
-            else d = await SeatAdjustPressZ(seat, d, double.Parse(a[1], System.Globalization.CultureInfo.InvariantCulture), cts.Token);
-            if (d == null) return "seatadjust: the presses got no answer; nothing saved";
-            d = await SeatAdjustPress(seat, d, "[SAVE]", cts.Token);
-            var m = $"'{seat.Properties?.Name}' {SeatAdjust.PoseLabelFor(wLastPose, SeatRootOf(seat).ID.ToString())}: {a[0]} {(a.Length > 1 ? a[1] : "")} then [SAVE]: {(d != null ? "saved" : "save not confirmed")}";
-            SALog(m); return "seatadjust: " + m;
+            Interlocked.Increment(ref seatAdjustBusyCount);   // wander holds the sit and its pose change for the whole press sequence
+            try
+            {
+                var d = await SeatAdjustOpenPersonal(seat, cts.Token);
+                if (d == null) return "seatadjust: no AVsitter personal adjust menu on this furniture";
+                if (a[0] == "default") d = await SeatAdjustPress(seat, d, "[DEFAULT]", cts.Token);
+                else d = await SeatAdjustPressZ(seat, d, double.Parse(a[1], System.Globalization.CultureInfo.InvariantCulture), cts.Token);
+                if (d == null) return "seatadjust: the presses got no answer; nothing saved";
+                d = await SeatAdjustPress(seat, d, "[SAVE]", cts.Token);
+                var m = $"'{seat.Properties?.Name}' {SeatAdjust.PoseLabelFor(wLastPose, SeatRootOf(seat).ID.ToString())}: {a[0]} {(a.Length > 1 ? a[1] : "")} then [SAVE]: {(d != null ? "saved" : "save not confirmed")}";
+                SALog(m); return "seatadjust: " + m;
+            }
+            finally { Interlocked.Decrement(ref seatAdjustBusyCount); }
         }
         int gen = Interlocked.Increment(ref seatAdjustGen);
         return "seatadjust: " + await SeatAdjustRun(seat, seat.Properties?.Name ?? seat.ID.ToString(), SeatAdjust.PoseLabelFor(wLastPose, SeatRootOf(seat).ID.ToString()), gen);

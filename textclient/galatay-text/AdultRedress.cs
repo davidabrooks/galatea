@@ -29,9 +29,11 @@ public static partial class Program
     }
 
     // pure: is it time to put the outfit back? (due, why)
-    internal static (bool due, string why) NakedRedressDue(string pending, bool flowBusy, bool seated, bool sexualPoseNow, double sinceNakedS, bool outfitBusy)
+    internal static (bool due, string why) NakedRedressDue(string pending, bool flowBusy, bool seated, bool sexualPoseNow, double sinceNakedS, bool outfitBusy, bool quickRelog = false)
     {
         if (string.IsNullOrWhiteSpace(pending)) return (false, "nothing pending");
+        // 2026-11-03 16:25 / 18:03 David: a quick naked relog stands her up on the way out; that stand is not the end of the adult pose
+        if (quickRelog) return (false, "quick relog: she stays as she is");
         if (flowBusy) return (false, "the Naked flow is still running");
         if (outfitBusy) return (false, "another outfit change is running");
         // 2026-11-03 14:48 David: adult -> adult on the same seat never re-dresses. 16:33 David: adult -> NON-adult re-dresses at the
@@ -60,7 +62,7 @@ public static partial class Program
     static void NakedRedressTick()
     {
         if (nakedRedressOutfit == null || !LoggedIn || DateTime.Now < nakedRetryAt) return;
-        var (due, why) = NakedRedressDue(nakedRedressOutfit, nakedFlowBusy, client.Self.SittingOn != 0, SexualPoseRunningNow(), (DateTime.Now - nakedAt).TotalSeconds, beachOutfitBusy);
+        var (due, why) = NakedRedressDue(nakedRedressOutfit, nakedFlowBusy, client.Self.SittingOn != 0, SexualPoseRunningNow(), (DateTime.Now - nakedAt).TotalSeconds, beachOutfitBusy, QuickRelogSet(QuickRelogPath));
         if (due) _ = Task.Run(() => NakedRedressRun(why));
     }
 
@@ -82,6 +84,14 @@ public static partial class Program
         finally { nakedRedressBusy = 0; }
     }
 
+    // quick relog (2026-11-03 David: "do you really need to get dressed when you're doing a quick naked relog?"): run/quick-relog is written by
+    // 'logout quick' (MCP logout quick_relog=true, text-galatay.sh stop quick) before the logout stand and removed once the next login is in.
+    // It only holds back the automatic re-dress after a stand; wearing an outfit by command is never blocked.
+    static readonly string QuickRelogPath = Env("GT_QUICK_RELOG", "/home/box/viewers/textclient/run/quick-relog");
+    internal static bool QuickRelogSet(string path) { try { return File.Exists(path); } catch { return false; } }
+    internal static void QuickRelogMark(string path, string why) { try { File.WriteAllText(path, $"quick relog requested at {DateTime.Now:yyyy-MM-dd HH:mm:ss} ({why})\n"); } catch (Exception ex) { Log("warn", "quick-relog flag write failed: " + ex.Message); } }
+    internal static bool QuickRelogClear(string path) { try { if (!File.Exists(path)) return false; File.Delete(path); return true; } catch (Exception ex) { Log("warn", "quick-relog flag clear failed: " + ex.Message); return false; } }
+
     // pure (tested): what to do before a seat-menu pose switch. 2026-11-03 16:33 David: the mid-sit change went Vibrator -> Curled up,
     // stopped the face but left her naked. Next pose not adult -> The V STOP then re-dress (NakedRedressRun stops the face first), before the switch.
     internal static string AdultExitStep(bool nextSexual, bool redressPending, bool faceOn)
@@ -100,7 +110,7 @@ public static partial class Program
     // (the retry timer after a failure is respected: she stands anyway and the tick retries)
     static async Task NakedRedressBeforeStand(string why)
     {
-        if (nakedRedressOutfit == null || !LoggedIn || nakedFlowBusy || beachOutfitBusy || client.Self.SittingOn == 0 || DateTime.Now < nakedRetryAt) return;
+        if (nakedRedressOutfit == null || !LoggedIn || nakedFlowBusy || beachOutfitBusy || QuickRelogSet(QuickRelogPath) || client.Self.SittingOn == 0 || DateTime.Now < nakedRetryAt) return;
         await NakedRedressRun(why);   // returns at once when the tick is already running it: wait for that one below
         for (int k = 0; k < 240 && Volatile.Read(ref nakedRedressBusy) == 1; k++) await Task.Delay(250);
     }

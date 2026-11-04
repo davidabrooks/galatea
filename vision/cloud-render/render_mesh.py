@@ -1504,6 +1504,21 @@ def hover_parts_line(gaps):
     order = list(BONE_PART_SEGS)
     return "GT: hover check parts: " + ", ".join(f"{k} {gaps[k]:+.3f}" for k in order if k in gaps)
 
+CONTACT_VIEW_DEGS = (90.0, 60.0, 120.0, 45.0, 135.0, 0.0, 180.0, -90.0)   # the side first, then around her: a seat check tries these in order
+def seat_view_deg(hits_by_deg):
+    """2026-11-03 (David: "if the render can't see the furniture under the contact area, try different camera rotation angles"): the first angle in
+    CONTACT_VIEW_DEGS with nothing between it and the contact; else the one with the fewest blockers. hits_by_deg = {deg: blockers}. Ties keep the
+    earlier (the plain side view stays the default)."""
+    if not hits_by_deg: return CONTACT_VIEW_DEGS[0]
+    best = min(hits_by_deg, key=lambda d: (hits_by_deg[d], CONTACT_VIEW_DEGS.index(d) if d in CONTACT_VIEW_DEGS else 99))
+    return best
+
+def contact_frame_width(cpts, pad, min_width, max_width):
+    """the frame width for a contact close-up: the contact's own extent plus a small pad, never below min_width / above max_width"""
+    if not cpts: return min_width
+    xs = [p[0] for p in cpts]; ys = [p[1] for p in cpts]
+    return min(max_width, max(min_width, math.hypot(max(xs) - min(xs), max(ys) - min(ys)) + pad))
+
 def feet_camera_spec(x, y, yaw_deg, deg, cpts, zlow, floor_z, lens=50.0, res=(1024, 640), min_width=0.6, pad=0.3, max_width=1.4, sink=0.06):
     """the contact close-up camera: level, from `deg` degrees counter-clockwise from her front (90 = her left), looking at the contact area
     (cpts from contact_points). The frame is `width` wide (the contact's extent along the view + pad, at least min_width = 0.6 m, at most max_width),
@@ -1533,21 +1548,27 @@ def seat_hips(verts, pelvis, r=SEAT_HIPS_R, below=0.30, above=0.15):
     sel = v[(d <= r) & (v[:, 2] >= pelvis[2] - below) & (v[:, 2] <= pelvis[2] + above)]
     return sel if len(sel) >= 20 else v[d <= r * 1.5]
 
-def seat_top_under(patch, zlow, cast, start=SEAT_RAY_START, near=SEAT_TOP_NEAR, far=SEAT_PLANE_BELOW, n=48, min_hits=3):
+def seat_top_under(patch, zlow, cast, start=SEAT_RAY_START, near=SEAT_TOP_NEAR, far=SEAT_PLANE_BELOW, n=48, min_hits=3, top=None):
     """the top of the seat under her hips' lowest patch (2026-10-26, #314 live test on a slatted rocking chair: ONE ray at the agent position hit a slat edge).
     cast(x, y, z) = the z of the first surface under (x, y) at or below z (her own body skipped) or None. Rays go down from `start` above her lowest hip
     vertex at up to `n` points of the patch; rays that fall between slats (no hit, or a rail far below) are dropped. The MEDIAN of the hits within `near`
     under her lowest vertex (else within `far`) is the seat top; fewer than `min_hits` hits -> None (seat surface not found)."""
     pts = list(patch); pts = pts[::max(1, len(pts) // n)][:n]
-    z, _ = seat_top_hits(pts, zlow, cast, start, near, far, min_hits)
+    z, _ = seat_top_hits(pts, zlow, cast, start, near, far, min_hits, top)
     return z
 
-def seat_top_hits(pts, zlow, cast, start=SEAT_RAY_START, near=SEAT_TOP_NEAR, far=SEAT_PLANE_BELOW, min_hits=3):
+def seat_top_hits(pts, zlow, cast, start=SEAT_RAY_START, near=SEAT_TOP_NEAR, far=SEAT_PLANE_BELOW, min_hits=3, top=None):
     """seat_top_under's rays over the given points -> (median surface z or None, how many rays hit it): the hit count is the render-quality evidence
-    that a real surface lies under the part (2026-11-02 tub 'shave': a pose floating over the tub was nudged from a reading with no tub in frame)"""
-    hits = [z for z in (cast(q[0], q[1], zlow + start) for q in pts) if z is not None]
+    that a real surface lies under the part (2026-11-02 tub 'shave': a pose floating over the tub was nudged from a reading with no tub in frame).
+    Rays start above the part's own top (top, when given) so a surface that swallowed the part (a cushion around sunk-in hips) is still found;
+    a surface above her lowest vertex is a SINK and comes back as a negative gap, but only for a SOFT part (the caller passes top): a cushion swallows
+    hips, thighs and chest. A hard part (soles, knees, shins, palms) is passed no top and keeps the old window; the cushion top over a dangling shin is
+    not the shin's surface."""
+    z0 = max(zlow + start, float(top) + start) if top is not None else zlow + start   # top given (a soft part): over its whole top
+    ceil = float(top) if top is not None else z0                                      # nothing above its own top counts for a soft part
+    hits = [z for z in (cast(q[0], q[1], z0) for q in pts) if z is not None and z <= ceil]
     for lo in (near, far):
-        sel = [z for z in hits if zlow - lo <= z <= zlow + start]
+        sel = [z for z in hits if zlow - lo <= z <= z0]
         if len(sel) >= min_hits: return float(np.median(sel)), len(sel)
     return None, 0
 
@@ -1560,7 +1581,9 @@ def seat_contact(verts, pelvis, cast, r=SEAT_HIPS_R, below=0.30, above=0.15, ban
     if len(sel) == 0: return None
     zlow, cp = contact_points(sel)
     patch = [q for q in cp if q[2] <= zlow + 0.03] or cp   # the lowest patch of her butt: where it touches
-    seat_z = seat_top_under(patch, zlow, cast) if cast is not None else None
+    # 2026-11-03 (Lalou sofa, #418): the rays must start above her WHOLE hips, not 0.10 m over their lowest vertex: with the viewer's hover
+    # drawn her hips sit inside the cushion, the cushion top is above the old ray start and no surface was found at all ("seat not found")
+    seat_z = seat_top_under(patch, zlow, cast, top=float(np.max(sel[:, 2]))) if cast is not None else None
     return zlow, cp, seat_z, (None if seat_z is None else zlow - seat_z)
 
 # 2026-11-02 (David: furniture poses can be standing, sitting, kneeling, lying or hand-supported; adjust with the furniture's own ADJUST, never a fudge):
@@ -1577,7 +1600,7 @@ def furniture_support_parts(parts, cast, quantile=0.002):
         if len(p) == 0: continue
         zlow = float(np.quantile(p[:, 2], quantile)); patch = [tuple(r) for r in p[p[:, 2] <= zlow + 0.03]] or [tuple(p[0])]
         pts = patch[::max(1, len(patch) // 48)][:48]
-        surf, nh = seat_top_hits(pts, zlow, cast) if cast is not None else (None, 0)
+        surf, nh = (seat_top_hits(pts, zlow, cast, top=float(np.max(p[:, 2]))) if k in SUPPORT_SOFT else seat_top_hits(pts, zlow, cast)) if cast is not None else (None, 0)
         cx, cy = (float(np.mean([q[0] for q in patch])), float(np.mean([q[1] for q in patch])))
         out[k] = (zlow, surf, None if surf is None else zlow - surf, nh, (cx, cy))
     return out
@@ -1906,6 +1929,27 @@ if SCENE:
             bm_ = bmesh.new(); bm_.from_mesh(me_); bm_.faces.ensure_lookup_table()
             bmesh.ops.delete(bm_, geom=[bm_.faces[i] for i in np.nonzero(mask)[0]], context="FACES"); bm_.to_mesh(me_); bm_.free(); gone += int(mask.sum())
         bpy.context.view_layer.update(); print(f"GT: contact close-up: cut away {gone} faces of the seat between the camera and her hips", flush=True)
+    def seat_deg_from_blockers(px, py, pyaw, deg, cp, zlow, floor, res, lens):
+        """2026-11-03 (David): the seat check's camera angle. For each angle in CONTACT_VIEW_DEGS, cast from the contact patch toward that camera
+        position (the same feet_camera_spec the close-up uses) and count what stands in the way; the first clear angle wins, else the clearest.
+        Nothing is hardcoded about the seat: the angles are the orbit around her, the choice is made from the scene as exported."""
+        tgtz = min(floor, zlow) + 0.15
+        cpts = [q for q in cp] or [(px, py, tgtz)]
+        hits = {}
+        bpy.context.view_layer.update()
+        dg_ = bpy.context.evaluated_depsgraph_get()
+        for s_ in CONTACT_VIEW_DEGS:
+            loc_, tgt_, d_, _w = feet_camera_spec(px, py, pyaw, s_, cpts, zlow, floor, lens=lens, res=res, min_width=0.55, max_width=1.1)
+            n_ = 0
+            for q_ in cpts[::max(1, len(cpts) // 8)][:8]:
+                v_ = Vector(loc_) - Vector(q_); u_ = v_.normalized()
+                h_, _l, _n, _i, ob_, _m = sc.ray_cast(dg_, Vector(q_) + u_ * 0.02, u_, distance=max(0.01, v_.length - 0.02))
+                if h_ and id(ob_) not in {id(b_) for b_ in obs} and ob_.type == "MESH": n_ += 1
+            hits[s_] = n_
+        best = seat_view_deg(hits)
+        if best != deg: print(f"GT: seat view: turned {best:+.0f} deg (blockers " + ", ".join(f"{k:+.0f} {v}" for k, v in hits.items()) + ")", flush=True)
+        return best
+
     def contact_closeup(px, py, pyaw, deg, floor, lens, res):
         """camera for the close-up on her lowest contact (feet standing, hips sitting, shins kneeling); logs what it framed"""
         chunks = []
@@ -1951,13 +1995,21 @@ if SCENE:
                     cls_ = classify_support(inf_); sup_info = (inf_, cls_[1])
                     print(furniture_support_line(inf_, *cls_), flush=True)
                 except Exception as ex_: print(f"GT: furniture support: unknown (error {ex_})", flush=True)
+            # 2026-11-03 (David: "average those contact points' gaps, the same way the floor-sit check does, do not read a single surface point"):
+            # when the weight-bearing parts were found, their MEAN gap is the seat gap this check reports; the single seat-top reading is the fallback
+            if sup_info is not None and classify_support(sup_info[0])[2] is not None:
+                _k, _b, _g = classify_support(sup_info[0])
+                if _b: sc_ = (sc_[0], sc_[1], sc_[2], _g) if sc_ else sc_
         if sc_:
             zlow, cp, seat_z, gap = sc_; floor = seat_z if seat_z is not None else zlow   # the seat's top is the plane; none found -> frame the hips' own bounding area
             wide_ = os.environ.get("GT_SUPPORT_WIDE") == "1" and sup_info is not None
             if wide_:   # the retake: frame the bearing parts and the surface under them, wider, from the side at floor level
                 wp_ = wide_support_points(*sup_info)
                 if wp_: cp = list(cp) + wp_; floor = min([floor] + [q[2] for q in wp_])
-            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=1.6 if wide_ else 0.8, max_width=3.0 if wide_ else 1.4)
+            # 2026-11-03 (David): if the furniture under the contact is not visible from the side, turn around her; and zoom in on the contact itself
+            deg = deg if (wide_ or not sup_info) else seat_deg_from_blockers(px, py, pyaw, deg, cp, zlow, floor, res, lens)
+            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=1.6 if wide_ else 0.55,
+                                                  max_width=3.0 if wide_ else 1.1)
             if sup_info is not None:
                 zb_ = min(floor, zlow) - 0.06
                 print(support_quality_line(sup_info[0], zb_, zb_ + width * min(res) / max(res), seat_z is not None), flush=True)

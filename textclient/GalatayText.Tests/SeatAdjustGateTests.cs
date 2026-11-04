@@ -4,6 +4,7 @@ using System.Linq;
 using GalatayText;
 using Xunit;
 // 2026-11-02 17:12 tub 'shave' (floating high, overexposed close-up with no tub in it, nudged and SAVED) and 17:14 makeup table (stale pose label, wrong menu page)
+// 2026-11-04 (David: "just save your adjustments anyway ... you will always be checking them"): an APPLIED nudge is saved whatever the re-render reads.
 public class SeatAdjustGateTests
 {
     static SeatAdjust.SupportReading R(string kind, double gap, params string[] bear) => new(kind, bear, gap, new());
@@ -35,16 +36,49 @@ public class SeatAdjustGateTests
         Assert.Contains("ray hits", SeatAdjust.GateFail(R("kneeling", 0.04, "shins", "knees"), q));
         Assert.NotNull(SeatAdjust.GateFail(R("kneeling", 0.04, "shins"), null));
     }
-    [Fact] public void SaveConfidence_OnlyWhenBothRendersGoodSameClassInBand()
+    [Fact] public void SaveConfidence_SavesEveryAppliedNudge_AndSaysWhatTheOldRuleThought()
     {
         var q = SeatAdjust.ParseQuality(GoodQ); var bad = SeatAdjust.ParseQuality(TubQ);
         Assert.Equal(SeatAdjust.SaveCall.Save, SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), q, R("kneeling", -0.004, "shins", "feet"), q).call);
-        // the tub: an untrusted first render never leads to a Save
+        // the tub: an untrusted first render never leads to a Save (nothing else may stand on it)
         Assert.NotEqual(SeatAdjust.SaveCall.Save, SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), bad, R("kneeling", -0.014, "shins", "feet"), bad).call);
-        Assert.Equal(SeatAdjust.SaveCall.KeepUnsaved, SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), q, R("kneeling", -0.004, "shins", "feet"), bad).call);
-        Assert.Equal(SeatAdjust.SaveCall.KeepUnsaved, SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), q, R("sitting", -0.004, "hips", "thighs"), q).call);
-        Assert.Equal(SeatAdjust.SaveCall.KeepUnsaved, SeatAdjust.SaveConfidence(R("kneeling", 0.12, "shins", "feet"), q, R("kneeling", 0.05, "shins", "feet"), q).call);
+        // 2026-11-04 David ("just save your adjustments anyway"): these three used to stay UNSAVED; now they save and the reason is only the log line
+        var reRenderUnconfirmed = SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), q, R("kneeling", -0.004, "shins", "feet"), bad);
+        Assert.Equal(SeatAdjust.SaveCall.Save, reRenderUnconfirmed.call);
+        Assert.Contains("not good enough to confirm", reRenderUnconfirmed.why);
+        var bearingChanged = SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), q, R("sitting", -0.004, "hips", "thighs"), q);
+        Assert.Equal(SeatAdjust.SaveCall.Save, bearingChanged.call);
+        Assert.Contains("reads differently after the nudge", bearingChanged.why);       // hips+thighs -> hips+thighs+hands, in the log
+        Assert.Contains("kneeling on shins+feet", bearingChanged.why); Assert.Contains("sitting on hips+thighs", bearingChanged.why);
+        var outOfBand = SeatAdjust.SaveConfidence(R("kneeling", 0.12, "shins", "feet"), q, R("kneeling", 0.05, "shins", "feet"), q);
+        Assert.Equal(SeatAdjust.SaveCall.Save, outOfBand.call);
+        Assert.Contains("outside the contact band", outOfBand.why);
+        // a nudge the re-render shows to be WORSE is still undone
         Assert.Equal(SeatAdjust.SaveCall.Revert, SeatAdjust.SaveConfidence(R("kneeling", 0.05, "shins", "feet"), q, R("kneeling", 0.09, "shins", "feet"), q).call);
+        Assert.Contains("worse than before", SeatAdjust.SaveConfidence(R("kneeling", 0.05, "shins", "feet"), q, R("kneeling", 0.09, "shins", "feet"), q).why);
+    }
+    [Fact] public void CannotSave_IsTheOnlyThingThatStopsASave_AndNeverHowTheRenderReads()
+    {
+        var q = SeatAdjust.ParseQuality(GoodQ);
+        // a render that reads differently is NOT a reason to skip the save any more
+        Assert.Null(SeatAdjust.CannotSaveWhy(17, onSameSeat: true, menuAlive: true));
+        // she was stood up / the seat changed mid-run: the menu went with it
+        var stoodUp = SeatAdjust.CannotSaveWhy(17, onSameSeat: false, menuAlive: true);
+        Assert.Contains("stood up", stoodUp);
+        Assert.Equal(SeatAdjust.SaveCall.CannotSave, SeatAdjust.SaveDecision(R("kneeling", 0.077, "shins", "feet"), q, R("kneeling", -0.004, "shins", "feet"), q, 17, false, true).call);
+        // the menu was lost / the presses got no answer
+        var menuLost = SeatAdjust.CannotSaveWhy(17, onSameSeat: true, menuAlive: false);
+        Assert.Contains("menu was lost", menuLost);
+        Assert.Equal(SeatAdjust.SaveCall.CannotSave, SeatAdjust.SaveDecision(R("kneeling", 0.077, "shins", "feet"), q, R("sitting", -0.004, "hips", "thighs"), q, 17, true, false).call);
+        // no press was applied: nothing to save
+        var nothing = SeatAdjust.CannotSaveWhy(0, onSameSeat: true, menuAlive: true);
+        Assert.Contains("no presses", nothing);
+        var none = SeatAdjust.SaveDecision(R("kneeling", 0.077, "shins", "feet"), q, R("kneeling", 0.077, "shins", "feet"), q, 0, true, true);
+        Assert.Equal(SeatAdjust.SaveCall.CannotSave, none.call); Assert.Contains("no presses", none.why);
+        // a furniture with no Save button of its own (the generic path)
+        Assert.Contains("no Save button", SeatAdjust.CannotSaveWhy(3, onSameSeat: true, menuAlive: true, saveButton: false));
+        // the standing-up case is reported first: it is the one that explains the missing menu
+        Assert.Contains("stood up", SeatAdjust.CannotSaveWhy(3, onSameSeat: false, menuAlive: false, saveButton: false));
     }
     [Fact] public void Bugged_FloatingHighOverTheTubFromObjectData()
     {

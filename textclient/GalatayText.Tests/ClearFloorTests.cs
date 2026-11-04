@@ -137,10 +137,13 @@ public class ClearFloorTests
     }
 
     [Fact]
-    public void Wander_puts_the_outfit_back_before_it_stands_up_and_tub_toilet_still_step_clear()
+    public void Wander_stands_up_as_she_is_and_tub_toilet_still_step_clear()
     {
         var w = Src("Wander.cs");
-        Assert.True(w.IndexOf("NakedRedressBeforeStand(", StringComparison.Ordinal) < w.IndexOf("await EnsureStandingForWalk(ct);\n        await StandOutAfterSeat", StringComparison.Ordinal));
+        // 2026-11-04 David: no re-dress while she is still seated; she stands as she is and the tick dresses her off the seat
+        Assert.DoesNotContain("NakedRedressBeforeStand(", w);
+        Assert.DoesNotContain("NakedRedressBeforeStand(", Src("AdultRedress.cs"));
+        Assert.Contains("await DressAfterSeatIfPending();\n        wLastSit =", w);   // right after the stand+stand-out, still on the stay's own path
         Assert.True(w.IndexOf("ClearFloorForOutfitChange(\"toilet undress\"", StringComparison.Ordinal) < w.IndexOf("await ToiletUndress(ct)", StringComparison.Ordinal));
         Assert.True(w.IndexOf("ClearFloorForOutfitChange(\"tub undress\"", StringComparison.Ordinal) < w.IndexOf("await UndressForSeat(ct)", StringComparison.Ordinal));
         Assert.Contains("ClearFloorForOutfitChange(\"re-dress after seat\"", Src("HomeSeats.cs"));

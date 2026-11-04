@@ -37,6 +37,9 @@ public class QuickRelogRedressTests
         Assert.Contains("QuickRelogMark(QuickRelogPath, \"logout quick\")", prog);
         Assert.True(prog.IndexOf("QuickRelogClear(QuickRelogPath)") is > 0 and var c && c < prog.IndexOf("_ = Task.Run(AfterQuickLogin)"));
         Assert.Contains("beachOutfitBusy, QuickRelogSet(QuickRelogPath))", ar);                 // the stand tick
-        Assert.Contains("beachOutfitBusy || QuickRelogSet(QuickRelogPath) ||", ar);              // wander's before-stand re-dress
+        // 2026-11-04: wander's before-stand re-dress is gone (she stands as she is), so the tick is now the only place that dresses her
+        // after a stand, and it is the one that must still respect the quick-relog flag
+        Assert.DoesNotContain("NakedRedressBeforeStand", File.ReadAllText(Path.Combine(dir, "Wander.cs")));
+        Assert.Contains("QuickRelogSet(QuickRelogPath)", ar);
     }
 }

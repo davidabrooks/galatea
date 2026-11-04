@@ -104,7 +104,7 @@ public class AdultPoseClassifyTests
         Assert.False(Program.NakedRedressDue("X", false, false, false, 99, true).due);                  // another outfit change
         Assert.True(Program.NakedRedressDue("X", false, false, true, 0, false).due);                    // stood up
         var sw = Program.NakedRedressDue("X", false, true, false, 30, false);
-        Assert.False(sw.due); Assert.Contains("only after standing", sw.why);                          // 2026-11-03: a pose switch on the seat never re-dresses
+        Assert.False(sw.due); Assert.Contains("until the pose changes or she gets up", sw.why);         // 2026-11-04: seated, she stays as she is
     }
 
     [Fact]

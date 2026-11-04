@@ -3,8 +3,13 @@
 // submenu names) is only taken after wearing the Naked outfit. 2026-10-16 (David: standing up is too slow): she changes
 // WHILE SEATED, on the same seat, then picks the pose from the menu: no stand-up, no step to clear floor, no sit again. The outfit
 // worn BEFORE is remembered here, and put back (same outfit, HUD colours kept) as soon as the adult pose is over: the seat shows
-// a pose that is not sexual any more (a switch because someone entered our parcel, David left, wander changing the pose), or
-// wander's stay ends (put back before she stands, NakedRedressBeforeStand), else when she stands up for any other reason.
+// a pose that is not sexual any more (a switch because someone entered our parcel, David left, wander changing the pose), else
+// when she gets up off the seat.
+// 2026-11-04 (David: "I think it looks better if you don't get dressed after an adult pose until you change poses or get up"):
+// wander no longer re-dresses her WHILE SEATED at the end of a stay (the old NakedRedressBeforeStand, called before she stood). She
+// stands as she is, and the tick dresses her as soon as she is off the seat (NakedRedressDue: `seated` = false). The mid-sit switch to
+// a non-adult pose keeps its re-dress at the switch (that is "change poses"). Nothing else changed: not the quick-relog rule, not the
+// Naked-first undressing, not the birthday-suit / toilet / bikini flows, not RedressTarget.
 // Never while the Naked flow itself is running, and not while an adult pose is still running.
 using LibreMetaverse;
 
@@ -37,8 +42,10 @@ public static partial class Program
         if (flowBusy) return (false, "the Naked flow is still running");
         if (outfitBusy) return (false, "another outfit change is running");
         // 2026-11-03 14:48 David: adult -> adult on the same seat never re-dresses. 16:33 David: adult -> NON-adult re-dresses at the
-        // switch itself (LeaveAdultPoseBeforeSwitch, SeatPose.cs); this tick only covers leaving the seat
-        if (seated) return (false, sexualPoseNow ? "the adult pose is still running" : "still on the seat: re-dress only after standing up");
+        // switch itself (LeaveAdultPoseBeforeSwitch, SeatPose.cs); this tick only covers leaving the seat.
+        // 2026-11-04 David: and that is the ONLY moment she dresses before getting up -- she stays as she is for the rest of the stay,
+        // including its end, and stands undressed.
+        if (seated) return (false, sexualPoseNow ? "the adult pose is still running" : "still on the seat: she stays as she is until the pose changes or she gets up");
         return (true, "stood up");
     }
 
@@ -106,14 +113,12 @@ public static partial class Program
         }
     }
 
-    // wander's stay on the seat is over and the outfit is still pending: put it back while still seated, then she stands
-    // (the retry timer after a failure is respected: she stands anyway and the tick retries)
-    static async Task NakedRedressBeforeStand(string why)
-    {
-        if (nakedRedressOutfit == null || !LoggedIn || nakedFlowBusy || beachOutfitBusy || QuickRelogSet(QuickRelogPath) || client.Self.SittingOn == 0 || DateTime.Now < nakedRetryAt) return;
-        await NakedRedressRun(why);   // returns at once when the tick is already running it: wait for that one below
-        for (int k = 0; k < 240 && Volatile.Read(ref nakedRedressBusy) == 1; k++) await Task.Delay(250);
-    }
+    // 2026-11-04 David: no re-dress while she is still seated at the end of a stay. The old NakedRedressBeforeStand ("put it back while
+    // still seated, then she stands") is gone; the seated re-dress at a mid-sit switch to a non-adult pose stays (LeaveAdultPoseBeforeSwitch,
+    // "change poses"), and the tick dresses her as soon as she is off the seat (NakedRedressDue: `seated` false, "get up").
+    // So there is exactly ONE place that puts the outfit back during a stay: AdultExitStep at a pose switch. Every stand -- the wander stay
+    // ending, a chat pause that then walks off, David's hold, a seat stood up by something else, a boat leave -- leaves her as she is and the
+    // tick (ParcelWatchTick, every second) dresses her once client.Self.SittingOn is 0.
 
     // the Naked-first step of SeatPose: remember what she wears, wear Naked right where she sits (no stand-up, no step to clear
     // floor, no sitting again), then take the pose through the seat menu. Returns an abort message, or null when the pose was

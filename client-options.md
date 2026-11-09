@@ -8,7 +8,7 @@ Leak check: /workspace/secondlife/scripts/leak-count.py found the password 0 tim
 
 ## Summary table (measured)
 
-| | Firestorm 7.2.4 | LibreMetaverse: my galatay-text daemon | LibreMetaverse: galatay-mcp (MCP server) | node-metaverse 0.8.21 | LM TestClient | Corrade |
+| | Firestorm 7.2.5 | LibreMetaverse: my galatay-text daemon | LibreMetaverse: galatay-mcp (MCP server) | node-metaverse 0.8.21 | LM TestClient | Corrade |
 |---|---|---|---|---|---|---|
 | Real login tested | yes (earlier) | yes, 2x | yes, 3x | yes, 2x | no (see below) | not installed |
 | Login time | ~17 s to STATE_STARTED | 4.6 s / 3.2 s | 3.5 / 2.7 / 3.5 s | 2.7-2.8 s (sim 3.3 s) | - | - |
@@ -21,8 +21,8 @@ Leak check: /workspace/secondlife/scripts/leak-count.py found the password 0 tim
 | Teleport | yes | local TP OK | same core | API present (not run) | `goto` | yes |
 | Clean logout | yes | yes (~1 s) | yes | yes in run 2; **run 1 crashed without logout** | - | - |
 
-## 1. Firestorm 7.2.4.80712 (current)
-- What it is: full 3D viewer and the one David uses. Released 2026-06-01. Installed at /home/box/viewers/Phoenix-Firestorm-...; see notes.md.
+## 1. Firestorm 7.2.5.81788 (current)
+- What it is: full 3D viewer and the one David uses. Released 2026-10-26 (was 7.2.4.80712 until 2026-11-09). Installed at /home/box/viewers/Phoenix-Firestorm-Releasex64_AVX2-7-2-5-81788, reached through the `/home/box/viewers/firestorm-current` symlink that `run-firestorm.sh`, `login-galatay.sh` and `fs-lowperf-settings.py` use; needs the system `libglu1-mesa` package; see notes.md.
 - Pros: everything is available (build tools, LSL editor, inventory, map, media), and it is what David sees and knows.
 - Cons: ~6 fps on llvmpipe and ~2-5 GB RAM. It can only be driven by screenshots and clicks, which is slow and brittle (the GUI sit has been silently failing). The password is visible in its argv.
 - Best use: visual building and editing sessions only.

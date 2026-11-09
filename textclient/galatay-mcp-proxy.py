@@ -226,14 +226,21 @@ def spawn():
     return c
 
 
+# The child process passes through the launcher before it becomes the connector: galatay-mcp-child.sh starts with
+# `#!/usr/bin/env bash`, so /proc/<pid>/exe is /usr/bin/env, then bash, then mcp-app/galatay-mcp (one pid, three execs).
+# 2026-11-09: "env" was missing here, so a settle poll that landed in the env stage (seen under load) stopped waiting and
+# wrote child_exe=/usr/bin/{env,bash} with child_dll_sha256 None, and nothing rewrote it until the next restart.
+LAUNCHER_EXES = ("env", "bash", "sh", "dash")
+
+
 def settle_state(c):
-    """The child starts as the launcher (bash); once it has exec'd the real connector, rewrite the state file so child_exe
-    and child_dll_sha256 describe the connector itself (restart-connector.sh checks them)."""
+    """The child starts as the launcher (env -> bash, LAUNCHER_EXES); once it has exec'd the real connector, rewrite the
+    state file so child_exe and child_dll_sha256 describe the connector itself (restart-connector.sh checks them)."""
     for _ in range(100):
         if c is not child or c.poll() is not None: return
         try: exe = os.path.basename(os.readlink(f"/proc/{c.pid}/exe"))
         except OSError: return
-        if exe not in ("bash", "sh", "dash"): break
+        if exe not in LAUNCHER_EXES: break
         time.sleep(0.1)
     if c is child: write_state()
 

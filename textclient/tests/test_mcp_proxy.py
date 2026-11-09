@@ -224,6 +224,21 @@ def run_child_sh(tmp, tcd, pname, extra=None):
     return subprocess.Popen(["bash", str(CHILD_SH)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
+def test_state_settles_past_an_env_launcher_stage(tmp_path, stub):
+    """2026-11-09 flake (test_real_connector_restart..., child_dll_sha256 None): galatay-mcp-child.sh is `#!/usr/bin/env bash`,
+    so the child is /usr/bin/env, then bash, then the connector. settle_state stopped at the env stage and recorded it as
+    the child for good. Here the launcher stage is held for 1 s under the name env (a copy of bash), as a busy box would."""
+    env_stage = tmp_path / "env"; shutil.copy("/bin/bash", env_stage)
+    c = Client(tmp_path, f"{env_stage} -c 'sleep 1; exec {stub}'")
+    try:
+        c.handshake()
+        real = os.path.realpath(sys.executable)
+        s = c.wait_state(lambda s: s["child_exe"] and os.path.realpath(s["child_exe"]) == real, timeout=15)
+        assert os.path.realpath(os.readlink(f"/proc/{s['child_pid']}/exe")) == real
+    finally:
+        c.close()
+
+
 def test_child_sh_swaps_staged_build_when_no_child_runs(tmp_path):
     tcd = tmp_path / "tcd"; fake_app(tcd, "mcp-app", "OLD"); nxt = fake_app(tcd, "mcp-app-next", "NEW"); (nxt / "READY").write_text("x")
     p = run_child_sh(tmp_path, tcd, "no-such-process-name")
@@ -234,17 +249,18 @@ def test_child_sh_swaps_staged_build_when_no_child_runs(tmp_path):
 
 
 def test_child_sh_waits_for_other_child_then_swaps_or_gives_up(tmp_path):
-    other = tmp_path / "fakechild"; shutil.copy("/bin/sleep", other)
+    name = f"fakech{os.getpid()}"[:15]   # per-run name: concurrent runs of this file must not see each other's busy child (pgrep -x)
+    other = tmp_path / name; shutil.copy("/bin/sleep", other)
     busy = subprocess.Popen([str(other), "60"])
     try:
         tcd = tmp_path / "tcd"; fake_app(tcd, "mcp-app", "OLD"); nxt = fake_app(tcd, "mcp-app-next", "NEW"); (nxt / "READY").write_text("x")
         t0 = time.time()
-        p = run_child_sh(tmp_path, tcd, "fakechild", {"GT_SWAP_WAIT_S": "2"})
+        p = run_child_sh(tmp_path, tcd, name, {"GT_SWAP_WAIT_S": "2"})
         time.sleep(3.5); p.kill(); out, err = p.communicate()
         assert "OLD" in err and (tcd / "mcp-app-next").exists()   # gave up: old build, staged build kept
         assert "NOT installed" in (tmp_path / "swap.log").read_text()
         # now the other child exits while the launcher is waiting: swap happens
-        p = run_child_sh(tmp_path, tcd, "fakechild", {"GT_SWAP_WAIT_S": "20"})
+        p = run_child_sh(tmp_path, tcd, name, {"GT_SWAP_WAIT_S": "20"})
         time.sleep(1.0); busy.kill(); busy.wait(); time.sleep(2.0); p.kill(); out, err = p.communicate()
         assert "NEW" in err and not (tcd / "mcp-app-next").exists()
     finally:
@@ -261,8 +277,10 @@ def test_real_connector_restart_via_sighup_and_restart_script(tmp_path):
         tools = c.call("tools/list")["result"]["tools"]
         assert len(tools) >= 50 and "idle_pose" in [t["name"] for t in tools]
         assert "not logged in" in json.dumps(c.call("tools/call", {"name": "idle_pose", "arguments": {"action": "status"}}))
-        s1 = c.state(); pid1 = s1["child_pid"]
-        assert s1["child_dll_sha256"] and os.readlink(f"/proc/{pid1}/exe").startswith(str(tcd / "mcp-app"))
+        # the proxy rewrites its state once the launcher (env -> bash) has exec'd the connector (settle_state, polls every
+        # 0.1 s): wait for that rewrite instead of racing it; a state that never settles still fails here
+        s1 = c.wait_state(lambda s: s["child_dll_sha256"], timeout=15); pid1 = s1["child_pid"]
+        assert s1["child_exe"].startswith(str(tcd / "mcp-app")) and os.readlink(f"/proc/{pid1}/exe").startswith(str(tcd / "mcp-app"))
 
         # SIGHUP: new child, list_changed, same tool list, same call works
         n0 = len(c.notes)

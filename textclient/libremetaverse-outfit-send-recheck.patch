@@ -1,0 +1,107 @@
+diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
+index 10e416f5..9a3f0ea0 100644
+--- a/LibreMetaverse/Appearance/AppearanceManager.cs
++++ b/LibreMetaverse/Appearance/AppearanceManager.cs
+@@ -2615,6 +2615,41 @@ namespace LibreMetaverse
+         /// Async-first implementation to send the Current Outfit folder to the current simulator.
+         /// </summary>
+         /// <param name="cancellationToken">Cancellation token to cancel the operation</param>
++        /// <summary>(galatay 2026-11-09) The item ids of the outfit-send blocks that are still in the current COF read
++        /// (<paramref name="cofItemIds"/>: link ids and their targets). Pure; used after the add-missing settle wait.</summary>
++        public static HashSet<UUID> OutfitSendStillLinked(IEnumerable<UUID> blockItemIds, ISet<UUID> cofItemIds)
++            => new HashSet<UUID>(blockItemIds.Where(cofItemIds.Contains));
++
++        static bool SafeBusy(Func<bool> busy) { try { return busy(); } catch { return false; } }
++
++        /// <summary>(galatay 2026-11-09) A fresh read of the COF (server fetch): every link id and its resolved target id; null if it fails.</summary>
++        async Task<HashSet<UUID>?> CurrentOutfitItemIdsAsync(CancellationToken cancellationToken)
++        {
++            try
++            {
++                var cof = await GetCurrentOutfitFolderAsync(cancellationToken).ConfigureAwait(false);
++                if (cof == null) return null;
++                List<InventoryBase>? contents;
++                using (var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
++                {
++                    cts.CancelAfter(TimeSpan.FromSeconds(30));
++                    contents = await Client.Inventory.FolderContentsAsync(cof.UUID, cof.OwnerID, true, true,
++                        InventorySortOrder.ByDate, cts.Token, true).ConfigureAwait(false);
++                }
++                if (contents == null) return null;
++                var ids = new HashSet<UUID>();
++                foreach (var b in contents)
++                {
++                    if (b == null) continue;
++                    ids.Add(b.UUID);
++                    if (b is InventoryItem it) ids.Add(it.ResolvedItemID);
++                }
++                return ids;
++            }
++            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
++            catch (Exception ex) { Logger.Warn("COF re-read failed: " + ex.Message, Client); return null; }
++        }
++
+         public async Task SendOutfitToCurrentSimulatorAsync(CancellationToken cancellationToken = default)
+         {
+             var blocks = new List<RezMultipleAttachmentsFromInvPacket.ObjectDataBlock>();
+@@ -2720,7 +2755,7 @@ namespace LibreMetaverse
+             // (galatay 2026-09-26) FolderContentsAsync(followLinks) returns each link AND its target: drop duplicate items
+             int before = blocks.Count;
+             blocks = blocks.GroupBy(b => b.ItemID).Select(g => g.First()).ToList();
+-            int dupes = before - blocks.Count, skipped = 0;
++            int dupes = before - blocks.Count, skipped = 0, unlinked = 0;
+             var excl = Client.Settings.Agent.OutfitSendExclude;
+             var excluded = excl == null ? new List<string>() : blocks.Where(b => excl(b.ItemID, Utils.BytesToString(b.Name))).Select(b => Utils.BytesToString(b.Name)).ToList();
+             if (excl != null) blocks = blocks.Where(b => !excl(b.ItemID, Utils.BytesToString(b.Name))).ToList();
+@@ -2748,13 +2783,36 @@ namespace LibreMetaverse
+                     else if (n > 0 && (DateTime.UtcNow - stable).TotalSeconds >= 4) break; // a steady 0 is 'not arrived yet', not 'settled'
+                     await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+                 }
++                // (galatay 2026-11-09) the COF above was read BEFORE the settle wait. An outfit change in that window (the login
++                // daily outfit took the bikini off at 14:15:14 while this pass held a COF read from the same moment) left removed
++                // items in 'blocks', and they were re-attached under the new outfit. Wait while the app says it is changing the
++                // outfit, then read the COF again and only send items that are still linked in it.
++                var busy = Client.Settings.Agent.OutfitSendBusy;
++                if (busy != null)
++                {
++                    var tb = DateTime.UtcNow;
++                    while (SafeBusy(busy) && (DateTime.UtcNow - tb).TotalMilliseconds < settleMs)
++                        await Task.Delay(500, cancellationToken).ConfigureAwait(false);
++                    if (SafeBusy(busy)) Logger.Info($"Outfit send: the outfit is still changing after {settleMs} ms; sending only what the COF links now", Client);
++                }
++                var fresh = await CurrentOutfitItemIdsAsync(cancellationToken).ConfigureAwait(false);
++                if (fresh == null)
++                {
++                    Logger.Warn("Outfit send (add-missing): could not re-read the 'Current Outfit' folder after the settle wait; nothing sent (a stale COF could re-attach removed items)", Client);
++                    return;
++                }
++                var keep = OutfitSendStillLinked(blocks.Select(b => b.ItemID), fresh);
++                unlinked = blocks.Count(b => !keep.Contains(b.ItemID));
++                if (unlinked > 0)
++                    Logger.Info("Outfit send: dropped (no longer in the COF): " + string.Join("; ", blocks.Where(b => !keep.Contains(b.ItemID)).Select(b => Utils.BytesToString(b.Name))), Client);
++                blocks = blocks.Where(b => keep.Contains(b.ItemID)).ToList();
+                 var have = AttachedItems();
+                 skipped = blocks.Count(b => have.Contains(b.ItemID));
+                 blocks = blocks.Where(b => !have.Contains(b.ItemID)).ToList();
+             }
+             var rank = Client.Settings.Agent.OutfitSendRank;
+             if (rank != null) blocks = blocks.OrderBy(b => rank(Utils.BytesToString(b.Name))).ToList();   // stable: same rank keeps COF order
+-            Logger.Info($"Outfit send: {blocks.Count} attachment(s) to add ({dupes} duplicate(s) removed, {skipped} already attached skipped, kept off: {(excluded.Count == 0 ? "none" : string.Join("; ", excluded))}): " +
++            Logger.Info($"Outfit send: {blocks.Count} attachment(s) to add ({dupes} duplicate(s) removed, {skipped} already attached skipped, {unlinked} no longer in the COF dropped, kept off: {(excluded.Count == 0 ? "none" : string.Join("; ", excluded))}): " +
+                 string.Join("; ", blocks.Select(b => Utils.BytesToString(b.Name))) + $"; FirstDetachAll={Client.Settings.Agent.OutfitSendDetachAll}", Client);
+             if (blocks.Count == 0 && !Client.Settings.Agent.OutfitSendDetachAll) return;
+ 
+diff --git a/LibreMetaverse/Settings/AgentSettings.cs b/LibreMetaverse/Settings/AgentSettings.cs
+index bd6347bf..770361c3 100644
+--- a/LibreMetaverse/Settings/AgentSettings.cs
++++ b/LibreMetaverse/Settings/AgentSettings.cs
+@@ -18,6 +18,9 @@ namespace LibreMetaverse
+         /// <summary>(galatay 2026-10-27) Order of the objects in the outfit send: lower rank first (stable), so the body that covers the
+         /// system avatar is requested before accessories. null = COF order.</summary>
+         public System.Func<string, int>? OutfitSendRank = null;
++        /// <summary>(galatay 2026-11-09) True while the app is changing the outfit (e.g. its wardrobe lock is held). The add-missing
++        /// outfit send waits until it is false (at most OutfitSendSkipAttachedSettleMs more), then re-reads the COF before sending.</summary>
++        public System.Func<bool>? OutfitSendBusy = null;
+         public bool SendThrottle = true;
+         public bool DisableUpdateDuplicateCheck = true;
+         public bool MultipleSims = false;

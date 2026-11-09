@@ -34,6 +34,7 @@ apply "$TC/libremetaverse-compressed-particles.patch"   # 2026-10-21: compressed
 apply "$TC/libremetaverse-doh-connect.patch"    # 2026-10-09: GridClient.CapsConnectCallback (SocketsHttpHandler) for SlDns.cs DoH + real-IP connects; 2026-11-09: certificates checked with upstream ServerCertificateValidator (never accept-any)
 apply "$TC/libremetaverse-udp-rcvbuf.patch"     # 2026-10-14: Settings.UdpSocketReceiveBuffer (SO_RCVBUF) - lost chat when the box stalled; 2026-11-09: via UDPBase.SocketReceiveBufferSize (UDPBase moved to Transport)
 apply "$TC/libremetaverse-outfit-order.patch"     # 2026-10-27: Settings.Agent.OutfitSendRank (outfit send: body first)
+apply "$TC/libremetaverse-outfit-send-recheck.patch"   # 2026-11-09: add-missing outfit send re-reads the COF after the settle wait and waits out an outfit change (stale COF re-attached the removed bikini)
 apply "$TC/libremetaverse-hosting-patches.patch"
 apply "$TC/libremetaverse-maintenance-patches.patch"
 apply "$TC/libremetaverse-zlogger.patch"

@@ -20,6 +20,12 @@ public static partial class Program
     internal static bool AutoOutfitAllowed(bool undressed, DateTime undressedAt, DateTime now)
         => !undressed && (now - undressedAt).TotalSeconds >= UndressQuietS;
 
+    // (2026-11-09) true while an outfit change holds the wardrobe lock. The library's add-missing login outfit send waits on it
+    // (Settings.Agent.OutfitSendBusy) and then re-reads the COF: at 14:15 the daily outfit took the bikini off while that send
+    // held an older COF read, and the send put the bikini back on under the new outfit.
+    internal static bool OutfitChanging() => LockHeld(wardrobeLock);
+    internal static bool LockHeld(SemaphoreSlim s) => s.CurrentCount == 0;   // pure (tested)
+
     internal static void WardrobeUndressedNow() { wardrobeUndressed = true; wardrobeUndressedAt = DateTime.Now; }
     internal static void WardrobeDressed(string outfit) { if (wardrobeUndressed) Log("wardrobe", $"dressed deliberately ('{outfit}'): random changes allowed again"); wardrobeUndressed = false; }
 

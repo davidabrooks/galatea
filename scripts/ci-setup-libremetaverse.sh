@@ -34,4 +34,5 @@ apply "$TC/libremetaverse-compressed-particles.patch"   # 2026-10-21: compressed
 apply "$TC/libremetaverse-doh-connect.patch"    # 2026-10-09: GridClient.CapsConnectCallback (SocketsHttpHandler) for SlDns.cs DoH + real-IP connects
 apply "$TC/libremetaverse-udp-rcvbuf.patch"     # 2026-10-14: Settings.UdpSocketReceiveBuffer (SO_RCVBUF) - lost chat when the box stalled
 apply "$TC/libremetaverse-outfit-order.patch"     # 2026-10-27: Settings.Agent.OutfitSendRank (outfit send: body first)
+apply "$TC/libremetaverse-messagepack-security.patch"
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

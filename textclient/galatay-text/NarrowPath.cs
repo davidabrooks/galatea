@@ -127,7 +127,7 @@ public static partial class Program
         var step = NarrowCentreStep(me, NarrowFor(HomeWanderRegion), toward);
         if (step == null) return;
         WLog($"narrow corridor: {why}: off the centre line at {P3(me)}, stepping to {P3(step.Value)} first");
-        try { await WalkLeg(step.Value, 0.6f, "narrow centre line (" + why + ")", ct); }
+        try { await WalkLeg(step.Value, 0.6f, "narrow centre line (" + why + ")", ct, precise: true); }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { WLog("narrow centre step: " + ex.GetBaseException().Message); }
     }

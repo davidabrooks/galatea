@@ -26,6 +26,58 @@ public static partial class Program
     // pure (selftest): how far from a leg end a stalled walk still counts as arrived (the sim autopilot's ~1 m stop distance)
     internal static float AutopilotStopSlack(float tol) => MathF.Max(tol, 1.3f);
 
+    // pure (tested): a precise leg that stalled short of its tolerance must finish the last metre instead of calling it arrived
+    internal static bool ShortLegNeedsFinish(bool precise, float dist, float tol) => precise && dist > tol;
+
+    // pure (tested): has the final approach reached the spot? within tol, or just past it along the approach (the stop overshot a little)
+    internal static bool FinalApproachReached(Vector3 from, Vector3 to, Vector3 now, float tol)
+    {
+        if (HDist(now, to) <= tol) return true;
+        float dx = to.X - from.X, dy = to.Y - from.Y, l2 = dx * dx + dy * dy;
+        if (l2 < 1e-4f) return false;
+        float t = ((now.X - from.X) * dx + (now.Y - from.Y) * dy) / l2;
+        return t >= 1f && HDist(now, to) <= tol + 0.15f;
+    }
+
+    // the last metre of a precise leg: aim the autopilot THROUGH the spot (StandStepOff.cs StandOffAim: up to 1.2 m past it, only where
+    // the floor is clear of walls on the nav grid and of furniture) so its stop distance lands on the spot; cancel on arrival; then short
+    // pulses of her own forward walk control. Never a teleport.
+    static async Task<bool> FinishShortLeg(Vector3 target, float tol, string label, CancellationToken ct)
+    {
+        var g = NavGridHere();
+        Func<float, float, bool> blocked = g == null ? null : (x, y) => { if (!g.Contains(x, y)) return false; var (i, j) = g.IJ(x, y); return g.At(i, j) != 0; };
+        var boxes = InPeronaut ? HomeFootprints() : new List<FurnitureBox>();
+        Func<Vector3, bool> clearAt = q => InFurnitureMargin(q, boxes, ClearBodyMargin) == null && !(blocked?.Invoke(q.X, q.Y) ?? false);
+        for (int attempt = 1; attempt <= 2; attempt++)
+        {
+            var from = client.Self.SimPosition;
+            if (HDist(from, target) <= tol) break;
+            var aim = StandOffAim(from, target, clearAt);
+            AutoPilotTo(aim);
+            var t0 = DateTime.Now; var now = from;
+            while ((DateTime.Now - t0).TotalSeconds < 6)
+            {
+                await Task.Delay(100, ct);
+                now = client.Self.SimPosition;
+                if (FinalApproachReached(from, target, now, tol)) break;
+            }
+            client.Self.AutoPilotCancel();
+            await Task.Delay(300, ct); now = client.Self.SimPosition;
+            Log("walk", $"leg {label}: final approach {attempt} aimed {V(aim)}: {V(from)} -> {V(now)}, {HDist(now, target):F2} m from the spot");
+            if (HDist(now, target) <= tol + 0.15f) return true;
+        }
+        var m = client.Self.Movement;
+        for (int i = 0; i < 6 && HDist(client.Self.SimPosition, target) > tol; i++)
+        {
+            try { m.TurnToward(new Vector3(target.X, target.Y, client.Self.SimPosition.Z)); } catch { }
+            m.AtPos = true; m.SendUpdate(true); await Task.Delay(250, ct);
+            m.AtPos = false; m.SendUpdate(true); await Task.Delay(200, ct);
+        }
+        var end = client.Self.SimPosition; bool ok = HDist(end, target) <= tol + 0.15f;
+        Log("walk", $"leg {label}: after nudging at {V(end)}, {HDist(end, target):F2} m from the spot: {(ok ? "arrived" : "NOT reached")}");
+        return ok;
+    }
+
     static void AutoPilotTo(Vector3 p)
     {
         IdlePoseExitBeforeMove("walk");   // IdlePose.cs: STOP the pose / AO ground sit first
@@ -57,7 +109,9 @@ public static partial class Program
 
     // one leg with stuck recovery; true = arrived within tol (horizontal)
     // navMode (NavPlan.cs): give up after 2 recoveries so the planner re-plans instead of side-stepping into walls
-    static async Task<bool> WalkLeg(Vector3 target, float tol, string label, CancellationToken ct, bool navMode = false)
+    // precise (2026-11-09): the caller needs her ON the spot (change spot, stand-out clear spot, corridor centre line). A stall
+    // inside the autopilot's ~1 m stop distance is then not "arrived": FinishShortLeg aims through the spot and nudges.
+    static async Task<bool> WalkLeg(Vector3 target, float tol, string label, CancellationToken ct, bool navMode = false, bool precise = false)
     {
         var start = client.Self.SimPosition;
         Log("walk", $"leg {label}: {V(start)} -> {V(target)} ({HDist(start, target):F1} m)");
@@ -119,6 +173,11 @@ public static partial class Program
             if (goal == target && HDist(p, target) <= AutopilotStopSlack(tol))
             {
                 client.Self.AutoPilotCancel();
+                if (ShortLegNeedsFinish(precise, HDist(p, target), tol))
+                {   // 2026-11-09 14:46 tub: 3 legs each "arrived" 1.0 m short, the change spot check (0.8 m) failed, seat skipped 30 min
+                    Log("walk", $"leg {label}: stalled at {V(p)} {HDist(p, target):F1} m short (the autopilot's stop distance); finishing the last metre");
+                    return await FinishShortLeg(target, tol, label, ct);
+                }
                 Log("walk", $"leg {label}: arrived at {V(p)} ({HDist(p, target):F1} m short: the autopilot's stop distance) in {(DateTime.Now - legT0).TotalSeconds:F0} s");
                 return true;
             }

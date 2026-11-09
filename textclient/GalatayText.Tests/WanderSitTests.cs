@@ -54,7 +54,7 @@ public class WanderSitTests
     public void Visit_reuses_the_picker_visit_function_not_a_copy()
     {
         var src = File.ReadAllText(Repo("galatay-text", "WanderSit.cs"));
-        Assert.Contains("HomeRandomSit(g, ct, force: cand)", src);
+        Assert.Contains("HomeRandomSit(g, ct, force: cand, onRequest: true)", src);   // 2026-11-09: a requested visit (bath: stays until told otherwise)
         foreach (var dup in new[] { "UndressForSeat", "GoToChangeSpot", "ToiletUndress", "SeatPose(", "Exec(\"sit" })
             Assert.DoesNotContain(dup, src);
         var w = File.ReadAllText(Repo("galatay-text", "Wander.cs"));

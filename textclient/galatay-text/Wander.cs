@@ -718,7 +718,7 @@ public static partial class Program
     }
 
     // force* (hand wash after the toilet): that seat, that menu path and that stay instead of a random pick
-    static async Task<bool> HomeRandomSit(Graph g, CancellationToken ct, SeatCand force = null, List<string> forceMenu = null, int forceStay = 0)
+    static async Task<bool> HomeRandomSit(Graph g, CancellationToken ct, SeatCand force = null, List<string> forceMenu = null, int forceStay = 0, bool onRequest = false)
     {
         var cands = force != null ? new List<SeatCand> { force } : await HomeWanderSeats(g);
         var infos = LoadHomeSeats().GroupBy(i => i.Id).ToDictionary(x => x.Key, x => x.First());
@@ -811,7 +811,7 @@ public static partial class Program
         wLastSeat = c.p.ID; wSits++;
         if (boat) wOnBoatLocal = client.Self.SittingOn;
         WanderNoteLevel();
-        var stay = forceStay > 0 ? forceStay : HomeSitStaySeconds(info, wRnd);   // toilet / sink: their seat-list stay_s (30-60 s)
+        var stay = forceStay > 0 ? forceStay : HomeSitStaySeconds(info, wRnd, onRequest);   // bath: 15-25 min soak, until told otherwise on request   // toilet / sink: their seat-list stay_s (30-60 s)
         var t0 = DateTime.Now;
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
@@ -840,7 +840,7 @@ public static partial class Program
         }
         if (info?.Special == "shower" && info.TouchChild != UUID.Zero && client.Self.SittingOn != 0)
         { await Task.Delay(1500, ct); waterOn = TouchChildPrim(info.TouchChild, "shower water ON (valve)"); }
-        double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
+        double changeAt = FirstPoseChangeAt(stay, menu, wRnd); bool changed = false;   // HomeSeats.cs: long soaks keep rotating
         try
         {
             // a seat adjustment in progress holds the sit and its pose change (SeatAdjust.SitKeepsSitting / SitChangesPose)
@@ -851,6 +851,8 @@ public static partial class Program
                 {
                     changed = true;
                     try { if (boat) WLog($"BOAT POSE change '{c.name}': {(await BoatPose(c.p, c.name, ct)).msg}"); else await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
+                    changeAt = NextPoseChangeAt((DateTime.Now - t0).TotalSeconds, stay, wRnd);
+                    if (changeAt < double.MaxValue) { changed = false; WLog($"POSE '{c.name}': next pose change in {changeAt - (DateTime.Now - t0).TotalSeconds:F0} s (long stay)"); }
                 }
             }
         }
@@ -1262,7 +1264,7 @@ public static partial class Program
             if (pr.Contains(SkipSeatMarker)) { WLog($"'{c.name}': no clearly non-adult pose by name; standing up and skipping this seat for now"); StandFaceFirst(); await Task.Delay(1500, ct); MarkSeatFailed(c, "no clearly non-adult pose by name"); return false; }
         }
         catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE error: " + ex.GetBaseException().Message); }
-        double changeAt = menu && stay >= 180 ? stay * (0.4 + wRnd.NextDouble() * 0.2) : double.MaxValue; bool changed = false;
+        double changeAt = FirstPoseChangeAt(stay, menu, wRnd); bool changed = false;   // HomeSeats.cs: long soaks keep rotating
         // a seat adjustment in progress holds the sit and its pose change (SeatAdjust.SitKeepsSitting / SitChangesPose)
         while (SeatAdjust.SitKeepsSitting((DateTime.Now - t0).TotalSeconds, stay, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
         {

@@ -80,7 +80,7 @@ public static partial class Program
         wSitTask = Task.Run(async () =>
         {
             bool ok = false;
-            try { if (client.Self.SittingOn != 0) { await EnsureStandingForWalk(ct); } ok = await HomeRandomSit(g, ct, force: cand); }
+            try { if (client.Self.SittingOn != 0) { await EnsureStandingForWalk(ct); } ok = await HomeRandomSit(g, ct, force: cand, onRequest: true); }
             catch (OperationCanceledException) { WLog("wander sit visit cancelled"); }
             catch (Exception ex) { WLog("wander sit error: " + ex.GetBaseException().Message); }
             finally

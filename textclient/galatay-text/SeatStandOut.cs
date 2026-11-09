@@ -69,7 +69,7 @@ public static partial class Program
         if (!hopFirst)
         {
             WLog($"{label}: at {P3(me)}, stepping to the clear spot {P3(to)} first");
-            try { await WalkLeg(to, 0.4f, label, ct, navMode: true); }
+            try { await WalkLeg(to, 0.4f, label, ct, navMode: true, precise: true); }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { WLog("stand out walk: " + ex.GetBaseException().Message); }
             var end = client.Self.SimPosition;

@@ -83,12 +83,24 @@ public static partial class Program
 
     // 2026-10-08 14:51 David: how long one home sit lasts. A seat's "stay_s" [min, max] (toilet, sink: 30-60 s) wins,
     // otherwise the usual 2-4 min. The hand wash after the toilet passes its own 20-40 s (WashHands.cs).
-    internal const int HomeSitMinS = 120, HomeSitMaxS = 240;
-    internal static int HomeSitStaySeconds(HomeSeatInfo i, Random r)
+    // 2026-11-09 David (t3194u): a bath is a proper soak, not a 2-4 min sit: 15-25 min on a wander visit, and when he sends me to the
+    // bath (the wander_sit command) I stay until told otherwise (stand, a wander pause/stop) - capped at 4 h so a forgotten bath ends.
+    internal const int HomeSitMinS = 120, HomeSitMaxS = 240, BathSoakMinS = 900, BathSoakMaxS = 1500, BathOnRequestS = 4 * 3600;
+    internal static bool IsBathSoak(HomeSeatInfo i) => i != null && (i.Special == "undress" || string.Equals(i.Place, "tub", StringComparison.OrdinalIgnoreCase));
+    internal static int HomeSitStaySeconds(HomeSeatInfo i, Random r, bool onRequest = false)
     {
-        var (lo, hi) = i?.StayS ?? (HomeSitMinS, HomeSitMaxS);
+        if (i?.StayS == null && IsBathSoak(i) && onRequest) return BathOnRequestS;
+        var (lo, hi) = i?.StayS ?? (IsBathSoak(i) ? (BathSoakMinS, BathSoakMaxS) : (HomeSitMinS, HomeSitMaxS));
         return r.Next(lo, hi + 1);
     }
+
+    // pure (tested): when the next pose change of a stay happens. Short stays (< 10 min): ONE change at 40-60 % (as before; none
+    // under 3 min). Long stays (a bath soak): the first at 3-5 min, then every 4-7 min, while she is still seated.
+    internal const int LongStayRotateS = 600;
+    internal static double FirstPoseChangeAt(double stay, bool menu, Random r) =>
+        !menu || stay < 180 ? double.MaxValue : stay >= LongStayRotateS ? 180 + r.NextDouble() * 120 : stay * (0.4 + r.NextDouble() * 0.2);
+    internal static double NextPoseChangeAt(double elapsed, double stay, Random r) =>
+        stay < LongStayRotateS ? double.MaxValue : elapsed + 240 + r.NextDouble() * 180;
 
     // menu for this sit: fixed steps + one random choice (shower: Single* > F1|F2)
     internal static List<string> HomeSeatMenu(HomeSeatInfo i, Random r)
@@ -246,7 +258,7 @@ public static partial class Program
         for (int k = 0; k < 3; k++)
         {
             if (AtChangeSpot(client.Self.SimPosition, spot.Value)) return true;
-            try { await WalkLeg(spot.Value, 0.5f, "change spot (" + why + ")", ct); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("change spot walk: " + ex.GetBaseException().Message); }
+            try { await WalkLeg(spot.Value, 0.5f, "change spot (" + why + ")", ct, precise: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("change spot walk: " + ex.GetBaseException().Message); }
             await Task.Delay(800, ct);
         }
         var ok = AtChangeSpot(client.Self.SimPosition, spot.Value);

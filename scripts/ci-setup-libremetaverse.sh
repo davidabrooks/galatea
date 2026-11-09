@@ -36,4 +36,5 @@ apply "$TC/libremetaverse-udp-rcvbuf.patch"     # 2026-10-14: Settings.UdpSocket
 apply "$TC/libremetaverse-outfit-order.patch"     # 2026-10-27: Settings.Agent.OutfitSendRank (outfit send: body first)
 apply "$TC/libremetaverse-messagepack-security.patch"
 apply "$TC/libremetaverse-hosting-patches.patch"
+apply "$TC/libremetaverse-maintenance-patches.patch"
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

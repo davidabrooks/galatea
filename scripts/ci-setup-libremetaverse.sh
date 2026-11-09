@@ -37,4 +37,5 @@ apply "$TC/libremetaverse-outfit-order.patch"     # 2026-10-27: Settings.Agent.O
 apply "$TC/libremetaverse-messagepack-security.patch"
 apply "$TC/libremetaverse-hosting-patches.patch"
 apply "$TC/libremetaverse-maintenance-patches.patch"
+apply "$TC/libremetaverse-zlogger.patch"
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

@@ -41,4 +41,5 @@ apply "$TC/libremetaverse-zlogger.patch"
 apply "$TC/libremetaverse-corej2k.patch"
 apply "$TC/libremetaverse-utf8stringinterpolation.patch"
 apply "$TC/libremetaverse-system-io-hashing.patch"
+apply "$TC/libremetaverse-stringtools.patch"               # 2026-11-08: transitive override Microsoft.NET.StringTools 18.11.0 (MessagePack floor 17.11.4)
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

@@ -1,5 +1,5 @@
 diff --git a/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs b/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
-index 463bf575..6f41b1fa 100644
+index a9613ccb..911ffa14 100644
 --- a/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
 +++ b/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
 @@ -603,6 +603,7 @@ namespace LibreMetaverse
@@ -10,7 +10,7 @@ index 463bf575..6f41b1fa 100644
              Uri seedCap = new Uri(Utils.BytesToString(crossing.RegionData.SeedCapability));
              IPEndPoint endPoint = new IPEndPoint(crossing.RegionData.SimIP, crossing.RegionData.SimPort);
  
-@@ -1065,6 +1066,7 @@ namespace LibreMetaverse
+@@ -1049,6 +1050,7 @@ namespace LibreMetaverse
          private void CrossedRegionEventHandler(string capsKey, IMessage message, Simulator simulator)
          {
              CrossedRegionMessage crossed = (CrossedRegionMessage)message;
@@ -19,7 +19,7 @@ index 463bf575..6f41b1fa 100644
              IPEndPoint endPoint = new IPEndPoint(crossed.IP, crossed.Port);
  
 diff --git a/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs b/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
-index 9bfa7b56..bab5b697 100644
+index 37f5c3ad..4cceb295 100644
 --- a/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
 +++ b/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
 @@ -25,6 +25,8 @@
@@ -83,7 +83,7 @@ index 9bfa7b56..bab5b697 100644
          // Single semaphore protects all mutations of _currentCrossing and its State field.
          // Not held across awaits — acquired briefly, released before any async work begins.
          private readonly SemaphoreSlim _stateLock = new SemaphoreSlim(1, 1);
-@@ -276,11 +323,18 @@ namespace LibreMetaverse
+@@ -291,11 +338,18 @@ namespace LibreMetaverse
                  {
                      crossing.NewSimulator = newSim;
                      relativePosition = crossing.Position;
@@ -102,7 +102,7 @@ index 9bfa7b56..bab5b697 100644
  
                      Logger.Info($"Successfully connected to new region: {newSim.Name}", Client);
                      return await TransitionCrossingStateAsync(CrossingState.WaitingForComplete, token).ConfigureAwait(false);
-@@ -372,6 +426,11 @@ namespace LibreMetaverse
+@@ -387,6 +441,11 @@ namespace LibreMetaverse
              if (m_RegionCrossed != null)
                  OnRegionCrossed(new RegionCrossedEventArgs(crossing.OldSimulator, crossing.NewSimulator));
  
@@ -115,10 +115,10 @@ index 9bfa7b56..bab5b697 100644
              Logger.Debug($"Crossing cleanup: Old sim {crossing.OldSimulator?.Name ?? "null"}, New sim {crossing.NewSimulator?.Name ?? "null"}", Client);
              return true;
 diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
-index 64b40651..f9083c85 100644
+index 74dc0810..9102fa08 100644
 --- a/LibreMetaverse/Appearance/AppearanceManager.cs
 +++ b/LibreMetaverse/Appearance/AppearanceManager.cs
-@@ -3109,6 +3109,13 @@ namespace LibreMetaverse
+@@ -3085,6 +3085,13 @@ namespace LibreMetaverse
  
      private void Network_OnSimChanged(object? sender, SimChangedEventArgs e)
      {
@@ -133,10 +133,10 @@ index 64b40651..f9083c85 100644
          // The new sim will trigger a fresh Simulator_OnCapabilitiesReceived and
          // start a new appearance pass once capabilities are ready.
 diff --git a/LibreMetaverse/NetworkManager.cs b/LibreMetaverse/NetworkManager.cs
-index e0706f79..f82089ef 100644
+index d1cf4212..837877e6 100644
 --- a/LibreMetaverse/NetworkManager.cs
 +++ b/LibreMetaverse/NetworkManager.cs
-@@ -732,9 +732,18 @@ namespace LibreMetaverse
+@@ -717,9 +717,18 @@ namespace LibreMetaverse
              {
                  Logger.Info($"Moving to another simulator; sending CompleteAgentMovement to {simulator.Name}", Client);
                  // Move in to this simulator
@@ -205,10 +205,10 @@ index eaa6f4d5..1586c983 100644
                      continue;
                  }
 diff --git a/LibreMetaverse/Simulator.cs b/LibreMetaverse/Simulator.cs
-index cefd11f2..30b075ec 100644
+index b727a2d2..4cde2fe8 100644
 --- a/LibreMetaverse/Simulator.cs
 +++ b/LibreMetaverse/Simulator.cs
-@@ -1063,6 +1063,14 @@ namespace LibreMetaverse
+@@ -953,6 +953,14 @@ namespace LibreMetaverse
              if (Caps != null)
              {
                  if (Caps._SeedCapsURI == seedcaps && !changedSim) return;

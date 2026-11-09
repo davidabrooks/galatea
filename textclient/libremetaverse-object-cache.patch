@@ -1,8 +1,8 @@
 diff --git a/LibreMetaverse/NetworkManager.cs b/LibreMetaverse/NetworkManager.cs
-index 47993522..e0706f79 100644
+index 06b31d4e..d1cf4212 100644
 --- a/LibreMetaverse/NetworkManager.cs
 +++ b/LibreMetaverse/NetworkManager.cs
-@@ -1448,8 +1448,11 @@ namespace LibreMetaverse
+@@ -1476,8 +1476,11 @@ namespace LibreMetaverse
                      AgentID = Client.Self.AgentID,
                      SessionID = Client.Self.SessionID
                  },

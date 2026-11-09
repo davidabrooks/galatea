@@ -1,7 +1,8 @@
 diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
+index 9102fa08..10e416f5 100644
 --- a/LibreMetaverse/Appearance/AppearanceManager.cs
 +++ b/LibreMetaverse/Appearance/AppearanceManager.cs
-@@ -2776,6 +2776,8 @@
+@@ -2752,6 +2752,8 @@ namespace LibreMetaverse
                  skipped = blocks.Count(b => have.Contains(b.ItemID));
                  blocks = blocks.Where(b => !have.Contains(b.ItemID)).ToList();
              }
@@ -11,9 +12,10 @@ diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/App
                  string.Join("; ", blocks.Select(b => Utils.BytesToString(b.Name))) + $"; FirstDetachAll={Client.Settings.Agent.OutfitSendDetachAll}", Client);
              if (blocks.Count == 0 && !Client.Settings.Agent.OutfitSendDetachAll) return;
 diff --git a/LibreMetaverse/Settings/AgentSettings.cs b/LibreMetaverse/Settings/AgentSettings.cs
+index 118103c0..bd6347bf 100644
 --- a/LibreMetaverse/Settings/AgentSettings.cs
 +++ b/LibreMetaverse/Settings/AgentSettings.cs
-@@ -15,6 +15,9 @@
+@@ -15,6 +15,9 @@ namespace LibreMetaverse
          public int OutfitSendSkipAttachedSettleMs = 0;
          /// <summary>(galatay 2026-09-26) COF objects (item id, name) never to (re)attach in the outfit send, e.g. the Firestorm LSL Bridge.</summary>
          public System.Func<UUID, string, bool>? OutfitSendExclude = null;

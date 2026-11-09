@@ -1,5 +1,5 @@
 diff --git a/LibreMetaverse/Agent/AgentManager.EventArgs.cs b/LibreMetaverse/Agent/AgentManager.EventArgs.cs
-index 4cb90d1..bb15b9d 100644
+index 4cb90d17..bb15b9d1 100644
 --- a/LibreMetaverse/Agent/AgentManager.EventArgs.cs
 +++ b/LibreMetaverse/Agent/AgentManager.EventArgs.cs
 @@ -107,8 +107,10 @@ namespace LibreMetaverse
@@ -23,7 +23,7 @@ index 4cb90d1..bb15b9d 100644
      }
  
 diff --git a/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs b/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
-index acf6e92..463bf57 100644
+index 2b9023ad..a9613ccb 100644
 --- a/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
 +++ b/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
 @@ -215,12 +215,15 @@ namespace LibreMetaverse

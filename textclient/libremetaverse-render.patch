@@ -1,8 +1,8 @@
-diff --git a/LibreMetaverse/BVHDecoder.cs b/LibreMetaverse/BVHDecoder.cs
-index c013988..8efc7d2 100644
---- a/LibreMetaverse/BVHDecoder.cs
-+++ b/LibreMetaverse/BVHDecoder.cs
-@@ -337,14 +337,14 @@ namespace LibreMetaverse
+diff --git a/LibreMetaverse.Assets/Animation/BVHDecoder.cs b/LibreMetaverse.Assets/Animation/BVHDecoder.cs
+index 7e820164..8ef4f772 100644
+--- a/LibreMetaverse.Assets/Animation/BVHDecoder.cs
++++ b/LibreMetaverse.Assets/Animation/BVHDecoder.cs
+@@ -354,14 +354,14 @@ namespace LibreMetaverse
                  binBVHJointKey pJKey = new binBVHJointKey();
                  if (!BitConverter.IsLittleEndian)
                  {
@@ -19,24 +19,11 @@ index c013988..8efc7d2 100644
                      x = Utils.UInt16ToFloat(data, i, min, max); i += 2;
                      y = Utils.UInt16ToFloat(data, i, min, max); i += 2;
                      z = Utils.UInt16ToFloat(data, i, min, max); i += 2;
-diff --git a/LibreMetaverse/ObjectManager.cs b/LibreMetaverse/ObjectManager.cs
-index fab0adc..da8027c 100644
---- a/LibreMetaverse/ObjectManager.cs
-+++ b/LibreMetaverse/ObjectManager.cs
-@@ -2369,7 +2369,7 @@ namespace LibreMetaverse
- 
-             foreach (var material in materials)
-             {
--                array.Add(material);
-+                array.Add(OSD.FromBinary(material.GetBytes())); // galatay 2026-10-03: the cap wants 16-byte binary ids (LLMaterialID::asLLSD), not LLSD uuids
-             }
- 
-             OSDMap request = new OSDMap(new Dictionary<string, OSD>
-diff --git a/LibreMetaverse/Primitives/Primitive.cs b/LibreMetaverse/Primitives/Primitive.cs
-index 2eb4328..49c9464 100644
---- a/LibreMetaverse/Primitives/Primitive.cs
-+++ b/LibreMetaverse/Primitives/Primitive.cs
-@@ -1310,6 +1310,9 @@ namespace LibreMetaverse
+diff --git a/LibreMetaverse.Assets/Primitives/Primitive.cs b/LibreMetaverse.Assets/Primitives/Primitive.cs
+index 67e4dcf0..3e72dfa7 100644
+--- a/LibreMetaverse.Assets/Primitives/Primitive.cs
++++ b/LibreMetaverse.Assets/Primitives/Primitive.cs
+@@ -1301,6 +1301,9 @@ namespace LibreMetaverse
              if (!string.IsNullOrEmpty(desc)) prim.Properties.Description = desc;
          }
  
@@ -46,7 +33,7 @@ index 2eb4328..49c9464 100644
          public int SetExtraParamsFromBytes(byte[] data, int pos)
          {
              int i = pos;
-@@ -1340,6 +1343,15 @@ namespace LibreMetaverse
+@@ -1331,6 +1334,15 @@ namespace LibreMetaverse
                  {
                      ExtendedMeshFlags = Utils.BytesToUInt(data, i);
                  }
@@ -62,3 +49,16 @@ index 2eb4328..49c9464 100644
  
                  i += (int)paramLength;
                  totalLength += (int)paramLength + 6;
+diff --git a/LibreMetaverse/ObjectManager.cs b/LibreMetaverse/ObjectManager.cs
+index 7fed07b9..c582bc68 100644
+--- a/LibreMetaverse/ObjectManager.cs
++++ b/LibreMetaverse/ObjectManager.cs
+@@ -2277,7 +2277,7 @@ namespace LibreMetaverse
+ 
+             foreach (var material in materials)
+             {
+-                array.Add(material);
++                array.Add(OSD.FromBinary(material.GetBytes())); // galatay 2026-10-03: the cap wants 16-byte binary ids (LLMaterialID::asLLSD), not LLSD uuids
+             }
+ 
+             OSDMap request = new OSDMap(new Dictionary<string, OSD>

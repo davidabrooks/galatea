@@ -15,9 +15,9 @@ public class CrashGuardTests
     {
         // an assembly without the marker type/member stands in for the stale DLL
         var missing = Program.LmvMissingPatches(typeof(string).Assembly, Program.RequiredLmvMarkers);
-        Assert.Equal(new[] { "libremetaverse-seed-retry.patch" }, missing);
+        Assert.Equal(new[] { "LibreMetaverse v3.2.0+ (upstream seed-capability retry fix d58a7283)", "libremetaverse-object-cache.patch" }, missing);
         Assert.Equal(new[] { "x.patch" }, Program.LmvMissingPatches(typeof(LibreMetaverse.Caps).Assembly, new[] { ("LibreMetaverse.Caps", "NoSuchMember", "x.patch") }));
-        Assert.Single(Program.LmvMissingPatches(null, Program.RequiredLmvMarkers));
+        Assert.Equal(2, Program.LmvMissingPatches(null, Program.RequiredLmvMarkers).Count);
     }
     [Fact] public void GhostPidIsADeadPidNamedByTheLock()
     {

@@ -1,25 +1,26 @@
 diff --git a/Directory.Packages.props b/Directory.Packages.props
+index 0883ab9c..5ea7923b 100644
 --- a/Directory.Packages.props
 +++ b/Directory.Packages.props
 @@ -5,7 +5,7 @@
    <ItemGroup>
-     <PackageVersion Include="CoreJ2K" Version="2.3.3.91" />
+     <PackageVersion Include="CoreJ2K" Version="2.4.1.108" />
      <PackageVersion Include="MessagePack" Version="3.1.12" />
--    <PackageVersion Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12" />
+-    <PackageVersion Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.13" />
 +    <PackageVersion Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.14" />
-     <PackageVersion Include="Microsoft.NET.ILLink.Tasks" Version="10.0.12" />
+     <PackageVersion Include="Microsoft.NET.ILLink.Tasks" Version="10.0.13" />
      <PackageVersion Include="Microsoft.Bcl.HashCode" Version="6.0.0" />
-     <PackageVersion Include="Microsoft.Bcl.TimeProvider" Version="10.0.12" />
+     <PackageVersion Include="Microsoft.Bcl.TimeProvider" Version="10.0.13" />
 @@ -16,9 +16,9 @@
           the CI toolchain silently disables every generator (no error, just missing generated
           types downstream). -->
      <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
--    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
--    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.12" />
--    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.12" />
+-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
+-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.13" />
+-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
 +    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
 +    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.14" />
 +    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.14" />
-     <PackageVersion Include="Microsoft.Extensions.ObjectPool" Version="10.0.12" />
-     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
-     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
+     <PackageVersion Include="Microsoft.Extensions.ObjectPool" Version="10.0.13" />
+     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.402" />

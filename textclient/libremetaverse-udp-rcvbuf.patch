@@ -1,8 +1,35 @@
+diff --git a/LibreMetaverse.Transport/UDPBase.cs b/LibreMetaverse.Transport/UDPBase.cs
+index b73419a3..e00d4979 100644
+--- a/LibreMetaverse.Transport/UDPBase.cs
++++ b/LibreMetaverse.Transport/UDPBase.cs
+@@ -65,6 +65,9 @@ namespace LibreMetaverse
+         /// </summary>
+         protected virtual int ReceiveQueueCapacity => 512;
+ 
++        /// <summary>galatea: kernel receive buffer (SO_RCVBUF) in bytes; 0 = OS default</summary>
++        protected virtual int SocketReceiveBufferSize => 0;
++
+         // the port to listen on
+         protected int udpPort;
+ 
+@@ -141,6 +144,12 @@ namespace LibreMetaverse
+             // default on Windows.
+             udpSocket!.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, false);
+ 
++            if (SocketReceiveBufferSize > 0)
++            {
++                try { udpSocket!.ReceiveBufferSize = SocketReceiveBufferSize; }
++                catch (Exception ex) { Logger.Warn($"UDP ReceiveBufferSize {SocketReceiveBufferSize} not applied: {ex.Message}"); }
++            }
++
+             udpSocket!.Bind(ipep);
+ 
+             // we're not shutting down, we're starting up
 diff --git a/LibreMetaverse/Settings.cs b/LibreMetaverse/Settings.cs
-index 402dda37..71bd26d3 100644
+index 1596b1b0..eb75bbfb 100644
 --- a/LibreMetaverse/Settings.cs
 +++ b/LibreMetaverse/Settings.cs
-@@ -85,6 +85,9 @@ namespace LibreMetaverse
+@@ -89,6 +89,9 @@ namespace LibreMetaverse
          /// <summary>Capacity of the incoming UDP receive queue; packets received when the queue is full are dropped and counted in SimStats.DroppedPackets</summary>
          public static int UdpReceiveQueueCapacity = 512;
  
@@ -12,20 +39,16 @@ index 402dda37..71bd26d3 100644
          /// <summary>Timer interval in milliseconds between checks for stalled texture downloads</summary>
          public static float TexturePipelineRefreshInterval = 500.0f;
  
-diff --git a/LibreMetaverse/UDPBase.cs b/LibreMetaverse/UDPBase.cs
-index e0b47337..bb2467da 100644
---- a/LibreMetaverse/UDPBase.cs
-+++ b/LibreMetaverse/UDPBase.cs
-@@ -129,6 +129,12 @@ namespace LibreMetaverse
-             // default on Windows.
-             udpSocket!.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, false);
+diff --git a/LibreMetaverse/Simulator.cs b/LibreMetaverse/Simulator.cs
+index 4cde2fe8..583b83e2 100644
+--- a/LibreMetaverse/Simulator.cs
++++ b/LibreMetaverse/Simulator.cs
+@@ -1203,6 +1203,8 @@ namespace LibreMetaverse
  
-+            if (Settings.UdpSocketReceiveBuffer > 0)
-+            {
-+                try { udpSocket!.ReceiveBufferSize = Settings.UdpSocketReceiveBuffer; }
-+                catch (Exception ex) { Logger.Warn($"UDP ReceiveBufferSize {Settings.UdpSocketReceiveBuffer} not applied: {ex.Message}"); }
-+            }
+         protected override int ReceiveQueueCapacity => Settings.UdpReceiveQueueCapacity;
+ 
++        protected override int SocketReceiveBufferSize => Settings.UdpSocketReceiveBuffer;
 +
-             udpSocket!.Bind(ipep);
- 
-             // we're not shutting down, we're starting up
+         protected override void PacketReceived(UDPPacketBuffer buffer)
+         {
+             using (Logger.BeginClientScope(Client))

@@ -1,5 +1,5 @@
 diff --git a/LibreMetaverse/GridClient.cs b/LibreMetaverse/GridClient.cs
-index c7218853..5c17968d 100644
+index 2b3b9471..5bcffb9e 100644
 --- a/LibreMetaverse/GridClient.cs
 +++ b/LibreMetaverse/GridClient.cs
 @@ -123,6 +123,12 @@ namespace LibreMetaverse
@@ -15,7 +15,7 @@ index c7218853..5c17968d 100644
          /// <summary>Per-category rate limiter applied to all caps HTTP requests</summary>
          public CapsRateLimiter CapsRateLimiter { get; private set; }
          /// <summary>Second Life Marketplace subsystem</summary>
-@@ -206,6 +212,23 @@ namespace LibreMetaverse
+@@ -204,6 +210,24 @@ namespace LibreMetaverse
              }
              handler = winHttpHandler;
  #else
@@ -29,7 +29,8 @@ index c7218853..5c17968d 100644
 +                    ConnectCallback = CapsConnectCallback,
 +                    SslOptions = new SslClientAuthenticationOptions
 +                    {
-+                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true // same as ValidateServerCertificate
++                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => ServerCertificateValidator.Validate(Settings.Security,
++                            (sender as System.Net.Security.SslStream)?.TargetHostName ?? string.Empty, cert as System.Security.Cryptography.X509Certificates.X509Certificate2, chain, errors) // galatea: same policy as ValidateServerCertificate (3.1.8+)
 +                    },
 +                    MaxConnectionsPerServer = Settings.MaxHttpConnections
 +                };
@@ -39,7 +40,7 @@ index c7218853..5c17968d 100644
              var httpClientHandler = new HttpClientHandler
              {
                  AllowAutoRedirect = true,
-@@ -220,6 +243,11 @@ namespace LibreMetaverse
+@@ -218,6 +242,11 @@ namespace LibreMetaverse
              handler = httpClientHandler;
  #endif
  

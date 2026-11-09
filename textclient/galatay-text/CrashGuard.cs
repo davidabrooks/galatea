@@ -3,6 +3,9 @@
 // copied from the old /home/box/viewers/textclient/*-staging), so the seed-capability retry was the upstream unbounded synchronous
 // recursion again ("Seed capability returned no response. Trying again." x19 in one second, then "Stack overflow." = SIGABRT; the
 // same crash as 2026-10-08, fixed by libremetaverse-seed-retry.patch, which the stale DLL does not contain).
+// 2026-11-09 (LibreMetaverse v3.3.0): upstream fixed the seed retry itself (d58a7283, v3.2.0: Caps.ScheduleSeedRetry, bounded
+// backoff), so our seed-retry patch was dropped. The guard now requires that upstream fix AND a galatea patch marker
+// (object-cache's LibreMetaverse.ObjectDiskCache), so both a pre-3.2 LibreMetaverse and an unpatched 3.3.0 build are refused.
 // Guards here: (1) refuse to log in when the loaded LibreMetaverse lacks a galatea patch marker; (2) log every unhandled / unobserved
 // exception to textclient.log before the runtime aborts (a stack overflow itself cannot be caught: only the runtime's stderr shows it);
 // (3) a lock file that names a dead connector = a ghost avatar session: say so, clear the lock, let the next login replace it;
@@ -21,7 +24,8 @@ public static partial class Program
     // (type, public/nonpublic member) that only the galatea-patched LibreMetaverse has. Pure check below.
     internal static readonly (string Type, string Member, string Patch)[] RequiredLmvMarkers =
     {
-        ("LibreMetaverse.Caps", "SeedMaxAttempts", "libremetaverse-seed-retry.patch"),
+        ("LibreMetaverse.Caps", "ScheduleSeedRetry", "LibreMetaverse v3.2.0+ (upstream seed-capability retry fix d58a7283)"),
+        ("LibreMetaverse.ObjectDiskCache", "LastHandshake", "libremetaverse-object-cache.patch"),
     };
 
     /// <summary>pure (tested): the patch files missing from <paramref name="lmv"/>; empty = good.</summary>
@@ -45,7 +49,7 @@ public static partial class Program
             var lmv = typeof(LibreMetaverse.GridClient).Assembly;
             var missing = LmvMissingPatches(lmv, RequiredLmvMarkers);
             if (missing.Count == 0) return null;
-            return $"the loaded LibreMetaverse.dll ({lmv.Location}) is missing galatea patch(es) {string.Join(", ", missing)}: it is an unpatched/stale build and would crash the connector right after login (stack overflow in the seed-capability retry). Rebuild from the repo (build-all.sh) and deploy from ITS app-staging / mcp-app-staging";
+            return $"the loaded LibreMetaverse.dll ({lmv.Location}) is missing {string.Join(", ", missing)}: it is an unpatched/stale build (an old one crashes the connector right after login: stack overflow in the seed-capability retry). Rebuild from the repo (build-all.sh) and deploy from ITS app-staging / mcp-app-staging";
         }
         catch (Exception ex) { return null; /* a guard failure must not block login */ }
     }

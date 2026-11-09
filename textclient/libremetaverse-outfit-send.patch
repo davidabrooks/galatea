@@ -1,8 +1,8 @@
 diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
-index 3a6efc9..64b4065 100644
+index 13d2a1fd..74dc0810 100644
 --- a/LibreMetaverse/Appearance/AppearanceManager.cs
 +++ b/LibreMetaverse/Appearance/AppearanceManager.cs
-@@ -2741,6 +2741,45 @@ namespace LibreMetaverse
+@@ -2717,6 +2717,45 @@ namespace LibreMetaverse
                  }
              }
  
@@ -48,7 +48,7 @@ index 3a6efc9..64b4065 100644
              var attachmentsPacket = new RezMultipleAttachmentsFromInvPacket
              {
                  AgentData =
-@@ -2751,7 +2790,7 @@ namespace LibreMetaverse
+@@ -2727,7 +2766,7 @@ namespace LibreMetaverse
                  HeaderData =
                  {
                      CompoundMsgID = UUID.Random(),
@@ -57,7 +57,7 @@ index 3a6efc9..64b4065 100644
                      TotalObjects = (byte)blocks.Count
                  },
                  ObjectData = blocks.ToArray()
-@@ -3297,7 +3336,12 @@ namespace LibreMetaverse
+@@ -3273,7 +3312,12 @@ namespace LibreMetaverse
                                  shouldSend = v > _lastSentOutfitCOFVersion;
                                  if (shouldSend) _lastSentOutfitCOFVersion = v;
                              }
@@ -72,7 +72,7 @@ index 3a6efc9..64b4065 100644
                              else
                                  Logger.Debug($"Skipping duplicate outfit send (already sent for COF v{_lastSentOutfitCOFVersion})", Client);
 diff --git a/LibreMetaverse/Settings/AgentSettings.cs b/LibreMetaverse/Settings/AgentSettings.cs
-index 9df488f..118103c 100644
+index 9df488fc..118103c0 100644
 --- a/LibreMetaverse/Settings/AgentSettings.cs
 +++ b/LibreMetaverse/Settings/AgentSettings.cs
 @@ -5,6 +5,16 @@ namespace LibreMetaverse

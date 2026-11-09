@@ -15,7 +15,7 @@ Everything below follows from these five. Where a convenient design and a princi
 
 ## 1. What the vendored library already covers
 
-Galatea builds on LibreMetaverse pinned at `1844571e…` plus patches (cloned into the gitignored `textclient/src-libremetaverse/`). It contains a **`LibreMetaverse.RLV`** project (about 6,300 lines, no dependency on the rest of LibreMetaverse; it speaks `Guid`, not `UUID`) and about 600 NUnit tests under `LibreMetaverse.Tests/RLV`. **Galatea does not reference it yet** and no RLV code exists in `galatay-text/`. The library's own tests are not run by Galatea CI (CI runs only `GalatayText.Tests`, xUnit).
+Galatea builds on LibreMetaverse pinned at v3.3.0 `7f1cbd11…` (was v3.1.6 `1844571e…` until 2026-11-09) plus patches (cloned into the gitignored `textclient/src-libremetaverse/`). It contains a **`LibreMetaverse.RLV`** project (about 6,300 lines, no dependency on the rest of LibreMetaverse; it speaks `Guid`, not `UUID`) and about 600 NUnit tests under `LibreMetaverse.Tests/RLV`. **Galatea does not reference it yet** and no RLV code exists in `galatay-text/`. The library's own tests are not run by Galatea CI (CI runs only `GalatayText.Tests`, xUnit).
 
 **What it does:**
 - **Parser**: `RlvService.ProcessMessageAsync(message, senderId, senderName)`. The message must start with `@`; it splits on `,` and matches `behavior[:option]=param`. `param` is `force`, `y`/`n`/`add`/`rem`, or a channel number for queries. `@clear[=filter]` is supported. A blacklist (`RlvBlacklist`) is honored. A blacklisted command still gets a positive reply, as the spec says.

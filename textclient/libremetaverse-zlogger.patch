@@ -1,8 +1,9 @@
 diff --git a/Directory.Packages.props b/Directory.Packages.props
+index 71c0d70e..ae33bf32 100644
 --- a/Directory.Packages.props
 +++ b/Directory.Packages.props
 @@ -45,6 +45,6 @@
-     <PackageVersion Include="System.Threading.Channels" Version="10.0.12" />
+     <PackageVersion Include="System.Threading.Channels" Version="10.0.13" />
      <PackageVersion Include="System.Threading.RateLimiting" Version="10.0.14" />
      <PackageVersion Include="zlib.net-mutliplatform" Version="1.1.0" />
 -    <PackageVersion Include="ZLogger" Version="2.5.10" />

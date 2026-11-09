@@ -1,5 +1,6 @@
-"""check-lmv-patches.sh (2026-10-28): a staged/deployed LibreMetaverse.dll without the seed-retry patch must be refused
-(deploying one crashed the connector 4 times right after login). Pure file checks, no login."""
+"""check-lmv-patches.sh (2026-10-28): a staged/deployed LibreMetaverse.dll without the seed-retry fix must be refused
+(deploying one crashed the connector 4 times right after login). Since LibreMetaverse v3.3.0 (2026-11-09) the fix is upstream's
+Caps.ScheduleSeedRetry, and the galatea patches are proven by the object-cache patch's ObjectDiskCache. Pure file checks, no login."""
 import pathlib, subprocess, shutil
 import pytest
 
@@ -12,7 +13,7 @@ def run(*dirs):
 
 
 def test_patched_dll_passes(tmp_path):
-    (tmp_path / "LibreMetaverse.dll").write_bytes(b"MZ....#Strings\0SeedMaxAttempts\0Caps\0")
+    (tmp_path / "LibreMetaverse.dll").write_bytes(b"MZ....#Strings\0ScheduleSeedRetry\0Caps\0ObjectDiskCache\0")
     r = run(tmp_path)
     assert r.returncode == 0 and "patched" in r.stdout
 
@@ -23,13 +24,26 @@ def test_unpatched_dll_is_refused(tmp_path):
     assert r.returncode == 6 and "UNPATCHED" in r.stdout
 
 
+def test_old_seed_retry_patch_marker_alone_is_refused(tmp_path):
+    # the pre-3.3.0 build (v3.1.6 + our seed-retry patch) lacks upstream's fix and must not pass as current
+    (tmp_path / "LibreMetaverse.dll").write_bytes(b"MZ....#Strings\0SeedMaxAttempts\0ObjectDiskCache\0")
+    r = run(tmp_path)
+    assert r.returncode == 6 and "upstream-seed-retry-fix" in r.stdout
+
+
+def test_upstream_330_without_galatea_patches_is_refused(tmp_path):
+    (tmp_path / "LibreMetaverse.dll").write_bytes(b"MZ....#Strings\0ScheduleSeedRetry\0Caps\0")
+    r = run(tmp_path)
+    assert r.returncode == 6 and "libremetaverse-object-cache.patch" in r.stdout
+
+
 def test_missing_dll_is_refused(tmp_path):
     assert run(tmp_path).returncode == 6
 
 
 def test_one_bad_directory_fails_the_set(tmp_path):
     good, bad = tmp_path / "good", tmp_path / "bad"; good.mkdir(); bad.mkdir()
-    (good / "LibreMetaverse.dll").write_bytes(b"SeedMaxAttempts"); (bad / "LibreMetaverse.dll").write_bytes(b"nothing")
+    (good / "LibreMetaverse.dll").write_bytes(b"ScheduleSeedRetry ObjectDiskCache"); (bad / "LibreMetaverse.dll").write_bytes(b"nothing")
     assert run(good, bad).returncode == 6
 
 

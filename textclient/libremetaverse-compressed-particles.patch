@@ -1,6 +1,8 @@
---- a/LibreMetaverse/ObjectManager.PacketHandlers.cs	2026-10-21 10:10:10.038268425 -0700
-+++ b/LibreMetaverse/ObjectManager.PacketHandlers.cs	2026-10-21 10:10:10.038268425 -0700
-@@ -835,7 +835,11 @@
+diff --git a/LibreMetaverse/ObjectManager.PacketHandlers.cs b/LibreMetaverse/ObjectManager.PacketHandlers.cs
+index 1586c983..805e6d18 100644
+--- a/LibreMetaverse/ObjectManager.PacketHandlers.cs
++++ b/LibreMetaverse/ObjectManager.PacketHandlers.cs
+@@ -835,7 +835,11 @@ namespace LibreMetaverse
                      // Particle system
                      if ((flags & CompressedFlags.HasParticles) != 0)
                      {

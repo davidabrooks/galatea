@@ -501,6 +501,9 @@ public static partial class Program
     internal static (int x0, int y0, float?[,] h) MergeTerrain(List<(int gx0, int gy0, float?[,] h)> grids, int n)
     {
         if (grids.Count == 0) return (0, 0, new float?[0, 0]);
+        // 2026-11-09: never a grid bigger than her region plus one ring of neighbors (3 x 3 regions); a farther grid (a stale
+        // region after a teleport) is dropped, the first grid (her own region) is always kept
+        grids = grids.Take(1).Concat(grids.Skip(1).Where(g => Math.Abs(g.gx0 - grids[0].gx0) <= n && Math.Abs(g.gy0 - grids[0].gy0) <= n)).ToList();
         int minX = grids.Min(g => g.gx0), minY = grids.Min(g => g.gy0), maxX = grids.Max(g => g.gx0) + n, maxY = grids.Max(g => g.gy0) + n;
         int w = maxX - minX, hgt = maxY - minY; var m = new float?[hgt, w];
         foreach (var (gx0, gy0, h) in grids)

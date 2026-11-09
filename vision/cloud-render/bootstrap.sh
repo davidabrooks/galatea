@@ -12,9 +12,12 @@ apt-get install -y -qq --no-install-recommends python3 python3-pip curl xz-utils
   libx11-6 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 libgl1 libegl1 libglvnd0 \
   libvulkan1 libxext6 >/dev/null
 pip3 install -q --no-cache-dir runpod==1.7.* pillow >/dev/null
-BL=blender-4.2.3-linux-x64
+BL=blender-4.5.15-linux-x64
+BL_SHA256=0d2b8bb2efe97e6c8eb57de6b7322f8800e1984e3125b60decca5f6771e4773e   # download.blender.org/release/Blender4.5/blender-4.5.15.sha256
 if [ ! -x /opt/$BL/blender ]; then
-  curl -sL https://download.blender.org/release/Blender4.2/$BL.tar.xz | tar -xJ -C /opt
+  curl -sfL https://download.blender.org/release/Blender4.5/$BL.tar.xz -o /tmp/$BL.tar.xz
+  echo "$BL_SHA256  /tmp/$BL.tar.xz" | sha256sum -c --quiet -
+  tar -xJf /tmp/$BL.tar.xz -C /opt && rm -f /tmp/$BL.tar.xz
 fi
 REF=${GT_REPO_REF:-vision/runpod-test-render}
 BASE=https://raw.githubusercontent.com/davidabrooks/galatea/$REF/vision/cloud-render

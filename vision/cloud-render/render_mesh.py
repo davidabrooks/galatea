@@ -453,6 +453,10 @@ def build(group, bones=None, lining=True):
         if tn and _alpha_stats(tn)[1] < 1e-3: continue
         see_through = group.startswith("avatar") and (b.get("mat") or {}).get("alpha", "auto") in ("auto", "blend") and not b["tex"].startswith("bake:") and tn and has_alpha(tn)
         if see_through and DECAL_LIFT > 0: P = lift_along_normals(P, N, DECAL_LIFT)
+        t3 = I.reshape(-1, 3); ok = (t3[:, 0] != t3[:, 1]) & (t3[:, 1] != t3[:, 2]) & (t3[:, 0] != t3[:, 2])
+        if not ok.all():   # 2026-11-09: a triangle that repeats a vertex is an invalid polygon; Blender 4.5 segfaults in Mesh.update() on it
+            I = t3[ok].ravel(); ni = len(I)   # (zero area, never drawn: the render is unchanged)
+            if not ni: continue
         me = bpy.data.meshes.new(b["tex"][:40]); nt = ni // 3
         me.vertices.add(nv); me.vertices.foreach_set("co", P)
         me.loops.add(ni); me.loops.foreach_set("vertex_index", I)

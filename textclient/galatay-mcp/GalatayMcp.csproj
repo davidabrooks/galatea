@@ -160,7 +160,7 @@
     <Compile Include="../galatay-text/TextureCmds.cs" Link="Core/TextureCmds.cs" />
     <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../SlTextureVision/SlTextureVision.csproj" /> <!-- texture save / faces / vendor look (TextureCmds.cs) -->

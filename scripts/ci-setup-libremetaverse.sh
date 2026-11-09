@@ -35,4 +35,5 @@ apply "$TC/libremetaverse-doh-connect.patch"    # 2026-10-09: GridClient.CapsCon
 apply "$TC/libremetaverse-udp-rcvbuf.patch"     # 2026-10-14: Settings.UdpSocketReceiveBuffer (SO_RCVBUF) - lost chat when the box stalled
 apply "$TC/libremetaverse-outfit-order.patch"     # 2026-10-27: Settings.Agent.OutfitSendRank (outfit send: body first)
 apply "$TC/libremetaverse-messagepack-security.patch"
+apply "$TC/libremetaverse-hosting-patches.patch"
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

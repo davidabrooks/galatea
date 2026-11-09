@@ -200,9 +200,19 @@ public static partial class Program
         res.Add((cur, Vector3.Zero));
         if (!neighbors || !MultiSims) return res;
         foreach (var s in SimsSnapshot())
-            if (s != null && s != cur && s.Connected && s.Handle != 0 && s.Handle != cur.Handle) res.Add((s, SimGeo.Offset(cur.Handle, s.Handle)));
+            if (s != null && s != cur && s.Connected && s.Handle != 0 && s.Handle != cur.Handle)
+            {
+                var off = SimGeo.Offset(cur.Handle, s.Handle);
+                if (IsAdjacentOffset(off)) res.Add((s, off));   // 2026-11-09: not the far regions still open after a teleport
+            }
         return res;
     }
+
+    // pure (tested, 2026-11-09): a region next to (or diagonal to) the current one. After the 14:21 teleport Peronaut -> Ahern the
+    // old Peronaut, Terric, Castiliano and Impetueux stayed connected for ~20-60 s, ~136 regions away; the scene export merged their
+    // terrain with Morris into one 8897 x 2753 grid (24.5 M cells, a 464 MB scene.json) and the client went from 0.4 to 8.9 GB.
+    internal static bool IsAdjacentOffset(Vector3 off) =>
+        Math.Abs(off.X) <= SimGeo.Grid && Math.Abs(off.Y) <= SimGeo.Grid && (off.X != 0 || off.Y != 0);
 
     // avatars streamed by neighbor regions (not in the current one), position in the current frame, nearest first
     static List<(Avatar av, Simulator sim, Vector3 pos, float dist)> NeighborAvatars(float maxDist = float.MaxValue)

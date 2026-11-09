@@ -1,0 +1,6 @@
+# imgvenv exact lock (pip freeze of /home/box/tools/imgvenv, 2026-11-09, Python 3.13.5) for vision/look.py, look_cam.py, render_local.py.
+# Recreate: python3 -m venv /home/box/tools/imgvenv && /home/box/tools/imgvenv/bin/pip install -r vision/imgvenv-requirements.lock.txt
+imagecodecs==2026.8.16
+numpy==2.5.3
+pillow==12.3.0
+scipy==1.18.1

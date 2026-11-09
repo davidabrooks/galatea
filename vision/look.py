@@ -30,7 +30,7 @@ import handler, llsky, make_job  # texture fetch (CDN, capped) + bake decode / r
 MESHER = os.environ.get("SCENE_MESHER", "/home/box/tools/scene-mesher/SceneMesher.dll")
 # the text client's supervisor may not have dotnet on PATH (2026-10-04: "nice: 'dotnet': No such file"); DOTNET_ROOT is set
 DOTNET = shutil.which("dotnet") or os.path.join(os.environ.get("DOTNET_ROOT", "/home/box/.dotnet"), "dotnet")
-BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.2.3-linux-x64/blender")
+BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.5.15-linux-x64/blender")
 OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
 VIEWS = {"view": "eye", "around": "eye;eye:90;eye:180;eye:-90"}
@@ -785,7 +785,7 @@ def main(a):
                     print(f"layer base retry: bias {os.environ['GT_TEX_BIAS']}, textures ~{info2['textures']['est_mb']} MB", file=sys.stderr)
             got, hdr_files, rend, build = render_layered(out, env, meta, refetch, read_mem_available())
         else:
-            for attempt in range(3):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
+            for attempt in range(3):  # Blender has segfaulted in Mesh.update() (4.2 once; 4.5 often before render_mesh dropped degenerate triangles); a rerun is usually clean
                 if attempt:
                     if r.returncode != -9 and attempt > 1: break
                     env = {**env, **retry_env(r.returncode, hd, attempt)}

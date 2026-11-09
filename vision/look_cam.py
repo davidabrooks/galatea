@@ -19,7 +19,7 @@ import handler, make_job  # texture fetch (CDN, capped) + bake decode / region s
 MESHER = os.environ.get("SCENE_MESHER", "/home/box/tools/scene-mesher/SceneMesher.dll")
 # the text client's supervisor may not have dotnet on PATH (2026-10-04: "nice: 'dotnet': No such file"); DOTNET_ROOT is set
 DOTNET = shutil.which("dotnet") or os.path.join(os.environ.get("DOTNET_ROOT", "/home/box/.dotnet"), "dotnet")
-BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.2.3-linux-x64/blender")
+BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.5.15-linux-x64/blender")
 OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
 VIEWS = {"view": "", "around": "eye;eye:90;eye:180;eye:-90"}
@@ -238,7 +238,7 @@ def main(a):
             env.setdefault("GT_NOSKY", "1")
             env.setdefault("GT_DENOISE", "0")
             env.setdefault("GT_MIN_TRIS", "12")  # drop dust; keep chairs/walls/avatars
-        for attempt in range(2):  # Blender 4.2 has segfaulted once in Mesh.update() on a crowd scene (tbb); the rerun was clean
+        for attempt in range(2):  # Blender has segfaulted in Mesh.update() (4.2 once; 4.5 often before render_mesh dropped degenerate triangles); a rerun is usually clean
             r = subprocess.run(["nice", "-n", "10", BLENDER, "-b", "--factory-startup", "-noaudio", "-t", "0", "--python",
                                 f"{HERE}/cloud-render/render_mesh.py", "--", WORK, kind, "CYCLES", out], capture_output=True, text=True, env=env)
             if r.returncode >= 0: break

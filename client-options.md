@@ -8,18 +8,18 @@ Leak check: /workspace/secondlife/scripts/leak-count.py found the password 0 tim
 
 ## Summary table (measured)
 
-| | Firestorm 7.2.4 | LibreMetaverse: my galatay-text daemon | LibreMetaverse: galatay-mcp (MCP server) | node-metaverse 0.8.21 | Radegast Veles 3.0.0 | LM TestClient | Corrade |
-|---|---|---|---|---|---|---|---|
-| Real login tested | yes (earlier) | yes, 2x | yes, 3x | yes, 2x | yes, 2x (2026-10-02) | no (see below) | not installed |
-| Login time | ~17 s to STATE_STARTED | 4.6 s / 3.2 s | 3.5 / 2.7 / 3.5 s | 2.7-2.8 s (sim 3.3 s) | ~2 s after clicking Login | - | - |
-| RAM | ~2.1 GB viewer + ~3.6 GB plugins/CEF | 100-170 MB RSS | 115-160 MB RSS | 100-150 MB RSS | 400-460 MB logged in (5-6 GB with Scene Viewer) | - | - |
-| CPU | 260-280 % (~6-7 fps) | ~1 % idle (0.12 s CPU per 10 s) | 3.3-3.6 s CPU per ~55 s session incl. login | 3.7 s CPU per 50 s session | 14-22 % logged in | - | - |
-| Walk | GUI | yes (autopilot; `walk 3` and moveto OK; stopped once at a cliff) | yes (walk 2 m OK) | only raw control flags: 2.2 m once, 0 m once; no autopilot API | GUI | moveto/follow cmds | yes |
-| Sit by UUID | failing silently via GUI | **yes** (from 23.6 m away) | **yes** | **yes** | GUI | `siton` | yes |
-| IM send | yes | yes | yes | yes | yes | yes | yes |
-| Receive chat/IM | yes | chat, script dialogs, and alerts logged; incoming IM code path **not yet exercised** (David did not reply during the tests) | same core (events queue) | chat logged | yes | yes | yes |
-| Teleport | yes | local TP OK | same core | API present (not run) | yes | `goto` | yes |
-| Clean logout | yes | yes (~1 s) | yes | yes in run 2; **run 1 crashed without logout** | - | - | - |
+| | Firestorm 7.2.4 | LibreMetaverse: my galatay-text daemon | LibreMetaverse: galatay-mcp (MCP server) | node-metaverse 0.8.21 | LM TestClient | Corrade |
+|---|---|---|---|---|---|---|
+| Real login tested | yes (earlier) | yes, 2x | yes, 3x | yes, 2x | no (see below) | not installed |
+| Login time | ~17 s to STATE_STARTED | 4.6 s / 3.2 s | 3.5 / 2.7 / 3.5 s | 2.7-2.8 s (sim 3.3 s) | - | - |
+| RAM | ~2.1 GB viewer + ~3.6 GB plugins/CEF | 100-170 MB RSS | 115-160 MB RSS | 100-150 MB RSS | - | - |
+| CPU | 260-280 % (~6-7 fps) | ~1 % idle (0.12 s CPU per 10 s) | 3.3-3.6 s CPU per ~55 s session incl. login | 3.7 s CPU per 50 s session | - | - |
+| Walk | GUI | yes (autopilot; `walk 3` and moveto OK; stopped once at a cliff) | yes (walk 2 m OK) | only raw control flags: 2.2 m once, 0 m once; no autopilot API | moveto/follow cmds | yes |
+| Sit by UUID | failing silently via GUI | **yes** (from 23.6 m away) | **yes** | **yes** | `siton` | yes |
+| IM send | yes | yes | yes | yes | yes | yes |
+| Receive chat/IM | yes | chat, script dialogs, and alerts logged; incoming IM code path **not yet exercised** (David did not reply during the tests) | same core (events queue) | chat logged | yes | yes |
+| Teleport | yes | local TP OK | same core | API present (not run) | `goto` | yes |
+| Clean logout | yes | yes (~1 s) | yes | yes in run 2; **run 1 crashed without logout** | - | - |
 
 ## 1. Firestorm 7.2.4.80712 (current)
 - What it is: full 3D viewer and the one David uses. Released 2026-06-01. Installed at /home/box/viewers/Phoenix-Firestorm-...; see notes.md.
@@ -51,34 +51,7 @@ Leak check: /workspace/secondlife/scripts/leak-count.py found the password 0 tim
   - It sends the fixed channel "libnmv".
 - Verdict: usable, but less robust and less complete than LibreMetaverse.
 
-## 4. Radegast
-- Legacy 2.x (tags up to v2.53) is WinForms and **Windows only**.
-- **Radegast Veles 3.0.0** (Avalonia, net10) is the cross-platform rewrite. Source only. Rebuilt 2026-10-02 PT at upstream d1398eb (PR #201: login and crash fixes) in ~27 s at /home/box/viewers/textclient/radegast-src.
-- SkiaSharp fix: the stock linux-x64 libSkiaSharp.so crashes ("Default font family name can't be null"). The fontconfig-enabled 4.151.1 build in radegast-src/local-fixes/ replaces it. A rebuild overwrites it; `textclient/run-radegast.sh` re-applies it.
-- **Real login tested 2026-10-02 17:36 and 17:48 PT** (GUI, password typed into the masked field, Start Location = Last Location, "Remember credentials" off). Login took ~2 s to region.
-- Resources: ~250 MB at the login screen; 400-460 MB RSS and 14-22 % CPU logged in (2D UI only). Opening the Scene Viewer pushed it to 5-6 GB RSS and ~300 % CPU while still rendering black (llvmpipe). Firestorm was 2.5 GB and ~440 % at the same spot.
-- Works:
-  - chat/IM receive with logs (`~/.config/RadegastVeles/Galatay Resident/*.txt`), toasts, profile view
-  - group list, group chat session with participants, group notice archive
-  - friends list with rights, offer/request teleport buttons (not used)
-  - inventory tree, search, Received Items, rename (context menu > Rename, F2)
-  - Create > New Landmark (made "BC Sky Platform", Naberrie 118,137,253)
-  - landmark Teleport (works; inside the BC parcel SL reroutes to the landing point, 107,150,53)
-  - Objects list with radius and search, Touch / Sit On / Walk To (sit-teleporters work)
-  - Appearance tab: worn list, per-item detach (X); wear by double-click in inventory; hover height; rebake
-  - minimap and status bar (region/pos/parcel/L$)
-- Doesn't work / missing:
-  - HUD Viewer and Scene Viewer need Vulkan GPU interop ("Compositor doesn't support GPU interop"). No HUD button clicks (Objects > Touch only hits a root prim) and no in-world snapshots.
-  - no shape/appearance slider editor (the wearable panel shows only textures)
-  - no sound (fmod not shipped)
-  - inventory search-result right-click menu acts on the previously selected node (use double-click or the tree)
-- Gotchas:
-  - Closing the main window (title X / Alt+F4 / File > Hide Window) hides it to a tray icon. There's no tray host here, so the window can't be restored and the only way out is killing the process (no logout). Always use File > Logout, then Exit.
-  - It logs the Firestorm LSL bridge owner-say, including bridgeAuth, unmasked in chat.txt.
-  - Not scriptable from a shell: everything is clicks on an X display.
-- Launcher: `textclient/run-radegast.sh` (deployed as /home/box/viewers/run-radegast.sh; needs DISPLAY).
-
-## 5. Corrade (grimore.org, Wizardry and Steamworks)
+## 4. Corrade (grimore.org, Wizardry and Steamworks)
 - A mature, closed-source freeware bot. It is controlled from LSL/HTTP/MQTT with a group+password scheme and has a Docker image. Its releases are "infrequent" per its page (API pages last modified 2025-10).
 - **Not installed:** the login password lives in its plain-text configuration (against our rules), and it is heavyweight for our needs. Everything it offers is available through LibreMetaverse directly.
 
@@ -91,5 +64,5 @@ Leak check: /workspace/secondlife/scripts/leak-count.py found the password 0 tim
 Use a hybrid:
 - **galatay-mcp** (LibreMetaverse + MCP) for everyday presence: chat, IM, moving, sitting, following, teleports, event polling. It is about 150 MB and ~1 % CPU, versus Firestorm's 2-5 GB and ~270 %.
 - **galatay-text** is the same core as a shell-driven daemon. Use it when MCP isn't mounted.
-- **Firestorm** when building or editing visually, or when something must be seen. Only one of them can be logged in at a time: every launcher refuses if Firestorm or another Galatay client is running.
+- **Firestorm** when building or editing visually, or when something must be seen. It is also the backup GUI viewer: Radegast Veles (tested 2026-10-02) was retired and removed from the box on 2026-11-09. Only one of them can be logged in at a time: every launcher refuses if Firestorm or another Galatay client is running.
 - Next steps for the MCP server: build/script tools (rez prim, set pos/scale/texture, upload and compile LSL into a prim) on top of the library APIs listed above.

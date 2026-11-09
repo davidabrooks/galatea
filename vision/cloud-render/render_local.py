@@ -2,7 +2,7 @@
 """Default path: render a make_job.py job on the box CPU (no cloud). Same inputs and Blender script as the Runpod worker.
 usage: render_local.py <job.json> <outdir> [samples=128]
 Runs Cycles on all cores under nice 10 (the SL text client stays responsive); prints seconds per image.
-Needs: BLENDER (default /home/box/tools/blender-4.2.3-linux-x64/blender), python with pillow (imgvenv).
+Needs: BLENDER (default /home/box/tools/blender-4.5.15-linux-x64/blender), python with pillow (imgvenv).
 """
 import json, os, re, shutil, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -13,7 +13,7 @@ work = "/tmp/gt-render-job"; shutil.rmtree(work, ignore_errors=True); os.makedir
 info = {}; err = handler.mesh_job(job, info, work)
 if err: sys.exit(err)
 print("textures", info["textures"])
-blender = os.environ.get("BLENDER", "/home/box/tools/blender-4.2.3-linux-x64/blender")
+blender = os.environ.get("BLENDER", "/home/box/tools/blender-4.5.15-linux-x64/blender")
 for name in job["renders"]:
     cam, av = job.get("cameras", {}).get(name), job.get("avatar_at", {}).get(name)
     for v in (cam, av):

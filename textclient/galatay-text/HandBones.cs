@@ -60,26 +60,32 @@ public static partial class Program
     {
         if (SystemAnimIds.Contains(id)) return (true, false, -1);   // system anims never key Bento fingers
         if (fingerCache.TryGetValue(id, out var c)) return c;
-        byte[] data = null; var file = Path.Combine(AnimCacheDir, id + ".anim");
-        try { if (File.Exists(file)) data = await File.ReadAllBytesAsync(file); } catch { }
-        if (data is not { Length: > 0 })
-        {
-            try
-            {
-                var cap = client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
-                if (cap == null) return (false, false, -1);
-                var (resp, body) = await client.Assets.HttpDownloadManager.QueueDownloadAsync(new Uri($"{cap}?animatn_id={id}")).WaitAsync(TimeSpan.FromSeconds(20));
-                if (resp != null && resp.IsSuccessStatusCode && body is { Length: > 0 })
-                {
-                    data = body;
-                    try { Directory.CreateDirectory(AnimCacheDir); await File.WriteAllBytesAsync(file, data); } catch { }
-                }
-            }
-            catch (Exception ex) { Log("hands", $"anim {id}: download failed ({ex.GetBaseException().Message})"); }
-        }
+        var data = await AnimBytes(id);
         if (data is not { Length: > 0 }) return (false, false, -1);
         try { var (f, p) = FingerInfo(new BinBVHAnimationReader(data)); var r = (true, f, p); fingerCache[id] = r; return r; }
         catch (Exception ex) { Log("hands", $"anim {id}: parse failed ({ex.GetBaseException().Message})"); return (false, false, -1); }
+    }
+
+    // the animation asset's bytes: the disk cache, else the ViewerAsset cap (animatn_id), cached on disk. null = not readable.
+    // Shared by the finger check (HandBones) and the animation headers (AnimHeaders: priority, length, loop).
+    static async Task<byte[]> AnimBytes(UUID id)
+    {
+        byte[] data = null; var file = Path.Combine(AnimCacheDir, id + ".anim");
+        try { if (File.Exists(file)) data = await File.ReadAllBytesAsync(file); } catch { }
+        if (data is { Length: > 0 }) return data;
+        try
+        {
+            var cap = client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
+            if (cap == null) return null;
+            var (resp, body) = await client.Assets.HttpDownloadManager.QueueDownloadAsync(new Uri($"{cap}?animatn_id={id}")).WaitAsync(TimeSpan.FromSeconds(20));
+            if (resp != null && resp.IsSuccessStatusCode && body is { Length: > 0 })
+            {
+                data = body;
+                try { Directory.CreateDirectory(AnimCacheDir); await File.WriteAllBytesAsync(file, data); } catch { }
+            }
+        }
+        catch (Exception ex) { Log("anim", $"anim {id}: download failed ({ex.GetBaseException().Message})"); }
+        return data is { Length: > 0 } ? data : null;
     }
 
     static readonly ConcurrentDictionary<UUID, List<(UUID anim, UUID src)>> avatarAnims = new();

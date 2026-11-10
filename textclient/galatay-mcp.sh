@@ -17,11 +17,6 @@ mkdir -p /home/box/viewers/textclient/run && chmod 700 /home/box/viewers/textcli
 if [[ -x /home/box/viewers/galatay-autostart.sh && ! -e /tmp/galatay-autostart.boot ]]; then
   setsid -f /home/box/viewers/galatay-autostart.sh --detach </dev/null >/dev/null 2>&1 || true
 fi
-# Backup hook (2026-09-26): start the hourly Second Life backup loop (idempotent: flock inside, a second start is a
-# no-op). Fully detached like the autostart hook above; see /home/box/backups/RESTORE.md.
-if [[ -x /home/box/backups/bin/backup-loop.sh ]]; then
-  setsid -f /home/box/backups/bin/backup-loop.sh start </dev/null >/dev/null 2>&1 || true
-fi
 # iCloud mail watcher hook (2026-10-04): start /home/box/viewers/icloudwatch (IMAP IDLE -> "SL iCloud mail watcher" wake).
 # Idempotent (pid file + flock: a second start is a no-op; 'disabled' file keeps it off). Fully detached like the hooks above.
 if [[ -x /home/box/viewers/icloudwatch/icloudwatch.sh ]]; then

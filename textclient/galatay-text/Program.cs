@@ -399,6 +399,7 @@ public static partial class Program
         VisitorWatchStart(); // visitor_arrival wakes at home (VisitorArrival.cs)
         FriendWatchStart(); // David Nightingale online -> 'david_login' wake ~10 s later (FriendWatch.cs)
         IdlePoseLoginStart(); // clear a leftover collar pose / AO ground sit (IdlePose.cs)
+        GestureWarmAfterLogin(); // decode the active gestures for chat triggers (Gestures.cs)
         LoginJoinStart(); // walk over to David myself + measured placement for the david_login wake (LoginJoin.cs)
         _ = Task.Run(LoginFaceHim); // after the join walk: face David if he is within 20 m (IdlePose.cs)
         if (QuickRelogClear(QuickRelogPath)) Log("login", "quick relog done: automatic re-dress after a stand is back on (AdultRedress.cs)");
@@ -1818,6 +1819,7 @@ public static partial class Program
   voice on|off|status|tail [n] | voice wake off|name|all|test|selftest   LISTEN-ONLY SL voice + webhook wake (default wake=name: only when a line mentions me); transcript /workspace/secondlife/voice/transcript-<date>.md; mic never sent; off after every login (Voice.cs)
   maturity                    READ-ONLY: account maturity ceiling + preferred (General/Moderate/Adult) as the grid reports them, and the current region rating
   maturity set <general|moderate|adult> --david-ok   CHANGES the account maturity preference (UpdateAgentInformation, then read back; one try, no retry). Needs DAVID'S OK (the flag); operator socket only, refused from any automated path; the grid may refuse (age verification)
+  gesture list | show <g> | play <g> | stop   her gestures (* = active, [trigger]); play one by name or trigger (/wave): animation, sound, chat and wait steps like a viewer (Gestures.cs); an active gesture's trigger word in her own say plays it
   logout                      log out cleanly and exit";
 
     static async Task<string> Exec(string line)
@@ -1877,15 +1879,23 @@ public static partial class Program
                     ? $"usage: {cmd} --re <msg id[,msg id..]> <text>"
                     : $"usage: {cmd} [--re <msg ids>] [--force] <text>";
                 var t = cmd == "say" ? ChatType.Normal : cmd == "shout" ? ChatType.Shout : ChatType.Whisper;
+                string gNote = null;   // Gestures.cs: a trigger word of an active gesture plays it and is replaced (or dropped), like a viewer
+                if (GestureChatTrigger(rest) is { } gt)
+                {
+                    gNote = gt.note;
+                    if (gt.text.Trim().Length == 0) { Log("me-chat", $"({cmd}) {rest} -> {gNote}; nothing left to say"); return $"ok ({gNote}; the line was only the trigger, nothing said)"; }
+                    rest = gt.text;
+                }
                 HeadTurnForSay();   // someone nearby talking with her: a short head turn to them (LookAt.cs)
                 var (sent, skip) = ChatGuardedSay(t, rest, force, re);
                 if (!sent) return skip;
                 TypingStop("said in nearby chat");   // InstantReplies.cs
                 NoteGreetedFromOwnNearbySay(rest); // login/chat-routine hi to David: wander must not greet him again
                 NoteSpokeToNearby(t);              // anyone in chat range heard her: no wander greeting for 15 min
-                Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}");
-                return "ok";
+                Log("me-chat", $"({cmd}{(re.Count > 0 ? " --re " + string.Join(",", re) : "")}) {rest}{(gNote != null ? $" [{gNote}]" : "")}");
+                return gNote != null ? $"ok ({gNote})" : "ok";
             }
+            case "gesture": return await GestureCmd(a, rest);   // Gestures.cs
             case "body" when a.Length >= 1 && a[0] == "reattach": return await BodyReattachCmd();
             case "chan":
             {

@@ -16,6 +16,10 @@
 // AO / idle: animations a gesture started are never learned as AO stands or sits, never seat-off animations, and do not count as a
 // posture change for the hover check; while a gesture plays the idle timer keeps restarting (no idle sit or kneel on top of it), and an
 // idle pose is cleared (she stands) before a gesture plays.
+// 2026-11-09 (David t3214u, t3216u): by default only ANIMATION and WAIT steps play. Sound steps (nobody nearby hears anything) and chat-text
+// steps (nothing is said) are skipped unless asked for, each separately: `gesture play [--sound] [--chat] <g>`, MCP `sound: true` / `chat: true`,
+// or the defaults GT_GESTURE_SOUND=on / GT_GESTURE_CHAT=on (both off). A chat trigger still plays the gesture with those defaults, and the
+// trigger word is never said; its replace text is said only when chat is on (the rest of her own line is her own words and is said).
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -78,6 +82,12 @@ public static partial class Program
         return m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var c) ? (c, m.Groups[2].Value) : (0, t ?? "");
     }
 
+    internal static bool GestureHasSound(GestureDef d) => d?.Steps.Any(s => s.Kind == GStepKind.Sound) == true;
+    internal static bool GestureHasChat(GestureDef d) => d?.Steps.Any(s => s.Kind == GStepKind.Chat && s.Text.Trim().Length > 0) == true;
+    internal static string GestureMarks(GestureDef d) => (GestureHasSound(d) ? " +sound" : "") + (GestureHasChat(d) ? " +chat" : "");
+    internal static bool GestureEnvOn(string v) => (v ?? "").Trim().ToLowerInvariant() is "on" or "1" or "true" or "yes";
+    static bool GestureSoundDefault() => GestureEnvOn(Env("GT_GESTURE_SOUND", "off"));
+    static bool GestureChatDefault() => GestureEnvOn(Env("GT_GESTURE_CHAT", "off"));
     internal static string GestureStepText(GStep s) => s.Kind switch
     {
         GStepKind.Anim => $"{(s.Stop ? "stop" : "start")} animation '{s.Name}' {s.Id}",
@@ -111,7 +121,7 @@ public static partial class Program
 
     // pure: her own chat line with an active gesture's trigger word (LLGestureMgr::triggerAndReviseString): only the first trigger word
     // plays; it is replaced by the replace text (her capitalization kept when they are equal) or dropped. hit = index into active, -1 = none.
-    internal static (string text, int hit) GestureTriggerRewrite(string text, IReadOnlyList<(string trigger, string replace)> active)
+    internal static (string text, int hit) GestureTriggerRewrite(string text, IReadOnlyList<(string trigger, string replace)> active, bool sayReplace = true)
     {
         var toks = (text ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries); var outp = new List<string>(); int hit = -1;
         foreach (var tok in toks)
@@ -121,7 +131,7 @@ public static partial class Program
                 int k = -1; for (int j = 0; j < active.Count; j++) if (!string.IsNullOrWhiteSpace(active[j].trigger) && string.Equals(tok, active[j].trigger.Trim(), StringComparison.OrdinalIgnoreCase)) { k = j; break; }
                 if (k >= 0)
                 {
-                    hit = k; var r = active[k].replace?.Trim() ?? "";
+                    hit = k; var r = sayReplace ? active[k].replace?.Trim() ?? "" : "";   // chat off: the replace text is gesture chat, not said
                     if (r.Length > 0) outp.Add(string.Equals(tok, r, StringComparison.OrdinalIgnoreCase) ? tok : r);
                     continue;
                 }
@@ -147,14 +157,14 @@ public static partial class Program
     internal sealed record GestureLimits(double MaxSec = 120, double MaxWaitSec = 60, double WaitAnimSec = 30, double EndWaitSec = 30, double NotSeenSec = 3, int PollMs = 100);
     internal sealed record GestureRunResult(bool Ok, string Error, int StepsRun, int Chats, int Skipped, List<UUID> Started, List<UUID> StoppedAtEnd, double Seconds);
 
-    internal static async Task<GestureRunResult> GestureRun(string label, GestureDef g, IGestureIo io, GestureLimits lim, CancellationToken ct)
+    internal static async Task<GestureRunResult> GestureRun(string label, GestureDef g, IGestureIo io, GestureLimits lim, CancellationToken ct, bool sounds = false, bool chat = false)
     {
         var t0 = io.Now; var requested = new Dictionary<UUID, DateTime>(); var started = new List<UUID>(); var stoppedAtEnd = new List<UUID>();
         int chats = 0, skipped = 0, run = 0; string err = null;
         bool Finished(UUID id, DateTime at) => !io.AnimPlaying(id) && (io.AnimSeenSince(id, at) || (io.Now - at).TotalSeconds >= lim.NotSeenSec);
         bool AllDone() => requested.All(kv => Finished(kv.Key, kv.Value));
         double Left() => lim.MaxSec - (io.Now - t0).TotalSeconds;
-        io.Log($"'{label}': start, {g.Steps.Count} step(s), trigger '{g.Trigger}'");
+        io.Log($"'{label}': start, {g.Steps.Count} step(s), trigger '{g.Trigger}', {(sounds ? "with sound" : "no sound")}, {(chat ? "with chat" : "no chat")}");
         try
         {
             for (int k = 0; k < g.Steps.Count; k++)
@@ -174,6 +184,7 @@ public static partial class Program
                     }
                     case GStepKind.Sound:
                     {
+                        if (!sounds) { skipped++; io.Log($"{n} sound '{s.Name}' skipped: silent mode (play with sound:true to hear it)"); break; }
                         var why = io.Sound(s.Id);
                         if (why == null) io.Log($"{n} sound '{s.Name}' {s.Id}"); else { skipped++; io.Log($"{n} sound '{s.Name}' skipped: {why}"); }
                         break;
@@ -182,6 +193,7 @@ public static partial class Program
                     {
                         var (ch, txt) = GestureChatChannel(s.Text);
                         if (txt.Trim().Length == 0) { skipped++; io.Log($"{n} chat skipped: empty text"); break; }
+                        if (!chat) { skipped++; io.Log($"{n} chat '{txt}' skipped: chat off (play with chat:true to say it)"); break; }
                         var why = io.Chat(ch, txt);
                         if (why == null) { chats++; io.Log($"{n} chat{(ch != 0 ? $" on channel {ch}" : "")}: {txt}"); } else { skipped++; io.Log($"{n} chat '{txt}' skipped: {why}"); }
                         break;
@@ -341,6 +353,19 @@ public static partial class Program
         catch (Exception ex) { Log("gesture", "login warm-up: " + ex.GetBaseException().Message); }
     });
 
+    // pure: `play [--sound|--no-sound] [--chat|--no-chat] <g>` -> the switches (defaults from GT_GESTURE_SOUND / GT_GESTURE_CHAT) and the name
+    internal static (bool sound, bool chat, string name) GesturePlayArgs(string arg, bool soundDefault, bool chatDefault)
+    {
+        bool sound = soundDefault, chat = chatDefault; var rest = (arg ?? "").Trim();
+        while (rest.StartsWith("--"))
+        {
+            var sp = rest.IndexOf(' '); var w = (sp < 0 ? rest : rest[..sp]).ToLowerInvariant();
+            if (w == "--sound") sound = true; else if (w == "--no-sound") sound = false; else if (w == "--chat") chat = true; else if (w == "--no-chat") chat = false; else break;
+            rest = sp < 0 ? "" : rest[(sp + 1)..].TrimStart();
+        }
+        return (sound, chat, rest);
+    }
+
     static async Task<string> GestureCmd(string[] a, string rest)
     {
         var sub = a.Length == 0 ? "list" : a[0].ToLowerInvariant();
@@ -352,11 +377,11 @@ public static partial class Program
             {
                 var items = await GestureItems(cts.Token);
                 var loaded = await GestureLoadAll(items, TimeSpan.FromSeconds(20), cts.Token);
-                var sb = new StringBuilder($"{items.Count} gesture(s), {items.Count(x => x.Active)} active (* = active; trigger in []):\n");
+                var sb = new StringBuilder($"{items.Count} gesture(s), {items.Count(x => x.Active)} active (* = active; trigger in []; +sound / +chat = has sound / chat steps, skipped unless played with sound:true / chat:true):\n");
                 foreach (var x in items)
                 {
                     var t = GestureTrig(x);
-                    sb.AppendLine($"  {(x.Active ? "*" : " ")} '{x.Name}' [{(t == null ? "?" : t.Length == 0 ? "-" : t)}]{(gestureDefs.TryGetValue(x.Asset, out var d) ? $" {d.Steps.Count} step(s)" : "")} {x.Path} item {x.Item}");
+                    sb.AppendLine($"  {(x.Active ? "*" : " ")} '{x.Name}' [{(t == null ? "?" : t.Length == 0 ? "-" : t)}]{(gestureDefs.TryGetValue(x.Asset, out var d) ? $" {d.Steps.Count} step(s){GestureMarks(d)}" : "")} {x.Path} item {x.Item}");
                 }
                 if (items.Any(x => GestureTrig(x) == null)) sb.AppendLine($"  (? = not decoded yet; {loaded} decoded now)");
                 return sb.ToString().TrimEnd();
@@ -365,15 +390,16 @@ public static partial class Program
             {
                 var (it, err) = await GestureFind(arg, cts.Token); if (it == null) return err;
                 var (def, e2) = await GestureLoad(it.Asset, cts.Token); if (def == null) return $"error: gesture '{it.Name}': {e2}";
-                var sb = new StringBuilder($"'{it.Name}'{(it.Active ? " (active)" : "")} trigger '{def.Trigger}' replace '{def.ReplaceWith}' item {it.Item} asset {it.Asset}, {def.Steps.Count} step(s):\n");
+                var sb = new StringBuilder($"'{it.Name}'{(it.Active ? " (active)" : "")} trigger '{def.Trigger}' replace '{def.ReplaceWith}' item {it.Item} asset {it.Asset}, {def.Steps.Count} step(s){(GestureHasSound(def) ? ", +sound (skipped unless sound:true)" : ", no sound steps")}{(GestureHasChat(def) ? ", +chat (skipped unless chat:true)" : ", no chat steps")}:\n");
                 for (int k = 0; k < def.Steps.Count; k++) sb.AppendLine($"  {k + 1}. {GestureStepText(def.Steps[k])}");
                 return sb.ToString().TrimEnd();
             }
             case "play":
             {
+                var (sound, chat, garg) = GesturePlayArgs(arg, GestureSoundDefault(), GestureChatDefault()); arg = garg;
                 var (it, err) = await GestureFind(arg, cts.Token); if (it == null) return err;
                 var (def, e2) = await GestureLoad(it.Asset, cts.Token); if (def == null) return $"error: gesture '{it.Name}': {e2}";
-                var task = GesturePlayStart(it.Name, def, "command");
+                var task = GesturePlayStart(it.Name, def, "command", sound, chat);
                 if (await Task.WhenAny(task, Task.Delay(40000)) == task) return await task;
                 return $"playing '{it.Name}' (still running after 40 s; the result is logged as [gesture])";
             }
@@ -401,20 +427,20 @@ public static partial class Program
     }
 
     // one gesture at a time: a new one stops the one playing (like the viewer replaying a gesture)
-    static Task<string> GesturePlayStart(string name, GestureDef def, string why)
+    static Task<string> GesturePlayStart(string name, GestureDef def, string why, bool sound = false, bool chat = false)
     {
         CancellationTokenSource prev; Task<string> prevTask; var mine = new CancellationTokenSource();
         lock (gestureLock) { prev = gestureCts; prevTask = gestureTask; gestureCts = mine; }
         var t = Task.Run(async () =>
         {
             if (prev != null) { try { prev.Cancel(); } catch { } if (prevTask != null) await Task.WhenAny(prevTask, Task.Delay(5000)); }
-            return await GesturePlay(name, def, why, mine);
+            return await GesturePlay(name, def, why, mine, sound, chat);
         });
         lock (gestureLock) if (gestureCts == mine) gestureTask = t;
         return t;
     }
 
-    static async Task<string> GesturePlay(string name, GestureDef def, string why, CancellationTokenSource cts)
+    static async Task<string> GesturePlay(string name, GestureDef def, string why, CancellationTokenSource cts, bool sound, bool chat)
     {
         var lim = new GestureLimits();
         cts.CancelAfter(TimeSpan.FromSeconds(lim.MaxSec + 10));
@@ -423,8 +449,8 @@ public static partial class Program
         bool standingBefore = client.Self.SittingOn == 0 && !AoSitReallyOn();
         gesturePlaying = name; IdleNoteActivity();
         GestureRunResult res;
-        Log("gesture", $"'{name}' ({why}): play");
-        try { res = await GestureRun(name, def, new LiveGestureIo(name), lim, cts.Token); }
+        Log("gesture", $"'{name}' ({why}): play, {(sound ? "with sound" : "no sound")}, {(chat ? "with chat" : "no chat")}");
+        try { res = await GestureRun(name, def, new LiveGestureIo(name), lim, cts.Token, sound, chat); }
         finally
         {
             gesturePlaying = null; IdleNoteActivity();
@@ -447,9 +473,10 @@ public static partial class Program
     {
         if (Env("GT_GESTURE_CHAT_TRIGGERS", "on") == "off" || IsSafeword(text)) return null;
         var act = GestureActiveTriggers(out var assets); if (act.Count == 0) return null;
-        var (rev, hit) = GestureTriggerRewrite(text, act); if (hit < 0) return null;
+        bool sound = GestureSoundDefault(), chat = GestureChatDefault();
+        var (rev, hit) = GestureTriggerRewrite(text, act, sayReplace: chat); if (hit < 0) return null;
         var def = gestureDefs[assets[hit]];
-        _ = GesturePlayStart(act[hit].trigger, def, "chat trigger").ContinueWith(t => Log("gesture", $"chat trigger '{act[hit].trigger}': {(t.IsFaulted ? "error " + t.Exception?.GetBaseException().Message : t.Result)}"), TaskScheduler.Default);
+        _ = GesturePlayStart(act[hit].trigger, def, "chat trigger", sound, chat).ContinueWith(t => Log("gesture", $"chat trigger '{act[hit].trigger}': {(t.IsFaulted ? "error " + t.Exception?.GetBaseException().Message : t.Result)}"), TaskScheduler.Default);
         return (rev, $"gesture '{act[hit].trigger}' played");
     }
 }

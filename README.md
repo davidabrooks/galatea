@@ -67,7 +67,7 @@ What Galatea can do and how to drive it (CLI and MCP tools): [docs/capabilities.
 
 - `balance`, `pay_object` (exact uuid + amount, only with David's OK; hard cap `GT_PAY_MAX`, default L$2500)
 - `anim_list`, `stop_animations`, `touch_attachment` (HUD buttons; an empty link lists the HUD's prims)
-- `gesture` (Nov 2026): `list` (owned gestures, * = active, [trigger]), `show`, `play` by name or trigger (`/wave`), `stop`; text `gesture ...`. An active gesture's trigger word in her own `say` plays it (`GT_GESTURE_CHAT_TRIGGERS=off` disables)
+- `gesture` (Nov 2026): `list` (owned gestures, * = active, [trigger], +sound / +chat), `show`, `play` by name or trigger (`/wave`; silent by default: only animations + waits, `sound: true` / `chat: true` opt in), `stop`; text `gesture ...`. An active gesture's trigger word in her own `say` plays it (`GT_GESTURE_CHAT_TRIGGERS=off` disables)
 - `offers`, `accept_offer` (accept/decline one pending offer by id; saved offers reload at connector start)
 - `inv_find`, `inv_ls`, `inv_dump`, `rez_item`, `offer_allow`, `take_object` (unpack a box: rez, touch, accept its folder, take it back)
 - `wear_item` (ADD-attach; NX Remote refused); `routes/_always-wear.txt` keeps the N° 9 collar on in every outfit

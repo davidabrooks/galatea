@@ -98,7 +98,7 @@ public class GestureTests
     [Fact] public async Task Run_StepsInOrder_WaitForAnimationsReallyWaits()
     {
         var io = new FakeIo(); io.Length[Wave] = 2.5;
-        var r = await GestureRun("/wave", Def(A(Wave), WaitAnims(), Say("Hi!"), new GStep(GStepKind.Sound, "boing", Snd)), io, new GestureLimits(), default);
+        var r = await GestureRun("/wave", Def(A(Wave), WaitAnims(), Say("Hi!"), new GStep(GStepKind.Sound, "boing", Snd)), io, new GestureLimits(), default, sounds: true, chat: true);
         Assert.True(r.Ok); Assert.Equal(4, r.StepsRun); Assert.Equal(1, r.Chats); Assert.Empty(r.StoppedAtEnd);
         Assert.Equal(new[] { "start c541", "chat Hi!", "sound" }, io.Out.Where(x => !x.StartsWith("log")).ToArray());
         Assert.InRange(r.Seconds, 2.7, 3.0);   // the chat came after the wave ended (LMV: at once)
@@ -108,7 +108,7 @@ public class GestureTests
     [Fact] public async Task Run_WaitTime_AndChannelChat()
     {
         var io = new FakeIo();
-        var r = await GestureRun("/t", Def(WaitSec(1.5f), Say("/7 ping")), io, new GestureLimits(), default);
+        var r = await GestureRun("/t", Def(WaitSec(1.5f), Say("/7 ping")), io, new GestureLimits(), default, chat: true);
         Assert.True(r.Ok); Assert.Equal((7, "ping"), io.Said.Single()); Assert.InRange(r.Seconds, 1.5, 1.6);
     }
     [Fact] public async Task Run_LoopedAnimation_StoppedAtTheEnd_SoSheStandsAgain()
@@ -121,7 +121,7 @@ public class GestureTests
     [Fact] public async Task Run_WaitForAnimations_GivesUpAfter30sAndContinues()
     {
         var io = new FakeIo(); io.Length[Clap] = double.PositiveInfinity;
-        var r = await GestureRun("/c", Def(A(Clap), WaitAnims(), Say("after")), io, new GestureLimits(EndWaitSec: 0), default);
+        var r = await GestureRun("/c", Def(A(Clap), WaitAnims(), Say("after")), io, new GestureLimits(EndWaitSec: 0), default, chat: true);
         Assert.True(r.Ok); Assert.Contains(io.Out, x => x.Contains("waited too long")); Assert.Contains((0, "after"), io.Said);
     }
     [Fact] public async Task Run_AnAnimationTheSimNeverPlays_CountsAsDoneAfter3s()
@@ -157,7 +157,7 @@ public class GestureTests
     [Fact] public async Task Run_SkippedChatAndSound_AreCountedAndLogged_NotErrors()
     {
         var io = new FakeIo { ChatSkip = "refused: quiet mode ON", SoundSkip = "quiet mode ON" };
-        var r = await GestureRun("/t", Def(Say("hi"), new GStep(GStepKind.Sound, "s", Snd), Say("   ")), io, new GestureLimits(), default);
+        var r = await GestureRun("/t", Def(Say("hi"), new GStep(GStepKind.Sound, "s", Snd), Say("   ")), io, new GestureLimits(), default, sounds: true, chat: true);
         Assert.True(r.Ok); Assert.Equal(3, r.Skipped); Assert.Equal(0, r.Chats);
         Assert.Contains(io.Out, x => x.Contains("chat 'hi' skipped: refused: quiet mode ON"));
     }
@@ -169,6 +169,67 @@ public class GestureTests
         Assert.Contains(io.Out, x => x.Contains("restarted")); Assert.Empty(r.StoppedAtEnd);
     }
 
+    // ---- silent mode (David t3214u, t3216u): by default only animation + wait steps; sound and chat are separate opt-ins
+    static GestureDef WaveWithSound() => Def(A(Wave), Say("Hi!"), new GStep(GStepKind.Sound, "boing", Snd), WaitAnims());
+    static string[] Acts(FakeIo io) => io.Out.Where(x => !x.StartsWith("log")).ToArray();
+    [Fact] public async Task Default_OnlyAnimationsAndWaits_NoSoundPacket_NoChat()
+    {
+        var io = new FakeIo(); io.Length[Wave] = 1;
+        var r = await GestureRun("/wave", WaveWithSound(), io, new GestureLimits(), default);
+        Assert.True(r.Ok); Assert.Equal(new[] { "start c541" }, Acts(io));   // io.Sound (SoundTrigger) and io.Chat never called
+        Assert.Empty(io.Said); Assert.Equal(0, r.Chats); Assert.Equal(2, r.Skipped); Assert.Equal(4, r.StepsRun);
+        Assert.InRange(r.Seconds, 1.1, 1.5);   // the wait-for-animations step still waited for the wave
+        Assert.Contains(io.Out, x => x.Contains("skipped: silent mode")); Assert.Contains(io.Out, x => x.Contains("skipped: chat off"));
+    }
+    [Fact] public async Task SoundTrue_SendsExactlyOneSound_ChatStillOff()
+    {
+        var io = new FakeIo(); io.Length[Wave] = 1;
+        var r = await GestureRun("/wave", WaveWithSound(), io, new GestureLimits(), default, sounds: true);
+        Assert.True(r.Ok); Assert.Equal(new[] { "start c541", "sound" }, Acts(io)); Assert.Empty(io.Said); Assert.Equal(1, r.Skipped);
+    }
+    [Fact] public async Task ChatTrue_SaysTheLine_SoundStillOff()
+    {
+        var io = new FakeIo(); io.Length[Wave] = 1;
+        var r = await GestureRun("/wave", WaveWithSound(), io, new GestureLimits(), default, chat: true);
+        Assert.True(r.Ok); Assert.Equal(new[] { "start c541", "chat Hi!" }, Acts(io)); Assert.Equal(1, r.Chats); Assert.Equal(1, r.Skipped);
+    }
+    [Fact] public async Task BothOn_EverythingPlays()
+    {
+        var io = new FakeIo(); io.Length[Wave] = 1;
+        var r = await GestureRun("/wave", WaveWithSound(), io, new GestureLimits(), default, sounds: true, chat: true);
+        Assert.Equal(new[] { "start c541", "chat Hi!", "sound" }, Acts(io)); Assert.Equal(0, r.Skipped);
+    }
+    [Fact] public void Marks_SoundAndChatSteps()
+    {
+        Assert.Equal(" +sound +chat", GestureMarks(WaveWithSound())); Assert.Equal("", GestureMarks(Def(A(Wave), WaitSec(1))));
+        Assert.Equal(" +chat", GestureMarks(Def(Say("hey")))); Assert.Equal("", GestureMarks(Def(Say("  ")))); Assert.Equal("", GestureMarks(null));
+        Assert.Equal(" +sound +chat", GestureMarks(GestureParse(WaveAsset).def));
+    }
+    [Fact] public void PlayArgs_SwitchesAndDefaults()
+    {
+        Assert.Equal((false, false, "/wave"), GesturePlayArgs("/wave", false, false));
+        Assert.Equal((true, false, "/wave"), GesturePlayArgs("--sound /wave", false, false));
+        Assert.Equal((true, true, "Female - Hey"), GesturePlayArgs("--chat --sound Female - Hey", false, false));
+        Assert.Equal((false, false, "/wave"), GesturePlayArgs("--no-sound --no-chat /wave", true, true));
+        Assert.Equal((true, true, "/wave"), GesturePlayArgs("/wave", true, true));   // GT_GESTURE_SOUND / GT_GESTURE_CHAT = on
+        Assert.True(GestureEnvOn("on")); Assert.True(GestureEnvOn("1")); Assert.False(GestureEnvOn("off")); Assert.False(GestureEnvOn(null));
+    }
+    [Fact] public void ChatTrigger_ChatOff_TheTriggerAndItsReplaceTextAreNeverSaid()
+    {
+        Assert.Equal(("to David", 1), GestureTriggerRewrite("/bow to David", Active, sayReplace: false));
+        Assert.Equal(("", 0), GestureTriggerRewrite("/wave", Active, sayReplace: false));
+        Assert.Equal(("bows deeply to David", 1), GestureTriggerRewrite("/bow to David", Active, sayReplace: true));
+    }
+    [Fact] public void SoundAndChatAreOptIn_InTheToolTheCommandAndChatTriggers()
+    {
+        var m = File.ReadAllText(Path.Combine(Root(), "textclient/galatay-mcp/McpProgram.cs"));
+        Assert.Contains("bool? sound = null", m); Assert.Contains("bool? chat = null", m); Assert.Contains("$\"gesture play {GestureFlags(sound, chat)}{n}\"", m);
+        var g = File.ReadAllText(Path.Combine(Root(), "textclient/galatay-text/Gestures.cs"));
+        Assert.Contains("CancellationToken ct, bool sounds = false, bool chat = false)", g);          // the player's default: animations + waits only
+        Assert.Contains("Env(\"GT_GESTURE_SOUND\", \"off\")", g); Assert.Contains("Env(\"GT_GESTURE_CHAT\", \"off\")", g);
+        Assert.Contains("GestureTriggerRewrite(text, act, sayReplace: chat)", g);                       // chat off: nothing of the gesture is said
+        Assert.Contains("GesturePlayStart(act[hit].trigger, def, \"chat trigger\", sound, chat)", g);
+    }
     // ---- AO / idle: a gesture's animation is not the AO's, and not a posture change
     [Fact] public void GestureAnims_AreOwnedDuringPlayAndAShortGrace()
     {

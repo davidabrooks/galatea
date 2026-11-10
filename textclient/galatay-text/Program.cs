@@ -1819,7 +1819,7 @@ public static partial class Program
   voice on|off|status|tail [n] | voice wake off|name|all|test|selftest   LISTEN-ONLY SL voice + webhook wake (default wake=name: only when a line mentions me); transcript /workspace/secondlife/voice/transcript-<date>.md; mic never sent; off after every login (Voice.cs)
   maturity                    READ-ONLY: account maturity ceiling + preferred (General/Moderate/Adult) as the grid reports them, and the current region rating
   maturity set <general|moderate|adult> --david-ok   CHANGES the account maturity preference (UpdateAgentInformation, then read back; one try, no retry). Needs DAVID'S OK (the flag); operator socket only, refused from any automated path; the grid may refuse (age verification)
-  gesture list | show <g> | play <g> | stop   her gestures (* = active, [trigger]); play one by name or trigger (/wave): animation, sound, chat and wait steps like a viewer (Gestures.cs); an active gesture's trigger word in her own say plays it
+  gesture list | show <g> | play [--sound] [--chat] <g> | stop   her gestures (by default only animation + wait steps; sound / chat steps only with --sound / --chat or GT_GESTURE_SOUND / GT_GESTURE_CHAT=on) (* = active, [trigger]); play one by name or trigger (/wave): animation, sound, chat and wait steps like a viewer (Gestures.cs); an active gesture's trigger word in her own say plays it
   logout                      log out cleanly and exit";
 
     static async Task<string> Exec(string line)

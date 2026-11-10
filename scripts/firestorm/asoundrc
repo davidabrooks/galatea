@@ -1,0 +1,3 @@
+# Route ALSA default device to PulseAudio (headless null sink). Needs libasound2-plugins.
+pcm.!default { type pulse }
+ctl.!default { type pulse }

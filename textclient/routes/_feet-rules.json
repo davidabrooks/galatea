@@ -1,0 +1,16 @@
+{
+ "note": "Maitreya LaraX foot pose per footwear (David 2026-10-11). AUTOMATIC since FeetAuto.cs (2026-10-11): every 4 s the client compares worn attachments with 'footwear'; a listed heeled shoe worn -> its button (f3), none -> 'default' (f1). It attaches the LaraX HUD (961d2d4b-...), touches the button, detaches. Last pressed pose in textclient/run/feet-state.txt. Covers outfit wear, undress/redress, bikini/beach, chat helper. 'feet' reports, 'feet apply' forces. Add new heels here.",
+ "default": "f1",
+ "footwear": [
+  {
+   "item": "810c862e-8d2d-3d28-82a5-19e9fd216ce9",
+   "name": "TETRA - Moca Ankle Boots (Suede) - Maitreya Mid",
+   "feet": "f3"
+  },
+  {
+   "item": "4010e716-31a9-3b35-a35a-04ba6411b2ed",
+   "name": "TETRA - Moca Ankle Boots (Snakeskin) - Maitreya Mid",
+   "feet": "f3"
+  }
+ ]
+}

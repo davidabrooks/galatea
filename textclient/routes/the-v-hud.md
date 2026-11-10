@@ -98,9 +98,71 @@ Blond on her fair skin is subtle in the 640 px `look self front`. Use a 1280x204
 - Do not press HUD buttons beyond the settings above without David's OK. No animations/sounds/fluids in public.
 - HUD only shows on her own screen (nobody else sees HUDs), so it is never "in the way" for others.
 
-## Face: Pure Pleasure on adult poses (TheVFace.cs, 2026-11-03)
-David: an adult pose plays the "Pure Pleasure" face; The V STOP when the pose ends (non-adult switch, stand, leave).
-In the face atlas (texture 2ad8d281, 5 per row) Pure Pleasure is row 4, column 2 (17th on page 1, between Roar and Ectasy).
-The touch buttons come from `routes/the-v-face.json` (`pleasure` prim+face, optional `open` touches, `stop` prim+face).
-Not mapped yet: the overlay prim/face for that cell and the STOP face need one live check (touch, render the face).
-Unmapped buttons are skipped and logged, never guessed.
+## Face page probe (2026-11-03 15:00-15:15 PT, partial; the-v-face.json NOT written)
+- Face buttons work without opening the Face panel first: each face of face_menu_1_1 / 1_2 / 1_3 (8/8/5 faces) plays its own
+  face animation (The V @Stomach starts a unique anim plus the shared a129e25b + e29bf17f). Touch ST does not matter.
+  Touching the face that is playing again stops it (a toggle), e.g. face_menu_1_1 face 1 = anim 1144d137 on, again = off.
+- anim_list gives only UUIDs, not names, so a face's NAME can't be read back. Face names come from the atlas
+  hud-2ad8d281.jpg (5 x 9, row-major; Pure Pleasure = row 4 col 2 = cell 17). The mesh face order is NOT proven to follow it.
+  Seen in renders: face_menu_1_2 face 0 = eyes closed (fits cell 9 "Lick it all"); 1_2 face 7 = tongue out, eyes rolled.
+  1_3 face 0 = half-lidded eyes, soft pout (candidate for Pure Pleasure, unconfirmed).
+- anim_ids seen: 1_1 f0 b9356338, f1 1144d137, f2 c6b96ba9, f7 edf09ab5; 1_2 f0 f44eb6f7.
+- sidebar_1 faces 0-7: none stops a face; face 5 swapped a V body anim (fd5b838b -> e88303a3), a vagina state button.
+- sidebar_2 face 0 DETACHES the HUD (close button). Avoid. sidebar face 0/1 at st 0.5,0.46 did nothing.
+- STOP is not found yet (candidates left: shortcuts_side_large_1/2, shortcuts_side_small, which also hold fluids/sounds).
+- The anim-events.log and textclient.log lag behind under load (queued events); use anim_list.
+
+## Face page and STOP mapping (2026-11-03 15:25 PT, read from a render of the HUD itself; supersedes the probe above)
+Method: the HUD prims are meshes with the UVs baked in (repeats 1, offset 0), so each face's atlas cell comes from the mesh
+UVs. The mesh assets are cached in ~/.cache/scene-mesher/mesh, the TEs are in the look scene export (attach_point 34), and
+the atlas images are /workspace/secondlife/the-v/hud-*.jpg. Tools: /workspace/the-v-hud/mesh.py (LL mesh decoder) and
+render.py (composes the HUD). Render: /workspace/the-v-hud/the-v-hud-render.png.
+Page 1 shows atlas columns 1-4 of rows 1-5 (atlas hud-2ad8d281, 5 x 9 grid).
+| prim | face | atlas row,col | label |
+|---|---|---|---|
+| face_menu_1_1 | 0 | 2,3 | Lick the Nip |
+| face_menu_1_1 | 1 | 2,4 | Lick It All |
+| face_menu_1_1 | 2 | 2,2 | Tongue Fuck |
+| face_menu_1_1 | 3 | 2,1 | Supergasm |
+| face_menu_1_1 | 4 | 1,4 | Definitely Coming |
+| face_menu_1_1 | 5 | 1,2 | It's Coming |
+| face_menu_1_1 | 6 | 1,3 | Coming Again |
+| face_menu_1_1 | 7 | 1,1 | Shy Smile |
+| face_menu_1_2 | 0 | 4,4 | Clit Suck Face |
+| face_menu_1_2 | 1 | 4,3 | Ecstasy |
+| face_menu_1_2 | 2 | 4,1 | Roar |
+| face_menu_1_2 | 3 | 4,2 | Pure Pleasure |
+| face_menu_1_2 | 4 | 3,4 | Moan |
+| face_menu_1_2 | 5 | 3,3 | Talk Dirty |
+| face_menu_1_2 | 6 | 3,2 | Lick It |
+| face_menu_1_2 | 7 | 3,1 | 3some Tongue |
+| face_menu_1_3 | 0 | 5,1 | Climax |
+| face_menu_1_3 | 1 | 5,2 | Trying to Cum |
+| face_menu_1_3 | 2 | 5,3 | Angry Sex |
+| face_menu_1_3 | 3 | 5,4 | Lightly Stimulated |
+| face_menu_1_3 | 4 | 9,-3 | (not a face: "More Expressions" strip) |
+
+Mini HUD and shortcut overlays (texture e38b9792):
+- sidebar_1 faces 5,4,3,2,1,0 = PUSH IN, shape 1 (closed), 2, 3, 4, 5 (open). Face 6 = the mini top bar, face 7 = the mini panel.
+  Shape 1 = The V anim fd5b838b, the normal state (restored 15:2x). PUSH IN = e88303a3.
+- sidebar_2: face 7 = drip, 2 = drops, 3 = spray, 4 = favourite face, 5 = favourite sound, **6 = STOP**, 1 = panel; touching face 0
+  detached the HUD.
+- shortcuts_side_large_1 faces 0-5 = PUSH IN and shapes 1-5; shortcuts_side_large_2 faces 2-6 = drip, drops, spray, face, sound (no STOP);
+  shortcuts_side_small = the "Shortcuts" tab. sidebar face 0 = the whole main bar (icons need touch ST; not used).
+Verified 2026-11-03: face_menu_1_2 face 3 started febe4578 (+ shared a129e25b, e29bf17f); sidebar_2 face 6 stopped all three
+and kept the shape anim fd5b838b. Face buttons work without opening the Face panel, so the-v-face.json has no "open" touches.
+
+## Incident 2026-11-03: The V hidden ("show original BoM groin"), and the fix
+- From ~15:09 PT The V's main mesh (prim name "VHD", pubes 0b81f6ab) and the hoop were transparent, and prim "BOM_ORIGINAL"
+  (24daea5f, the original BoM groin) showed instead. The shape animation (fd5b838b) kept running. Most likely cause: probing
+  touched sidebar_1 face 6 (the mini HUD's top bar: power / eye / ▶) at its centre, and the centre is the eye.
+- **Fix: touch `sidebar` face 1 (the eye overlay, texture px x134-153 y101-118) once.** At 15:40:4x VHD and the hoop showed
+  again and BOM_ORIGINAL hid. The pubes (brown strip) and hoop were never lost.
+- How to read it: in a look scene export (attach_point 28), the prim "VHD" face alpha should be 1 and "BOM_ORIGINAL" 0 (null).
+  The hoop prim (2 faces) should be alpha 1.
+- This HUD is in its minimized (mini) layout: `sidebar` face 0 (the full main bar) is hidden, so touch-ST presses on it do nothing.
+- RISKY / do not touch: `sidebar` face 0 at st 0.066,0.98 and `sidebar_2` face 0 DETACH the HUD. `sidebar_1` face 6 = mini top
+  bar (power/eye/▶); `sidebar_1` faces 0-5 = shapes / PUSH IN; `sidebar_2` faces 7,2,3 = fluids (drip/drops/spray), 5 = sound.
+  The V's own touch menu (touch The V) offers <<<CLOSE | STOP | OPEN>>> | DRIP | SPRAY | CUM | FAV SOUND | CUM LAYER | FAV FACE | GIVE HUD.
+  On 15:38 OPEN>>> was pressed once (no visible change; the shape anim stayed fd5b838b).
+- vagina_look_menu_3 faces (texture hud-3b049989): 0 PUSH IN, 1 shape 1, 3 shape 2, 4 shape 3, 2 shape 4, 5 shape 5.

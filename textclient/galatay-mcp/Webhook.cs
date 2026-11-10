@@ -1,7 +1,9 @@
 // Webhook wake-up push for incoming avatar chat / IMs.
 // - Events are still queued for poll_events by the core; this only POSTs a batched summary.
-// - Config is re-read at runtime: URL from a one-line file, key from the box secrets JSON
-//   (card.GALATAY_WEBHOOK_KEY, else any key named GALATAY_WEBHOOK_KEY). Missing either -> silent no-op.
+// - Config is re-read at runtime: URL from a one-line file; key from GALATAY_WEBHOOK_KEY env first, else the
+//   box secrets JSON (card.GALATAY_WEBHOOK_KEY, else any key named GALATAY_WEBHOOK_KEY). An unreadable secrets
+//   file is tolerated when the env key is set. Missing URL or key: one WARNING log (no secret values) and
+//   webhook_status exposes config_warning; POSTs that finally fail set last_post_error the same way.
 // - Debouncing (2026-10-02, David: Ryan got two near-identical IMs; later the same day: only wait when it is a burst).
 //   Events are held PER CONVERSATION (an IM sender's id, or local chat as one conversation):
 //     * single line: the first line of a conversation waits only the burst-detect window GT_WEBHOOK_BURST_DETECT_S (default 4 s).
@@ -82,6 +84,14 @@ public static class Webhook
     static int droppedOverflow;
     static DateTime lastConfigCheck = DateTime.MinValue;
     static bool configuredCached;
+    // 2026-11-09: never fail silently — one WARNING each until config/POST recovers; status exposes both.
+    static bool configWarned, postFailWarned;
+    public static string LastConfigWarning { get; private set; }
+    public static string LastPostError { get; private set; }
+    public static void ResetWarningsForTests()
+    {
+        lock (gate) { configWarned = postFailWarned = false; LastConfigWarning = LastPostError = null; configuredCached = false; lastConfigCheck = DateTime.MinValue; }
+    }
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(8) };
     static readonly JsonSerializerOptions J = new()
     {
@@ -254,12 +264,13 @@ public static class Webhook
         }
         catch { return null; }
     }
-    static string ReadKey()
+    // pure: pull GALATAY_WEBHOOK_KEY from secrets JSON (card first, then any nested key). Never logs the value.
+    public static string KeyFromSecretsJson(string json)
     {
+        if (string.IsNullOrWhiteSpace(json)) return null;
         try
         {
-            if (!File.Exists(SecretsFile)) return null;
-            using var doc = JsonDocument.Parse(File.ReadAllText(SecretsFile));
+            using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("card", out var card) && card.ValueKind == JsonValueKind.Object
                 && card.TryGetProperty(KeyName, out var k) && k.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(k.GetString()))
@@ -281,6 +292,47 @@ public static class Webhook
         }
         catch { return null; }
     }
+
+    // pure (unit-tested): env wins; file is fallback; unreadable/missing file only fails when env is empty.
+    // source = "env" | "file" | null. issue = short reason with no secret values when key is null.
+    public static string ResolveKey(string envVal, bool fileExists, string secretsJson, string fileErrorName, out string source, out string issue)
+    {
+        source = null; issue = null;
+        if (!string.IsNullOrWhiteSpace(envVal)) { source = "env"; return envVal.Trim(); }
+        if (!string.IsNullOrEmpty(fileErrorName))
+        {
+            issue = $"secrets file unreadable ({fileErrorName}) and {KeyName} env not set";
+            return null;
+        }
+        if (!fileExists)
+        {
+            issue = $"secrets file missing and {KeyName} env not set";
+            return null;
+        }
+        var fromFile = KeyFromSecretsJson(secretsJson);
+        if (fromFile != null) { source = "file"; return fromFile; }
+        issue = $"no {KeyName} in secrets file and env not set";
+        return null;
+    }
+
+    static string ReadKey() => ReadKeyDetailed(out _, out _);
+
+    public static string ReadKeyDetailed(out string source, out string issue)
+    {
+        var env = Environment.GetEnvironmentVariable(KeyName);
+        if (!string.IsNullOrWhiteSpace(env)) { source = "env"; issue = null; return env.Trim(); }
+        try
+        {
+            if (!File.Exists(SecretsFile))
+                return ResolveKey(null, false, null, null, out source, out issue);
+            return ResolveKey(null, true, File.ReadAllText(SecretsFile), null, out source, out issue);
+        }
+        catch (Exception ex)
+        {
+            return ResolveKey(null, true, null, ex.GetType().Name, out source, out issue);
+        }
+    }
+
     static (string url, string key) ReadConfig() { var u = ReadUrl(); var k = u == null ? null : ReadKey(); return (u, k); }
 
     static bool ConfiguredCached()
@@ -292,18 +344,70 @@ public static class Webhook
         }
         var (u, k) = ReadConfig();
         var ok = u != null && k != null;
-        lock (gate) configuredCached = ok;
+        lock (gate)
+        {
+            configuredCached = ok;
+            if (ok) { configWarned = false; LastConfigWarning = null; }
+        }
         return ok;
+    }
+
+    // one WARNING when URL/key missing (Enqueue / Post); never includes secret values.
+    public static void WarnNotConfiguredOnce()
+    {
+        lock (gate) { if (configWarned) return; configWarned = true; }
+        var u = ReadUrl();
+        var k = ReadKeyDetailed(out _, out var keyIssue);
+        string msg;
+        if (u == null && k == null) msg = $"not configured: URL missing/invalid and key unavailable ({keyIssue ?? "unknown"})";
+        else if (u == null) msg = "not configured: URL file missing or invalid (webhook-url.txt)";
+        else msg = $"not configured: key unavailable ({keyIssue ?? "unknown"})";
+        LastConfigWarning = msg;
+        LogLocal("WARNING: " + msg + "; chat/IM wakes are dropped until fixed (no secrets logged)");
+    }
+
+    public static void NotePostFailureOnce(string reason)
+    {
+        var msg = "POST failed (" + (string.IsNullOrEmpty(reason) ? "unknown" : reason) + "); see webhook-failed.log";
+        LastPostError = msg;
+        lock (gate) { if (postFailWarned) return; postFailWarned = true; }
+        LogLocal("WARNING: " + msg);
+    }
+
+    static void ClearPostError()
+    {
+        lock (gate) { postFailWarned = false; LastPostError = null; }
     }
 
     public static string ConfigSummary()
     {
-        var u = ReadUrl(); var k = ReadKey();
+        var u = ReadUrl(); var k = ReadKeyDetailed(out var keySource, out var keyIssue);
         string host = null; if (u != null) try { host = new Uri(u).Host; } catch { }
         lock (gate)
         {
             DayRoll();
-            return JsonSerializer.Serialize(new { url_configured = u != null, url_host = host, key_configured = k != null, posts_today = postsToday, daily_cap = DailyCap, exempt_today = exemptToday, cap_dropped_today = capDroppedToday, cap_hit_at = capHitAt == DateTime.MinValue ? null : capHitAt.ToString("HH:mm:ss"), pending = convs.Values.Sum(c => c.Evs.Count), conversations_held = convs.Count, burst_detect_s = Detect.TotalSeconds, quiet_s = Quiet.TotalSeconds, max_hold_s = MaxHold.TotalSeconds, min_interval_s = MinInterval.TotalSeconds }, J);
+            return JsonSerializer.Serialize(new
+            {
+                configured = u != null && k != null,
+                url_configured = u != null,
+                url_host = host,
+                key_configured = k != null,
+                key_source = keySource,
+                key_issue = k == null ? keyIssue : null,
+                config_warning = LastConfigWarning,
+                last_post_error = LastPostError,
+                posts_today = postsToday,
+                daily_cap = DailyCap,
+                exempt_today = exemptToday,
+                cap_dropped_today = capDroppedToday,
+                cap_hit_at = capHitAt == DateTime.MinValue ? null : capHitAt.ToString("HH:mm:ss"),
+                pending = convs.Values.Sum(c => c.Evs.Count),
+                conversations_held = convs.Count,
+                burst_detect_s = Detect.TotalSeconds,
+                quiet_s = Quiet.TotalSeconds,
+                max_hold_s = MaxHold.TotalSeconds,
+                min_interval_s = MinInterval.TotalSeconds
+            }, J);
         }
     }
 
@@ -312,7 +416,7 @@ public static class Webhook
 
     public static void Enqueue(string type, string from, string fromId, string text, string time, double? distance, long? msgId = null, string parcel = null, string context = null, string channel = null, string trigger = null, string line = null)
     {
-        if (PostOverride == null && !ConfiguredCached()) return; // silent no-op until URL and key exist
+        if (PostOverride == null && !ConfiguredCached()) { WarnNotConfiguredOnce(); return; }
         if (text != null && text.Length > MaxTextChars) text = text[..MaxTextChars] + "…";
         if (context != null && context.Length > MaxTextChars * 2) context = context[..(MaxTextChars * 2)] + "…";
         var ev = new Ev(type, from, fromId, text, time, distance) { msg_id = msgId, parcel = parcel, context = context, channel = channel, trigger = trigger, line = line };
@@ -431,7 +535,16 @@ public static class Webhook
         var body = SanitizeJsonBody(JsonSerializer.Serialize(new { kind = kinds.Count == 1 ? kinds[0] : "mixed", urgent, region = Core.RegionName, conversations = nconv, batched = batch.Count, events = batch }, J));
         if (overflow > 0) LogLocal($"batch overflow: {overflow} extra event(s) not included in webhook body (still in poll_events)");
         var (status, err) = PostOverride != null ? await PostOverride(body) : await Post(body, reReadConfig: true);
-        LogLocal(status is >= 200 and < 300 ? $"POST ok ({status}) with {batch.Count} event(s) from {nconv} conversation(s){(urgent ? " [urgent]" : "")}" : $"POST failed ({(status?.ToString() ?? err)}) with {batch.Count} event(s)");
+        if (status is >= 200 and < 300)
+        {
+            ClearPostError();
+            LogLocal($"POST ok ({status}) with {batch.Count} event(s) from {nconv} conversation(s){(urgent ? " [urgent]" : "")}");
+        }
+        else
+        {
+            LogLocal($"POST failed ({(status?.ToString() ?? err)}) with {batch.Count} event(s)");
+            if (PostOverride != null) NotePostFailureOnce(status?.ToString() ?? err); // live Post() already notes on final fail
+        }
     }
 
     public static string LeaseCmd(string[] a)
@@ -553,19 +666,20 @@ public static class Webhook
     {
         var (url, key) = ReadConfig();
         lock (gate) { configuredCached = url != null && key != null; lastConfigCheck = DateTime.UtcNow; }
-        if (url == null || key == null) return (null, "not configured");
+        if (url == null || key == null) { WarnNotConfiguredOnce(); return (null, "not configured"); }
         int? lastStatus = null; string lastErr = null;
         for (int attempt = 0; attempt < RetryBackoffMs.Length; attempt++)
         {
             if (RetryBackoffMs[attempt] > 0) await Task.Delay(RetryBackoffMs[attempt]);
             (lastStatus, lastErr) = await PostOnce(url, key, body);
-            if (lastStatus is >= 200 and < 300) return (lastStatus, null);
+            if (lastStatus is >= 200 and < 300) { ClearPostError(); return (lastStatus, null); }
             bool more = attempt < RetryBackoffMs.Length - 1 && RetriableStatus(lastStatus);
             LogLocal($"POST failed ({(lastStatus?.ToString() ?? lastErr)}) attempt {attempt + 1}/{RetryBackoffMs.Length}"
                      + (more ? $"; retry in {RetryBackoffMs[attempt + 1]} ms (same body / msg_ids)" : "; giving up"));
             if (!more) break;
         }
         AppendFailed(body, lastStatus, lastErr);
+        NotePostFailureOnce(lastStatus?.ToString() ?? lastErr);
         return (lastStatus, lastErr);
     }
 
@@ -609,7 +723,11 @@ public static class Webhook
     public static async Task<string> Test()
     {
         var (url, key) = ReadConfig();
-        if (url == null || key == null) return JsonSerializer.Serialize(new { ok = false, status = "not configured", url_configured = ReadUrl() != null, key_configured = ReadKey() != null }, J);
+        if (url == null || key == null)
+        {
+            WarnNotConfiguredOnce();
+            return JsonSerializer.Serialize(new { ok = false, status = "not configured", url_configured = ReadUrl() != null, key_configured = ReadKey() != null, config_warning = LastConfigWarning }, J);
+        }
         lock (gate)
         {
             DayRoll();

@@ -6,7 +6,7 @@
   "temperature": 0.8,
   "timeout_s": 8,
   "history_lines": 20,
-  "visitors": false,
+  "visitors": true,
   "_about_guards": "2026-10-18 (David, after the Warehouse 21 ban): when visitors=true, FastGuard.cs enforces these in code before/after the model (David's lines are never guarded). Reply only when clearly addressed (name Galatay/Galatea/Gala, an IM, a reply within reply_window_s to something she said to that person, or a question with 'you' when at most quiet_avatars others are in range); never crowd greetings, name lists, emote/emoji-only lines or lines addressed to someone else; no near-identical line twice in a row nor to the same person within dedupe_window_s; nearby cap max_per_min, only busy_max_per_min when more than busy_avatars avatars are within chat_range_m; one apology line per apology_window_min; a stop/spam complaint gets one reply, then no nearby fast replies for stop_silence_min (IMs still answered).",
   "guards": {
     "reply_window_s": 60,

@@ -147,12 +147,12 @@ public class LevelDwellTests
     }
 
     [Fact]
-    public void Dwell_setting_comes_from_wander_rules_with_a_30_minute_default()
+    public void Dwell_setting_comes_from_wander_rules_defaulting_to_30_when_omitted()
     {
         Assert.Equal(30, Program.ParseWanderRule("{\"Peronaut\":{\"place\":\"home\",\"seatAvatarM\":3,\"greet\":true}}", "Peronaut").LevelDwellMin);
         Assert.Equal(45, Program.ParseWanderRule("{\"Peronaut\":{\"place\":\"home\",\"levelDwellMin\":45}}", "Peronaut").LevelDwellMin);
         var repo = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "routes", "_wander-rules.json"));
-        if (File.Exists(repo)) Assert.Equal(30, Program.ParseWanderRule(File.ReadAllText(repo), "Peronaut").LevelDwellMin);
+        if (File.Exists(repo)) Assert.Equal(20, Program.ParseWanderRule(File.ReadAllText(repo), "Peronaut").LevelDwellMin);  // live intent since 2026-11-04
     }
 
     [Fact]

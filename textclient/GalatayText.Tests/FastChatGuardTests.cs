@@ -132,14 +132,14 @@ public class FastChatGuardTests
     }
 
     [Fact]
-    public void Config_has_visitors_off_guards_and_the_persona_matches()
+    public void Config_has_visitors_on_guards_and_the_persona_matches()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "routes", "_fast-chat.json");
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d != null; d = d.Parent)
             if (File.Exists(Path.Combine(d.FullName, "textclient", "routes", "_fast-chat.json"))) { path = Path.Combine(d.FullName, "textclient", "routes", "_fast-chat.json"); break; }
         var c = Program.ParseFastCfg(File.ReadAllText(path));
         Assert.NotNull(c);
-        Assert.False(c.Visitors);
+        Assert.True(c.Visitors);   // live intent since 2026-10-18 (visitors: true)
         Assert.Equal((60.0, 600.0, 15, 3, 15, 30), (c.GuardReplyWindowS, c.GuardDedupeWindowS, c.GuardBusyAvatars, c.GuardBusyMaxPerMin, c.GuardStopSilenceMin, c.GuardApologyWindowMin));
         Assert.Contains("crowd greetings", c.Persona); Assert.Contains("say sorry at most once", c.Persona); Assert.Contains("15 minutes", c.Persona);
         Assert.Equal(60, Program.ParseFastCfg("{\"persona\":\"x\",\"guards\":{\"reply_window_s\":9999}}").GuardReplyWindowS == 600 ? 60 : 0);   // out-of-range values are clamped

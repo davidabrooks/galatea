@@ -196,6 +196,15 @@ public sealed class SlTools
     [McpServerTool(Name = "anim_list"), Description("List animations currently playing on me with their source.")]
     public static Task<string> AnimList() => R("anim list");
 
+    [McpServerTool(Name = "gesture"), Description("My SL gestures (Gestures.cs). action list = every gesture I own (* = active, [trigger], steps); show = one gesture's steps; play = play one by name or trigger (e.g. '/wave'): its animation, sound, chat (said in nearby chat, like a viewer) and wait steps, then back to my normal AO stand (an idle sit/kneel is cleared first); stop = stop the one playing. Waits up to 40 s for the result.")]
+    public static Task<string> Gesture([Description("list | show | play | stop")] string action = "list", [Description("gesture name or trigger (show / play)")] string name = "")
+    {
+        var a = Clean(action).ToLowerInvariant(); var n = Clean(name);
+        if (a is not ("list" or "show" or "play" or "stop")) return Task.FromResult(Json(new { ok = false, result = "action must be list, show, play or stop" }));
+        if (a is "show" or "play" && n.Length == 0) return Task.FromResult(Json(new { ok = false, result = $"{a} needs a gesture name or trigger" }));
+        return R(a is "list" or "stop" ? $"gesture {a}" : $"gesture {a} {n}");
+    }
+
     [McpServerTool(Name = "offers"), Description("List pending inventory/friendship offers (id, sender, item, allow-listed or not). Read-only.")]
     public static Task<string> Offers([Description("pending (default) or all")] string which = "pending") => R(Clean(which) == "all" ? "offers all" : "offers list");
 

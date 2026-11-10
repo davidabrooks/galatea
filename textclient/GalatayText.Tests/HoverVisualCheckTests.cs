@@ -23,7 +23,7 @@ public class HoverVisualCheckTests
     {
         var aw = Src("AttachWatch.cs");
         Assert.DoesNotContain("PoseHoverSchedule", aw); Assert.DoesNotContain("HoverCheckRequest", aw);   // only the posture tracker may request
-        Assert.Contains("hoverSvc.HoverPostureNote(now.Keys, client.Self.SittingOn != 0)", aw);
+        Assert.Contains("hoverSvc.HoverPostureNote(WithoutGestureAnims(now.Keys, DateTime.Now, gestureAnimUntil), client.Self.SittingOn != 0)", aw);   // a gesture's animation is no posture change (Gestures.cs)
     }
     [Fact] public void Posture_IsJudgedFromTheAoAnimList_NotTheSim()
     {
@@ -91,7 +91,7 @@ public class HoverVisualCheckTests
     [Fact] public void IdleTickAlsoNotesPosture_SoAMissedPacketStillTriggersOnce()
     {
         var ip = Src("IdlePose.cs");
-        Assert.Contains("hoverSvc.HoverPostureNote(SelfAnims(), client.Self.SittingOn != 0)", ip);
+        Assert.Contains("hoverSvc.HoverPostureNote(WithoutGestureAnims(SelfAnims(), DateTime.Now, gestureAnimUntil), client.Self.SittingOn != 0)", ip);
         // the AO's own sit-confirm (a sit-to-sit switch) also requests, and it is the same debounced request
         Assert.Contains("HoverCheckRequest(\"sit\")", ip);
     }

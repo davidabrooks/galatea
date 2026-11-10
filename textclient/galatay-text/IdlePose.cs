@@ -662,8 +662,8 @@ public static partial class Program
         bool davidAway = dav.av != null && dav.dist < 15 && LeashMovingAway(dav.pos, dav.av.Velocity, client.Self.SimPosition);
         bool dancing = IdleDancingNow();
         if (Env("GT_AUTO_HOVER", "observe") != "off") _ = hoverSvc.AutoHoverCheck("idle tick");
-        try { hoverSvc.HoverPostureNote(SelfAnims(), client.Self.SittingOn != 0); } catch { }   // PoseHover.cs: a sit/stand the anim packets missed
-        if (moving || following || sitObj || leashDriving || dancing) IdleNoteActivity();   // the timer restarts after a dance
+        try { hoverSvc.HoverPostureNote(WithoutGestureAnims(SelfAnims(), DateTime.Now, gestureAnimUntil), client.Self.SittingOn != 0); } catch { }   // PoseHover.cs: a sit/stand the anim packets missed
+        if (moving || following || sitObj || leashDriving || dancing || GesturePlayingNow()) IdleNoteActivity();   // the timer restarts after a dance or a gesture (Gestures.cs)
         var posed = idlePosed;
         if (posed != null)
         {

@@ -330,8 +330,9 @@ LAUNCHER = TC / "galatay-mcp.sh"
 
 def test_launcher_keeps_all_hooks_and_execs_proxy():
     txt = LAUNCHER.read_text()
-    for hook in ("galatay-autostart.sh", "backup-loop.sh", "icloudwatch.sh", "galatea-tmp-clean-loop.sh"):
+    for hook in ("galatay-autostart.sh", "icloudwatch.sh", "galatea-tmp-clean-loop.sh"):
         assert hook in txt
+    assert "backup-loop.sh" not in txt  # hourly backup loop removed from live launcher 2026-11-09
     assert 'exec python3 "$HERE/galatay-mcp-proxy.py"' in txt and "mcp-app-next" not in txt   # swap moved to the child launcher
     assert "mcp-app-next/READY" in CHILD_SH.read_text() and 'exec "$TCD/mcp-app/galatay-mcp"' in CHILD_SH.read_text()
 

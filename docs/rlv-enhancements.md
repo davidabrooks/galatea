@@ -69,6 +69,7 @@ After every login while David is in my region, the spawn distance is measured on
 
 ## Idle pose (IdlePose.cs)
 After she has been idle for 3–5 min (base GT_IDLE_POSE_SEC=240 s, ±25% jitter) she settles into a pose. Idle means no own movement, following, sitting, walker or chat/IM activity.
+- **Leash and the collar (David, 2026-11-09):** a leash or unleash never touches the collar: no Stealth change or restore, no Magic Leash reset, no menu presses. A chain with TEXTURE_TRANSPARENT or alpha ≤ 0.05 is invisible but still counts as leashed; it does not count as a visible chain below, so a hidden collar plus an invisible chain gets an AO ground sit.
 - **Collar visible (Stealth off) or a visible leash chain:** a random N° 9 collar pose from cutie/coy/kneel/nadu/pretty/shy/tower, never the same twice in a row. It goes through touch collar → Pose → ▸ pages until the label shows. Getting up is the Pose menu's **STOP**, verified by the pose animation disappearing.
 - **Collar hidden and no visible leash:** the Martha AO's 'force sitg' toggle (mapped in run/ao-groundsit.txt), never while leashed.
 - **Cleared first, before:** walking (AutoPilot/nav), the leash walker (on his motion start), follow, teleport, leash attach/unleash, a sit/force-sit, an outfit change, David walking away, and logout. A leftover pose is cleared on login. The leash wander-off never fires while posed.

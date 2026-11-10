@@ -133,7 +133,7 @@ public static partial class Program
         leashArrivedAt = DateTime.Now;   // a new or restored leash: LeashWalk grace (no walking straight after login/relog)
         if (cur != null) LeashEnd($"replaced by {mode} to {name}", quiet: true);
         leash = new LeashState(mode, holder, name, anchor, leashLength, how, DateTime.Now); leashMissScans = 0; leashHadStrict = false; leashRelease.Cancel(); leashNextWanderOff = DateTime.MaxValue;
-        if (mode == "leash") { try { SetPauseNow("rlv", $"leash held by {name}"); } catch { } afSnoozeUntil = DateTime.MaxValue; if (cur?.mode != "leash") LeashCollarOnLeashRun(); }
+        if (mode == "leash") { try { SetPauseNow("rlv", $"leash held by {name}"); } catch { } afSnoozeUntil = DateTime.MaxValue; }   // never touches the collar (David 2026-11-09)
         bool strict = LeashStrictNow();
         var text = mode == "leash"
             ? $"leashed {(anchor ? "(anchored) to" : "by")} {name} [{how}]; strict {(strict ? "ON (no self-unleash/teleport)" : "off")}; I walk with them when they walk off (never while they stand), forward only past {LeashForwardCutoff(leashLength):F1} m"
@@ -146,7 +146,6 @@ public static partial class Program
     {
         var l = leash; if (l == null) return;
         leash = null; leashNextWanderOff = DateTime.MaxValue; leashHadStrict = false; leashRelease.Cancel();
-        try { LeashCollarOnUnleash(l.mode, why); } catch { }
         if (l.mode == "leash" && followId == l.holder) { followId = UUID.Zero; followDistThis = null; try { client.Self.AutoPilotCancel(); } catch { } }
         if (l.mode == "leash" && rlvHoldSeat == null) { afSnoozeUntil = DateTime.Now; try { if (wanderPause == "rlv") wanderPause = null; } catch { } }
         var text = $"{(l.mode == "leash" ? "unleashed" : "follow stopped")} ({why}); was {l.mode} to {l.holderName} for {(DateTime.Now - l.since):hh\\:mm\\:ss}";
@@ -183,6 +182,23 @@ public static partial class Program
             }
             catch { }
         };
+    }
+
+    // 2026-11-09 (David leads her with an invisible chain): the chain counts as VISIBLE only when its texture is not
+    // TEXTURE_TRANSPARENT and its particles are not fully see-through. An invisible chain still means leashed
+    // (IdleLeashedNow uses the target), but it never makes the idle pose a collar kneel.
+    internal static readonly UUID TextureTransparent = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
+    internal const float LeashChainMinAlpha = 0.05f;
+    // pure (tested)
+    internal static bool LeashChainVisible(UUID texture, float startAlpha, float endAlpha) =>
+        texture != TextureTransparent && Math.Max(startAlpha, endAlpha) > LeashChainMinAlpha;
+    // pure (tested): idle_pose status wording
+    internal static string LeashChainText(bool chain, bool visible) => !chain ? "none" : visible ? "visible" : "invisible (still leashed)";
+    static bool LeashChainVisibleNow()
+    {
+        if (LeashParticleTarget() is not { } t) return false;
+        var ps = t.emitter.ParticleSys;
+        return LeashChainVisible(ps.Texture, ps.PartStartColor.A, ps.PartEndColor.A);
     }
 
     // the particle chain: any of her worn prims aiming particles at someone/something else

@@ -2009,6 +2009,7 @@ public static partial class Program
             case "height": case "diag": return await HeightDiag();
             case "hover": return await HoverCmd(a);
             case "rebake": { try { await client.Appearance.RequestSetAppearance(true); return "appearance update (server bake) requested"; } catch (Exception ex) { return "rebake failed: " + ex.GetBaseException().Message; } }
+            case "anim" when a.Length >= 1 && a[0] is "info" or "check": return await AnimInfoCmd(a);   // AnimHeaders.cs (read-only)
             case "anim": return AnimCmd(a);
             case "mute": case "unmute": case "mutelist": return await MuteCmds(cmd, rest);
             case "regions": case "neighbors": return RegionsCmd(a);   // Neighbors.cs

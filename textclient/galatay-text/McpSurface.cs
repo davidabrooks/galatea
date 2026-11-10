@@ -162,11 +162,14 @@ public static partial class Program
             case "posehover" when rest is ["status"] or []: return (true, "posehover status", null);
             // `seatadjust z <dz>`: ONE narrow manual seat-height move through the furniture's own AVsitter adjust (SeatAdjust.PlanZ lays out the
             // presses). `seatadjust status` only reports. Never saves (SeatAdjust.Run's Save rule alone may), never spends, never touches the hover.
+            // `anim info <uuid>` / `anim check`: animation headers (priority, length, loop, arm joints), read-only (AnimHeaders.cs)
+            case "anim" when rest is ["check"]: return (true, "anim check", null);
+            case "anim" when rest.Length == 2 && rest[0] == "info" && UUID.TryParse(rest[1], out _): return (true, "anim info " + rest[1], null);
             case "seatadjust" when rest is ["status"]: return (true, "seatadjust status", null);
             case "seatadjust" when rest.Length == 2 && rest[0] == "z" && SeatAdjust.ParseZ(new[] { rest[0], rest[1] }).ok:
                 return (true, "seatadjust z " + rest[1], null);
         }
-        return (false, null, $"refused: '{cmd}{(rest.Length > 0 ? " " + rest[0] : "")}' is not in the allow-list (look, hover [get|check|repin|apply <m, +-0.5>], height|diag, posehover status|check, seatadjust z <m, +-1>|status)");
+        return (false, null, $"refused: '{cmd}{(rest.Length > 0 ? " " + rest[0] : "")}' is not in the allow-list (look, hover [get|check|repin|apply <m, +-0.5>], height|diag, posehover status|check, seatadjust z <m, +-1>|status, anim info <uuid>|check)");
     }
 
     static string PoseHoverTail(int n)

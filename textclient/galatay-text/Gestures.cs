@@ -153,15 +153,19 @@ public static partial class Program
         string Sound(UUID id);                       // null = played, else why it was skipped
         string Chat(int channel, string text);       // null = said, else why it was skipped
         void Log(string msg);
+        double? AnimEndSec(UUID id) => null;         // a non-looping animation is over this many seconds after its start (asset length + margin); null = loops / unknown
     }
     internal sealed record GestureLimits(double MaxSec = 120, double MaxWaitSec = 60, double WaitAnimSec = 30, double EndWaitSec = 30, double NotSeenSec = 3, int PollMs = 100);
-    internal sealed record GestureRunResult(bool Ok, string Error, int StepsRun, int Chats, int Skipped, List<UUID> Started, List<UUID> StoppedAtEnd, double Seconds);
+    internal sealed record GestureRunResult(bool Ok, string Error, int StepsRun, int Chats, int Skipped, List<UUID> Started, List<UUID> StoppedAtEnd, double Seconds, List<UUID> EndedAtLength = null);
 
     internal static async Task<GestureRunResult> GestureRun(string label, GestureDef g, IGestureIo io, GestureLimits lim, CancellationToken ct, bool sounds = false, bool chat = false)
     {
         var t0 = io.Now; var requested = new Dictionary<UUID, DateTime>(); var started = new List<UUID>(); var stoppedAtEnd = new List<UUID>();
         int chats = 0, skipped = 0, run = 0; string err = null;
-        bool Finished(UUID id, DateTime at) => !io.AnimPlaying(id) && (io.AnimSeenSince(id, at) || (io.Now - at).TotalSeconds >= lim.NotSeenSec);
+        // over: the sim stopped it, or (2026-11-09 t3223u) a non-looping animation reached its asset length: the sim keeps HELLO / CLAP
+        // listed until someone stops them, so without this every stock gesture ran into the 30 s end wait
+        bool AtLength(UUID id, DateTime at) => io.AnimEndSec(id) is double e && (io.Now - at).TotalSeconds >= e;
+        bool Finished(UUID id, DateTime at) => AtLength(id, at) || (!io.AnimPlaying(id) && (io.AnimSeenSince(id, at) || (io.Now - at).TotalSeconds >= lim.NotSeenSec));
         bool AllDone() => requested.All(kv => Finished(kv.Key, kv.Value));
         double Left() => lim.MaxSec - (io.Now - t0).TotalSeconds;
         io.Log($"'{label}': start, {g.Steps.Count} step(s), trigger '{g.Trigger}', {(sounds ? "with sound" : "no sound")}, {(chat ? "with chat" : "no chat")}");
@@ -222,11 +226,13 @@ public static partial class Program
             }
         }
         catch (OperationCanceledException) { err = "cancelled"; }
-        foreach (var id in requested.Keys) if (io.AnimPlaying(id)) { io.AnimStop(id); stoppedAtEnd.Add(id); }
+        var endedAtLength = new List<UUID>();
+        foreach (var (id, at) in requested) if (io.AnimPlaying(id)) { io.AnimStop(id); if (err == null && AtLength(id, at)) endedAtLength.Add(id); else stoppedAtEnd.Add(id); }
+        if (endedAtLength.Count > 0) io.Log($"'{label}': {endedAtLength.Count} animation(s) ended at their length (not looped), stop sent: {string.Join(", ", endedAtLength.Select(x => x.ToString()[..8]))}");
         if (stoppedAtEnd.Count > 0) io.Log($"'{label}': stopped {stoppedAtEnd.Count} of its animation(s) still playing at the end: {string.Join(", ", stoppedAtEnd.Select(x => x.ToString()[..8]))}");
         var secs = (io.Now - t0).TotalSeconds;
         io.Log(err == null ? $"'{label}': done in {secs:0.0} s ({run} step(s), {chats} chat, {skipped} skipped)" : $"'{label}': ERROR {err} after {secs:0.0} s ({run} step(s) run)");
-        return new(err == null, err, run, chats, skipped, started, stoppedAtEnd, secs);
+        return new(err == null, err, run, chats, skipped, started, stoppedAtEnd, secs, endedAtLength);
     }
 
     // ---- live state ----
@@ -267,6 +273,7 @@ public static partial class Program
             return null;
         }
         public void Log(string msg) => Program.Log("gesture", msg);
+        public double? AnimEndSec(UUID id) => AnimNaturalEnd(AnimHeadCached(id));
     }
 
     sealed record GestureItem(UUID Item, UUID Asset, string Name, string Path, bool Active);
@@ -448,6 +455,7 @@ public static partial class Program
         if (idlePosed != null) { var r = await IdlePoseExit("gesture " + name); pre = $"stood up from the idle pose first ({r}); "; }
         bool standingBefore = client.Self.SittingOn == 0 && !AoSitReallyOn();
         gesturePlaying = name; IdleNoteActivity();
+        var visTask = GestureVisibility(def);   // runs beside the play: reads what plays now synchronously, then the headers (cache / download)
         GestureRunResult res;
         Log("gesture", $"'{name}' ({why}): play, {(sound ? "with sound" : "no sound")}, {(chat ? "with chat" : "no chat")}");
         try { res = await GestureRun(name, def, new LiveGestureIo(name), lim, cts.Token, sound, chat); }
@@ -457,6 +465,7 @@ public static partial class Program
             foreach (var kv in gestureAnimUntil) if (kv.Value == DateTime.MaxValue) gestureAnimUntil[kv.Key] = DateTime.Now.AddSeconds(10);   // grace: a late stop packet is still hers
             lock (gestureLock) if (gestureCts == cts) { gestureCts = null; gestureTask = null; }
         }
+        string vis = ""; try { vis = await visTask.WaitAsync(TimeSpan.FromSeconds(8)); } catch { }
         string after;
         if (client.Self.SittingOn != 0) after = "seated (as before)";
         else if (standingBefore && AoSitReallyOn()) { after = "an AO sit plays after the gesture: " + await AoGroundSitEnsureOff("after gesture " + name); }
@@ -464,7 +473,33 @@ public static partial class Program
         Log("gesture", $"'{name}': after: {after}");
         var head = res.Ok ? $"played '{name}'" : $"error: gesture '{name}': {res.Error}";
         return $"{pre}{head}: {res.StepsRun}/{def.Steps.Count} step(s) in {res.Seconds:0.0} s, {res.Chats} chat line(s), {res.Skipped} skipped" +
-               $"{(res.StoppedAtEnd.Count > 0 ? $", stopped {res.StoppedAtEnd.Count} animation(s) still playing" : "")}; after: {after}";
+               $"{(res.StoppedAtEnd.Count > 0 ? $", stopped {res.StoppedAtEnd.Count} animation(s) still playing" : "")}" +
+               $"{(res.EndedAtLength?.Count > 0 ? $", {res.EndedAtLength.Count} ended at its length" : "")}; after: {after}" +
+               (vis.Length > 0 ? $"; visibility: {vis}" : "");
+    }
+
+    // the gesture's animation headers (length for the end, priority for the visibility note) and the headers of what she plays now.
+    // Started with the play (the animation list is read before the first step; the headers come from the disk cache, else a download, at most 6 s). Returns the visibility note ("" when the gesture has no animation).
+    static async Task<string> GestureVisibility(GestureDef def)
+    {
+        try
+        {
+            var mine = def.Steps.Where(s => s.Kind == GStepKind.Anim && !s.Stop).Select(s => (s.Id, s.Name)).Distinct().ToList();
+            if (mine.Count == 0) return "";
+            var others = client.Self.SignaledAnimations.Keys.Where(k => mine.All(m => m.Id != k) && !GestureAnimOwnedNow(k)).ToList();
+            var hs = await AnimHeadsGet(mine.Select(m => m.Id).Concat(others), TimeSpan.FromSeconds(6));
+            var oh = others.Select(o => (o, hs.TryGetValue(o, out var h) ? h : null)).ToList();
+            var lines = mine.Select(m =>
+            {
+                var h = hs.TryGetValue(m.Id, out var x) ? x : null;
+                var end = AnimNaturalEnd(h);
+                var t = AnimVisibilityText(m.Name, h, AnimHiddenJoints(h, oh), oh.Count(z => z.Item2 == null), AnimLabel);
+                return t + (h == null ? "" : end is double e ? $", ends at {e.ToString("0.#", CultureInfo.InvariantCulture)} s" : ", loops (stopped at the end)");
+            }).ToList();
+            foreach (var l in lines) Log("gesture", "visibility " + l);
+            return string.Join("; ", lines);
+        }
+        catch (Exception ex) { Log("gesture", $"visibility check failed: {ex.GetBaseException().Message}"); return ""; }
     }
 
     // `say`: a trigger word of an active gesture plays it (only gestures already decoded; never waits on a download). Returns the text

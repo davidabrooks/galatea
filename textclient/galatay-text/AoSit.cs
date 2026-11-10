@@ -23,7 +23,11 @@ public static partial class Program
     // 2026-10-27 09:34 (login, force sit held ON by the AO): 985d3be4 (a VAMOSITG ground-sit animation, it also replaced 7c8e8863 in the 11:21 sit) was learned as a STAND on an
     // earlier login, because the AO starts the held sit right after login while she is "plainly standing"; from then on the status said "standing (only classified AO stands)"
     // on a sit and the login hover check retried against a sitting render. Seeded as a sit: the load re-asserts the seed over the learned file.
-    internal static readonly UUID[] AoSitSeed = { UUID.Parse("2941ee1d-94c1-a56f-0d90-fe0e2e0918dc"), UUID.Parse("985d3be4-2b64-1123-c503-8dfa2eb083c6") };
+    // 2026-11-09 15:46 (login after the PR 446 deploy): the AO came back holding VAMOSITG26 (03b3df38), learned as a STAND the same way, so idle_pose status said
+    // "standing (only classified AO stands)" while the render showed her sitting back on one hand; a force-sit press released it. 42303bb6 is VAMOSITG22's sit (the
+    // only AO animation of the 2026-11-02 12:47:47 G22 entry; the 12:48:02 hover render shows her sitting on the ground) and was filed as a stand too.
+    internal static readonly UUID[] AoSitSeed = { UUID.Parse("2941ee1d-94c1-a56f-0d90-fe0e2e0918dc"), UUID.Parse("985d3be4-2b64-1123-c503-8dfa2eb083c6"),
+        UUID.Parse("03b3df38-4116-f8bc-055a-6302a9245cf1"), UUID.Parse("42303bb6-35d6-8419-2379-c9b01bfdd913") };
     // 2026-10-26 13:20 (live test after #316): the N° 9 collar (worn at the chin) starts these four animations right after every login (RLV ready) and again at
     // random; they were "learned" as AO sit animations because they appeared while a ground-sit entry was running, so from then on a plain STAND counted as "AO sit
     // playing", the hover check ran as `sit VAMOSITG12` on a standing avatar and posted a -0.229 fix. They come from the collar attachment (anim-events.log: "from att @Chin"),
@@ -46,15 +50,21 @@ public static partial class Program
             {
                 if (!File.Exists(AoClassFile)) return;
                 var d = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(File.ReadAllText(AoClassFile)) ?? new();
-                foreach (var s in d.GetValueOrDefault("sit") ?? new()) if (UUID.TryParse(s, out var u)) aoSitIds.Add(u);
-                foreach (var s in d.GetValueOrDefault("stand") ?? new()) if (UUID.TryParse(s, out var u)) aoStandIds.Add(u);
-                foreach (var s in d.GetValueOrDefault("other") ?? new()) if (UUID.TryParse(s, out var u)) aoOtherIds.Add(u);
-                foreach (var u in aoStandIds) aoSitIds.Remove(u);
-                foreach (var u in AoSitSeed) { aoStandIds.Remove(u); aoSitIds.Add(u); }
-                aoSitIds.ExceptWith(aoOtherIds);   // a collar animation learned as a sit by an older build is a sit no more
+                AoClassMerge(d, aoSitIds, aoStandIds, aoOtherIds);
             }
             catch { }
         }
+    }
+    // pure (tested): merge the learned file into the seeded sets. A stand in the file beats a learned sit, the sit seed beats the file (a held AO sit
+    // learned as a stand at login is a sit again at the next load), and a collar animation is never a sit.
+    internal static void AoClassMerge(Dictionary<string, List<string>> d, HashSet<UUID> aoSitIds, HashSet<UUID> aoStandIds, HashSet<UUID> aoOtherIds)
+    {
+        foreach (var s in d.GetValueOrDefault("sit") ?? new()) if (UUID.TryParse(s, out var u)) aoSitIds.Add(u);
+        foreach (var s in d.GetValueOrDefault("stand") ?? new()) if (UUID.TryParse(s, out var u)) aoStandIds.Add(u);
+        foreach (var s in d.GetValueOrDefault("other") ?? new()) if (UUID.TryParse(s, out var u)) aoOtherIds.Add(u);
+        foreach (var u in aoStandIds) aoSitIds.Remove(u);
+        foreach (var u in AoSitSeed) { aoStandIds.Remove(u); aoSitIds.Add(u); }
+        aoSitIds.ExceptWith(aoOtherIds);   // a collar animation learned as a sit by an older build is a sit no more
     }
     static void AoClassSave()
     {

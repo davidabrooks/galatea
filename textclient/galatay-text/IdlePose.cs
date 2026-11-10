@@ -25,7 +25,8 @@ public static partial class Program
         var pool = IdleCollarPoses.Where(p => !string.Equals(p, last, StringComparison.OrdinalIgnoreCase)).ToArray();
         return pool[(int)(Math.Clamp(r01, 0, 0.999999) * pool.Length)];
     }
-    // pure (tested): which idle pose: collar pose when the collar or the leash chain can be seen, else the AO ground sit
+    // pure (tested): which idle pose: collar pose when the collar or the leash chain can be SEEN (an invisible chain does not count,
+    // 2026-11-09), else the AO ground sit
     // 2026-10-26 (David): in android form she NEVER uses the collar kneel poses, only AO ground sits (and standing)
     internal static string IdlePoseKind(bool collarVisible, bool leashVisible, bool android = false) => !android && (collarVisible || leashVisible) ? "collar" : "groundsit";
     // pure (tested): the kind an idle pose may really be entered as, or null = no idle pose now. android: never a collar kneel (ground sit
@@ -668,7 +669,7 @@ public static partial class Program
         {
             var why = IdleMustExit(posed.kind, following, sitObj, moving, forceSat, leashedNow, davidAway, false, androidNow);
             if (why != null) { if (why == "leashed") idleLeashHold = true; await IdlePoseExit(why); }
-            else if (IdleSwitch(posed.kind, CollarVisibleNow(), LeashParticleTarget() != null, leashedNow, AoGroundSitNow() != null, androidNow) is string sw)
+            else if (IdleSwitch(posed.kind, CollarVisibleNow(), LeashChainVisibleNow(), leashedNow, AoGroundSitNow() != null, androidNow) is string sw)
             { await IdlePoseExit("switch to " + sw); Log("idlepose", "switch: " + await IdlePoseEnter(sw, "visibility changed")); }
             else if (!idleRotatePaused && IdleShouldRotate(posed.kind, (DateTime.Now - posed.since).TotalSeconds, idleRotate, dancing)) Log("idlepose", "rotate: " + await IdlePoseRotate());
             return;
@@ -676,7 +677,7 @@ public static partial class Program
         if (davidAway) IdleNoteActivity();
         var kind = IdleEnter(new IdleIn(idlePoseOn, leashedNow, leashDriving, following, sitObj, moving, forceSat,
             rlv.Has("sit") || rlv.Has("unsit") && sitObj, leashForgetBusy != 0 || shuttingDown, dancing,
-            (DateTime.Now - idleActivityAt).TotalSeconds, idleThreshold, CollarVisibleNow(), LeashParticleTarget() != null, AoGroundSitNow() != null, androidNow, idleLeashHold));
+            (DateTime.Now - idleActivityAt).TotalSeconds, idleThreshold, CollarVisibleNow(), LeashChainVisibleNow(), AoGroundSitNow() != null, androidNow, idleLeashHold));
         if (kind != null && IdleCooldownActive(DateTime.Now, idleNoSitUntil)) return;   // explicit stand cooldown
         if (kind != null && IdleLoginHoldActive(DateTime.Now, idleLoginAt, loginVeilOffAt, idleThreshold)) return;   // post-login: 2x the idle time
         if (kind != null) Log("idlepose", "enter: " + await IdlePoseEnter(kind, $"idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0} s"));
@@ -711,7 +712,7 @@ public static partial class Program
         {
             case "on" when a.Length == 1: idlePoseOn = true; IdleNoteActivity(); return $"idle pose ON (after {idleThreshold:F0} s idle)";
             case "off": idlePoseOn = false; return "idle pose OFF; " + await IdlePoseExit("idle pose off");
-            case "now": { var k = a.Length > 1 ? (a[1] == "collar" || a[1] == "kneel" ? "collar" : "groundsit") : IdlePoseKind(CollarVisibleNow(), LeashParticleTarget() != null, IdleAndroidNow()); return await IdlePoseEnter(k, "manual"); }   // IdlePoseEnter refuses collar kneels in android form
+            case "now": { var k = a.Length > 1 ? (a[1] == "collar" || a[1] == "kneel" ? "collar" : "groundsit") : IdlePoseKind(CollarVisibleNow(), LeashChainVisibleNow(), IdleAndroidNow()); return await IdlePoseEnter(k, "manual"); }   // IdlePoseEnter refuses collar kneels in android form
             case "rotate" when a.Length == 2 && (a[1] == "on" || a[1] == "off"): idleRotatePaused = a[1] == "off"; return idleRotatePaused ? "automatic pose switching PAUSED (keeps the current pose until stand or restart)" : "automatic pose switching ON";
             case "stop": case "stand": return await IdleExplicitStand("manual stop");
             case "idle" when a.Length > 1 && double.TryParse(a[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sec) && sec >= 30:
@@ -725,7 +726,7 @@ public static partial class Program
                 var real = IdleRealPose();
                 string gu = hoverSvc.HoverGaveUp is string g && (DateTime.Now - hoverSvc.HoverGaveUpAt).TotalMinutes < 30 ? $"; {g}" : "";
                 return $"idle pose {(idlePoseOn ? "ON" : "OFF")}; REAL STATE: {real.Text}; {(p == null ? IdleStandingWord(real.State) : $"posed: {p.kind} '{p.pose}' since {p.since:HH:mm:ss}")}; idle {(DateTime.Now - idleActivityAt).TotalSeconds:F0}/{idleThreshold:F0} s; {(IdleCooldownActive(DateTime.Now, idleNoSitUntil) ? $"stand cooldown until {idleNoSitUntil:HH:mm}; " : "")}AO force sit {(AoForceSitOn(SelfAnims(), client.Self.SittingOn != 0) ? "ON" : AoUnclassifiedNow().Count > 0 ? "UNKNOWN (unclassified AO animation)" : "off")} (from the animations, not a stored flag){(aoLastPressReport != null ? $"; last press {aoLastPressAt:HH:mm:ss}: {aoLastPressReport}" : "")}; {IdleRealStateText()}{gu}; " +
-                       $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {(LeashParticleTarget() != null ? "visible" : "none")}; {feetSvc.LastFitText}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
+                       $"collar {(CollarVisibleNow() ? "visible" : "hidden")}, leash chain {LeashChainText(LeashParticleTarget() != null, LeashChainVisibleNow())}; {feetSvc.LastFitText}; AO force sitg {(AoGroundSitNow() is { } s ? $"link {s.link} face {s.face} st {s.st}" : "NOT mapped")}; last pose {idleLastPose ?? "-"}";
             }
         }
     }

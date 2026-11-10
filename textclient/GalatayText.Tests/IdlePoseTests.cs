@@ -352,11 +352,10 @@ public class IdlePoseTests
         var ip = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "textclient/galatay-text/IdlePose.cs"));
         Assert.DoesNotContain("stealthLock.WaitAsync(0)", cs);                       // never skip: wait for the other session
         Assert.Contains("if (!await CollarMenuEnter()) return (\"collar menu busy for 90 s\", null);", cs);   // Stealth takes it
-        Assert.Contains("await CollarMenuEnter()) return \"collar menu busy for 90 s\"", cs);                  // Magic Leash takes it
         Assert.Contains("try { return await CollarPosePlayLocked(pose); } finally { stealthLock.Release(); }", ip);  // pose switch too
         Assert.Contains("try { return await CollarPoseStopLocked(anims); } finally { stealthLock.Release(); }", ip);
         Assert.Contains("CollarLooksLikePoseMenu(d.ButtonLabels), 10000)", ip);       // 'Pose' waits for the Pose page, not any dialog
-        Assert.Contains("CollarLooksLikeMainMenu(d.ButtonLabels), 10000)", cs);       // Magic Leash starts from the real main menu
+        Assert.DoesNotContain("MagicLeashSet(", cs);                                  // 2026-11-09: no automatic Magic Leash any more
     }
     // ---- 2026-10-26 09:54 leash test: groundsit -> leash chain appears -> she stood, then entered the collar kneel 'pretty' ----
     [Fact] public void LeashDuringGroundSit_ExitsAndNeverReEnters_Timeline()
@@ -398,7 +397,7 @@ public class IdlePoseTests
         Assert.True(enter.IndexOf("IdleEnterKindFor(") < enter.IndexOf("CollarPosePlay("));
         var rot = src[src.IndexOf("static async Task<string> IdlePoseRotate(")..]; rot = rot[..rot.IndexOf("CollarPosePlay(")];
         Assert.Contains("IdleAndroidNow()", rot);
-        Assert.Contains("IdlePoseKind(CollarVisibleNow(), LeashParticleTarget() != null, IdleAndroidNow())", src);
+        Assert.Contains("IdlePoseKind(CollarVisibleNow(), LeashChainVisibleNow(), IdleAndroidNow())", src);
     }
     // 2026-10-26 16:10 (David): after a relog the AO's sit-name hook was gone (a static flag, but a NEW GridClient per login): the sit name stayed stale and no hover check followed a ground-sit switch
     [Fact] public void AoSitHookIsPerClientNotOncePerProcess()

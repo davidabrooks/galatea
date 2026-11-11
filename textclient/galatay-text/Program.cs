@@ -528,9 +528,9 @@ public static partial class Program
                 try { if (chatPos != Vector3.Zero) dist = Math.Round(Vector3.Distance(chatPos, client.Self.SimPosition), 1); } catch { }
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
                 bool lapReq = LapRequestIn(e.SourceID, e.Message, chatId, false);   // LapAuto.cs: before the webhook sees the line
-                Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId);
-                if (!lapReq) WanderChatIn(e.SourceID, e.FromName, chatPos, false, e.Message);
-                if (e.SourceID != DavidId || !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) // InstantReplies.cs
+                Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId); // webhook: always, including far/unknown speakers
+                if (!lapReq) WanderChatIn(e.SourceID, e.FromName, chatPos, false, e.Message); // pause only if PlanChatInbound says so (5 m / IM)
+                if (e.SourceID != DavidId || !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) // InstantReplies.cs; reply path is not gated by wander range
                 {
                     if (e.SourceID == DavidId) TypingStart(false);
                     if (e.Type != ChatType.Shout) TryFastChat(e.SourceID, e.FromName, e.Message, chatId, false, UUID.Zero); // FastChat.cs

@@ -6,9 +6,10 @@
 //    like 'say --re <id>' / 'im --re <id>' (Explicit answered), so the webhook does not POST it on its own and a later
 //    '--re' on it is refused. Anything else (questions, chatty lines, failed actions, quiet mode) goes to the routine.
 //    If he has just logged in and I have not said anything since, the greeting is folded into the reply ("Hi babe! On it!").
-// 2. Typing delay: the human-like pause before a reply is unchanged (FastTypingDelayMs). The visible typing
-//    indicator and typing animation are off (2026-11-11 David): we no longer send ChatType.Start/StopTyping,
-//    InstantMessageDialog.Start/StopTyping, or Animations.TYPE when preparing or sending nearby chat or IMs.
+// 2. Typing: the human-like pause before a reply is unchanged (FastTypingDelayMs). The typing indicator is
+//    sent (nearby: ChatType.Start/StopTyping; IM: InstantMessageDialog.Start/StopTyping). The TYPE animation
+//    is never started (2026-11-11 David). After StartTyping we send AnimationStop(TYPE), like Firestorm with
+//    "play typing animation" off, in case the sim starts the anim from the typing chat.
 // 'instant [status|test <text>]'.
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -166,13 +167,9 @@ public static partial class Program
                 return (true, StopWander("David asked in chat (instant reply)"));
             case "follow":
             {
-                if (client.Self.SittingOn != 0) return (false, "seated (standing up is left to the routine: outfit/redress rules)");
-                if (followingDavid) return (true, "already following him");
-                var dav = Avatars().FirstOrDefault(t => t.av.ID == DavidId);
-                if (dav.av == null || dav.dist < 0) return (false, "David not in view");
-                if (WanderOn) StopWander("David asked me to come / follow (instant reply)");
-                var r = FollowCmd(dav.av.Name);
-                return (r.StartsWith("following"), r);
+                // 2026-11-11 David: "come here" / follow works at any distance or sim (NoteDavidComeHere).
+                NoteDavidComeHere("instant reply");
+                return (true, "coming to David");
             }
             case "kiss":
             {
@@ -187,18 +184,23 @@ public static partial class Program
     }
 
     // ---- typing indicator -----------------------------------------------------------------------------------
-    // 2026-11-11 David: do not play the typing animation or send the typing start/stop indicator to others.
-    // The delay before a reply stays; only the visible typing state is off. Pure helper is unit-tested.
-    internal const bool TypingIndicatorEnabled = false;
+    // 2026-11-11 David: send the typing indicator, but never play the typing animation.
+    // The delay before a reply stays. Pure helper is unit-tested.
+    internal const bool TypingIndicatorEnabled = true;
     static readonly TimeSpan TypingMax = TimeSpan.FromSeconds(90);
     static int typingGen; static volatile bool typingOn; static bool typingIm;
     // What would be sent to the sim for a typing start/stop. Empty when disabled.
-    // Nearby chat: ChatType.Start/StopTyping + Animations.TYPE. IM: the typing dialog only (no anim).
+    // Nearby chat: ChatType.Start/StopTyping, and AnimationStop(TYPE) (never AnimationStart).
+    // IM: the typing dialog only (no animation, like a viewer).
     internal static IReadOnlyList<string> TypingEmitActions(bool enabled, bool im, bool on)
     {
         if (!enabled) return Array.Empty<string>();
         if (im) return new[] { on ? "im-start-typing" : "im-stop-typing" };
-        return new[] { on ? "chat-start-typing" : "chat-stop-typing", on ? "anim-type-start" : "anim-type-stop" };
+        // Firestorm with PlayTypingAnim off still sends the typing chat; stopTyping always stops TYPE.
+        // We also stop TYPE right after StartTyping, in case the sim starts the anim from that chat.
+        return on
+            ? new[] { "chat-start-typing", "anim-type-stop" }
+            : new[] { "chat-stop-typing", "anim-type-stop" };
     }
     static void TypingStart(bool im)
     {

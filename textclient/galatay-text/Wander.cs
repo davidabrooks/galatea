@@ -10,7 +10,9 @@
 // Chat: nearby agent chat from a speaker whose position is known and within 5 m, or an IM, pauses the wander
 //       (2026-11-11 David: do not stop for chat farther away or from an unknown/not-in-view position).
 //       Replies are unchanged: fast chat, instant replies, and the webhook still handle local chat from anyone
-//       in range (and IMs), even when the wander does not pause. She approaches to ~2.5 m (if allowed) and waits.
+//       in range (and IMs), even when the wander does not pause.
+//       "Come here" from David Nightingale (nearby or IM) goes to him at any distance or sim (JoinDavid.cs);
+//       that is not gated by the 5 m pause. Other speakers' come requests keep the old nearby cap (20 m local / 40 m IM).
 //       Auto-resume after 3 min without chat from anyone nearby and without her own chat. 'wander hold' keeps it paused.
 // Short pauses: every 15-45 m of a leg she stops 6-20 s (doubled 2026-09-26) (not near the zendo, on steps or next to people), often facing a feature or the view.
 // Events use kind "wander" (poll_events only; never the webhook).
@@ -395,6 +397,17 @@ public static partial class Program
             var sim = client.Network.CurrentSim;
             if (av != null && sim != null && (av.ParentID == 0 || sim.ObjectsPrimitives.ContainsKey(av.ParentID))) pos = PositionHelper.GetAvatarPosition(sim, av);
             float dist = pos == Vector3.Zero ? -1 : Vector3.Distance(pos, me);
+            // Come-here approach is not gated by the 5 m wander pause. David is handled in the hook (any distance / sim).
+            // Other speakers keep the pre-457 nearby cap (20 m local / 40 m IM).
+            if (id != DavidId && IsComeRequest(text))
+            {
+                bool known = dist >= 0;
+                var come = PlanComeHere(isDavid: false, isComeRequest: true, im, known ? true : null, known, dist, mapLocationKnown: false);
+                if (come.action == ComeHereAction.Approach) wApproachPending = true;
+                else WLog($"chat from {name}: come request ignored ({come.why})");
+            }
+            else if (id != DavidId && dist >= 0 && dist <= 40f)
+                WLog($"chat from {name}: not a come request; replying in place (no approach)");
             if (!WanderChatShouldPause(im, dist)) return; // local chat from farther than 5 m or unknown position doesn't pause; IMs still do
             wLastIncoming = DateTime.Now;
             var p = wanderPause;
@@ -403,9 +416,6 @@ public static partial class Program
             if (p == "rest") { WLog($"{name} spoke while she rests: chat pause (the rest picks up again after the chat if she is still seated)"); p = null; }
             bool newSpeaker = p == null || wSpeaker != id;
             wSpeaker = id; wSpeakerName = name; wSpeakerPos = pos;
-            // 2026-10-12 16:13 "can you hear me babe?" walked her to the beach: only a clear come request walks her over
-            if (dist >= 0 && dist <= 40f && IsComeRequest(text)) wApproachPending = true;
-            else if (dist >= 0 && dist <= 40f) WLog($"chat from {name}: not a come request; replying in place (no approach)");
             if (p == null) SetPause("chat", $"{(im ? "IM" : "nearby chat")} from {name}{(dist >= 0 ? $" ({dist:F0} m)" : " (not nearby)")}; waiting for the conversation (auto-resume after 3 min quiet)");
             else if (newSpeaker) WLog($"chat pause: now following {name}{(dist >= 0 ? $" ({dist:F0} m)" : "")}");
         }

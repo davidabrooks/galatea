@@ -6,8 +6,9 @@
 //    like 'say --re <id>' / 'im --re <id>' (Explicit answered), so the webhook does not POST it on its own and a later
 //    '--re' on it is refused. Anything else (questions, chatty lines, failed actions, quiet mode) goes to the routine.
 //    If he has just logged in and I have not said anything since, the greeting is folded into the reply ("Hi babe! On it!").
-// 2. Typing indicator: any other line from David starts the SL typing state + typing animation right away (nearby chat:
-//    ChatType.StartTyping + typing animation; IM: the IM typing dialog only) until my next say / IM to him, or 90 s.
+// 2. Typing delay: the human-like pause before a reply is unchanged (FastTypingDelayMs). The visible typing
+//    indicator and typing animation are off (2026-11-11 David): we no longer send ChatType.Start/StopTyping,
+//    InstantMessageDialog.Start/StopTyping, or Animations.TYPE when preparing or sending nearby chat or IMs.
 // 'instant [status|test <text>]'.
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -186,13 +187,24 @@ public static partial class Program
     }
 
     // ---- typing indicator -----------------------------------------------------------------------------------
+    // 2026-11-11 David: do not play the typing animation or send the typing start/stop indicator to others.
+    // The delay before a reply stays; only the visible typing state is off. Pure helper is unit-tested.
+    internal const bool TypingIndicatorEnabled = false;
     static readonly TimeSpan TypingMax = TimeSpan.FromSeconds(90);
     static int typingGen; static volatile bool typingOn; static bool typingIm;
+    // What would be sent to the sim for a typing start/stop. Empty when disabled.
+    // Nearby chat: ChatType.Start/StopTyping + Animations.TYPE. IM: the typing dialog only (no anim).
+    internal static IReadOnlyList<string> TypingEmitActions(bool enabled, bool im, bool on)
+    {
+        if (!enabled) return Array.Empty<string>();
+        if (im) return new[] { on ? "im-start-typing" : "im-stop-typing" };
+        return new[] { on ? "chat-start-typing" : "chat-stop-typing", on ? "anim-type-start" : "anim-type-stop" };
+    }
     static void TypingStart(bool im)
     {
         try
         {
-            if (!LoggedIn) return;
+            if (!TypingIndicatorEnabled || !LoggedIn) return;
             var gen = Interlocked.Increment(ref typingGen);
             if (!typingOn || typingIm != im)
             {
@@ -213,13 +225,34 @@ public static partial class Program
     }
     static void TypingSend(bool on)
     {
-        if (typingIm)
-            client.Self.InstantMessage(client.Self.Name, DavidId, "typing", DavidId ^ client.Self.AgentID,
-                on ? InstantMessageDialog.StartTyping : InstantMessageDialog.StopTyping, InstantMessageOnline.Online,
-                client.Self.SimPosition, UUID.Zero, Utils.EmptyBytes);
-        else client.Self.Chat(string.Empty, 0, on ? ChatType.StartTyping : ChatType.StopTyping);
-        if (typingIm) return;   // like a viewer: the typing animation only for nearby chat
-        if (on) client.Self.AnimationStart(Animations.TYPE, true); else client.Self.AnimationStop(Animations.TYPE, true);
+        foreach (var a in TypingEmitActions(TypingIndicatorEnabled, typingIm, on))
+        {
+            switch (a)
+            {
+                case "im-start-typing":
+                    client.Self.InstantMessage(client.Self.Name, DavidId, "typing", DavidId ^ client.Self.AgentID,
+                        InstantMessageDialog.StartTyping, InstantMessageOnline.Online,
+                        client.Self.SimPosition, UUID.Zero, Utils.EmptyBytes);
+                    break;
+                case "im-stop-typing":
+                    client.Self.InstantMessage(client.Self.Name, DavidId, "typing", DavidId ^ client.Self.AgentID,
+                        InstantMessageDialog.StopTyping, InstantMessageOnline.Online,
+                        client.Self.SimPosition, UUID.Zero, Utils.EmptyBytes);
+                    break;
+                case "chat-start-typing":
+                    client.Self.Chat(string.Empty, 0, ChatType.StartTyping);
+                    break;
+                case "chat-stop-typing":
+                    client.Self.Chat(string.Empty, 0, ChatType.StopTyping);
+                    break;
+                case "anim-type-start":
+                    client.Self.AnimationStart(Animations.TYPE, true);
+                    break;
+                case "anim-type-stop":
+                    client.Self.AnimationStop(Animations.TYPE, true);
+                    break;
+            }
+        }
     }
 
     static string InstantCmdText(string[] a)

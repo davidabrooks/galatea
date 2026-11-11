@@ -452,13 +452,44 @@ public class IdlePoseTests
     [Fact] public void IdleSit_AfterLogin_WaitsTwiceTheIdleTime()   // 2026-10-31 18:07 regression: auto-sat 106 s after a slow login's veil-off
     {
         var login = new System.DateTime(2026, 10, 31, 18, 5, 24); var veil = login.AddSeconds(17);
+        Assert.Equal(600, Program.IdleLoginHoldSec(94));    // a short draw is floored at 2x IdleWaitMax
+        Assert.Equal(600, Program.IdleLoginHoldSec(300));
+        Assert.Equal(800, Program.IdleLoginHoldSec(400));   // a longer manual threshold still doubles
         Assert.True(Program.IdleLoginHoldActive(login.AddSeconds(600), login, System.DateTime.MaxValue, 94));   // veil still on
-        Assert.True(Program.IdleLoginHoldActive(veil.AddSeconds(106), login, veil, 94));                          // the live case: blocked
-        Assert.True(Program.IdleLoginHoldActive(veil.AddSeconds(187), login, veil, 94));
-        Assert.False(Program.IdleLoginHoldActive(veil.AddSeconds(189), login, veil, 94));
-        Assert.True(Program.IdleLoginHoldActive(login.AddSeconds(500), login, System.DateTime.MinValue, 300));     // no veil: from login
-        Assert.False(Program.IdleLoginHoldActive(login.AddSeconds(601), login, System.DateTime.MinValue, 300));
+        Assert.True(Program.IdleLoginHoldActive(veil.AddSeconds(106), login, veil, 94));                          // the 2026-10-31 live case: blocked
+        Assert.True(Program.IdleLoginHoldActive(veil.AddSeconds(440), login, veil, 220));                         // 2026-11-11 11:01: ~220 s draw, sat 440 s after veil-off
+        Assert.True(Program.IdleLoginHoldActive(veil.AddSeconds(599), login, veil, 94));
+        Assert.False(Program.IdleLoginHoldActive(veil.AddSeconds(600), login, veil, 94));
+        Assert.True(Program.IdleLoginHoldActive(login.AddSeconds(599), login, System.DateTime.MinValue, 300));     // no veil: from login
+        Assert.False(Program.IdleLoginHoldActive(login.AddSeconds(600), login, System.DateTime.MinValue, 300));
         var src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
         Assert.Contains("IdleLoginHoldActive(DateTime.Now, idleLoginAt, loginVeilOffAt, idleThreshold)) return;", src);
+        Assert.Contains("IdleLoginHoldSec(thresholdSec)", src);
+    }
+    [Fact] public void IdleSit_SkipsHoverCheck_OnlyForAutomaticIdleEntry()
+    {
+        Assert.True(Program.IdleSitSkipsHoverCheck("idle 460 s"));
+        Assert.True(Program.IdleSitSkipsHoverCheck("idle"));
+        Assert.False(Program.IdleSitSkipsHoverCheck("manual"));
+        Assert.False(Program.IdleSitSkipsHoverCheck("visibility changed"));
+        Assert.False(Program.IdleSitSkipsHoverCheck(null));
+        Program.SetIdleSitHoverSuppressed(false);
+        Assert.False(Program.HoverCheckSkippedForIdleSit("sit"));
+        Program.SetIdleSitHoverSuppressed(true);
+        try
+        {
+            Assert.True(Program.HoverCheckSkippedForIdleSit("sit"));
+            Assert.True(Program.HoverCheckSkippedForIdleSit("ground sit"));
+            Assert.False(Program.HoverCheckSkippedForIdleSit("manual"));
+            Assert.False(Program.HoverCheckSkippedForIdleSit("collar pose"));
+        }
+        finally { Program.SetIdleSitHoverSuppressed(false); }
+        var idle = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/IdlePose.cs"));
+        Assert.Contains("if (IdleSitSkipsHoverCheck(why)) SetIdleSitHoverSuppressed(true);", idle);
+        Assert.Contains("if (hoverAfter && !HoverCheckSkippedForIdleSit(hoverWhy)) hoverSvc.HoverCheckRequest(hoverWhy, hoverDelayMs);", idle);
+        var outfit = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/OutfitSafe.cs"));
+        Assert.Contains("IdleNoteActivity();", outfit);
+        var ph = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "textclient/galatay-text/PoseHover.cs"));
+        Assert.Contains("if (Program.HoverCheckSkippedForIdleSit(why))", ph);
     }
 }

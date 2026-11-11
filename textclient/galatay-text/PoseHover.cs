@@ -327,11 +327,57 @@ internal sealed partial class Hover
         try { var tmp = VerifiedPoseHoverFile + ".tmp"; File.WriteAllText(tmp, JsonSerializer.Serialize(new SortedDictionary<string, double>(VerifiedPoseHover), new JsonSerializerOptions { WriteIndented = true })); File.Move(tmp, VerifiedPoseHoverFile, true); }
         catch (Exception ex) { h.Log("posehover", "verified pose hover not saved: " + ex.GetBaseException().Message); }
     }
-    // pure (tested): the hover to apply at once on a switch to `key` (its own verified value, else the kind's), or null (none, or already in force)
-    internal static double? EarlyPoseHover(string key, string kind, IReadOnlyDictionary<string, double> verified, double? inForce)
+    // 2026-11-11 11:02 (David watched, android|VAMOSITG25): the visual check measured a +0.288 m render gap at hover -0.063,
+    // posted -0.351 (clamped to ±0.4, under GroundSitGapMax 0.45) and "confirmed" contact at gap -0.002 from a nearly black
+    // 5 KB close-up. His Firestorm view already had her on / sunk into the floor. The renderer's ground-sit placement sits
+    // ~0.29 m higher than the viewer; agreeing samples only prove the renderer is consistent with itself. pose-hover.json
+    // still holds the last accepted value android|VAMOSITG25 = 0.022 (ignored since the bias removal). The check also wrote
+    // -0.351 into pose-hover-verified.json (and kind|android|sit), which must not be re-applied.
+    internal const double VerifiedSitHoverMin = -0.20, VerifiedSitHoverMax = 0.15;
+    internal const double VerifiedPoseHoverDeltaMax = 0.12;   // same threshold as HoverFixMax: larger jumps need David, not a self-consistent render
+    internal static readonly string LegacyPoseHoverFile = Program.Env("GT_POSE_HOVER", "/workspace/secondlife/pose-hover.json");
+    // pure (tested): a stored or proposed hover a sit / kneel may keep. -0.351 is outside; the previously accepted android sits live around -0.10..0.02
+    internal static bool VerifiedHoverPlausible(string kind, double v) =>
+        kind is "sit" or "kneel" ? v >= VerifiedSitHoverMin && v <= VerifiedSitHoverMax : Math.Abs(v) <= 0.25;
+    // pure (tested): trusted hover for this pose: a plausible per-pose verified value, else a plausible same-form kind value, else a legacy pose-hover.json entry (non-bias keys)
+    internal static double? TrustedPoseHover(string key, string kind, IReadOnlyDictionary<string, double> verified, IReadOnlyDictionary<string, double> legacy = null)
     {
-        if (key == null) return null;
-        if (!verified.TryGetValue(key, out var v) && !verified.TryGetValue("kind|" + key.Split('|')[0] + "|" + kind, out v)) return null;
+        if (string.IsNullOrEmpty(key)) return null;
+        if (verified != null && verified.TryGetValue(key, out var v) && VerifiedHoverPlausible(kind, v)) return v;
+        var kindKey = "kind|" + key.Split('|')[0] + "|" + kind;
+        if (verified != null && verified.TryGetValue(kindKey, out v) && VerifiedHoverPlausible(kind, v)) return v;
+        if (legacy != null && legacy.TryGetValue(key, out v) && VerifiedHoverPlausible(kind, v)) return v;
+        return null;
+    }
+    // pure (tested): drop bias| / ref| calibration keys left in pose-hover.json
+    internal static Dictionary<string, double> LegacyPoseHoverValues(IReadOnlyDictionary<string, double> nums)
+    {
+        var d = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        if (nums == null) return d;
+        foreach (var kv in nums)
+            if (!kv.Key.StartsWith("bias|", StringComparison.OrdinalIgnoreCase) && !kv.Key.StartsWith("ref|", StringComparison.OrdinalIgnoreCase))
+                d[kv.Key] = kv.Value;
+        return d;
+    }
+    internal static Dictionary<string, double> LoadLegacyPoseHover()
+    {
+        try { return File.Exists(LegacyPoseHoverFile) ? LegacyPoseHoverValues(JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(LegacyPoseHoverFile))) : new(); }
+        catch { return new(); }
+    }
+    // pure (tested): do not apply a visual-check result that disagrees strongly with the stored value, or that is itself implausible, without David
+    internal static string VerifiedPoseHoverBlock(string key, string kind, double target, IReadOnlyDictionary<string, double> verified, IReadOnlyDictionary<string, double> legacy = null)
+    {
+        if (TrustedPoseHover(key, kind, verified, legacy) is double sv)
+            return Math.Abs(target - sv) > VerifiedPoseHoverDeltaMax
+                ? $"the render asks for {target:+0.000;-0.000} but {key}'s verified hover is {sv:+0.000;-0.000} ({Math.Abs(target - sv) * 100:0.0} cm apart, over {VerifiedPoseHoverDeltaMax * 100:0} cm): the render is not trusted (a ground-sit close-up can agree with itself while Firestorm already has her on the floor); kept {sv:+0.000;-0.000}, nothing applied; needs a visual check from David before a new value is saved"
+                : null;
+        return VerifiedHoverPlausible(kind, target) ? null
+            : $"the render asks for {target:+0.000;-0.000} which is implausible for a {kind} (outside {VerifiedSitHoverMin:+0.00;-0.00}..{VerifiedSitHoverMax:+0.00;-0.00}): nothing applied; needs a visual check from David";
+    }
+    // pure (tested): the hover to apply at once on a switch to `key` (its own verified value, else the kind's, else a legacy accepted value); implausible stored values (e.g. a bad -0.351 written today) are skipped
+    internal static double? EarlyPoseHover(string key, string kind, IReadOnlyDictionary<string, double> verified, double? inForce, IReadOnlyDictionary<string, double> legacy = null)
+    {
+        if (TrustedPoseHover(key, kind, verified, legacy) is not double v) return null;
         return inForce is double f && Math.Abs(f - v) <= 0.002 ? null : v;
     }
     // on a pose switch: wait (up to waitMs) for the new pose to show, then post its verified hover before the visual check runs
@@ -347,7 +393,7 @@ internal sealed partial class Hover
                 {
                     var key = PoseHoverKey(h.AndroidFormNow(), pose);
                     var (eff, _) = await h.EffectiveHoverFresh();
-                    if (EarlyPoseHover(key, kind, VerifiedPoseHover, eff) is double v)
+                    if (EarlyPoseHover(key, kind, VerifiedPoseHover, eff, LoadLegacyPoseHover()) is double v)
                     { var (_, info) = await h.PostHover(v, $"pose switch ({why}): {key} verified hover applied before the check"); h.Log("posehover", $"{key}: switch: verified hover {v:0.000} applied at once (was {(eff is double e ? e.ToString("0.000") : "?")}): {info}"); }
                     return;
                 }
@@ -375,6 +421,8 @@ internal sealed partial class Hover
     internal Task<string> HoverCheckRequest(string why, int delayMs = 4000)
     {
         if (Program.Env("GT_POSE_HOVER_CHECK", "on") == "off") return Task.FromResult("hover check is off (GT_POSE_HOVER_CHECK=off)");
+        if (Program.HoverCheckSkippedForIdleSit(why))
+        { h.Log("posehover", $"visual hover check skipped ({why}): idle sit, hover not auto-adjusted"); return Task.FromResult("skipped: idle sit"); }
         long id = Interlocked.Increment(ref hoverReqSeq);
         h.Log("posehover", $"visual hover check requested ({why}), in {delayMs / 1000.0:0.#} s");
         if (why != "manual") _ = EarlyHoverOnSwitch(why, Math.Max(delayMs, 3000));
@@ -644,7 +692,15 @@ internal sealed partial class Hover
             if (PoseChangedSinceCheck(hoverLastCheckedPose, pose)) { liftTxt += $"; pose changed from {hoverLastCheckedPose}: the hover in force ({hov:0.000}) was set for that pose, remeasured here"; h.Log("posehover", $"{key}: pose changed since the last check ({hoverLastCheckedPose} -> {pose}): hover in force {hov:0.000} is not trusted, remeasuring on this pose"); }
             hoverLastCheckedPose = pose;
             string calTxt = "Firestorm placement, no per-pose bias";   // #392: render_mesh.py ignores GT_HOVER_BIAS
-            if (SupportConfirmed(eg, aim)) { NoteVerifiedPoseHover(key, kind, hov); if (kind == "stand" && StandFeetBlock(fw0, Program.FootwearKeyNow(), Program.feetSvc.VerifiedFeet) == null) Program.SaveVerifiedStandHover(hov, key); how = $"render confirms contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}); hover left alone"; }
+            if (SupportConfirmed(eg, aim))
+            {
+                var saveOk = VerifiedPoseHoverBlock(key, kind, hov, VerifiedPoseHover, LoadLegacyPoseHover()) == null;
+                if (saveOk) NoteVerifiedPoseHover(key, kind, hov);
+                if (saveOk && kind == "stand" && StandFeetBlock(fw0, Program.FootwearKeyNow(), Program.feetSvc.VerifiedFeet) == null) Program.SaveVerifiedStandHover(hov, key);
+                how = saveOk
+                    ? $"render confirms contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}); hover left alone"
+                    : $"render claims contact at {hov:0.000} ({effSrc}; gap {basis:+0.000}; {calTxt}{liftTxt}) but that hover is not trusted against a stored value; hover left alone, not saved";
+            }
             else
             {
                 var t = PoseHoverFromGap(hov, eg);
@@ -660,6 +716,8 @@ internal sealed partial class Hover
                 }
                 if (kind == "stand" && Program.SavedHoverDeviationBlock(fw0, Program.LoadFootwearHovers(), t) is string dvb)
                 { var dm = $"{key}: render gap {basis:+0.000;-0.000} at {hov:0.000}: {dvb} ({img1})"; h.Log("posehover", dm); hoverCheckResult = dm; return null; }
+                if (VerifiedPoseHoverBlock(key, kind, t, VerifiedPoseHover, LoadLegacyPoseHover()) is string pvb)
+                { var dm = $"{key}: render gap {basis:+0.000;-0.000} at {hov:0.000}: {pvb} ({img1})"; h.Log("posehover", dm); hoverCheckResult = dm; return null; }
                 if (!PoseStill(kind, pose)) { h.Log("posehover", $"{key}: pose changed; skipped"); return null; }
                 if (kind == "stand" && StandFeetBlock(fw0, Program.FootwearKeyNow(), Program.feetSvc.VerifiedFeet) is string fb1) { h.Log("posehover", $"{key}: {fb1}; render gap {gap:+0.000;-0.000} ignored, nothing changed"); return fb1; }
                 var (ok, info) = await h.PostHover(t, $"visual hover fix: {key} (applied now, not saved)");

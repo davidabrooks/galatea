@@ -171,8 +171,9 @@ public static partial class Program
     // Login order (David 16:16): settle, decide beach/house FIRST, then the daily pick. On the beach: keep / put on the
     // Bikini and save the daily pick for the walk up to the house. Not on the beach: wear the next pick (when away > 1 h or forced; was once per PT day).
     // 2026-10-12 David: logged in wearing an android body (Kay/CALISTA, BodyFamily) -> no daily/random outfit or colour pick, keep it
-    internal static string LoginOutfitPlan(bool onBeach, bool bikiniWorn, bool dailyPending, string rememberedForHouse, bool androidWorn = false)
+    internal static string LoginOutfitPlan(bool onBeach, bool bikiniWorn, bool dailyPending, string rememberedForHouse, bool androidWorn = false, string requestedOutfit = null)
     {
+        if (!string.IsNullOrWhiteSpace(requestedOutfit)) return "wear-requested";
         if (androidWorn) return "keep-android";
         if (onBeach) return (bikiniWorn ? "keep-bikini" : "bikini-on") + (dailyPending ? "+daily-deferred" : "");
         if (dailyPending) return "daily-wear";
@@ -214,9 +215,20 @@ public static partial class Program
                 Log("outfit-daily", $"login outfit SKIPPED: undressed at {wardrobeUndressedAt:HH:mm:ss} (no random change until she dresses deliberately); daily stays pending");
                 zoneArmed = true; return;
             }
-            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null, await AndroidWornAtLogin());
-            Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT)");
-            if (plan == "keep-android") { zoneArmed = true; return; }   // android body: keep the outfit; the daily stays pending for a human login
+            var requested = LoadLoginOutfitRequest();
+            var plan = LoginOutfitPlan(onBeach, BikiniWorn(), dailyPending, beachMode ? beachRememberedOutfit : null, await AndroidWornAtLogin(), requested);
+            Log("outfit-daily", $"login outfit plan: {plan} (region {region} z {z:F1}, daily {(dailyPending ? "pending" : "done")} for {today} PT{(requested != null ? $", requested '{requested}'" : "")})");
+            if (plan is "keep-android" or "wear-requested")
+            {
+                if (DailyPassYieldsToManual(loginManualOutfit))
+                    Log("outfit-daily", $"login outfit YIELDED: manual outfit_wear '{loginManualOutfit}' during login; {plan} skipped; daily stays pending");
+                else if (plan == "wear-requested")
+                    Log("outfit-daily", $"wearing requested '{requested}': " + (await WearOutfitWithHuds(requested)).Replace("\n", " | "));
+                // android body or a requested android outfit: ears stay hidden; a requested human outfit shows them
+                var earOutfit = loginManualOutfit ?? requested ?? lastNamedOutfit ?? currentOutfit;
+                if (plan == "keep-android" || IsAndroidOutfit(earOutfit)) EvoxEarsAfterOutfit(earOutfit ?? "Android");
+                zoneArmed = true; return;   // daily stays pending for a later human login
+            }
             string pick = null; bool freshPick = false; var wornBefore = lastNamedOutfit;
             if (dailyPending)
             {
@@ -254,7 +266,9 @@ public static partial class Program
                 {
                     if (beachMode && !string.IsNullOrWhiteSpace(beachRememberedOutfit) && pick == null) pick = beachRememberedOutfit;
                     beachMode = false; beachRememberedOutfit = null; PersistBeachState();
-                    if (pick != null) Log("outfit-daily", $"wearing '{pick}': " + (await WearOutfitWithHuds(pick, KeepHudColorFor(pick, wornBefore, freshPick))).Replace("\n", " | "));
+                    if (DailyPassYieldsToManual(loginManualOutfit))
+                    { Log("outfit-daily", $"login outfit YIELDED: manual outfit_wear '{loginManualOutfit}' during login; daily pick '{pick}' not worn; daily stays pending"); pick = null; }
+                    else if (pick != null) Log("outfit-daily", $"wearing '{pick}': " + (await WearOutfitWithHuds(pick, KeepHudColorFor(pick, wornBefore, freshPick))).Replace("\n", " | "));
                 }
                 if (dailyPending && pick != null)
                     try { Directory.CreateDirectory(Path.GetDirectoryName(DailyOutfitDateFile)!); File.WriteAllText(DailyOutfitDateFile, today + "\n" + pick + "\n"); } catch { }
@@ -262,6 +276,7 @@ public static partial class Program
             finally { beachOutfitBusy = false; zoneArmed = true; }
         }
         catch (Exception ex) { Log("outfit-daily", "error: " + ex.GetBaseException().Message); zoneArmed = true; }
+        finally { loginOutfitPassActive = false; loginRequestedOutfit = null; loginManualOutfit = null; }
     }
 
     // Move a folder with the classic MoveInventoryFolder UDP message. The AIS PATCH parent_id route the library uses
@@ -384,6 +399,9 @@ public static partial class Program
         C(LoginOutfitPlan(false, true, true, null) == "daily-wear", "login upstairs: daily wear");
         C(LoginOutfitPlan(false, false, false, "tshirt") == "restore-remembered", "login upstairs after beach: restore");
         C(LoginOutfitPlan(false, false, false, null) == "keep", "login upstairs, daily done: keep");
+        C(LoginOutfitPlan(false, false, true, null, false, "Android Base") == "wear-requested", "login requested Android Base: wear it, skip daily");
+        C(LoginOutfitPlan(true, true, true, "tshirt", true, "Android Base") == "wear-requested", "requested outfit beats android-worn and beach");
+        C(DailyPassYieldsToManual("Android Base") && !DailyPassYieldsToManual(null) && !DailyPassYieldsToManual(""), "manual outfit_wear during login yields the daily pass");
         var al = DailyOutfitCandidates(new[] { "Bikini", "tubetop", "tshirt", "Jiyoo tubetop", "jiyoo Tshirt", "Jani tshirt" }, new[] { "tubetop", "tshirt" });
         C(al.SequenceEqual(new[] { "tshirt", "tubetop" }), $"daily allow-list tubetop+tshirt ({string.Join(",", al)})");
         var pn = ParseOutfitNames("Jiyoo tubetop, jiyoo Tshirt,'Jani tshirt'");

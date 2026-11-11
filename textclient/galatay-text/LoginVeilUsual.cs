@@ -36,15 +36,45 @@ internal static class UsualOutfit
     // 2026-10-31 12:52 login (David: wrong outfit then a swap ~30 s later, feet wrong for ~90 s): past the threshold, when today's daily outfit
     // is still pending, the login wears the daily pick (pre-chosen at logout, its links saved) instead of the usual outfit, so there is no swap.
     /// <summary>Pure (tested): which outfit the login veil should put on past the threshold: the daily pre-pick when the daily is pending and it
-    /// has clothes; else the usual outfit. Within the threshold: the usual (AtLogin then keeps the stash as worn anyway).</summary>
-    internal static (string Name, List<(UUID Item, string Name)> Links, bool Daily) LoginTarget(TimeSpan sinceLogout, bool dailyPending,
-        string usualName, List<(UUID Item, string Name)> usualLinks, string dailyName, List<(UUID Item, string Name)> dailyLinks, double afterMin = DefaultAfterMin, bool forced = false)
+    /// has clothes; else the usual outfit. Within the threshold: the usual (AtLogin then keeps the stash as worn anyway). A requested login
+    /// outfit (e.g. Android Base) holds the stash as worn and skips the daily pick (HoldAsWorn); the named outfit is put on after login.</summary>
+    internal static (string Name, List<(UUID Item, string Name)> Links, bool Daily, bool HoldAsWorn) LoginTarget(TimeSpan sinceLogout, bool dailyPending,
+        string usualName, List<(UUID Item, string Name)> usualLinks, string dailyName, List<(UUID Item, string Name)> dailyLinks, double afterMin = DefaultAfterMin, bool forced = false, string requestedName = null)
     {
         usualLinks ??= new();
+        if (!string.IsNullOrWhiteSpace(requestedName))
+            return (requestedName.Trim(), new(), false, true);
         if ((!forced && sinceLogout < TimeSpan.FromMinutes(afterMin)) || !dailyPending || string.IsNullOrWhiteSpace(dailyName)
             || dailyLinks == null || !dailyLinks.Any(x => x.Item != UUID.Zero && IsClothes(x.Name)))
-            return (usualName, usualLinks, false);
-        return (dailyName, dailyLinks, true);
+            return (usualName, usualLinks, false, false);
+        return (dailyName, dailyLinks, true, false);
+    }
+
+    /// <summary>Pure (tested): login outfit / --outfit argument (quotes optional).</summary>
+    internal static string ParseLoginOutfitArg(string rest)
+    {
+        var s = (rest ?? "").Trim();
+        if (s.Length == 0) return null;
+        string body = null;
+        foreach (var key in new[] { "--outfit", "outfit" })
+        {
+            if (s.StartsWith(key, StringComparison.OrdinalIgnoreCase) && (s.Length == key.Length || char.IsWhiteSpace(s[key.Length])))
+            { body = s[key.Length..].Trim(); break; }
+        }
+        if (body == null) return null;
+        if (body.Length >= 2 && ((body[0] == '"' && body[^1] == '"') || (body[0] == (char)39 && body[^1] == (char)39)))
+            body = body[1..^1].Trim();
+        return string.IsNullOrWhiteSpace(body) ? null : body;
+    }
+    /// <summary>Pure (tested): first non-empty, non-# line of the login-outfit marker file.</summary>
+    internal static string ParseLoginOutfitText(string text)
+    {
+        foreach (var line in (text ?? "").Split(new[] { (char)10, (char)13 }, StringSplitOptions.None))
+        {
+            var x = line.Trim().Trim('"').Trim((char)39);
+            if (x.Length > 0 && !x.StartsWith('#')) return x;
+        }
+        return null;
     }
 
     internal static string FormatUsual(string name, IEnumerable<(UUID Item, string Name)> links)
@@ -127,6 +157,45 @@ public static partial class Program
     static bool forceOutfitThisLogin;
     /// <summary>Set by the login veil: null = not decided yet (no veil stash), else whether this login changes to the next pick.</summary>
     internal static bool? loginOutfitChangeDue;
+    /// <summary>One-shot (2026-11-11, David): log in wearing this My Outfits name (e.g. Android Base). Written by <c>login outfit &lt;name&gt;</c>
+    /// or the login MCP tool's outfit argument; also by writing this file before login. Consumed at login; the daily pick is skipped and stays pending.</summary>
+    internal static string LoginOutfitRequestFile => Env("GT_LOGIN_OUTFIT", "/home/box/viewers/textclient/run/login-outfit.txt");
+    internal static string loginRequestedOutfit;   // this login only; null = not loaded yet, "" = none
+    internal static volatile bool loginOutfitPassActive;
+    internal static string loginManualOutfit;      // a manual outfit_wear after login started
+    /// <summary>Pure (tested): the login daily/requested pass must not overwrite a manual outfit_wear made after login started.</summary>
+    internal static bool DailyPassYieldsToManual(string manualOutfit) => !string.IsNullOrWhiteSpace(manualOutfit);
+    internal static void NoteManualOutfitDuringLogin(string name)
+    {
+        if (!loginOutfitPassActive || string.IsNullOrWhiteSpace(name)) return;
+        loginManualOutfit = name.Trim();
+        Log("outfit-daily", $"manual outfit_wear '{loginManualOutfit}' during login: the daily/requested pass will yield");
+    }
+    static string LoadLoginOutfitRequest()
+    {
+        string fromFile = null;
+        try
+        {
+            if (File.Exists(LoginOutfitRequestFile))
+            {
+                fromFile = UsualOutfit.ParseLoginOutfitText(File.ReadAllText(LoginOutfitRequestFile));
+                try { File.Delete(LoginOutfitRequestFile); } catch { }
+                if (fromFile != null) Log("login-veil", $"login outfit request '{fromFile}' loaded from {LoginOutfitRequestFile} (daily pick skipped; daily stays pending)");
+            }
+        }
+        catch (Exception ex) { Log("login-veil", "login outfit request read failed: " + ex.GetBaseException().Message); }
+        if (string.IsNullOrWhiteSpace(loginRequestedOutfit)) loginRequestedOutfit = fromFile ?? "";
+        return string.IsNullOrWhiteSpace(loginRequestedOutfit) ? null : loginRequestedOutfit;
+    }
+    static void WriteLoginOutfitRequest(string name)
+    {
+        name = (name ?? "").Trim();
+        loginRequestedOutfit = name;
+        if (name.Length == 0) return;
+        try { Directory.CreateDirectory(Path.GetDirectoryName(LoginOutfitRequestFile)!); File.WriteAllText(LoginOutfitRequestFile, name + ((char)10).ToString()); }
+        catch (Exception ex) { Log("login-veil", "login outfit request write failed: " + ex.GetBaseException().Message); }
+        Log("login-veil", $"login outfit request '{name}' saved for this login (daily pick will be skipped)");
+    }
 
     static bool ConsumeForceOutfitMarker()
     {
@@ -179,8 +248,11 @@ public static partial class Program
             var forced = ConsumeForceOutfitMarker();
             var due = UsualOutfit.OutfitChangeDue(since, forced, LoginVeilOutfitChangeAfterMin);
             loginOutfitChangeDue = due;
-            Log("login-veil", $"outfit change {(due ? "DUE" : "not due")}: {since.TotalMinutes:F1} min away (change after {LoginVeilOutfitChangeAfterMin:F0}){(forced ? ", forced by marker" : "")}");
-            var t = UsualOutfit.LoginTarget(since, due, name, links, dName, dLinks, LoginVeilUsualAfterMin, forced);
+            var requested = LoadLoginOutfitRequest();
+            Log("login-veil", $"outfit change {(due ? "DUE" : "not due")}: {since.TotalMinutes:F1} min away (change after {LoginVeilOutfitChangeAfterMin:F0}){(forced ? ", forced by marker" : "")}{(requested != null ? $", requested outfit '{requested}'" : "")}");
+            var t = UsualOutfit.LoginTarget(since, due, name, links, dName, dLinks, LoginVeilUsualAfterMin, forced, requested);
+            if (t.HoldAsWorn)
+                return new UsualOutfit.Plan(stash, new(), new(), false, $"login requested outfit '{requested}': stash as worn; the named outfit is put on after login; daily pick skipped");
             var plan = UsualOutfit.AtLogin(stash, t.Links, t.Name, since, LoginVeilUsualAfterMin, forced && t.Daily);
             if (t.Daily) { loginDailyPick = t.Name; plan = plan with { Why = plan.Why.Replace("my usual outfit", "the next outfit pick") }; }
             return plan;

@@ -204,6 +204,7 @@ public static partial class Program
         if (a.Length >= 2 && a[0] == "wear" && !a[^1].Equals("add", StringComparison.OrdinalIgnoreCase))
         {
             var nm = string.Join(' ', a[1..].Where(x => !x.Equals("replace", StringComparison.OrdinalIgnoreCase)));
+            NoteManualOutfitDuringLogin(nm);
             return await WearOutfitWithHuds(nm);
         }
         if (a.Length >= 2 && a[0] == "wear")
@@ -213,7 +214,9 @@ public static partial class Program
             if (nameParts.Count > 0 && nameParts[^1].Equals("add", StringComparison.OrdinalIgnoreCase)) { replace = false; nameParts.RemoveAt(nameParts.Count - 1); }
             if (nameParts.Count > 0 && nameParts[^1].Equals("replace", StringComparison.OrdinalIgnoreCase)) { replace = true; nameParts.RemoveAt(nameParts.Count - 1); }
             if (nameParts.Count == 0) return "usage: outfit wear <name> [replace|add]";
-            return await OutfitWearNamed(string.Join(' ', nameParts), replace);
+            var wearName = string.Join(' ', nameParts);
+            NoteManualOutfitDuringLogin(wearName);
+            return await OutfitWearNamed(wearName, replace);
         }
         if (a.Length < 2 || (a[0] != "plan" && a[0] != "create")) return "usage: outfit plan|create <name> [extra ids] | outfit check | outfit rename <old> <new> | outfit wear <name> [replace|add] | outfit trash <name…>|defaults | outfit zone status|selftest | outfit daily status";
         var (name, extra) = ParseOutfitCreateArgs(a);

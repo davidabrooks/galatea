@@ -67,7 +67,7 @@ public sealed class SlTools
 
     [McpServerTool(Name = "login"), Description("Log Galatay Resident into Second Life (start location 'last'). Optional outfit = a My Outfits name to wear at this login (e.g. 'Android Base'); skips the daily pick and leaves it pending. A manual outfit_wear after login starts wins over the daily pass. Refuses if Firestorm or another Galatay client is logged in. Password is read internally from the box secret store.")]
     public static Task<string> Login([Description("optional My Outfits name to wear at this login (e.g. Android Base); skips the daily pick")] string outfit = "")
-        => Detached(string.IsNullOrWhiteSpace(outfit) ? "login" : "login outfit "" + Clean(outfit).Replace(""", "") + """);
+        => Detached(string.IsNullOrWhiteSpace(outfit) ? "login" : "login outfit " + ((char)34).ToString() + Clean(outfit).Replace(((char)34).ToString(), "") + ((char)34).ToString());
 
     [McpServerTool(Name = "logout"), Description("Log out of Second Life cleanly (the MCP server keeps running). quick_relog=true: a quick relog, she is not re-dressed by the stand on the way out (cleared at the next login).")]
     public static Task<string> Logout([Description("true for a quick relog: keep her outfit as it is (no automatic re-dress after the logout stand)")] bool quick_relog = false) => Detached(quick_relog ? "logout quick" : "logout");

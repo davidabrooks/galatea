@@ -28,8 +28,8 @@ public class FastChatTests
     {
         var c = Cfg();
         Assert.True(c.Enabled);
-        Assert.Equal("grok-4.20-0309-non-reasoning", c.Model);
-        Assert.InRange(c.TimeoutS, 1, 10);
+        Assert.Equal("grok-4.7", c.Model);
+        Assert.InRange(c.TimeoutS, 15, 30);
         Assert.Contains("Ryan", c.Persona); Assert.Contains("Agrasifim", c.Persona); Assert.Contains("rent", c.Persona);
         Assert.Null(Program.ParseFastCfg("{\"enabled\":true}"));   // no persona -> never call the model
     }
@@ -94,8 +94,9 @@ public class FastChatTests
         Assert.Equal(Program.FastOutcome.Routine, Program.FastDecide(Program.ParseFastResponse(Api("not json")), true));
         Assert.Equal(Program.FastOutcome.Routine, Program.FastDecide(Program.ParseFastResponse("{\"error\":\"x\"}"), true));
         Assert.Equal("ok", Program.ParseFastResponse(Api("```json\n{\"reply\":\"ok\",\"action\":false}\n```")).Reply);
-        Assert.Equal(0.00175, Program.FastCost(Cfg(), 1000, 0, 200), 6);
-        Assert.Equal(0.00041, Program.FastCost(Cfg(), 1000, 1000, 84), 6);   // cached prompt: 0.2 + 0.21
+        Assert.Equal(0.0032, Program.FastCost(Cfg(), 1000, 0, 200), 6);          // 1000 in @ $2 + 200 out @ $6
+        Assert.Equal(0.001004, Program.FastCost(Cfg(), 1000, 1000, 84), 6); // cached prompt @ $0.5 + 84 out @ $6
+        Assert.Equal(0.009458, Program.FastCost(Cfg(), 334, 128, 35, 1462), 6); // reasoning tokens billed as output
     }
 
     [Fact]

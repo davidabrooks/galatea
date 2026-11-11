@@ -4,8 +4,10 @@
 // Every incoming nearby agent chat line gets a message id (msg_id in the webhook event and in 'chatlog').
 // 'say --re <id[,id..]> <text>' claims exactly those messages under a lock: refused if ANY was already answered
 // (reply names the answer + still-open ids), else sends and marks them answered. Skips the short duplicate window.
-// Plain 'say' / 'shout' / 'whisper' still works (David-directed lines); a second nearby say within
-// GT_CHAT_GUARD_WINDOW_S (default 5 s) is refused unless '--force' (manual / David-directed double-send).
+// Plain 'say' / 'shout' / 'whisper' still works (David-directed lines). A second nearby say within
+// GT_CHAT_GUARD_WINDOW_S (default 5 s) is refused only when it is near-identical to the last nearby line
+// (FastNearIdentical: "lol" after "lol"). A clearly different follow-up from the chat routine may go through.
+// '--force' still skips the window (manual / David-directed double-send).
 // 'chatlog [name] [n]' = read-only nearby chat history with ids / answered state. 'chatguard selftest'.
 // 2026-10-08 08:13 David: "You greeted me twice again". A plain 'say' (no --re) answered his "good morning, babe" and the
 // chat routine's 'say --re <id>' 10 s later answered it again. A plain nearby say now also claims every unanswered nearby
@@ -63,9 +65,11 @@ public static partial class Program
     internal static List<long> PlainSayClaimIds(IEnumerable<InMsg> all, DateTimeOffset now, TimeSpan window) =>
         all.Where(m => m.AnsweredAt == null && m.T <= now && now - m.T <= window).Select(m => m.Id).ToList();
 
-    // pure (selftest): short duplicate window for plain say (not --re)
-    internal static bool ChatWindowBlocks(DateTimeOffset now, DateTimeOffset? lastSay, TimeSpan window, bool force) =>
-        !force && lastSay != null && now - lastSay.Value < window;
+    // pure: short window for plain say (not --re). Within the window, only a near-duplicate of the last
+    // nearby line is blocked. A clearly different follow-up is allowed. Missing texts (both empty) still block,
+    // so existing "was the window closed?" checks keep working.
+    internal static bool ChatWindowBlocks(DateTimeOffset now, DateTimeOffset? lastSay, TimeSpan window, bool force, string newText = null, string lastText = null) =>
+        !force && lastSay != null && now - lastSay.Value < window && FastNearIdentical(newText, lastText);
 
     // decide + send + record under one lock (nearby chat is one conversation)
     static (bool sent, string reply) ChatGuardedSay(ChatType type, string text, bool force, IReadOnlyCollection<long> re, Func<DateTimeOffset> clock = null, Action send = null)
@@ -86,11 +90,11 @@ public static partial class Program
                 Log("chat-guard", $"--re {string.Join(",", re)}: said{(force ? " (--force ignored with --re)" : "")}");
                 return (true, null);
             }
-            if (ChatWindowBlocks(now, lastNearbySayAt, ChatGuardWindow, force))
+            if (ChatWindowBlocks(now, lastNearbySayAt, ChatGuardWindow, force, text, lastNearbySayText))
             {
                 Interlocked.Increment(ref chatGuardSkips);
                 var ago = (now - lastNearbySayAt!.Value).TotalSeconds;
-                var txt = $"skipped: already said in nearby chat at {PT(lastNearbySayAt.Value)} ({ago:F1} s ago, {ChatGuardWindow.TotalSeconds:0} s duplicate window): '{Short(lastNearbySayText, 60)}'; not said again. Use 'say --re <msg ids>' to answer specific lines, or 'say --force' only for a manual/David-directed extra line.";
+                var txt = $"skipped: already said in nearby chat at {PT(lastNearbySayAt.Value)} ({ago:F1} s ago, {ChatGuardWindow.TotalSeconds:0} s near-duplicate window): '{Short(lastNearbySayText, 60)}'; not said again. Use 'say --re <msg ids>' to answer specific lines, or 'say --force' only for a manual/David-directed extra line.";
                 Log("chat-guard", txt);
                 return (false, txt);
             }
@@ -164,7 +168,7 @@ public static partial class Program
     static async Task<string> ChatGuardCmd(string[] a)
     {
         if (a.Length > 0 && a[0] == "selftest") return await ChatGuardSelfTest();
-        return $"chat guard: {ChatGuardWindow.TotalSeconds:0} s duplicate window for plain say/shout/whisper; 'say --re <ids>' claim-and-send; skips this process: {chatGuardSkips}. 'chatguard selftest' | 'chatlog [name] [n]'";
+        return $"chat guard: {ChatGuardWindow.TotalSeconds:0} s near-duplicate window for plain say/shout/whisper; 'say --re <ids>' claim-and-send; skips this process: {chatGuardSkips}. 'chatguard selftest' | 'chatlog [name] [n]'";
     }
 
     static async Task<string> ChatGuardSelfTest()
@@ -175,9 +179,11 @@ public static partial class Program
         var t = DateTimeOffset.Now; TimeSpan S(double s) => TimeSpan.FromSeconds(s); var W = S(5);
         // pure window
         C(!ChatWindowBlocks(t, null, W, false), "never said -> plain say allowed");
-        C(ChatWindowBlocks(t, t - S(1), W, false), "1 s after a say -> window blocks");
+        C(ChatWindowBlocks(t, t - S(1), W, false), "1 s after a say, no new text -> window blocks");
         C(!ChatWindowBlocks(t, t - S(1), W, true), "--force skips the window");
         C(!ChatWindowBlocks(t, t - S(6), W, false), "6 s later -> window open");
+        C(ChatWindowBlocks(t, t - S(0.5), W, false, "lol", "lol"), "lol after lol 0.5 s later is blocked");
+        C(!ChatWindowBlocks(t, t - S(3.5), W, false, "Thanks Beragon! Give my android bits a sec to finish rezzing, hehe", "Yay, all good now?"), "distinct follow-up 3.5 s later is allowed");
         // claim-and-send (doors double-reply replay)
         var idD = "aaaaaaaa-aaaa-4aaa-aaaa-" + Random.Shared.Next(100000000, 999999999).ToString("D12");
         var idS = "bbbbbbbb-bbbb-4bbb-bbbb-" + Random.Shared.Next(100000000, 999999999).ToString("D12");
@@ -205,12 +211,13 @@ public static partial class Program
         C(ChatAnsweredExplicitly(idD, late) && ChatAnsweredExplicitly(idD, d1), "answered ids marked Explicit for webhook drop");
         // plain say window (clock after --force must clear the window from that send)
         lastNearbySayAt = null; lastNearbySayText = "";
-        var p1 = ChatGuardedSay(ChatType.Normal, "David asked me to wave", false, null, () => t, () => said++);
-        var p2 = ChatGuardedSay(ChatType.Normal, "and again", false, null, () => t + S(2), () => said++);
-        var p3 = ChatGuardedSay(ChatType.Normal, "forced", true, null, () => t + S(2), () => said++);
-        var p4 = ChatGuardedSay(ChatType.Normal, "later", false, null, () => t + S(8), () => said++); // 6 s after force at t+2
-        C(p1.sent && !p2.sent && p2.reply.StartsWith("skipped: already said") && p3.sent && p4.sent,
-            "plain say: 5 s window blocks duplicate; --force and 6 s later allowed (David-directed)");
+        var p1 = ChatGuardedSay(ChatType.Normal, "Yay, all good now?", false, null, () => t, () => said++);
+        var p2 = ChatGuardedSay(ChatType.Normal, "Yay, all good now? :)", false, null, () => t + S(2), () => said++);
+        var pDiff = ChatGuardedSay(ChatType.Normal, "Thanks Beragon! Give my android bits a sec to finish rezzing, hehe", false, null, () => t + S(3.5), () => said++);
+        var p3 = ChatGuardedSay(ChatType.Normal, "forced", true, null, () => t + S(4), () => said++);
+        var p4 = ChatGuardedSay(ChatType.Normal, "later", false, null, () => t + S(11), () => said++); // 7 s after force at t+4
+        C(p1.sent && !p2.sent && p2.reply.StartsWith("skipped: already said") && pDiff.sent && p3.sent && p4.sent,
+            "plain say: 5 s window blocks a near-duplicate; a distinct follow-up, --force, and 6 s later are allowed");
         // ReClaimCheck IM wording still defaults (unknown-id branch names imlog; answered branch names im --re)
         var imUnk = ReClaimCheck(new List<InMsg>(), new long[] { 1 }, "Bob");
         var imList = new List<InMsg> { new InMsg { Id = 1, Text = "hi", AnsweredAt = t, AnsweredBy = "yo" } };

@@ -9,7 +9,11 @@
 //   - action=true (a request to DO something): the client never acts on the model's word. For David the short ack is sent
 //     WITHOUT claiming the line, and the line goes on to the chat routine with fast_ack=<ack> (the routine acts, and only
 //     reports the result / problems). For a visitor nothing is sent; the routine handles it as before.
-//   - empty reply, API error, or timeout (timeout_s, default 8 s): the line goes to the routine unchanged.
+//   - empty reply, API error, or timeout (timeout_s, default 25 s): the line goes to the routine unchanged.
+//     A reasoning-model failure or timeout is never retried with a weaker model; the line is left unclaimed.
+// 2026-11-11 David: "say / tell / thank" lines from him are instructions to speak (FastIsSpeakCommand). A trailing
+// Galatea/Galatay/Gala is him addressing her. A bare "say thanks" thanks whoever was just being thanked. A reply that
+// addresses or thanks herself is rewritten toward that thankee, or left unclaimed for the routine (FastVetReply).
 //   - visitors (only when "visitors" is true): the code guards in FastGuard.cs decide first (addressed to her? crowd line? repeat? cap?).
 // While a call is in flight the webhook holds that conversation (Webhook.FastHold), at most timeout_s + 2 s.
 // Key: env XAI_API_KEY, else the box secret store card.XAI_API_KEY; never logged. Token usage per call is appended to
@@ -22,6 +26,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using LibreMetaverse;
 
 namespace GalatayText;
@@ -30,9 +35,9 @@ public static partial class Program
 {
     internal sealed class FastCfg
     {
-        public bool Enabled = true, Visitors = true; public string Model = "grok-4.20-0309-non-reasoning";
-        public int MaxTokens = 120, HistoryLines = 20; public double Temperature = 0.8, TimeoutS = 8;
-        public double PriceIn = 1.25, PriceCachedIn = 0.2, PriceOut = 2.5; public string Persona = "";
+        public bool Enabled = true, Visitors = true; public string Model = "grok-4.7";
+        public int MaxTokens = 200, HistoryLines = 20; public double Temperature = 0.8, TimeoutS = 25;
+        public double PriceIn = 2.0, PriceCachedIn = 0.5, PriceOut = 6.0; public string Persona = "";
         // human-like typing delay (2026-10-08 David: replies sometimes too fast; vary with the mood): total time since the
         // incoming line = (base + per_word * words) * pace multiplier + jitter, capped (thoughtful has its own, higher cap)
         public double TypingBaseS = 1.5, TypingPerWordS = 0.25, TypingMaxS = 6, TypingJitterS = 0.4;
@@ -44,7 +49,7 @@ public static partial class Program
         public int GuardBusyAvatars = 15, GuardBusyMaxPerMin = 3, GuardMaxPerMin = 6, GuardQuietAvatars = 3, GuardApologyWindowMin = 30, GuardStopSilenceMin = 15;
     }
     internal sealed record FastLine(string Scope, string Speaker, string Text, bool Mine);
-    internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error, string Pace = "normal", string Outfit = null, bool Helper = false, bool Kiss = false);
+    internal sealed record FastResult(string Reply, bool Action, int PromptTok, int CachedTok, int OutTok, string Error, string Pace = "normal", string Outfit = null, bool Helper = false, bool Kiss = false, int ReasonTok = 0);
 
     static string FastFile => Path.Combine(RouteDir, "_fast-chat.json");
     static string FastUsageFile => Path.Combine(Path.GetDirectoryName(LogPath) ?? ".", "fastchat-usage.jsonl");
@@ -72,9 +77,9 @@ public static partial class Program
             if (r.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(m.GetString())) c.Model = m.GetString();
             int I(string k, int def, int lo, int hi) => r.TryGetProperty(k, out var x) && x.TryGetInt32(out var n) ? Math.Clamp(n, lo, hi) : def;
             double D(string k, double def, double lo, double hi) => r.TryGetProperty(k, out var x) && x.TryGetDouble(out var n) ? Math.Clamp(n, lo, hi) : def;
-            c.MaxTokens = I("max_tokens", 120, 16, 400); c.HistoryLines = I("history_lines", 20, 0, 60);
-            c.Temperature = D("temperature", 0.8, 0, 2); c.TimeoutS = D("timeout_s", 8, 1, 20);
-            c.PriceIn = D("price_in_per_m", 1.25, 0, 100); c.PriceCachedIn = D("price_cached_in_per_m", 0.2, 0, 100); c.PriceOut = D("price_out_per_m", 2.5, 0, 100);
+            c.MaxTokens = I("max_tokens", 200, 16, 400); c.HistoryLines = I("history_lines", 20, 0, 60);
+            c.Temperature = D("temperature", 0.8, 0, 2); c.TimeoutS = D("timeout_s", 25, 1, 40);
+            c.PriceIn = D("price_in_per_m", 2.0, 0, 100); c.PriceCachedIn = D("price_cached_in_per_m", 0.5, 0, 100); c.PriceOut = D("price_out_per_m", 6.0, 0, 100);
             c.TypingBaseS = D("typing_base_s", 1.5, 0, 10); c.TypingPerWordS = D("typing_per_word_s", 0.25, 0, 2);
             c.TypingMaxS = D("typing_max_s", 6, 0, 20); c.TypingJitterS = D("typing_jitter_s", 0.4, 0, 3);
             if (r.TryGetProperty("guards", out var g) && g.ValueKind == JsonValueKind.Object)
@@ -187,12 +192,13 @@ public static partial class Program
         {
             using var d = JsonDocument.Parse(json);
             var r = d.RootElement;
-            int pt = 0, ct = 0, ot = 0;
+            int pt = 0, ct = 0, ot = 0, rt = 0;
             if (r.TryGetProperty("usage", out var u))
             {
                 if (u.TryGetProperty("prompt_tokens", out var a)) a.TryGetInt32(out pt);
                 if (u.TryGetProperty("completion_tokens", out var b)) b.TryGetInt32(out ot);
                 if (u.TryGetProperty("prompt_tokens_details", out var pd) && pd.ValueKind == JsonValueKind.Object && pd.TryGetProperty("cached_tokens", out var c)) c.TryGetInt32(out ct);
+                if (u.TryGetProperty("completion_tokens_details", out var cdet) && cdet.ValueKind == JsonValueKind.Object && cdet.TryGetProperty("reasoning_tokens", out var rk)) rk.TryGetInt32(out rt);
             }
             var content = r.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
             content = content.Trim();
@@ -215,7 +221,7 @@ public static partial class Program
             pace = FastNormPace(pace ?? tagPace);
             reply = System.Text.RegularExpressions.Regex.Replace(reply, @"\s*\n\s*", " ").Trim();
             if (reply.Length > 300) reply = reply[..300].TrimEnd() + "…";
-            return new FastResult(reply, action, pt, ct, ot, null, pace, action && !helper ? outfit : null, helper, kiss);
+            return new FastResult(reply, action, pt, ct, ot, null, pace, action && !helper ? outfit : null, helper, kiss, rt);
         }
         catch (Exception ex) { return new FastResult("", false, 0, 0, 0, "bad response: " + ex.GetType().Name); }
     }
@@ -261,8 +267,187 @@ public static partial class Program
         return FastOutcome.Send;
     }
 
-    internal static double FastCost(FastCfg c, int pt, int ct, int ot) =>
-        ((pt - ct) * c.PriceIn + ct * c.PriceCachedIn + ot * c.PriceOut) / 1_000_000.0;
+    internal static double FastCost(FastCfg c, int pt, int ct, int ot, int rt = 0)
+    {
+        int uncached = Math.Max(0, pt - ct);
+        return (uncached * c.PriceIn + Math.Max(0, ct) * c.PriceCachedIn + (Math.Max(0, ot) + Math.Max(0, rt)) * c.PriceOut) / 1_000_000.0;
+    }
+
+    // ---- David "say / tell / thank" commands and self-address vetting (2026-11-11) ------------------------
+    static readonly Regex FastVocativeLeadRx = new(@"^\s*(?:(?:hey|ok|okay|hi)\s+)?(?:galatay|galatea|gala)\s*[,:]\s*", RegexOptions.IgnoreCase);
+    static readonly Regex FastVocativeTailRx = new(@"\s*[,:]?\s+(?:galatay|galatea|gala)\s*[.!?~]*\s*$", RegexOptions.IgnoreCase);
+    static readonly Regex FastSelfThanksRx = new(
+        @"^\s*(?:(?:thanks|thank\s+you|thx|ty|hi|hello|hey|yo)[\s,!.]*)+(?:galatay|galatea|gala)\b|" +
+        @"^\s*(?:galatay|galatea|gala)\s*[,:]|" +
+        @"\b(?:thanks|thank\s+you|thx|ty)\b[^.!?\n]{0,24}\b(?:galatay|galatea|gala)\b",
+        RegexOptions.IgnoreCase);
+    static readonly Regex FastThanksVerbRx = new(@"\b(?:thanks|thank\s+you|thank|thx|ty)\b", RegexOptions.IgnoreCase);
+    static readonly string[] FastSpeakFillers = { "please", "just", "babe", "baby", "love", "hon", "honey", "darling", "ok", "okay", "hey",
+        "can you", "could you", "would you", "will you", "i want you to", "i need you to", "i'd like you to", "id like you to" };
+    static readonly HashSet<string> FastThankObjects = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "music","set","song","songs","dance","dancing","help","that","this","everything","coming","having","being",
+        "afternoon","morning","evening","night","time","stream","show","company","kind","kindness","words","compliment",
+        "tip","gift","welcome","fun","tune","tunes","track","mix","djing","work","the","a","an","it","for",
+    };
+
+    // pure: strip a leading or trailing Galatea/Galatay/Gala vocative ("say thanks galatea", "Galatea, say thanks")
+    internal static string FastStripVocative(string text)
+    {
+        var t = (text ?? "").Trim();
+        t = FastVocativeLeadRx.Replace(t, "");
+        t = FastVocativeTailRx.Replace(t, "");
+        return t.Trim();
+    }
+    static string FastSpeakNorm(string text)
+    {
+        var t = InstantNorm(FastStripVocative(text));
+        for (bool changed = true; changed && t.Length > 0;)
+        {
+            changed = false;
+            foreach (var f in FastSpeakFillers.OrderByDescending(s => s.Length))
+            {
+                if (t == f) { t = ""; changed = true; break; }
+                if (t.StartsWith(f + " ", StringComparison.Ordinal)) { t = t[(f.Length + 1)..]; changed = true; break; }
+                if (t.EndsWith(" " + f, StringComparison.Ordinal)) { t = t[..^(f.Length + 1)]; changed = true; break; }
+            }
+        }
+        return t;
+    }
+    // pure: David is telling her to say / tell / thank, not chatting. "thank you beragon" (he is thanking someone) is not a command.
+    internal static bool FastIsSpeakCommand(string text)
+    {
+        var t = FastSpeakNorm(text);
+        if (t.Length == 0) return false;
+        if (t == "say" || t.StartsWith("say ", StringComparison.Ordinal)) return true;
+        if (Regex.IsMatch(t, @"^tell\s+(?:them|everyone|everybody|him|her|us|all|folks|the\s+room)\b")) return true;
+        if (t.StartsWith("thank ", StringComparison.Ordinal) && !t.StartsWith("thank you", StringComparison.Ordinal)) return true;
+        return false;
+    }
+    // pure: a speak-command whose content is thanks (say thanks, thank beragon, tell them thanks)
+    internal static bool FastIsThanksCommand(string text)
+    {
+        if (!FastIsSpeakCommand(text)) return false;
+        var t = FastSpeakNorm(text);
+        return Regex.IsMatch(t, @"^(?:say\s+thanks?\b|say\s+thank\s+you\b|thank\s+(?!you\b)|tell\b.*\bthanks?\b)");
+    }
+    static string FastDisplayName(string n, IEnumerable<string> speakers)
+    {
+        if (string.IsNullOrEmpty(n)) return n;
+        var match = speakers.FirstOrDefault(s => s.Equals(n, StringComparison.OrdinalIgnoreCase));
+        if (match != null) return match;
+        if (n.All(char.IsUpper) || n.All(char.IsLower))
+            return char.ToUpperInvariant(n[0]) + (n.Length > 1 ? n[1..].ToLowerInvariant() : "");
+        return n;
+    }
+    // pure: the person a nearby line is thanking, or null
+    internal static string FastThankeeInLine(string text, IEnumerable<string> speakers)
+    {
+        if (string.IsNullOrEmpty(text) || !FastThanksVerbRx.IsMatch(text)) return null;
+        var speakerNames = (speakers ?? Array.Empty<string>()).Where(s => !string.IsNullOrEmpty(s)).ToList();
+        var after = FastThanksVerbRx.Replace(text, "\n", 1);
+        after = after[(after.LastIndexOf('\n') + 1)..];
+        after = Regex.Replace(after, @"^\s+for\b", "", RegexOptions.IgnoreCase);
+        var toks = Regex.Matches(after, @"[\p{L}][\p{L}'\-]{0,24}");
+        for (int i = toks.Count - 1; i >= 0; i--)
+        {
+            var n = toks[i].Value;
+            if (FastNotNames.Contains(n) || FastThankObjects.Contains(n) || FastNameRx.IsMatch(n)) continue;
+            return FastDisplayName(n, speakerNames);
+        }
+        return null;
+    }
+    // pure: most recently thanked person in this conversation (nearest earlier line wins)
+    internal static string FastRecentThankee(IReadOnlyList<FastLine> hist, string scope)
+    {
+        var mine = (hist ?? Array.Empty<FastLine>()).Where(h => h != null && h.Scope == scope && !h.Mine).ToList();
+        var speakers = new List<string>();
+        foreach (var h in (hist ?? Array.Empty<FastLine>()).Where(h => h != null && !h.Mine && !string.IsNullOrEmpty(h.Speaker)))
+        {
+            var first = h.Speaker.Split(' ', 2)[0];
+            if (!string.IsNullOrEmpty(first) && !speakers.Contains(first, StringComparer.OrdinalIgnoreCase)) speakers.Add(first);
+        }
+        for (int i = mine.Count - 1; i >= 0; i--)
+        {
+            var n = FastThankeeInLine(mine[i].Text, speakers);
+            if (n != null) return n;
+        }
+        return null;
+    }
+    // pure: the reply thanks or addresses Galatea/Galatay (her own name as addressee or thankee)
+    internal static bool FastAddressesSelf(string reply) => !string.IsNullOrEmpty(reply) && FastSelfThanksRx.IsMatch(reply);
+    internal static string FastRewriteSelfAddress(string reply, string thankee)
+    {
+        if (string.IsNullOrEmpty(reply) || string.IsNullOrEmpty(thankee)) return null;
+        var next = Regex.Replace(reply, @"\b(?:galatay|galatea|gala)\b", thankee, RegexOptions.IgnoreCase);
+        return FastAddressesSelf(next) ? null : next;
+    }
+    internal static string FastEnsureThankee(string reply, string thankee)
+    {
+        if (string.IsNullOrEmpty(thankee)) return reply ?? "";
+        var text = reply ?? "";
+        if (Regex.IsMatch(text, @"\b" + Regex.Escape(thankee) + @"\b", RegexOptions.IgnoreCase)) return text;
+        if (string.IsNullOrWhiteSpace(text) || Regex.IsMatch(text.Trim(), @"^(?:thanks|thank you|thx|ty)[\s!.\p{So}\p{Sk}]*$", RegexOptions.IgnoreCase))
+            return "Thanks " + thankee + "! " + "\u2764\uFE0F";
+        if (Regex.IsMatch(text, @"^\s*(?:thanks|thank you)\b", RegexOptions.IgnoreCase))
+        {
+            // "Thanks for the music!" -> "Thanks for the music, Beragon!"
+            var trimmed = text.TrimEnd();
+            var m = Regex.Match(trimmed, @"^(.*?)([.!]+)?(\s*)$");
+            // Keep any trailing emoji/symbols after stripping terminal punctuation
+            var core = trimmed.TrimEnd();
+            string trail = "";
+            while (core.Length > 0 && !char.IsLetterOrDigit(core[^1]) && core[^1] != ')')
+            {
+                trail = core[^1] + trail;
+                core = core[..^1];
+            }
+            core = core.TrimEnd(',', ' ', '!');
+            if (!trail.Contains('!')) trail = "!" + trail;
+            return core + ", " + thankee + trail;
+        }
+        return text;
+    }
+    // pure: after the model answers, rewrite or defer a self-addressing reply; for a thanks command, name the recent thankee.
+    // deferWhy != null means do not send; leave the line unclaimed for the main routine.
+    internal static (string reply, string deferWhy) FastVetReply(string reply, IReadOnlyList<FastLine> hist, string scope, string incoming, bool isDavid)
+    {
+        var thankee = FastRecentThankee(hist, scope);
+        var text = reply ?? "";
+        if (FastAddressesSelf(text))
+        {
+            if (string.IsNullOrEmpty(thankee)) return (text, "reply addresses or thanks herself; left to the routine");
+            var rw = FastRewriteSelfAddress(text, thankee);
+            if (string.IsNullOrEmpty(rw) || FastAddressesSelf(rw)) return (text, "reply addresses or thanks herself; left to the routine");
+            text = rw;
+        }
+        if (isDavid && FastIsThanksCommand(incoming) && !string.IsNullOrEmpty(thankee))
+            text = FastEnsureThankee(text, thankee);
+        return (text, null);
+    }
+    // note added to the user message when David is giving a speak command
+    internal static string FastSpeakNote(string text, IReadOnlyList<FastLine> hist, string scope)
+    {
+        if (!FastIsSpeakCommand(text)) return null;
+        var thankee = FastRecentThankee(hist, scope);
+        var who = thankee != null
+            ? "If he said to say thanks without a clear other name, thank " + thankee + ", who was just being thanked."
+            : "If he said to say thanks without a name, thank whoever was just being thanked in the earlier lines.";
+        return "David is asking you to say something in chat (not chatting with you). A trailing Galatea/Galatay/Gala is him addressing you, not the person to thank or talk to. " + who + " Never thank or address yourself. Write the line you would say; set action=false.";
+    }
+    // apply speak-command action override + self-address vet. Returns a defer reason, or null to proceed with dec/r.
+    internal static string FastPostprocess(ref FastResult r, ref FastOutcome dec, bool david, string text, IReadOnlyList<FastLine> hist, string scope)
+    {
+        if (r == null || r.Error != null) { dec = FastDecide(r, david); return null; }
+        if (david && FastIsSpeakCommand(text) && !r.Helper && !string.IsNullOrWhiteSpace(r.Reply))
+            r = r with { Action = false, Outfit = null, Kiss = false };
+        dec = FastDecide(r, david);
+        if (dec == FastOutcome.Routine) return null;
+        var (next, why) = FastVetReply(r.Reply, hist, scope, text, david);
+        if (why != null) { dec = FastOutcome.Routine; return why; }
+        if (next != r.Reply) r = r with { Reply = next };
+        return null;
+    }
 
     // the API call with a hard timeout; never throws
     internal static async Task<(FastResult r, long ms)> FastCall(FastCfg cfg, string body, string key)
@@ -295,8 +480,8 @@ public static partial class Program
             var o = new JsonObject
             {
                 ["t"] = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), ["model"] = c.Model, ["who"] = who, ["im"] = im,
-                ["ms"] = ms, ["prompt"] = r.PromptTok, ["cached"] = r.CachedTok, ["out"] = r.OutTok,
-                ["usd"] = Math.Round(FastCost(c, r.PromptTok, r.CachedTok, r.OutTok), 6), ["outcome"] = outcome, ["error"] = r.Error,
+                ["ms"] = ms, ["prompt"] = r.PromptTok, ["cached"] = r.CachedTok, ["out"] = r.OutTok, ["reason"] = r.ReasonTok,
+                ["usd"] = Math.Round(FastCost(c, r.PromptTok, r.CachedTok, r.OutTok, r.ReasonTok), 6), ["outcome"] = outcome, ["error"] = r.Error,
             };
             lock (fastHist) File.AppendAllText(FastUsageFile, o.ToJsonString() + "\n");
         }
@@ -361,8 +546,10 @@ public static partial class Program
             }
             fastPending[msgId] = DateTime.UtcNow.AddSeconds(cfg.TimeoutS + cfg.MaxDelayS + 2);   // API call + typing delay
             var scope = im ? "im:" + from : "nearby";
-            var body = BuildFastRequest(cfg, FastState(), FastHistSnapshot(), scope, name, text, im,
-                complaint ? "this person asks you to stop chatting. Reply ONCE with a very short, polite acknowledgement (under 10 words); after that you stay silent in nearby chat for a while." : null);
+            var histSnap = FastHistSnapshot();
+            string speakNote = david ? FastSpeakNote(text, histSnap, scope) : null;
+            var body = BuildFastRequest(cfg, FastState(), histSnap, scope, name, text, im,
+                complaint ? "this person asks you to stop chatting. Reply ONCE with a very short, polite acknowledgement (under 10 words); after that you stay silent in nearby chat for a while." : speakNote);
             _ = Task.Run(async () =>
             {
                 string outcome = "routine", typed = "";
@@ -373,7 +560,8 @@ public static partial class Program
                     Interlocked.Increment(ref fastCalls);
                     (r, ms) = await FastCall(cfg, body, key);
                     var dec = FastDecide(r, david);
-                    string guardWhy = null;
+                    var vetWhy = FastPostprocess(ref r, ref dec, david, text, histSnap, scope);
+                    string guardWhy = vetWhy;
                     if (dec == FastOutcome.Send && !david && FastGuardFinal(cfg, fastGuard, from.ToString(), r.Reply, im, near, FastLastOwnNearbyLine(), DateTimeOffset.Now) is string fgw)
                     { guardWhy = fgw; Interlocked.Increment(ref fastGuarded); dec = FastOutcome.Routine; }
                     if (dec != FastOutcome.Routine && RateGuard() is string rg) { outcome = "routine (" + rg + ")"; dec = FastOutcome.Routine; }
@@ -404,7 +592,7 @@ public static partial class Program
                         if (FastSend(from, name, r.Reply, msgId, im, imSession, claim: false)) { fastAcks[msgId] = r.Reply; outcome = "ack, action left to the routine"; }
                         else outcome = "routine (ack not sent)";
                     }
-                    else if (guardWhy != null) outcome = "routine (guard: " + guardWhy + ")";
+                    else if (guardWhy != null) outcome = "routine (" + (guardWhy.StartsWith("guard:") ? guardWhy : (guardWhy.StartsWith("reply ") ? guardWhy : "guard: " + guardWhy)) + ")";
                     else if (r.Error != null) outcome = "routine (" + r.Error + ")";
                     else if (r.Action) outcome = "routine (visitor action request)";
                     else outcome = "routine (no reply needed)";
@@ -448,7 +636,7 @@ public static partial class Program
             }
             var hist = FastHistSnapshot().Where(h => h.Scope == "voice" && h.Mine).ToList();
             hist.AddRange(transcript.Select(t => new FastLine("voice", t.speaker, t.text, false)));
-            var body = BuildFastRequest(cfg, FastState(), hist, "voice", name, text, false);
+            var body = BuildFastRequest(cfg, FastState(), hist, "voice", name, text, false, david ? FastSpeakNote(text, hist, "voice") : null);
             _ = Task.Run(async () =>
             {
                 string outcome = "routine"; FastResult r = null; long ms = 0; string ack = null; bool posted = false;
@@ -457,6 +645,8 @@ public static partial class Program
                     Interlocked.Increment(ref fastCalls);
                     (r, ms) = await FastCall(cfg, body, key);
                     var dec = FastDecide(r, david);
+                    var vetWhy = FastPostprocess(ref r, ref dec, david, text, hist, "voice");
+                    if (vetWhy != null) outcome = "routine (" + vetWhy + ")";
                     if (dec == FastOutcome.Send && !david && FastGuardFinal(cfg, fastGuard, from.ToString(), r.Reply, false, near, FastLastOwnNearbyLine(), DateTimeOffset.Now) is string fgw)
                     { outcome = "routine (guard: " + fgw + ")"; Interlocked.Increment(ref fastGuarded); dec = FastOutcome.Routine; }
                     if (dec != FastOutcome.Routine && RateGuard() is string rg) { outcome = "routine (" + rg + ")"; dec = FastOutcome.Routine; }
@@ -595,11 +785,13 @@ public static partial class Program
         if (text.Length == 0) return "usage: fastchat test [--im|--voice] [--from <First_Last>] <line>";
         var scope = im ? "im:test" : voice ? "voice" : "nearby";
         var hist = FastHistSnapshot().Where(h => h.Scope == scope).ToList();
-        var body = BuildFastRequest(cfg, state ?? "in region Peronaut (at home with David, the beach house); wearing the outfit 'TETRA Chill T-Shirt shorts'; standing; not wandering; local time " + DateTime.Now.ToString("ddd h:mm tt") + " PT", hist, scope, from, text, im);
+        bool david = from == "David Nightingale";
+        var body = BuildFastRequest(cfg, state ?? "in region Peronaut (at home with David, the beach house); wearing the outfit 'TETRA Chill T-Shirt shorts'; standing; not wandering; local time " + DateTime.Now.ToString("ddd h:mm tt") + " PT", hist, scope, from, text, im, david ? FastSpeakNote(text, hist, scope) : null);
         var (r, ms) = await FastCall(cfg, body, FastKey());
-        FastUsage(cfg, from + " (test)", im, r, ms, "test");
-        var dec = FastDecide(r, from == "David Nightingale");
+        var dec = FastDecide(r, david);
+        var vetWhy = FastPostprocess(ref r, ref dec, david, text, hist, scope);
+        FastUsage(cfg, from + " (test)", im, r, ms, vetWhy != null ? "test (would leave to the routine: " + vetWhy + ")" : "test");
         return $"fastchat test ({(im ? "IM" : voice ? "voice" : "nearby")}, from {from}, {cfg.Model}): {ms} ms; reply '{r.Reply}', action={r.Action.ToString().ToLowerInvariant()}, pace={r.Pace}, outfit={r.Outfit ?? "-"}, helper={r.Helper.ToString().ToLowerInvariant()} (typing ~{FastTypingDelayMs(cfg, r.Reply, r.Pace, 0, 0) / 1000.0:0.0} s) -> would {dec switch { FastOutcome.Send => "send + claim", FastOutcome.Ack => "send the ack and hand the action to the routine", _ => "leave it to the routine" }}" +
-               $"{(r.Error != null ? " (" + r.Error + ")" : "")}; tokens {r.PromptTok} prompt ({r.CachedTok} cached) + {r.OutTok} out = ${FastCost(cfg, r.PromptTok, r.CachedTok, r.OutTok):0.00000}";
+               $"{(vetWhy != null ? " (" + vetWhy + ")" : r.Error != null ? " (" + r.Error + ")" : "")}; tokens {r.PromptTok} prompt ({r.CachedTok} cached) + {r.OutTok} out + {r.ReasonTok} reason = ${FastCost(cfg, r.PromptTok, r.CachedTok, r.OutTok, r.ReasonTok):0.00000}";
     }
 }

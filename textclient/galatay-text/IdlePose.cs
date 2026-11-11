@@ -252,13 +252,18 @@ public static partial class Program
     static void IdleNoSitSave() { try { File.WriteAllText(IdleNoSitFile, IdleNoSitFormat(idleNoSitUntil)); } catch { } }
     static DateTime IdleNoSitLoad() { try { return File.Exists(IdleNoSitFile) ? IdleNoSitParse(File.ReadAllText(IdleNoSitFile)) : DateTime.MinValue; } catch { return DateTime.MinValue; } }
     // 2026-10-31 18:07 (David): a slow login let her auto-sit 106 s after the veil came off. After login the idle sit waits at least
-    // TWICE the normal idle time (the drawn threshold, 90-300 s), counted from the later of login and veil-off; veil still on = wait.
+    // TWICE the normal idle time, counted from the later of login and veil-off; veil still on = wait.
+    // 2026-11-11 11:01 (David watched): the hold used the drawn threshold only (90-300 s, so as little as 3 min). Today's draw was
+    // ~220 s (hold ~7 min from veil-off at 10:54:21); she ground-sat at 11:01:41, 8 min after login, in the middle of an outfit change
+    // (idle 460 s: outfit changes and bot messages do not reset the idle clock, so the wait was already exhausted when the hold ended).
+    // The hold is now at least 2x IdleWaitMax (10 min), or 2x a longer manual threshold.
     internal const double IdleLoginFactor = 2;
+    internal static double IdleLoginHoldSec(double thresholdSec) => IdleLoginFactor * Math.Max(thresholdSec, IdleWaitMax);
     internal static bool IdleLoginHoldActive(DateTime now, DateTime loginAt, DateTime veilOffAt, double thresholdSec)
     {
         if (veilOffAt == DateTime.MaxValue) return true;
         var from = veilOffAt > loginAt ? veilOffAt : loginAt;
-        return (now - from).TotalSeconds < IdleLoginFactor * thresholdSec;
+        return (now - from).TotalSeconds < IdleLoginHoldSec(thresholdSec);
     }
     // stand (stand tool, idle_pose stop, logout): clear any pose, make sure the AO force sit is off; cooldown only for his stand
     static async Task<string> IdleExplicitStand(string why)
@@ -293,7 +298,15 @@ public static partial class Program
     static readonly string AoGroundSitFile = Env("GT_AO_GROUNDSIT_FILE", "/home/box/viewers/textclient/run/ao-groundsit.txt");
     static double IdleBaseSec() => double.TryParse(Env("GT_IDLE_POSE_SEC", "240"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 30 ? v : 240;
     static (int link, int face, string st)? AoGroundSitNow() { try { return File.Exists(AoGroundSitFile) ? AoGroundSitSpot(File.ReadAllText(AoGroundSitFile)) : null; } catch { return null; } }
-    static void IdleNoteActivity() { idleActivityAt = DateTime.Now; }
+    internal static void IdleNoteActivity() { idleActivityAt = DateTime.Now; }
+    // 2026-11-11: an automatic idle sit must not run a visual hover check that can sink her (android|VAMOSITG25: renderer gap +0.288, posted -0.351, David saw her in the floor)
+    static int idleSitHoverSuppressed;
+    internal static bool IdleSitHoverSuppressed => System.Threading.Volatile.Read(ref idleSitHoverSuppressed) != 0;
+    internal static void SetIdleSitHoverSuppressed(bool on) => System.Threading.Volatile.Write(ref idleSitHoverSuppressed, on ? 1 : 0);
+    internal static bool IdleSitSkipsHoverCheck(string enterWhy) =>
+        !string.IsNullOrEmpty(enterWhy) && enterWhy.StartsWith("idle", StringComparison.OrdinalIgnoreCase);
+    internal static bool HoverCheckSkippedForIdleSit(string requestWhy) =>
+        IdleSitHoverSuppressed && requestWhy is "sit" or "ground sit";
     static void IdleSave() { try { var s = idlePosed; if (s == null) File.Delete(IdlePoseFile); else File.WriteAllText(IdlePoseFile, JsonSerializer.Serialize(s)); } catch { } }
     static IdlePoseState IdleLoad() { try { return File.Exists(IdlePoseFile) ? JsonSerializer.Deserialize<IdlePoseState>(File.ReadAllText(IdlePoseFile)) : null; } catch { return null; } }
 
@@ -522,6 +535,7 @@ public static partial class Program
     {
         if (!await idleLock.WaitAsync(0)) return "idle pose busy";
         bool hoverAfter = false; int hoverDelayMs = 1000; string hoverWhy = "ground sit";
+        if (IdleSitSkipsHoverCheck(why)) SetIdleSitHoverSuppressed(true);   // set before GroundSitEntry: the AO confirm and posture-note also request a check
         try
         {
             if (idlePosed != null) return $"already posed ({idlePosed.kind} {idlePosed.pose})";
@@ -559,7 +573,7 @@ public static partial class Program
             hoverAfter = true;   // requested after the lock is released (a request made inside it waits for the 8 s retry)
             return $"AO ground sit on ({(added.Count > 0 ? "anim " + string.Join(",", added.Select(x => x[..8])) : "no new anim seen")}; pose {aoSitCurrentName ?? "?"})";
         }
-        finally { idleLock.Release(); if (hoverAfter) hoverSvc.HoverCheckRequest(hoverWhy, hoverDelayMs); }   // the ONE hover check of this sit / collar pose
+        finally { idleLock.Release(); if (hoverAfter && !HoverCheckSkippedForIdleSit(hoverWhy)) hoverSvc.HoverCheckRequest(hoverWhy, hoverDelayMs); }   // idle auto-sits skip the visual check (it can sink her); manual / switch still request it
     }
     static async Task<string> IdlePoseExit(string why)
     {
@@ -578,7 +592,7 @@ public static partial class Program
                 if (GroundSitStandNeeded(SelfAnims(), client.Self.SittingOn != 0)) { try { StandFaceFirst(); } catch { } info += "; stood up (SitOnGround cleared)"; }
                 try { if (EffectiveHoverNow() is double hv && Math.Abs(hv - PinnedHover()) > 0.005) await PostHover(PinnedHover(), "ground sit ended: back to normal hover"); } catch { }
             }
-            idlePosed = null; IdleSave(); IdleNoteActivity(); hoverSvc.AutoHoverKick("pose cleared");
+            idlePosed = null; IdleSave(); IdleNoteActivity(); SetIdleSitHoverSuppressed(false); hoverSvc.AutoHoverKick("pose cleared");
             idleThreshold = IdleThresholdSec(IdleBaseSec(), Random.Shared.NextDouble());
             Log("idlepose", $"cleared {s.kind} {s.pose} before {why}: {info}");
             return $"cleared {s.kind} {s.pose}: {info}";

@@ -52,13 +52,19 @@ internal static class EvoxHide
         if (!before.Lashes && after.Lashes) l.Add("lashes");
         return string.Join(",", l);
     }
-    /// <summary>Pure (tested): the login target from the marker and the current state: show again only what the marker names.</summary>
-    internal static Parts ShowTarget(string marker, Parts now)
+    /// <summary>Pure (tested): the login target from the marker and the current state: show again only what the marker names.
+    /// Android outfits keep ears hidden even when the marker names them (they are shown later when a human outfit is worn).</summary>
+    internal static Parts ShowTarget(string marker, Parts now, bool android = false)
     {
         if (now == null) return null;
         var m = (marker ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return new Parts(m.Contains("ears") ? false : now.Ears, m.Contains("lashes") ? false : now.Lashes);
+        return new Parts(android ? true : (m.Contains("ears") ? false : now.Ears), m.Contains("lashes") ? false : now.Lashes);
     }
+    /// <summary>Pure (tested): hide or show ears only; lashes stay as they are.</summary>
+    internal static Parts EarTarget(Parts now, bool hideEars) => now == null ? null : new Parts(hideEars, now.Lashes);
+    /// <summary>Pure (tested): android login (requested, named, or worn) must not restore ears.</summary>
+    internal static bool HideEarsAtLogin(bool requestedAndroid, bool currentOrLastNamedAndroid, bool androidWorn)
+        => requestedAndroid || currentOrLastNamedAndroid || androidWorn;
     /// <summary>Pure (tested): safety net: restore once the veil is gone, or after SafetyNetSec whatever happens (never left earless).</summary>
     /// <summary>Pure (tested): the HUD's own failure line. 2026-10-30 16:44/16:48/17:00/17:20 logouts: the HUD, attached for the job, said
     /// "Hello Galatea, please wear your head to activate me." ~2 s after attaching (its head handshake failed) and ignored the presses, so
@@ -242,8 +248,9 @@ public static partial class Program
             var m = File.ReadAllText(f).Trim();
             if (m.Length == 0) { File.Delete(f); return; }
             for (int i = 0; i < 40 && EvoxHeadRoot() == null; i++) { if (i % 8 == 0) EvoxRequestWornProps(); await Task.Delay(250); }   // the head first
-            var (_, after, msg) = await EvoxSet(now => EvoxHide.ShowTarget(m, now), why);
-            bool ok = after != null && EvoxHide.Presses(after, EvoxHide.ShowTarget(m, after)).Count == 0;
+            var android = EvoxHide.HideEarsAtLogin(IsAndroidOutfit(loginRequestedOutfit), IsAndroidOutfit(currentOutfit) || IsAndroidOutfit(lastNamedOutfit), AndroidWorn());
+            var (_, after, msg) = await EvoxSet(now => EvoxHide.ShowTarget(m, now, android), why);
+            bool ok = after != null && EvoxHide.Presses(after, EvoxHide.ShowTarget(m, after, android)).Count == 0;
             if (ok) { try { File.Delete(f); } catch { } }
             Log("login-veil", $"evox after login ({why}): {msg}{(ok ? "" : "; marker kept, the safety net retries")}");
         }
@@ -267,6 +274,22 @@ public static partial class Program
                 if (!File.Exists(LoginVeilEvoxFile)) return;
                 await Task.Delay(30000);
             }
+        });
+    }
+
+    /// <summary>After an outfit change or an android login: hide ears on Android* outfits, show them again on human outfits; lashes unchanged.</summary>
+    static void EvoxEarsAfterOutfit(string outfit)
+    {
+        var hide = IsAndroidOutfit(outfit);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (int i = 0; i < 40 && LoginVeilWorn(LoginVeilItem()); i++) await Task.Delay(500);
+                var (_, _, msg) = await EvoxSet(now => EvoxHide.EarTarget(now, hide), hide ? "android ears" : "human ears");
+                Log("login-veil", $"evox after outfit '{outfit ?? "-"}': {msg}");
+            }
+            catch (Exception ex) { Log("login-veil", "evox after outfit failed: " + ex.GetBaseException().Message); }
         });
     }
 

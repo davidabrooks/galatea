@@ -411,6 +411,8 @@ public static partial class Program
         _ = Task.Run(ActiveGroupAfterLogin); // routes/_active-group.json: saved active group (or none) (ActiveGroup.cs)
         _ = Task.Run(ResurfaceRestoredOffers); // restored group invites: re-check + urgent webhook again ~45 s after login (OfferStore.cs)
         OutfitZonesLoad();
+        loginManualOutfit = null; loginOutfitPassActive = true;
+        LoadLoginOutfitRequest();
         _ = Task.Run(DailyOutfitAfterLogin); // once per PT calendar day: random non-Bikini outfit (OutfitZones.cs)
         if (attachBlockTask == null) attachBlockTask = Task.Run(SeatAttachLoop); // seat-off attachments (AttachWatch.cs)
         GC.Collect();
@@ -1820,6 +1822,7 @@ public static partial class Program
   maturity                    READ-ONLY: account maturity ceiling + preferred (General/Moderate/Adult) as the grid reports them, and the current region rating
   maturity set <general|moderate|adult> --david-ok   CHANGES the account maturity preference (UpdateAgentInformation, then read back; one try, no retry). Needs DAVID'S OK (the flag); operator socket only, refused from any automated path; the grid may refuse (age verification)
   gesture list | show <g> | play [--sound] [--chat] <g> | stop   her gestures (by default only animation + wait steps; sound / chat steps only with --sound / --chat or GT_GESTURE_SOUND / GT_GESTURE_CHAT=on) (* = active, [trigger]); play one by name or trigger (/wave): animation, sound, chat and wait steps like a viewer (Gestures.cs); an active gesture's trigger word in her own say plays it
+  login [outfit <name>]      log in (start last). outfit = wear that My Outfits folder (e.g. Android Base), skip the daily pick (also run/login-outfit.txt); daily stays pending
   logout                      log out cleanly and exit";
 
     static async Task<string> Exec(string line)
@@ -1830,7 +1833,17 @@ public static partial class Program
         var rest = sp < 0 ? "" : line[(sp + 1)..].Trim();
         var a = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (cmd != "status" && cmd != "where" && cmd != "help" && line != "anim list") Log("cmd", line);
-        if (cmd == "login") { CancelPendingRelogin("manual login"); return await LoginAsync(); }
+        if (cmd == "login")
+        {
+            CancelPendingRelogin("manual login");
+            var outfit = UsualOutfit.ParseLoginOutfitArg(rest);
+            if (outfit != null)
+            {
+                if (LoggedIn) return $"already logged in (use outfit wear '{outfit}' to change now)";
+                WriteLoginOutfitRequest(outfit);
+            }
+            return await LoginAsync();
+        }
         if (cmd == "remind") return RemindCmd(a); // works logged out (FriendWatch.cs)
         if (!LoggedIn && cmd != "help" && cmd != "restart") return "not logged in" + (cmd is "status" or "where" ? "" : " (use login)");
         if (cmd is "say" or "shout" or "whisper" || (cmd == "chan" && a.Length > 0 && a[0] == "0")) { var qg = QuietChatGuard(); if (qg != null) { Log("quiet", $"manual {cmd} {qg}"); return qg; } }

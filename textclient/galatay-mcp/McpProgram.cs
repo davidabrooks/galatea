@@ -65,8 +65,9 @@ public sealed class SlTools
     // login / logout finish their set-up on their own task: a cancelled or dropped MCP call (the host's notifications/cancelled) never stops them half way
     static Task<string> Detached(string line) => Core.RunDetached(() => R(line), line, m => Json(new { ok = false, result = m }));
 
-    [McpServerTool(Name = "login"), Description("Log Galatay Resident into Second Life (start location 'last'). Refuses if Firestorm or another Galatay client is logged in. Password is read internally from the box secret store.")]
-    public static Task<string> Login() => Detached("login");
+    [McpServerTool(Name = "login"), Description("Log Galatay Resident into Second Life (start location 'last'). Optional outfit = a My Outfits name to wear at this login (e.g. 'Android Base'); skips the daily pick and leaves it pending. A manual outfit_wear after login starts wins over the daily pass. Refuses if Firestorm or another Galatay client is logged in. Password is read internally from the box secret store.")]
+    public static Task<string> Login([Description("optional My Outfits name to wear at this login (e.g. Android Base); skips the daily pick")] string outfit = "")
+        => Detached(string.IsNullOrWhiteSpace(outfit) ? "login" : "login outfit " + ((char)34).ToString() + Clean(outfit).Replace(((char)34).ToString(), "") + ((char)34).ToString());
 
     [McpServerTool(Name = "logout"), Description("Log out of Second Life cleanly (the MCP server keeps running). quick_relog=true: a quick relog, she is not re-dressed by the stand on the way out (cleared at the next login).")]
     public static Task<string> Logout([Description("true for a quick relog: keep her outfit as it is (no automatic re-dress after the logout stand)")] bool quick_relog = false) => Detached(quick_relog ? "logout quick" : "logout");
@@ -262,7 +263,7 @@ public sealed class SlTools
     [McpServerTool(Name = "rlv_log"), Description("Last n lines of the RLV log (/workspace/secondlife/rlv/rlv-log.md): every @ command my worn items sent and what I did.")]
     public static Task<string> RlvLogTail(int n = 30) => R("rlv log " + Math.Clamp(n, 1, 200));
 
-    [McpServerTool(Name = "outfit_wear"), Description("Change into a saved outfit from My Outfits by name (the always-wear collar stays on; Android* outfits also turn the collar's Stealth on).")]
+    [McpServerTool(Name = "outfit_wear"), Description("Change into a saved outfit from My Outfits by name (the always-wear collar stays on; Android* outfits also turn the collar's Stealth on and hide the EvoX ears; a human outfit shows the ears again). During login, this wins over the daily pick.")]
     public static Task<string> OutfitWear(string name) => R("outfit wear " + Clean(name));
 
     [McpServerTool(Name = "idle_pose"), Description("Idle pose (IdlePose.cs): action status | on | off | now [collar|groundsit] | stop | idle <seconds> | rotate on|off (pause automatic pose switching) | aomap <face> <u,v> (map the Martha AO 'force sitg' button). Collar visible or a visible leash -> a random collar pose (cutie/coy/kneel/nadu/pretty/shy/tower), cleared with the Pose menu's STOP before any movement; collar hidden and no visible leash -> AO ground sit.")]

@@ -196,6 +196,7 @@ public static partial class Program
         (buttons ?? Array.Empty<string>()).FirstOrDefault(b => b != null && words.Any(w => b.Contains(w, StringComparison.OrdinalIgnoreCase)));
     static void CollarStealthAfterOutfit(string outfit)
     {
+        EvoxEarsAfterOutfit(outfit);
         if (!IsAndroidOutfit(outfit)) return;
         _ = Task.Run(async () =>
         {

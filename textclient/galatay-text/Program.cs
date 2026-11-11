@@ -529,6 +529,7 @@ public static partial class Program
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
                 bool lapReq = LapRequestIn(e.SourceID, e.Message, chatId, false);   // LapAuto.cs: before the webhook sees the line
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId); // webhook: always, including far/unknown speakers
+                if (e.SourceID == DavidId && IsComeRequest(e.Message)) NoteDavidComeHere("nearby chat");
                 if (!lapReq) WanderChatIn(e.SourceID, e.FromName, chatPos, false, e.Message); // pause only if PlanChatInbound says so (5 m / IM)
                 if (e.SourceID != DavidId || !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) // InstantReplies.cs; reply path is not gated by wander range
                 {
@@ -577,6 +578,7 @@ public static partial class Program
                         catch { }
                         bool lapReq = !offline && ImAutoReact(im) && LapRequestIn(im.FromAgentID, im.Message, msgId, true);   // LapAuto.cs
                         Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist, msgId);
+                        if (!offline && im.FromAgentID == DavidId && IsComeRequest(im.Message)) NoteDavidComeHere("IM");
                         if (!lapReq && ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true, im.Message); // old messages: no wander pause/approach/reply
                         if (!offline && (im.FromAgentID != DavidId || !TryInstantReply(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true))) // InstantReplies.cs (after the wander chat pause)
                         {

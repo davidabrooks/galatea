@@ -176,34 +176,26 @@ public static partial class Program
     // ---- secrets -------------------------------------------------------
     static string ReadPassword()
     {
-        var env = Environment.GetEnvironmentVariable("SECONDLIFE_PASSWORD");
-        if (!string.IsNullOrEmpty(env)) { Environment.SetEnvironmentVariable("SECONDLIFE_PASSWORD", null); return env; }
-        using var doc = JsonDocument.Parse(File.ReadAllText(SecretsPath));
-        JsonElement cur = doc.RootElement;
-        bool ok = true;
-        foreach (var part in SecretKey.Split('.'))
+        // Env (launcher) or cached value from an earlier login in this process, then the secrets file
+        // with retries. See LoginSecrets.cs (16:36 auto-relogin UnauthorizedAccessException).
+        var r = LoadLoginPassword(
+            () => Environment.GetEnvironmentVariable("SECONDLIFE_PASSWORD"),
+            () => Environment.SetEnvironmentVariable("SECONDLIFE_PASSWORD", null),
+            () => File.ReadAllText(SecretsPath),
+            SecretKey,
+            loginPasswordCache,
+            fileRetries: LoginSecretsFileBackoffMs.Length,
+            LoginSecretsFileBackoffMs,
+            ms => { try { System.Threading.Thread.Sleep(ms); } catch { } });
+        if (r.Ok)
         {
-            if (cur.ValueKind == JsonValueKind.Object && cur.TryGetProperty(part, out var nx)) cur = nx; else { ok = false; break; }
+            if (r.Source == "cache")
+                Log("login", $"secrets file unreadable ({r.ErrorType}); using credentials cached from the earlier login");
+            return r.Value;
         }
-        if (ok && cur.ValueKind == JsonValueKind.String) return cur.GetString() ?? "";
-        // fallback: recursive search for the last key segment
-        var leaf = SecretKey.Split('.').Last();
-        string found = null;
-        void Walk(JsonElement e)
-        {
-            if (found != null) return;
-            if (e.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var p in e.EnumerateObject())
-                {
-                    if (p.Name == leaf && p.Value.ValueKind == JsonValueKind.String) { found = p.Value.GetString(); return; }
-                    Walk(p.Value);
-                }
-            }
-            else if (e.ValueKind == JsonValueKind.Array) foreach (var x in e.EnumerateArray()) Walk(x);
-        }
-        Walk(doc.RootElement);
-        return found ?? "";
+        if (r.ErrorType == nameof(UnauthorizedAccessException)) throw new UnauthorizedAccessException();
+        if (r.ErrorType == nameof(IOException)) throw new IOException();
+        throw new InvalidOperationException("cannot read secrets file");
     }
 
     // ---- main ----------------------------------------------------------

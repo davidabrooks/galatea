@@ -26,6 +26,21 @@ public static partial class Program
     // pure (selftest): how far from a leg end a stalled walk still counts as arrived (the sim autopilot's ~1 m stop distance)
     internal static float AutopilotStopSlack(float tol) => MathF.Max(tol, 1.3f);
 
+    // 2026-11-11 David: a walk_to whose z was 0.75 m above the surface "walked in place" ~1 m short.
+    // Arrival is judged horizontally; z is never required to match (loose ~1.5 m slack). Within ~1.5 m
+    // horizontally and not moving for ~2 s counts as arrived (then cancel autopilot).
+    internal const float WalkArrivedHorizM = 1.5f;
+    internal const float WalkArrivedStillS = 2f;
+    internal const float WalkStillMoveM = 0.3f;
+    internal const float WalkZSlackM = 1.5f;
+    internal static bool WalkCloseEnough(float horizDist, float absDz, float horizTol = WalkArrivedHorizM, float zSlack = WalkZSlackM) =>
+        horizDist <= horizTol; // z never blocks; zSlack is documented so callers do not wait on exact z
+    internal static bool WalkArrivedStill(float horizDist, float stillS, float movedHoriz,
+        float horizTol = WalkArrivedHorizM, float needS = WalkArrivedStillS, float moveMax = WalkStillMoveM) =>
+        horizDist <= horizTol && stillS >= needS && movedHoriz <= moveMax;
+    internal static bool WalkHorizStuck(float movedHoriz, float lookbackS, float moveMax = WalkStillMoveM, float needS = 3f) =>
+        lookbackS >= needS && movedHoriz <= moveMax;
+
     // pure (tested): a precise leg that stalled short of its tolerance must finish the last metre instead of calling it arrived
     internal static bool ShortLegNeedsFinish(bool precise, float dist, float tol) => precise && dist > tol;
 
@@ -162,9 +177,34 @@ public static partial class Program
                 return true;
             }
             if (goal != target && HDist(p, goal) <= 0.8f) { goal = target; AutoPilotTo(goal); hist.Clear(); continue; } // detour point reached -> resume
-            hist.Enqueue((DateTime.Now, p));
-            while (hist.Count > 0 && (DateTime.Now - hist.Peek().t).TotalSeconds > 3.0) hist.Dequeue();
-            bool stuck = hist.Count >= 5 && (DateTime.Now - hist.Peek().t).TotalSeconds >= 2.4 && Vector3.Distance(hist.Peek().p, p) < 0.25f;
+            var nowH = DateTime.Now;
+            hist.Enqueue((nowH, p));
+            while (hist.Count > 0 && (nowH - hist.Peek().t).TotalSeconds > 3.0) hist.Dequeue();
+            (DateTime t, Vector3 pos)? oldestAt(float sec)
+            {
+                (DateTime t, Vector3 pos)? hit = null;
+                foreach (var h in hist) { if ((nowH - h.t).TotalSeconds >= sec) hit = h; else break; }
+                return hit;
+            }
+            var still2 = oldestAt(WalkArrivedStillS);
+            float moved2 = still2 is { } s2 ? HDist(s2.pos, p) : float.MaxValue;
+            float stillS = still2 is { } s2b ? (float)(nowH - s2b.t).TotalSeconds : 0;
+            // within ~1.5 m horizontally and not moving for ~2 s: arrived (z is ignored). Precise legs still finish the last metre.
+            if (still2 != null && WalkArrivedStill(HDist(p, target), stillS, moved2))
+            {
+                if (ShortLegNeedsFinish(precise, HDist(p, target), tol))
+                {
+                    client.Self.AutoPilotCancel();
+                    Log("walk", $"leg {label}: still at {V(p)} {HDist(p, target):F1} m short for {stillS:F1} s; finishing the last metre");
+                    return await FinishShortLeg(target, tol, label, ct);
+                }
+                client.Self.AutoPilotCancel();
+                if (flew) { client.Self.Movement.Fly = false; client.Self.Movement.SendUpdate(true); Log("walk", "fly off (landed)"); }
+                Log("walk", $"leg {label}: arrived at {V(p)} ({HDist(p, target):F1} m horizontally, still {stillS:F1} s; z is not required) in {(DateTime.Now - legT0).TotalSeconds:F0} s");
+                return true;
+            }
+            var still3 = oldestAt(3f);
+            bool stuck = still3 != null && WalkHorizStuck(HDist(still3.Value.pos, p), (float)(nowH - still3.Value.t).TotalSeconds);
             if ((DateTime.Now - legStart).TotalSeconds > 90) { client.Self.AutoPilotCancel(); Log("walk", $"leg {label}: timeout at {V(p)}"); return false; }
             if (!stuck) continue;
             hist.Clear();

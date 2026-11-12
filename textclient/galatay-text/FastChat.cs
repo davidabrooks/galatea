@@ -616,8 +616,12 @@ public static partial class Program
     // chat (unclaimed: a voice line has no msg id). Sent -> no webhook POST. Action (David) -> ack sent, then `post` runs
     // with the ack so the routine does the action. Anything else (visitor action, empty, error, timeout) -> `post(null)`.
     // History: the voice scope only (transcript lines passed in + my earlier voice replies), never nearby chat or IMs.
+    // Voice wake selftest must not hit the live FastChat / xAI path (it swallows or delays the webhook POSTs the test counts).
+    static bool FastSkipVoiceForSelfTest;
+
     static bool TryFastVoice(UUID from, string name, string text, IReadOnlyList<(string speaker, string text)> transcript, Action<string> post)
     {
+        if (FastSkipVoiceForSelfTest) return false;
         try
         {
             var cfg = LoadFastCfg();

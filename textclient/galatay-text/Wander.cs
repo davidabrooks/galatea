@@ -297,6 +297,7 @@ public static partial class Program
     // ---- start / stop --------------------------------------------------------------------------------
     static string StartWander(string why)
     {
+        StopRoamIfOn("wander start");
         lock (wLock)
         {
             if (WanderOn) return "wander already running (" + WanderStatus() + ")";
@@ -346,6 +347,7 @@ public static partial class Program
     // without a stop request, e.g. a reboot) keeps it unmarked -> resumes even when stale.
     static void WanderOnShutdown(bool deliberate = false)
     {
+        StopRoamIfOn(deliberate ? "deliberate stop" : "logout/shutdown");
         if (WanderOn) { StopWander(deliberate ? "deliberate stop (flag kept; resumes only on a start within 15 min)" : "logout/shutdown (flag kept; resumes after the restart)", clearFlag: false, stopKind: deliberate ? "deliberate" : null); return; }
         if (!deliberate) return;
         var (en, _, _, reason) = LoadWanderFlag(); // e.g. paused for a region restart: still mark the stop as deliberate
@@ -391,12 +393,13 @@ public static partial class Program
         {
             if (id == UUID.Zero || id == client.Self.AgentID) return;
             NoteGreeted(id); // by UUID: a chat/IM partner is never a stranger-greet candidate (even while wander is off / on hold)
-            if (!WanderOn) return;
             var me = client.Self.SimPosition;
             var av = client.Network.CurrentSim?.ObjectsAvatars.Values.FirstOrDefault(x => x != null && x.ID == id);
             var sim = client.Network.CurrentSim;
             if (av != null && sim != null && (av.ParentID == 0 || sim.ObjectsPrimitives.ContainsKey(av.ParentID))) pos = PositionHelper.GetAvatarPosition(sim, av);
             float dist = pos == Vector3.Zero ? -1 : Vector3.Distance(pos, me);
+            RoamNoteChat(im, dist, name);
+            if (!WanderOn) return;
             // Come-here approach is not gated by the 5 m wander pause. David is handled in the hook (any distance / sim).
             // Other speakers keep the pre-457 nearby cap (20 m local / 40 m IM).
             if (id != DavidId && IsComeRequest(text))

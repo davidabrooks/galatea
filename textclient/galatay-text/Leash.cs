@@ -127,6 +127,7 @@ public static partial class Program
 
     static void LeashStart(string mode, UUID holder, string name, bool anchor, string how)
     {
+        StopRoamIfOn("leashed");
         var cur = leash;
         if (cur != null && cur.mode == mode && cur.holder == holder) return;
         // David 11:31: a leash attach/detach by itself never ends an idle kneel/sit (IdlePose.cs)

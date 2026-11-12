@@ -142,7 +142,10 @@ public static partial class Program
     {
         var sim = client.Network.CurrentSim;
         if (sim == null) return "";
-        var streamed = ViewSims().SelectMany(v => v.sim.ObjectsAvatars.Values).Where(a => a != null).Select(a => a.ID).ToHashSet();
+        var streamed = TrackedAvatars().Select(x => x.id).ToHashSet();
+        foreach (var (ns, _) in ViewSims())
+            foreach (var a in ns.ObjectsAvatars.Values)
+                if (a != null) streamed.Add(a.ID);
         var sb = new StringBuilder();
         // neighbor regions' maps (Neighbors.cs): avatars across a border not streamed to her, in this region's frame
         var nbCoarse = new Dictionary<UUID, Vector3>(); var nbRegion = new Dictionary<UUID, string>();
@@ -198,9 +201,11 @@ public static partial class Program
         float r = 40; if (a.Length > 0 && !F(a[0], out r)) return "usage: crowd [radius]";
         var sim = Sim; var me = client.Self.SimPosition;
         var roots = AttachRootsByAvatar(sim);
-        var near = Avatars().Where(t => t.dist >= 0 && t.dist <= r).ToList();
+        var tracked = TrackedAvatars(r).Where(t => t.av != null).ToList();
+        var near = tracked.Where(t => t.sim == sim).ToList();
+        var nb = tracked.Where(t => t.sim != sim).ToList();
         var sb = new StringBuilder(); var counts = new Dictionary<string, int>();
-        foreach (var (av, pos, d) in near)
+        foreach (var (id, av, nsim, pos, d) in near)
         {
             int exp = ExpectedOf(av);
             int have = roots.GetValueOrDefault(av.LocalID);
@@ -209,8 +214,8 @@ public static partial class Program
             sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1,-28} attachments {2,3}/{3,-3} {4}{5}", d, av.Name, have, exp, st, raw != have ? $" (raw updates seen: {raw})" : ""));
         }
         // neighbor regions (Neighbors.cs): avatars across the border, attachment roots counted in their own region
-        var nb = NeighborAvatars(r); var nbRoots = new Dictionary<Simulator, Dictionary<uint, int>>();
-        foreach (var (av, nsim, pos, d) in nb)
+        var nbRoots = new Dictionary<Simulator, Dictionary<uint, int>>();
+        foreach (var (id, av, nsim, pos, d) in nb)
         {
             if (!nbRoots.TryGetValue(nsim, out var rr)) nbRoots[nsim] = rr = AttachRootsByAvatar(nsim);
             int exp = ExpectedOf(av), have = rr.GetValueOrDefault(av.LocalID);

@@ -167,7 +167,12 @@ public static partial class Program
                 return (true, StopWander("David asked in chat (instant reply)"));
             case "follow":
             {
-                // 2026-11-11 David: "come here" / follow works at any distance or sim (NoteDavidComeHere).
+                // 2026-11-11 David: "follow me" starts the real follow (same as the follow tool). Come-here first only if he is not in view.
+                NoteDavidFollow("instant reply");
+                return (true, followId == DavidId ? "following David" : "coming to David, then following");
+            }
+            case "come":
+            {
                 NoteDavidComeHere("instant reply");
                 return (true, "coming to David");
             }

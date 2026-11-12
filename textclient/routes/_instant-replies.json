@@ -100,18 +100,30 @@
       "action": "follow",
       "phrases": [
         "follow me",
+        "follow",
+        "come with me",
+        "walk with me",
+        "come along"
+      ],
+      "replies": [
+        "Right behind you!",
+        "On my way, I'll follow you.",
+        "Following you, babe!",
+        "I'm with you."
+      ]
+    },
+    {
+      "action": "come",
+      "phrases": [
         "come here",
         "come over here",
         "come to me",
-        "come with me",
-        "come along",
         "come over",
         "come here to me"
       ],
       "replies": [
         "Coming, babe!",
         "On my way!",
-        "Right behind you!",
         "Coming!",
         "Be right there, babe."
       ]

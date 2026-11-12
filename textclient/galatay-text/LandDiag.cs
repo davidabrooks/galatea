@@ -57,8 +57,92 @@ public static partial class Program
         return sb.ToString();
     }
 
+    // 2026-11-11 David: parcel_info — name, owner, area, and ParcelProperties flags (scripts, build, fly, push, damage, voice, access/ban, music/media).
+    internal sealed record ParcelFlagInfo(
+        string Scripts, bool Build, bool Fly, bool PushRestrict, bool Damage, bool Voice,
+        bool AccessGroup, bool AccessList, bool BanList, bool MusicUrl, bool MediaUrl)
+    {
+        public bool AccessRestricted => AccessGroup || AccessList;
+        public string Summary =>
+            $"scripts={Scripts} build={(Build ? "yes" : "no")} fly={(Fly ? "yes" : "no")} push={(PushRestrict ? "restricted" : "ok")} " +
+            $"damage={(Damage ? "yes" : "no")} voice={(Voice ? "yes" : "no")} " +
+            $"access={(AccessRestricted ? (AccessGroup && AccessList ? "group+list" : AccessGroup ? "group" : "list") : "open")}" +
+            $"{(BanList ? " ban-list" : "")} music={(MusicUrl ? "yes" : "no")} media={(MediaUrl ? "yes" : "no")}";
+    }
+
+    internal static ParcelFlagInfo DecodeParcelFlags(ParcelFlags flags, string musicUrl = null, string mediaUrl = null)
+    {
+        bool other = flags.HasFlag(ParcelFlags.AllowOtherScripts);
+        bool group = flags.HasFlag(ParcelFlags.AllowGroupScripts);
+        string scripts = !other && !group ? "no-scripts" : other && group ? "other+group" : other ? "other" : "group";
+        return new(
+            scripts,
+            flags.HasFlag(ParcelFlags.CreateObjects),
+            flags.HasFlag(ParcelFlags.AllowFly),
+            flags.HasFlag(ParcelFlags.RestrictPushObject),
+            flags.HasFlag(ParcelFlags.AllowDamage),
+            flags.HasFlag(ParcelFlags.AllowVoiceChat),
+            flags.HasFlag(ParcelFlags.UseAccessGroup),
+            flags.HasFlag(ParcelFlags.UseAccessList),
+            flags.HasFlag(ParcelFlags.UseBanList),
+            !string.IsNullOrWhiteSpace(musicUrl),
+            !string.IsNullOrWhiteSpace(mediaUrl));
+    }
+
+    internal static string ParcelInfoLine(string name, string owner, int area, int localId, ParcelFlagInfo f) =>
+        $"parcel '{name}' owner {owner} area {area} m² local {localId}: {f.Summary}";
+
+    public static async Task<object> ParcelInfoObj(float? x = null, float? y = null)
+    {
+        if (!LoggedIn) return new { ok = false, result = "not logged in" };
+        var sim = client.Network.CurrentSim;
+        if (sim == null) return new { ok = false, result = "not in a region" };
+        var at = client.Self.SimPosition;
+        if (x is float px && y is float py) at = new Vector3(px, py, 0);
+        var p = await ParcelAt(sim, at.X, at.Y);
+        if (p == null) return new { ok = false, result = "no ParcelProperties reply within 10 s" };
+        var f = DecodeParcelFlags(p.Flags, p.MusicURL, p.Media.MediaURL);
+        return new
+        {
+            ok = true,
+            name = p.Name,
+            owner = p.OwnerID.ToString(),
+            group_owned = p.IsGroupOwned,
+            group = p.GroupID.ToString(),
+            area = p.Area,
+            local_id = p.LocalID,
+            region = sim.Name,
+            scripts = f.Scripts,
+            build = f.Build,
+            fly = f.Fly,
+            push_restrict = f.PushRestrict,
+            damage = f.Damage,
+            voice = f.Voice,
+            access_group = f.AccessGroup,
+            access_list = f.AccessList,
+            ban_list = f.BanList,
+            access_restricted = f.AccessRestricted,
+            music_url = f.MusicUrl,
+            media_url = f.MediaUrl,
+            summary = ParcelInfoLine(p.Name, p.OwnerID.ToString(), p.Area, p.LocalID, f)
+        };
+    }
+
+    static async Task<string> ParcelInfoCmd(string[] a)
+    {
+        float? x = null, y = null;
+        if (a.Length >= 2 && F(a[0], out var px) && F(a[1], out var py)) { x = px; y = py; }
+        var o = await ParcelInfoObj(x, y);
+        var t = o.GetType();
+        object v(string n) => t.GetProperty(n)?.GetValue(o);
+        if (v("ok") is false) return v("result")?.ToString() ?? "failed";
+        return v("summary")?.ToString() ?? "ok";
+    }
+
     static async Task<string> ParcelCmd(string[] a)
     {
+        if (a.Length > 0 && a[0].Equals("info", StringComparison.OrdinalIgnoreCase))
+            return await ParcelInfoCmd(a.Skip(1).ToArray());
         var sim = client.Network.CurrentSim;
         if (sim == null) return "not in a region";
         var at = client.Self.SimPosition;

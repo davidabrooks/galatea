@@ -1,5 +1,6 @@
 using LibreMetaverse;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -48,9 +49,22 @@ public static partial class Program
         }
         catch (Exception ex) { var m = "join David prep: " + ex.GetBaseException().Message; Log("outfit", m); return m; }
     }
-    static readonly System.Text.RegularExpressions.Regex ComeRx = new(@"(?<![a-z])(come\s+(here|over|down|up|back|to\s+me|join|sit|see|with\s+me|outside|inside|to\s+the\s+\w+)|get\s+over\s+here|join\s+me|over\s+here\s+(babe|baby|honey|love|please)?|come\s*!|come$|follow\s+me|walk\s+with\s+me)(?![a-z])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-    // pure: an explicit request to come to the speaker (a "can you hear me?" check is not)
+    // "come here" and similar stay come-here. "follow me" / "come with me" / "walk with me" / bare "follow" are the real follow (not "following").
+    static readonly System.Text.RegularExpressions.Regex ComeRx = new(@"(?<![a-z])(come\s+(here|over|down|up|back|to\s+me|join|sit|see|outside|inside|to\s+the\s+\w+)|get\s+over\s+here|join\s+me|over\s+here\s+(babe|baby|honey|love|please)?|come\s*!|come$)(?![a-z])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static readonly System.Text.RegularExpressions.Regex FollowRx = new(@"(?<![a-z])(follow(\s+me)?|come\s+with\s+me|walk\s+with\s+me)(?![a-z])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    // pure: an explicit request to come to the speaker (a "can you hear me?" check is not). "follow me" is not come-here.
     internal static bool IsComeRequest(string text) => !string.IsNullOrWhiteSpace(text) && ComeRx.IsMatch(text.Trim());
+    internal static bool IsFollowRequest(string text) => !string.IsNullOrWhiteSpace(text) && FollowRx.IsMatch(text.Trim());
+
+    // 2026-11-11: same-region come-here (not home) walks when he is within this range and the path is walkable.
+    internal const float ComeWalkMaxM = 64f;
+    // After a same-region teleport, a landing-point / telehub miss farther than this is not success: walk the rest.
+    internal const float TeleportLandSlackM = 5f;
+
+    internal static bool ComeHerePreferWalk(bool inHome, float horizDist, bool pathOk) =>
+        !inHome && horizDist <= ComeWalkMaxM && pathOk;
+
+    internal static bool TeleportMissedSpot(float horizDist, float slackM = TeleportLandSlackM) => horizDist > slackM;
 
     // 2026-11-11 David: come-here from him at any distance or sim. Never a lure request.
     internal const float OtherComeLocalMaxM = 20f;   // pre-457 local-chat cap for everyone else
@@ -122,10 +136,12 @@ public static partial class Program
             }
 
             if (WanderOn) StopWander("David asked me to come");
+            StopRoamIfOn("David asked me to come");
 
             if (plan.action == ComeHereAction.Approach)
             {
                 await GoToDavidSameRegion(pos, source);
+                MaybeStartFollowAfterCome(source);
                 return;
             }
 
@@ -142,9 +158,11 @@ public static partial class Program
                 if (handle == (client.Network.CurrentSim?.Handle ?? 0))
                 {
                     await GoToDavidSameRegion(loc, source + ", mapped in this region");
+                    MaybeStartFollowAfterCome(source);
                     return;
                 }
                 await TeleportToDavid(handle, loc, source);
+                MaybeStartFollowAfterCome(source);
             }
         }
         catch (Exception ex) { Log("come", "come-here error: " + ex.GetBaseException().Message); }
@@ -213,15 +231,147 @@ public static partial class Program
             }
             else Log("come", $"come-here ({source}): no home path ({err ?? "none"}); teleporting in-region");
         }
+        else
+        {
+            me = client.Self.SimPosition;
+            float hd = HDist(me, pos.Value);
+            bool pathOk = ComePathWalkable(me, pos.Value);
+            if (ComeHerePreferWalk(false, hd, pathOk))
+            {
+                var dest = new Vector3(pos.Value.X, pos.Value.Y, ComeSupportZ(pos.Value, me.Z));
+                Log("come", $"come-here ({source}): walking {hd:F0} m to David at {pos.Value.X:F0},{pos.Value.Y:F0},{dest.Z:F0} (same region, within {ComeWalkMaxM:F0} m)");
+                using var wcts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+                bool walked = await WalkPath(new System.Collections.Generic.List<Vector3> { dest }, wcts.Token, 1.5f);
+                Log("come", walked
+                    ? $"come-here walk done at {V(client.Self.SimPosition)}"
+                    : $"come-here walk did not arrive (at {V(client.Self.SimPosition)}); teleporting");
+                if (walked) return;
+            }
+            else Log("come", $"come-here ({source}): not walking ({hd:F0} m, path {(pathOk ? "ok" : "blocked")}); teleporting in-region");
+        }
         var sim = client.Network.CurrentSim?.Name;
         if (string.IsNullOrEmpty(sim)) { Log("come", "come-here: no current region; cannot teleport"); return; }
         var block = RobeTpBlock(sim, RobeMaybeWorn(out _), false);
         if (block != null) { Log("come", "come-here same-region teleport " + block); return; }
         Log("come", $"come-here ({source}): same-region teleport to David at {sim} {pos.Value.X:F0},{pos.Value.Y:F0},{pos.Value.Z:F0}");
-        var okTp = await client.Self.TeleportAsync(sim, pos.Value);
+        var requested = pos.Value;
+        var okTp = await client.Self.TeleportAsync(sim, requested);
         Log("come", okTp
             ? $"come-here: teleported to {client.Network.CurrentSim?.Name} {client.Self.SimPosition}"
             : "come-here: same-region teleport failed: " + client.Self.TeleportMessage);
+        if (okTp) await WalkRemainderIfLandingMissed(requested, "come-here");
+    }
+
+    static float ComeSupportZ(Vector3 at, float avatarZ)
+    {
+        try
+        {
+            var sim = client.Network.CurrentSim;
+            IEnumerable<RoamPrim> prims = sim != null ? RoamPrimsFromSim(sim, avatarZ) : System.Array.Empty<RoamPrim>();
+            return RoamSupportZ(at.X, at.Y, GroundAny(at.X, at.Y), avatarZ, prims);
+        }
+        catch { return at.Z; }
+    }
+
+    static bool ComePathWalkable(Vector3 from, Vector3 to)
+    {
+        try
+        {
+            var sim = client.Network.CurrentSim; if (sim == null) return false;
+            float len = HDist(from, to); if (len < 0.5f) return true;
+            var prims = RoamPrimsFromSim(sim, from.Z);
+            float water = sim.WaterHeight;
+            uint sx = sim.SizeX == 0 ? 256u : (uint)sim.SizeX;
+            uint sy = sim.SizeY == 0 ? 256u : (uint)sim.SizeY;
+            bool hasW = false, hasE = false, hasS = false, hasN = false;
+            foreach (var (nsim, _) in ViewSims())
+            {
+                if (nsim == null || nsim == sim || !nsim.Connected) continue;
+                if (!RoamNeighborAllowed(sim.SimOwner, nsim.SimOwner, true, SimGeo.Adjacent(sim.Handle, nsim.Handle))) continue;
+                var dir = SimGeo.Dir(sim.Handle, nsim.Handle);
+                if (dir.Contains('W')) hasW = true;
+                if (dir.Contains('E')) hasE = true;
+                if (dir.Contains('S')) hasS = true;
+                if (dir.Contains('N')) hasN = true;
+            }
+            float dx = to.X - from.X, dy = to.Y - from.Y;
+            float zAt(float d)
+            {
+                float t = d / len;
+                return RoamSupportZ(from.X + dx * t, from.Y + dy * t, GroundAny(from.X + dx * t, from.Y + dy * t), from.Z, prims);
+            }
+            bool waterAt(float d) => zAt(d) < water;
+            bool edgeAt(float d)
+            {
+                float t = d / len;
+                return RoamTooCloseToVoidEdge(from.X + dx * t, from.Y + dy * t, sx, sy, 8f, hasW, hasE, hasS, hasN);
+            }
+            return RoamPathCheckAlong(len, zAt, waterAt, edgeAt) == RoamPathReject.Ok;
+        }
+        catch { return false; }
+    }
+
+    // After any same-region teleport: if the parcel landing point / telehub dropped her more than TeleportLandSlackM
+    // from the requested spot, walk the rest of the way. Shared by come-here and the teleport command.
+    static async Task WalkRemainderIfLandingMissed(Vector3 requested, string why)
+    {
+        try
+        {
+            var me = client.Self.SimPosition;
+            float hd = HDist(me, requested);
+            if (!TeleportMissedSpot(hd)) return;
+            var dest = new Vector3(requested.X, requested.Y, ComeSupportZ(requested, me.Z));
+            Log("come", $"{why}: landing point left me {hd:F1} m from the requested spot {V(requested)} (at {V(me)}); walking the rest");
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            bool ok = await WalkPath(new System.Collections.Generic.List<Vector3> { dest }, cts.Token, 1.5f);
+            Log("come", ok
+                ? $"{why}: walked the rest, now at {V(client.Self.SimPosition)}"
+                : $"{why}: walk after landing miss stopped at {V(client.Self.SimPosition)}");
+        }
+        catch (Exception ex) { Log("come", why + " landing-miss walk error: " + ex.GetBaseException().Message); }
+    }
+
+    static volatile bool followDavidAfterCome;
+
+    static void MaybeStartFollowAfterCome(string source)
+    {
+        if (!followDavidAfterCome) return;
+        FollowDavid(source + ", after come-here");
+    }
+
+    // Same as the `follow` tool, targeting David at the default standoff. Works by UUID so he does not have to resolve by name.
+    static void FollowDavid(string source)
+    {
+        followDavidAfterCome = false;
+        try
+        {
+            if (WanderOn) StopWander("follow David");
+            StopRoamIfOn("follow David");
+            if (client.Self.SittingOn != 0) StandFaceFirst();
+            // Keep a per-call session standoff if one is already set; otherwise the default (1.5 m) applies.
+            followId = DavidId;
+            followName = DavidName;
+            Log("follow", $"following David ({source}) at {FollowDist:F1} m standoff");
+        }
+        catch (Exception ex) { Log("follow", "follow David error: " + ex.Message); }
+    }
+
+    // Hook / instant-reply entry: "follow me" and variants. If he is in view, start follow now; otherwise come-here first, then follow.
+    static void NoteDavidFollow(string source)
+    {
+        try
+        {
+            if (!LoggedIn) return;
+            if (FindAvatarAnySim(DavidId) != null)
+            {
+                FollowDavid(source);
+                return;
+            }
+            followDavidAfterCome = true;
+            Log("follow", $"David is not in view ({source}); coming to him first, then following");
+            NoteDavidComeHere(source + ", then follow");
+        }
+        catch (Exception ex) { Log("follow", "follow-David note error: " + ex.Message); }
     }
 
     static async Task TeleportToDavid(ulong handle, Vector3 loc, string source)

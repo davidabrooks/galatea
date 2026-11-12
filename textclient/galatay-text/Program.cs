@@ -529,7 +529,8 @@ public static partial class Program
                 long chatId = NoteChatInbound(e.SourceID.ToString(), e.Message); // chat guard + msg_id (ChatGuard.cs)
                 bool lapReq = LapRequestIn(e.SourceID, e.Message, chatId, false);   // LapAuto.cs: before the webhook sees the line
                 Notify("local_chat", e.FromName, e.SourceID, e.Message, dist, chatId); // webhook: always, including far/unknown speakers
-                if (e.SourceID == DavidId && IsComeRequest(e.Message)) NoteDavidComeHere("nearby chat");
+                if (e.SourceID == DavidId && IsFollowRequest(e.Message)) NoteDavidFollow("nearby chat");
+                else if (e.SourceID == DavidId && IsComeRequest(e.Message)) NoteDavidComeHere("nearby chat");
                 if (!lapReq) WanderChatIn(e.SourceID, e.FromName, chatPos, false, e.Message); // pause only if PlanChatInbound says so (5 m / IM)
                 if (e.SourceID != DavidId || !TryInstantReply(e.SourceID, e.FromName, e.Message, chatId, false)) // InstantReplies.cs; reply path is not gated by wander range
                 {
@@ -578,7 +579,8 @@ public static partial class Program
                         catch { }
                         bool lapReq = !offline && ImAutoReact(im) && LapRequestIn(im.FromAgentID, im.Message, msgId, true);   // LapAuto.cs
                         Notify("im", im.FromAgentName, im.FromAgentID, offline ? $"[offline IM, {OfflineSentText(im)}] {im.Message}" : im.Message, offline ? null : dist, msgId);
-                        if (!offline && im.FromAgentID == DavidId && IsComeRequest(im.Message)) NoteDavidComeHere("IM");
+                        if (!offline && im.FromAgentID == DavidId && IsFollowRequest(im.Message)) NoteDavidFollow("IM");
+                        else if (!offline && im.FromAgentID == DavidId && IsComeRequest(im.Message)) NoteDavidComeHere("IM");
                         if (!lapReq && ImAutoReact(im)) WanderChatIn(im.FromAgentID, im.FromAgentName, Vector3.Zero, true, im.Message); // old messages: no wander pause/approach/reply
                         if (!offline && (im.FromAgentID != DavidId || !TryInstantReply(im.FromAgentID, im.FromAgentName, im.Message, msgId ?? 0, true))) // InstantReplies.cs (after the wander chat pause)
                         {
@@ -605,7 +607,7 @@ public static partial class Program
                         else if (autoLure)
                         {
                             Log("lure", $"teleport offer from {im.FromAgentName} ('{im.Message}'): ACCEPTING (allow-listed)");
-                            var lf = im.FromAgentID; var ls = im.IMSessionID; pendingLure = null;
+                            var lf = im.FromAgentID; var ls = im.IMSessionID; pendingLure = null; NoteLureAccepted(lf);
                             if (lf == DavidId) _ = Task.Run(async () => { var pr = await JoinDavidBeachPrep("lure"); if (pr != null) Log("lure", pr); client.Self.TeleportLureRespond(lf, ls, true); });
                             else client.Self.TeleportLureRespond(lf, ls, true);
                         }
@@ -771,20 +773,21 @@ public static partial class Program
     public static async Task<object> NearbyObj(float radius, string filter, int max)
     {
         var sim = Sim; var me = client.Self.SimPosition;
-        var avs = Avatars().Select(t => new
+        // one entry per avatar: freshest stamped sighting (drops stale other-sim duplicates)
+        var avs = new List<object>();
+        var seenAv = new HashSet<UUID>();
+        foreach (var (id, a, nsim, p, d) in TrackedAvatars(Math.Max(radius, 64f)))
         {
-            name = t.av.Name, uuid = t.av.ID.ToString(), distance = t.dist < 0 ? (float?)null : MathF.Round(t.dist, 1),
-            pos = t.dist < 0 ? null : new[] { MathF.Round(t.pos.X, 1), MathF.Round(t.pos.Y, 1), MathF.Round(t.pos.Z, 1) },
-            seated_on = t.av.ParentID != 0 ? SeatName(t.av.ParentID) : null,
-            on_our_parcel = AvatarOnOurParcel(t.av.ID)
-        }).ToList();
-        foreach (var t in Avatars()) Remember(t.av.Name, t.av.ID);
-        // neighbor regions (Neighbors.cs): avatars and objects across the border, pos in this region's frame + their region
-        foreach (var (a, nsim, p, d) in NeighborAvatars(Math.Max(radius, 64f)))
-        {
-            Remember(a.Name, a.ID);
-            avs.Add(new { name = a.Name, uuid = a.ID.ToString(), distance = (float?)MathF.Round(d, 1), pos = new[] { MathF.Round(p.X, 1), MathF.Round(p.Y, 1), MathF.Round(p.Z, 1) },
-                          seated_on = a.ParentID != 0 ? "(object in " + nsim.Name + ")" : null, on_our_parcel = (bool?)false });
+            if (!seenAv.Add(id)) continue;
+            var name = a?.Name ?? NameOf(id);
+            if (!string.IsNullOrEmpty(name) && name != id.ToString()) Remember(name, id);
+            avs.Add(new
+            {
+                name, uuid = id.ToString(), distance = (float?)MathF.Round(d, 1),
+                pos = new[] { MathF.Round(p.X, 1), MathF.Round(p.Y, 1), MathF.Round(p.Z, 1) },
+                seated_on = a != null && a.ParentID != 0 ? (nsim == sim ? SeatName(a.ParentID) : "(object in " + nsim.Name + ")") : null,
+                on_our_parcel = nsim == sim ? AvatarOnOurParcel(id) : false
+            });
         }
         var roots = ViewSims().SelectMany(v => v.sim.ObjectsPrimitives.Values
             .Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim)
@@ -1604,23 +1607,22 @@ public static partial class Program
     static string AvatarList()
     {
         var sb = new StringBuilder();
-        var list = Avatars();
-        foreach (var (a, p, d) in list)
+        var cur = client?.Network?.CurrentSim;
+        var list = TrackedAvatars();
+        var seen = new HashSet<UUID>();
+        foreach (var (id, a, sim, p, d) in list)
         {
-            Remember(a.Name, a.ID);
-            var seat = a.ParentID != 0 ? $"  seated on {SeatName(a.ParentID)}" : "";
-            var head = "  " + FmtAvatarHeading(a.Rotation);
-            sb.AppendLine(d < 0 ? $"     ?m  {a.ID}  {a.Name}  (seated on an object not loaded yet){seat}{head}"
-                              : string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}{5}", d, a.ID, a.Name, Fmt(p), seat, head));
-        }
-        var nb = NeighborAvatars();
-        foreach (var (a, sim, p, d) in nb)
-        {
-            Remember(a.Name, a.ID);
-            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}  {5}{6}", d, a.ID, a.Name, Fmt(p), RegionTag(sim), FmtAvatarHeading(a.Rotation), a.ParentID != 0 ? "  (seated)" : ""));
+            if (!seen.Add(id)) continue;
+            var name = a?.Name ?? NameOf(id);
+            if (a != null && !string.IsNullOrEmpty(a.Name)) Remember(a.Name, id);
+            var seat = a != null && a.ParentID != 0 ? (sim == cur ? $"  seated on {SeatName(a.ParentID)}" : "  (seated)") : "";
+            var head = a != null ? "  " + FmtAvatarHeading(a.Rotation) : "";
+            var tag = sim != cur ? RegionTag(sim) : "";
+            var coarseMark = a == null ? "  (coarse)" : "";
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "{0,6:F1}m  {1}  {2}  at {3}{4}{5}{6}{7}", d, id, name, Fmt(p), tag, seat, head, coarseMark));
         }
         var coarse = CoarseOnlyLines();
-        if (list.Count == 0 && nb.Count == 0) sb.AppendLine(NoAvatarsLine(CoarseReceived, coarse.Length > 0));
+        if (list.Count == 0) sb.AppendLine(NoAvatarsLine(CoarseReceived, coarse.Length > 0));
         return sb.ToString() + coarse;
     }
 
@@ -1718,6 +1720,7 @@ public static partial class Program
   route list | route show <name> | route status | route steer [smooth|legacy]   named routes (textclient/routes/*.json) + places of this region's path graph
   route walk <name> [reverse] [allow_zendo] [allow_outside]   follow a route (joins at the nearest point; carrot steering 2.5 m ahead)
   wander start|stop|pause|hold|resume|status|seats|selftest|resumetest   Naberrie: deerpark<->landing; Peronaut home: front/patio/living loop + upper seats (Wander.cs); resumes after restart/reboot unless stale after a deliberate stop
+  roam on|off|status [radius_m]  non-home roaming: walkable spots within radius_m (default 40) of the start, including adjacent connected same-estate or Linden regions; pauses for nearby chat (never IMs); stops on teleport, sit, leash/follow, come here, or logout
   quiet status | quiet selftest | quiet override <min 1-30>|off   session detector (>= 3 seated in zendo / Deer Park -> quiet: no greetings, keep 15 m away, nearby say refused) (Quiet.cs)
   goto_place <place> [nosit] [allow_zendo] [allow_outside]    shortest way over the path graph (Naberrie places, or Peronaut home: home/living/front/chairs/patio-*/desk/bed/...); poolrock ends with sit_home
   route record <avatar> <name> | route record stop | route stop   record an avatar's walk as a route / stop walking+recording
@@ -1727,11 +1730,12 @@ public static partial class Program
   animwatch on|off|<minutes> | posekeeper on|off   log own animation start/stop with source; re-assert seat pose
   moveto <x> <y> <z>  (goto is an alias)  | walk <meters> | turn <degrees> | face <x y z | avatar name> | stop
   teleport [force] <region name> <x> <y> <z> | home [force]  (refused outside Naberrie while the robe is worn)
-  follow <First Last> [m] | follow off | follow dist [m] | follow status|selftest   keep ~2.5 m behind (default, 'follow dist' persists; [m] = this follow only); stops at 2-3 m, resumes > 3.5 m, backs off if he stands still and she is < 2 m; routes around furniture on a nav grid; stalled at a door -> door sequence
+  follow <First Last> [m] | follow off | follow dist [m] | follow status|selftest   keep ~1.5 m behind (default, 'follow dist' persists; [m] = this follow only); stops at ~1.9 m, resumes > 2.5 m, backs off if he stands still and she is < 1 m; routes around furniture on a nav grid; stalled at a door -> door sequence
   autofollow on|off|status|selftest   follow David automatically when he is within 20 m in the same region (default on, persisted); 'follow off' snoozes it 10 min
   door [name filter|uuid]     touch the nearest door/gate/entrance prim (incl. house links) within 10 m; reports what moved
   door try [filter|uuid]      full door sequence: touch, walk into, dialog Open / locked check, back up 1.5 m + re-approach +-0.5 m; every attempt logged [door] | door selftest
   accept | decline            pending teleport offer (allow-list only)
+  tp_offer [--confirm] <name|username|uuid|""First Last""> [message]   (alias: offer_teleport) send a teleport offer so they can come to me; default allow-list is David Nightingale only, anyone else needs --confirm; default message 'Join me here!'; skipped if the same person was offered in the last 10 s; never a teleport request
   dialog <button label>       answer the last script dialog (e.g. AVsitter pose menu)
   kiss [name] [lips|cheek]    kiss David (default) via his worn Real Kisser: face + touch its lips prim, ~instant | kiss status
   touch <object uuid>         touch an object (seat/HUD) so it opens its own menu (NOT the AO HUD: a touch toggles it off)
@@ -1776,6 +1780,7 @@ public static partial class Program
   landmark create <name> | landmark list | landmark raw <name> | landmark tp <name|item uuid> [pos] [force]   landmarks (pos = teleport to the exact stored position instead of the landmark request; raw = stored asset text)
   sethome                     set home to the current spot; prints the server's reply (e.g. refused off your own/group land)
   parcel [x y]                teleport routing, landing point, owner/group and whether Galatay may ignore the landing point
+  parcel_info [x y]            current parcel (or at x,y): name, owner, area, scripts/build/fly/push/damage/voice/access, music/media URL presence
   worn links <attachment|ao>  every prim of a worn attachment/HUD: link no., local id, name, description, faces, touch flag
   material set <prim local id> <faces 0,2|all> <pbr material uuid|none> | material get <local id>   PBR material on faces of one prim of her own worn attachment (ModifyMaterialParams; logs undo)
   glow set <prim local id> <faces 0,2|all> <0..1> | glow get <local id>   legacy glow on faces of one prim of her own worn attachment (TextureEntry update; logs before)
@@ -2035,6 +2040,7 @@ public static partial class Program
                   var nr = await NavCmds(cmd, rest, a); return prep == null ? nr : prep + "\n" + nr; }
             case "sit_lap": return await SitLapCmd(rest);   // SitFixes.cs: sit on the avatar's seat + lap pose
             case "wander": return await WanderCmds(a);
+            case "roam": return await RoamCmd(a);
             case "instant": return InstantCmdText(a);   // InstantReplies.cs
             case "fastchat": return await FastChatCmd(a);   // FastChat.cs
             case "quiet": return QuietCmds(a);
@@ -2074,6 +2080,7 @@ public static partial class Program
             case "nav": return await NavCmd(a, rest);       // NavPlan.cs
             case "nofly": return NoFlyCmd(a);
             case "parcel": return await ParcelCmd(a);
+            case "parcel_info": return await ParcelInfoCmd(a);
             case "scene" when a.Length > 0 && a[0] == "export": return await SceneExport(a);
             case "look": return await LookCmd(a);
             case "photo": return await PhotoCmd(a);
@@ -2163,9 +2170,10 @@ public static partial class Program
                     if (ng != null && client.Self.SittingOn == 0 && !NavStraightClear(ng, me0, new Vector3(x, y, z)) && !WanderBlocksManualWalk)
                         return StartWalk($"moveto {x:F1},{y:F1} via nav grid '{ng.Name}'", async ct => await NavWalkTo(ng, new Vector2(x, y), 0.8f, ct) ? $"arrived at {V(client.Self.SimPosition)}" : $"stopped at {V(client.Self.SimPosition)}");
                 }
-                Utils.LongToUInts(Sim.Handle, out var rx, out var ry);
-                client.Self.AutoPilot(x + (double)rx, y + (double)ry, z);
-                return $"autopilot to {Fmt(new Vector3(x, y, z))} (from {Fmt(client.Self.SimPosition)})";
+                // not on a nav grid: do not fire-and-forget AutoPilot (a z mismatch used to leave her walking in place ~1 m short).
+                // WalkPath uses horizontal arrival (~1.5 m / still 2 s) and cancels autopilot; z is not required to match.
+                var dest = new Vector3(x, y, z);
+                return StartWalk($"moveto {x:F1},{y:F1},{z:F1}", async ct => await WalkPath(new() { dest }, ct) ? $"arrived at {V(client.Self.SimPosition)}" : $"stopped at {V(client.Self.SimPosition)}");
             }
             case "walk":
             {
@@ -2203,6 +2211,7 @@ public static partial class Program
             }
             case "stop":
                 if (WanderOn) StopWander("stop command");
+                StopRoamIfOn("stop command");
                 followId = UUID.Zero; client.Self.AutoPilotCancel();
                 return "stopped";
             case "teleport": case "tp":
@@ -2217,7 +2226,11 @@ public static partial class Program
                     if (robeOn && tpForce && !region.Equals(HomeSeatRegion, StringComparison.OrdinalIgnoreCase)) Log("robe", $"WARNING forced teleport to {region} while the robe is worn ({robeHow})");
                 }
                 followId = UUID.Zero;
-                var ok = await client.Self.TeleportAsync(region, new Vector3(x, y, z));
+                StopRoamIfOn("teleport");
+                var dest = new Vector3(x, y, z);
+                bool sameRegion = region.Equals(client.Network.CurrentSim?.Name, StringComparison.OrdinalIgnoreCase);
+                var ok = await client.Self.TeleportAsync(region, dest);
+                if (ok && sameRegion) await WalkRemainderIfLandingMissed(dest, "teleport");
                 return ok ? $"teleported to {client.Network.CurrentSim?.Name} {Fmt(client.Self.SimPosition)}" : $"teleport failed: {client.Self.TeleportMessage}";
             }
             case "home":
@@ -2240,12 +2253,13 @@ public static partial class Program
             case "outfits" when a.Length >= 1 && a[0] == "collar": return await OutfitsCollarCmd(a.Length > 1 && a[1] == "check");   // OutfitCollarLinks.cs
             case "maitreya" when a.Length >= 2 && a[0] == "show" && a[1] == "all": return await MaitreyaShowAllCmd();   // MaitreyaShowAll.cs
             case "cof" when a.Length >= 1 && a[0] == "purge": return await CofPurgeCmd(string.Join(' ', a.Skip(1)));   // CofPurge.cs
+            case "tp_offer": case "offer_teleport": return await TpOfferCmd(rest);   // TpOffer.cs: outbound lure, David only unless confirm
             case "accept":
             {
                 if (pendingLure is not { } pl) return "no pending teleport offer";
                 bool robeAcc = RobeMaybeWorn(out var robeHowA);
                 if (robeAcc) Log("robe", $"WARNING accepting teleport from {pl.name} while the VIOLETTE robe is worn ({robeHowA}); the robe should stay at the Buddha Center");
-                client.Self.TeleportLureRespond(pl.from, pl.session, true); pendingLure = null;
+                NoteLureAccepted(pl.from); client.Self.TeleportLureRespond(pl.from, pl.session, true); pendingLure = null;
                 return $"accepted teleport from {pl.name}" + (robeAcc ? " (WARNING: the robe is worn; the robe stays at the Buddha Center - change to 'Original' if she leaves it)" : "");
             }
             case "decline":

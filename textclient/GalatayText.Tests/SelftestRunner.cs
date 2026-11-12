@@ -54,9 +54,16 @@ public static class SelftestRunner
             psi.FileName = exe;
             psi.ArgumentList.Add(flag);
         }
-        // No secrets: empty/placeholder env so Program does not look for box-secrets
+        // Hermetic: no live secrets, webhook URL, or xAI key (VoiceWakeFlush -> TryFastVoice would
+        // otherwise call the real API and swallow/delay the webhook POSTs the selftest counts).
         psi.Environment["GT_SOCK"] = Path.Combine(Path.GetTempPath(), "galatay-ci-test.sock");
         psi.Environment["GT_LOG"] = Path.Combine(Path.GetTempPath(), "galatay-ci-test.log");
+        var missing = Path.Combine(Path.GetTempPath(), "galatay-ci-missing-" + Guid.NewGuid().ToString("n"));
+        psi.Environment["GT_SECRETS"] = missing + "-secrets.json";
+        psi.Environment["GT_WEBHOOK_SECRETS"] = missing + "-webhook-secrets.json";
+        psi.Environment["GT_WEBHOOK_URL_FILE"] = missing + "-webhook-url.txt";
+        psi.Environment.Remove("XAI_API_KEY");
+        psi.Environment.Remove("GALATAY_WEBHOOK_KEY");
         using var p = Process.Start(psi)!;
         var sb = new StringBuilder();
         p.OutputDataReceived += (_, e) => { if (e.Data != null) sb.AppendLine(e.Data); };

@@ -68,9 +68,9 @@ public static partial class Program
         float dist = -1;
         if (av != null && (av.ParentID == 0 || sim.ObjectsPrimitives.ContainsKey(av.ParentID)))
             dist = Vector3.Distance(PositionHelper.GetAvatarPosition(sim, av), client.Self.SimPosition);
-        else if (FindAvatarAnySim(DavidId) is { } nb) { av = nb.av; dist = Vector3.Distance(nb.pos, client.Self.SimPosition); }   // across a border (Neighbors.cs)
+        else if (FindAvatarAnySim(DavidId) is { } nb) { av = nb.av; dist = Vector3.Distance(nb.pos, client.Self.SimPosition); }   // across a border / stamped coarse (Neighbors.cs)
         if (crossing.Grace && afEngaged) { afDavidLastSeen = DateTime.Now; return; }   // mid-crossing: keep following, decide after it settles
-        if (av != null) afDavidLastSeen = DateTime.Now;
+        if (av != null || dist >= 0) afDavidLastSeen = DateTime.Now;
         bool followingDavid = followId == DavidId;
         bool someoneElse = followId != UUID.Zero && !followingDavid;
         if (afEngaged && !followingDavid && followId == UUID.Zero) { afEngaged = false; AfLog("follow ended elsewhere (follow cleared)"); ResumeWanderAfterFollow(); return; }
@@ -84,7 +84,7 @@ public static partial class Program
             afWanderPause = WanderOn ? wanderPause : null; // capture before StopWander clears it
             if (afWanderWasOn) StopWander("auto-follow David (restores wander state when he leaves)", clearFlag: false);
             if (client.Self.SittingOn != 0) StandFaceFirst();
-            followDistThis = null; followId = DavidId; followName = av.Name; afEngaged = true; afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now;
+            followDistThis = null; followId = DavidId; followName = av?.Name ?? DavidName; afEngaged = true; afLastPos = client.Self.SimPosition; afLastMoveCheck = DateTime.Now;
             var wnote = !afWanderWasOn ? "" : afWanderPause is "hold" or "user" or "ao" ? $" (wander was on {afWanderPause}; will restore)" : " (wander stopped; resumes when he leaves)";
             AfLog($"David is {dist:F1} m away in {sim.Name}: following him{wnote}");
         }

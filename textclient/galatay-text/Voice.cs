@@ -636,8 +636,10 @@ public static partial class Program
         var keepPost = GalatayMcp.Webhook.PostOverride;
         var keepDetect = GalatayMcp.Webhook.Detect; var keepQuiet = GalatayMcp.Webhook.Quiet;
         var keepMaxHold = GalatayMcp.Webhook.MaxHold; var keepMinWh = GalatayMcp.Webhook.MinInterval;
+        var keepSkipVoice = FastSkipVoiceForSelfTest;
         try
         {
+            FastSkipVoiceForSelfTest = true;
             VoiceWakeReset();
             C(VoiceDebounceS <= 1.5 && VoiceMinWakeS <= 5, "low-latency defaults (debounce <= 1.5 s, min <= 5 s)");
             C(GalatayMcp.Webhook.PostsImmediately("voice") && !GalatayMcp.Webhook.PostsImmediately("im"), "voice skips webhook flush loop");
@@ -827,6 +829,7 @@ public static partial class Program
         catch (Exception ex) { C(false, "exception: " + ex); }
         finally
         {
+            FastSkipVoiceForSelfTest = keepSkipVoice;
             GalatayMcp.Webhook.PostOverride = keepPost;
             GalatayMcp.Webhook.Detect = keepDetect; GalatayMcp.Webhook.Quiet = keepQuiet;
             GalatayMcp.Webhook.MaxHold = keepMaxHold; GalatayMcp.Webhook.MinInterval = keepMinWh;

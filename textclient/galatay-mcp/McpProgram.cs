@@ -129,8 +129,36 @@ public sealed class SlTools
     [McpServerTool(Name = "auto_accept_teleports"), Description("Turn automatic acceptance of teleport offers from the allow-list (David Nightingale) on or off.")]
     public static Task<string> AutoAccept(bool on) => R("autolure " + (on ? "on" : "off"));
 
-    [McpServerTool(Name = "follow"), Description("Follow an avatar in view by name, keeping ~2.5 m behind them (stops at 2-3 m, resumes past 3.5 m, routes around furniture, handles doors); pass 'off' to stop. Optional distance_m (1-8) applies to this follow only.")]
-    public static Task<string> Follow(string name, [Description("Optional follow distance in metres (1-8) for this follow; default is the persisted 'follow dist' (2.5 m).")] double? distance_m = null)
+    [McpServerTool(Name = "tp_offer"), Description("Send a teleport offer (lure) so the other avatar can teleport to where I am. Default allow-list is David Nightingale only (legacy name, username, or UUID); anyone else is refused unless confirm=true, which means David approved that exact offer in chat. Never a teleport request (asking to be teleported to them). Optional message, default 'Join me here!'. Duplicate guard: skipped if I offered the same person in the last 10 s.")]
+    public static Task<string> TpOffer([Description("legacy name ('First Last'), username, or UUID")] string to,
+                                       [Description("invitation message")] string message = "Join me here!",
+                                       [Description("required to offer anyone other than David Nightingale; means David approved this exact offer in chat")] bool confirm = false)
+    {
+        var who = Clean(to).Replace("\"", "");
+        var msg = Clean(message);
+        if (string.IsNullOrWhiteSpace(who)) return Task.FromResult(Json(new { ok = false, result = "usage: tp_offer requires 'to' (name, username, or UUID)" }));
+        var flag = confirm ? "--confirm " : "";
+        var rest = string.IsNullOrWhiteSpace(msg) ? "" : " " + msg;
+        return R("tp_offer " + flag + "\"" + who + "\"" + rest);
+    }
+
+    [McpServerTool(Name = "roam"), Description("Roam on a non-home sim (Peronaut home wander is unchanged): walk between open, walkable spots within radius_m (default 40) of the start, including directly adjacent connected regions of the same estate/owner or a Linden/public area. Uses map tiles plus terrain and prim floors for the support-surface height. Pauses 20-60 s between legs and for nearby chat within 5 m (never for IMs or far chat). Stops on teleport, sit, leash/follow, come here, or logout. Walked border crossings continue; a failed crossing is treated as stuck. Actions: on, off, status.")]
+    public static Task<string> Roam([Description("on | off | status")] string action = "status",
+                                    [Description("roam radius in metres from the start point (default 40)")] float radius_m = 40)
+    {
+        var a = Clean(action).ToLowerInvariant();
+        if (a is "on" or "start") return R(FormattableString.Invariant($"roam on {radius_m}"));
+        if (a is "off" or "stop") return R("roam off");
+        return R("roam status");
+    }
+
+    [McpServerTool(Name = "parcel_info", ReadOnly = true), Description("READ-ONLY: the current parcel (or a region-local x,y) from ParcelProperties: name, owner, area, and flags — scripts (other / group / no-scripts), build, fly, push restrict, damage, voice, access/ban, and whether music or media URLs are set.")]
+    public static async Task<string> ParcelInfo([Description("optional region-local X")] float? x = null,
+                                               [Description("optional region-local Y")] float? y = null)
+        => Json(await Core.ParcelInfoObj(x, y));
+
+    [McpServerTool(Name = "follow"), Description("Follow an avatar in view by name, keeping ~1.5 m behind them (stops at ~1.9 m, resumes past 2.5 m, routes around furniture, handles doors); pass 'off' to stop. Optional distance_m (1-8) applies to this follow only.")]
+    public static Task<string> Follow(string name, [Description("Optional follow distance in metres (1-8) for this follow; default is the persisted 'follow dist' (1.5 m).")] double? distance_m = null)
         => R("follow " + Clean(name) + (distance_m is double d && !Clean(name).Equals("off", StringComparison.OrdinalIgnoreCase) ? " " + d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : ""));
 
     [McpServerTool(Name = "get_profile"), Description("Read Galatay's own profile (About text, first-life text, image ids, URL, publish flags). Uses the AgentProfile capability, else legacy UDP.")]

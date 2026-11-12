@@ -79,6 +79,43 @@ internal static class SimGeo
     // walks forward with her own controls until the region hands her over.
     public const float PushDist = 3f;
     public static bool NeedsPush(Vector3 me, Vector3 target, uint sx = Grid, uint sy = Grid) => ExitDist(me, target, sx, sy) < PushDist;
+    // 2026-11-11 Ahern -> Dore: follow aimed at a standoff only ~1 m into the neighbor, she reached x=-0.1,
+    // TurnToward faced back into Ahern, and the handoff never fired. Aim several metres past the border.
+    public const float CrossAimPastM = 8f;
+    public static Vector3 CrossAim(Vector3 me, Vector3 target, uint sx = Grid, uint sy = Grid, float pastM = CrossAimPastM)
+    {
+        var side = ExitBorder(me, target, sx, sy);
+        if (side == null) return target;
+        return side switch
+        {
+            "W" when target.X > -pastM => new Vector3(-pastM, target.Y, target.Z),
+            "E" when target.X < sx + pastM => new Vector3(sx + pastM, target.Y, target.Z),
+            "S" when target.Y > -pastM => new Vector3(target.X, -pastM, target.Z),
+            "N" when target.Y < sy + pastM => new Vector3(target.X, sy + pastM, target.Z),
+            _ => target
+        };
+    }
+    // true when she is on or past the exit border but CurrentSim has not changed (handoff never completed)
+    public static bool CrossPastBorderNoHandoff(Vector3 me, string side, uint sx = Grid, uint sy = Grid) => side switch
+    {
+        "W" => me.X <= 0.5f,
+        "E" => me.X >= sx - 0.5f,
+        "S" => me.Y <= 0.5f,
+        "N" => me.Y >= sy - 0.5f,
+        _ => false
+    };
+    public static Vector3 CrossBackoff(Vector3 me, string side, int attempt, float backM = 3f, uint sx = Grid, uint sy = Grid)
+    {
+        float shift = ((attempt % 2 == 0) ? 1f : -1f) * (1.5f * (1 + attempt / 2));
+        return side switch
+        {
+            "W" => new Vector3(MathF.Max(0f, me.X) + backM, me.Y + shift, me.Z),
+            "E" => new Vector3(MathF.Min(sx, me.X) - backM, me.Y + shift, me.Z),
+            "S" => new Vector3(me.X + shift, MathF.Max(0f, me.Y) + backM, me.Z),
+            "N" => new Vector3(me.X + shift, MathF.Min(sy, me.Y) - backM, me.Z),
+            _ => me
+        };
+    }
     // which border a straight walk from a to b (cur frame) leaves her region through: null = stays inside
     public static string ExitBorder(Vector3 a, Vector3 b, uint sx = Grid, uint sy = Grid)
     {
@@ -214,51 +251,226 @@ public static partial class Program
     internal static bool IsAdjacentOffset(Vector3 off) =>
         Math.Abs(off.X) <= SimGeo.Grid && Math.Abs(off.Y) <= SimGeo.Grid && (off.X != 0 || off.Y != 0);
 
-    // avatars streamed by neighbor regions (not in the current one), position in the current frame, nearest first
+    // 2026-11-11 16:07: both in Ahern after David's lure; follow used a stale Dore object/coarse (15.3 m west)
+    // and she walked into Dore to a ghost at 235.4,-0.9. Nearby also listed the same avatar twice (per-sim
+    // duplicates). Track sightings with timestamps, drop other sims when a newer update arrives, expire
+    // coarse entries, and prefer the current sim's ObjectUpdate when he is here.
+    internal const float AvCoarseExpireS = 4f;
+    internal enum AvPosSource { ObjectUpdate, Coarse }
+    internal readonly record struct AvPosSighting(UUID Id, ulong Handle, Vector3 LocalPos, DateTime At, AvPosSource Source);
+
+    internal static bool AvCoarseExpired(AvPosSighting e, DateTime now, float expireS) =>
+        e.Source == AvPosSource.Coarse && (now - e.At).TotalSeconds > expireS;
+
+    // Neighbor coarse packets are stamped when they arrive, even if the position is a leftover.
+    // They must not evict a current-sim ObjectUpdate. A *current-sim* coarse that is newer than a
+    // leftover neighbor object *does* replace it (16:07: he was in Ahern on the map, Dore object stale).
+    internal static AvPosSighting? PickAvatarPos(IReadOnlyList<AvPosSighting> entries, ulong currentHandle, DateTime now, float coarseExpireS)
+    {
+        if (entries == null || entries.Count == 0) return null;
+        var live = new List<AvPosSighting>();
+        foreach (var e in entries)
+            if (!AvCoarseExpired(e, now, coarseExpireS)) live.Add(e);
+        if (live.Count == 0) return null;
+        AvPosSighting? curObj = null, curCoarse = null, nbObj = null, best = null;
+        foreach (var e in live)
+        {
+            if (e.Handle == currentHandle && e.Source == AvPosSource.ObjectUpdate
+                && (curObj == null || e.At >= curObj.Value.At)) curObj = e;
+            if (e.Handle == currentHandle && e.Source == AvPosSource.Coarse
+                && (curCoarse == null || e.At >= curCoarse.Value.At)) curCoarse = e;
+            if (e.Handle != currentHandle && e.Source == AvPosSource.ObjectUpdate
+                && (nbObj == null || e.At >= nbObj.Value.At)) nbObj = e;
+            if (best == null || e.At > best.Value.At
+                || (e.At == best.Value.At && e.Source == AvPosSource.ObjectUpdate && best.Value.Source != AvPosSource.ObjectUpdate)
+                || (e.At == best.Value.At && e.Source == best.Value.Source && e.Handle == currentHandle && best.Value.Handle != currentHandle))
+                best = e;
+        }
+        if (curObj != null)
+        {
+            // A newer ObjectUpdate in a neighbor means he already crossed.
+            if (nbObj != null && nbObj.Value.At > curObj.Value.At) return nbObj;
+            return curObj;
+        }
+        if (curCoarse != null)
+        {
+            if (nbObj != null && nbObj.Value.At > curCoarse.Value.At) return nbObj;
+            return curCoarse;
+        }
+        return best;
+    }
+
+    internal static List<AvPosSighting> DropOlderOtherSimEntries(IReadOnlyList<AvPosSighting> entries, ulong currentHandle, DateTime now, float coarseExpireS)
+    {
+        var list = new List<AvPosSighting>();
+        var pick = PickAvatarPos(entries, currentHandle, now, coarseExpireS);
+        if (pick == null) return list;
+        foreach (var e in entries)
+            if (e.Handle == pick.Value.Handle) list.Add(e);
+        return list;
+    }
+
+    static readonly ConcurrentDictionary<(UUID id, ulong handle), AvPosSighting> avPos = new();
+
+    static void NoteAvatarSighting(UUID id, ulong handle, Vector3 local, AvPosSource src)
+    {
+        if (id == UUID.Zero || handle == 0) return;
+        if (client != null && id == client.Self.AgentID) return;
+        var sight = new AvPosSighting(id, handle, local, DateTime.Now, src);
+        avPos[(id, handle)] = sight;
+        var cur = client?.Network?.CurrentSim?.Handle ?? handle;
+        var kept = DropOlderOtherSimEntries(SightingsFor(id), cur, DateTime.Now, AvCoarseExpireS);
+        var keepHandle = kept.Count > 0 ? kept[0].Handle : handle;
+        foreach (var key in avPos.Keys)
+            if (key.id == id && key.handle != keepHandle)
+                avPos.TryRemove(key, out _);
+        FollowNoteLeaderSeen(id, handle);
+    }
+
+    static List<AvPosSighting> SightingsFor(UUID id)
+    {
+        var list = new List<AvPosSighting>();
+        foreach (var kv in avPos)
+            if (kv.Key.id == id) list.Add(kv.Value);
+        return list;
+    }
+
+    static Vector3 AvPosInCurrentFrame(AvPosSighting s, ulong currentHandle) =>
+        s.LocalPos + SimGeo.Offset(currentHandle, s.Handle);
+
+    // Unique avatars in the current frame (one entry per id), nearest first. Used by nearby / avatars / follow.
+    static List<(UUID id, Avatar av, Simulator sim, Vector3 pos, float dist)> TrackedAvatars(float maxDist = float.MaxValue)
+    {
+        var res = new List<(UUID, Avatar, Simulator, Vector3, float)>();
+        var cur = client?.Network?.CurrentSim; if (cur == null) return res;
+        var me = client.Self.SimPosition;
+        var now = DateTime.Now;
+        var ids = new HashSet<UUID>();
+        foreach (var key in avPos.Keys) ids.Add(key.id);
+        foreach (var id in ids)
+        {
+            if (id == client.Self.AgentID) continue;
+            var pick = PickAvatarPos(SightingsFor(id), cur.Handle, now, AvCoarseExpireS);
+            if (pick == null) continue;
+            var sim = SimByHandle(pick.Value.Handle) ?? (pick.Value.Handle == cur.Handle ? cur : null);
+            if (sim == null) continue;
+            var av = sim.ObjectsAvatars.Values.FirstOrDefault(a => a != null && a.ID == id);
+            var p = AvPosInCurrentFrame(pick.Value, cur.Handle);
+            var d = Vector3.Distance(p, me);
+            if (d <= maxDist) res.Add((id, av, sim, p, d));
+        }
+        return res.OrderBy(r => r.Item5).ToList();
+    }
+
+    // avatars streamed by neighbor regions (not the picked current-sim entry), position in the current frame, nearest first
     static List<(Avatar av, Simulator sim, Vector3 pos, float dist)> NeighborAvatars(float maxDist = float.MaxValue)
     {
-        var res = new List<(Avatar, Simulator, Vector3, float)>();
-        var cur = client?.Network?.CurrentSim; if (cur == null) return res;
-        var here = cur.ObjectsAvatars.Values.Where(a => a != null).Select(a => a.ID).ToHashSet();
-        var me = client.Self.SimPosition;
-        foreach (var (sim, off) in ViewSims().Skip(1))
-            foreach (var a in sim.ObjectsAvatars.Values)
-            {
-                if (a == null || a.ID == client.Self.AgentID || here.Contains(a.ID)) continue;
-                if (a.ParentID != 0 && !sim.ObjectsPrimitives.ContainsKey(a.ParentID)) continue;   // seat unknown: position unknown
-                var p = PositionHelper.GetAvatarPosition(sim, a) + off; var d = Vector3.Distance(p, me);
-                if (d <= maxDist && !res.Any(r => r.Item1.ID == a.ID)) res.Add((a, sim, p, d));
-            }
-        return res.OrderBy(r => r.Item4).ToList();
+        var cur = client?.Network?.CurrentSim;
+        return TrackedAvatars(maxDist)
+            .Where(t => t.av != null && cur != null && t.sim != cur)
+            .Select(t => (t.av, t.sim, t.pos, t.dist))
+            .ToList();
     }
 
-    // an avatar by id in any region we hold (current first): its region and position in the current frame
+    // an avatar by id: freshest stamped sighting, in the current region's frame
     static (Avatar av, Simulator sim, Vector3 pos)? FindAvatarAnySim(UUID id)
     {
-        foreach (var (sim, off) in ViewSims())
-        {
-            var av = sim.ObjectsAvatars.Values.FirstOrDefault(a => a != null && a.ID == id);
-            if (av == null || (av.ParentID != 0 && !sim.ObjectsPrimitives.ContainsKey(av.ParentID))) continue;
-            return (av, sim, PositionHelper.GetAvatarPosition(sim, av) + off);
-        }
-        return null;
+        var cur = client?.Network?.CurrentSim; if (cur == null || id == UUID.Zero) return null;
+        var pick = PickAvatarPos(SightingsFor(id), cur.Handle, DateTime.Now, AvCoarseExpireS);
+        if (pick == null) return null;
+        var sim = SimByHandle(pick.Value.Handle) ?? (pick.Value.Handle == cur.Handle ? cur : null);
+        if (sim == null) return null;
+        var av = sim.ObjectsAvatars.Values.FirstOrDefault(a => a != null && a.ID == id);
+        return (av, sim, AvPosInCurrentFrame(pick.Value, cur.Handle));
     }
 
-    // walk forward with her own controls (AtPos, facing the target) until the current region changes, max 6 s
+    // AgentUpdate: Movement.SendUpdate(true) always goes to CurrentSim. SendUpdate(reliable, sim) silently
+    // drops the packet when that simulator has AgentMovementComplete == false (LibreMetaverse, since SL 1.40.4
+    // would otherwise corrupt position). During a push we therefore keep sending to the region she is still in.
+    // Sending to the neighbor before the handoff would no-op if the child circuit has not completed movement.
+    // We wait briefly for the neighbor Connected + HandshakeComplete so the child agent exists before she steps off.
+    // The handoff pump in Crossing.cs sends updates to the new region only after CrossedRegion / SimChanged.
+    static Simulator SimByHandle(ulong handle) =>
+        client.Network.Simulators.FirstOrDefault(s => s != null && s.Handle == handle);
+
+    static async Task<bool> WaitNeighborCircuit(ulong handle, CancellationToken ct, int waitMs = 2000)
+    {
+        if (handle == 0) return false;
+        var until = DateTime.Now.AddMilliseconds(waitMs);
+        while (true)
+        {
+            var sim = SimByHandle(handle);
+            if (sim != null && sim.Connected && sim.HandshakeComplete) return true;
+            if (DateTime.Now >= until || ct.IsCancellationRequested)
+            {
+                Log("walk", $"neighbor circuit for handle {handle:X} not ready (connected={sim?.Connected}, handshake={sim?.HandshakeComplete}, movementComplete={sim?.AgentMovementComplete})");
+                return false;
+            }
+            await Task.Delay(100, ct);
+        }
+    }
+
+    // walk forward with her own controls (AtPos, facing well past the border) until the current region changes.
+    // Shared by follow, roam, and walk_to (all call this from NeedsPush). Retries with a backoff if the handoff never fires.
     static async Task<bool> PushAcrossBorder(Vector3 target, string label, CancellationToken ct)
     {
         var cur = client.Network.CurrentSim; if (cur == null) return false;
         var h0 = cur.Handle; var mv = client.Self.Movement; var me = client.Self.SimPosition;
+        var side = SimGeo.ExitBorder(me, target);
+        var destHandle = SimGeo.HandleAt(h0, target);
+        Simulator dest = null;
+        if (destHandle != 0 && destHandle != h0)
+        {
+            await WaitNeighborCircuit(destHandle, ct);
+            dest = SimByHandle(destHandle);
+        }
+        var aim = SimGeo.CrossAim(me, target);
         client.Self.AutoPilotCancel();
-        Log("walk", $"{label}: {SimGeo.ExitDist(me, target):F1} m from the {SimGeo.ExitBorder(me, target)} border: walking across with her own controls");
-        var until = DateTime.Now.AddSeconds(6);
+        // 2026-11-11 live: Dore S -> Bonifacio succeeded in 2 s (aim was well into the neighbor, CrossedRegion fired,
+        // Morris/Bonifacio seed caps were already up). Ahern W and Bonifacio E failed: she stopped at x=-0.1 / x=256.1
+        // (~1 m from David), TurnToward the standoff faced back into the current region, she barely moved for 6 s,
+        // then we set AtPos=false (killed velocity) and follow treated "1.3 m away" as arrived. No CrossedRegion, so
+        // CompleteAgentMovement on the new sim never ran. Root cause is heading + releasing controls on the line,
+        // not a missing neighbor circuit (Morris still had its seed cap when she later teleported there).
+        Log("walk", $"{label}: {SimGeo.ExitDist(me, target):F1} m from the {side} border: walking across with her own controls, aiming {SimGeo.CrossAimPastM:F0} m into the neighbor at {V(aim)}" +
+            (dest != null ? $"; neighbor {dest.Name} connected={dest.Connected} handshake={dest.HandshakeComplete} movementComplete={dest.AgentMovementComplete}" : destHandle != 0 && destHandle != h0 ? "; neighbor circuit not in the sim list yet" : ""));
+        var until = DateTime.Now.AddSeconds(12);
+        DateTime? pastSince = null;
+        int attempt = 0;
         try
         {
             while (DateTime.Now < until && client.Network.CurrentSim?.Handle == h0 && crossing.State != CrossingWatch.Phase.Crossing)
             {
                 var p = client.Self.SimPosition;
-                mv.TurnToward(new Vector3(target.X, target.Y, p.Z));
+                var aimNow = SimGeo.CrossAim(p, aim);
+                if (attempt > 0 && side is "W" or "E") aimNow = new Vector3(aimNow.X, aim.Y, aimNow.Z);
+                if (attempt > 0 && side is "N" or "S") aimNow = new Vector3(aim.X, aimNow.Y, aimNow.Z);
+                mv.TurnToward(new Vector3(aimNow.X, aimNow.Y, p.Z));
                 mv.AtPos = true; mv.SendUpdate(true);
+                if (side != null && SimGeo.CrossPastBorderNoHandoff(p, side))
+                {
+                    pastSince ??= DateTime.Now;
+                    if ((DateTime.Now - pastSince.Value).TotalSeconds >= 4 && attempt < 2)
+                    {
+                        attempt++;
+                        var back = SimGeo.CrossBackoff(p, side, attempt - 1);
+                        Log("walk", $"{label}: no handoff after {(DateTime.Now - pastSince.Value).TotalSeconds:F0} s at {V(p)}; backing off to {V(back)} and retrying (attempt {attempt})");
+                        var backUntil = DateTime.Now.AddSeconds(2);
+                        while (DateTime.Now < backUntil && client.Network.CurrentSim?.Handle == h0 && crossing.State != CrossingWatch.Phase.Crossing)
+                        {
+                            var q = client.Self.SimPosition;
+                            mv.TurnToward(new Vector3(back.X, back.Y, q.Z));
+                            mv.AtPos = true; mv.SendUpdate(true);
+                            await Task.Delay(200, ct);
+                        }
+                        aim = SimGeo.CrossAim(client.Self.SimPosition, back + (aimNow - p));
+                        // shift the deep aim onto the retry offset so we do not retry the exact same line
+                        if (side is "W" or "E") aim = new Vector3(aim.X, back.Y, aim.Z);
+                        else if (side is "N" or "S") aim = new Vector3(back.X, aim.Y, aim.Z);
+                        pastSince = null;
+                    }
+                }
+                else pastSince = null;
                 await Task.Delay(200, ct);
             }
         }
@@ -285,11 +497,36 @@ public static partial class Program
                 }
                 catch { }
             }
+            // Never freeze on the line: if the handoff did not start, step back into the current region first, then
+            // release AtPos. Dropping AtPos at x=256.1 (Bonifacio 16:01:41) or x=-0.1 (Ahern 15:51:05) killed velocity
+            // exactly where the source sim still needed a forward walk to send CrossedRegion.
+            bool handed = client.Network.CurrentSim?.Handle != h0 || crossing.State == CrossingWatch.Phase.Crossing;
+            if (!handed && side != null)
+            {
+                var p = client.Self.SimPosition;
+                if (SimGeo.CrossPastBorderNoHandoff(p, side))
+                {
+                    var back = SimGeo.CrossBackoff(p, side, 0);
+                    Log("walk", $"{label}: handoff did not start at {V(p)}; stepping back to {V(back)} before releasing controls");
+                    var backUntil = DateTime.Now.AddSeconds(1.5);
+                    try
+                    {
+                        while (DateTime.Now < backUntil && client.Network.CurrentSim?.Handle == h0 && crossing.State != CrossingWatch.Phase.Crossing)
+                        {
+                            var q = client.Self.SimPosition;
+                            mv.TurnToward(new Vector3(back.X, back.Y, q.Z));
+                            mv.AtPos = true; mv.SendUpdate(true);
+                            await Task.Delay(200, ct);
+                        }
+                    }
+                    catch { }
+                }
+            }
             mv.AtPos = false; try { mv.SendUpdate(true); } catch { }
         }
         for (int i = 0; i < 20 && crossing.State == CrossingWatch.Phase.Crossing; i++) await Task.Delay(FastCrossing ? 50 : 250, ct);
         bool ok = client.Network.CurrentSim?.Handle != h0;
-        Log("walk", $"{label}: {(ok ? $"crossed into {client.Network.CurrentSim?.Name}" : $"still in {cur.Name} at {V(client.Self.SimPosition)} after 6 s")}");
+        Log("walk", $"{label}: {(ok ? $"crossed into {client.Network.CurrentSim?.Name}" : $"still in {cur.Name} at {V(client.Self.SimPosition)} after the crossing push")}");
         return ok;
     }
 
@@ -323,7 +560,7 @@ public static partial class Program
             if (cur != null && e.Simulator != cur && e.Simulator.Handle != 0)
                 Log("regions", $"neighbor connected: {e.Simulator.Name} ({SimGeo.Dir(cur.Handle, e.Simulator.Handle)}) {e.Simulator.IPEndPoint}");
         };
-        client.Network.SimDisconnected += (s, e) => { if (e.Simulator != null) { coarseBy.TryRemove(e.Simulator.Handle, out _); coarsePk.TryRemove(e.Simulator, out _); droppedBy.TryRemove(e.Simulator.Handle, out _); Log("regions", $"region disconnected: {e.Simulator.Name}"); } };
+        client.Network.SimDisconnected += (s, e) => { if (e.Simulator != null) { coarseBy.TryRemove(e.Simulator.Handle, out _); coarsePk.TryRemove(e.Simulator, out _); droppedBy.TryRemove(e.Simulator.Handle, out _); foreach (var key in avPos.Keys) if (key.handle == e.Simulator.Handle) avPos.TryRemove(key, out _); Log("regions", $"region disconnected: {e.Simulator.Name}"); } };
         client.Self.TeleportProgress += (s, e) =>
         {
             if (e.Status is TeleportStatus.Start or TeleportStatus.Progress) { teleportActive = true; teleportActiveAt = DateTime.Now; }
@@ -346,6 +583,7 @@ public static partial class Program
         {
             var cur = client.Network.CurrentSim; if (cur == null) return;
             bool tp = teleportActive && (DateTime.Now - teleportActiveAt).TotalSeconds < 90;
+            if (tp) { StopRoamIfOn("teleport"); FollowNoteTeleport("region change"); }
             var (ao0, seated0, follow0) = PreCrossState();
             var r = crossing.SimChanged(DateTime.Now, e.PreviousSimulator?.Handle ?? 0, cur.Handle, tp, ao0, seated0, follow0);
             if (tp || (e.PreviousSimulator != null && e.PreviousSimulator.Handle != 0 && !SimGeo.Adjacent(e.PreviousSimulator.Handle, cur.Handle)))
@@ -368,7 +606,29 @@ public static partial class Program
         {
             if (e.Simulator == null || e.Simulator.Handle == 0) return;
             coarseBy[e.Simulator.Handle] = e.Positions;
+            if (e.Positions != null)
+                foreach (var (id, p) in e.Positions)
+                    NoteAvatarSighting(id, e.Simulator.Handle, p, AvPosSource.Coarse);
             if (e.Simulator != client.Network.CurrentSim) RequestCoarseNames(e.NewEntries);   // the current region's: HookCoarse
+        };
+        client.Objects.AvatarUpdate += (s, e) =>
+        {
+            try
+            {
+                if (e.Avatar == null || e.Simulator == null || e.Simulator.Handle == 0) return;
+                var p = PositionHelper.GetAvatarPosition(e.Simulator, e.Avatar);
+                NoteAvatarSighting(e.Avatar.ID, e.Simulator.Handle, p, AvPosSource.ObjectUpdate);
+            }
+            catch { }
+        };
+        client.Objects.TerseObjectUpdate += (s, e) =>
+        {
+            try
+            {
+                if (e.Simulator == null || e.Simulator.Handle == 0 || e.Prim == null || !e.Update.Avatar) return;
+                NoteAvatarSighting(e.Prim.ID, e.Simulator.Handle, e.Update.Position, AvPosSource.ObjectUpdate);
+            }
+            catch { }
         };
         HookCrossingTimeline();
     }
@@ -548,6 +808,16 @@ public static partial class Program
         C(SimGeo.NeedsPush(new Vector3(0.9f, 241, 0), new Vector3(-9.6f, 237.9f, 0)) && !SimGeo.NeedsPush(new Vector3(8, 241, 0), new Vector3(-9.6f, 237.9f, 0))
           && !SimGeo.NeedsPush(new Vector3(1, 100, 0), new Vector3(5, 100, 0)) && SimGeo.NeedsPush(new Vector3(254, 254, 0), new Vector3(262, 255, 0))
           && !SimGeo.NeedsPush(new Vector3(1, 128, 0), new Vector3(100, 300, 0)), "border push: only within 3 m of the border the walk leaves through (not another nearby edge)");
+        // 2026-11-11 Ahern -> Dore: standoff ~1 m into Dore must still aim 8 m past the border, not at x≈0
+        var ahernFollowAim = SimGeo.CrossAim(new Vector3(2.2f, 24.5f, 40.2f), new Vector3(-0.01f, 24.12f, 40.2f));
+        C(ahernFollowAim.X <= -8f + 1e-3f && MathF.Abs(ahernFollowAim.Y - 24.12f) < 1e-3f, "cross aim: a standoff 1 m into the west neighbor is extended 8 m past the border");
+        var deep = SimGeo.CrossAim(new Vector3(250f, 128f, 0), new Vector3(280f, 130f, 0));
+        C(MathF.Abs(deep.X - 280f) < 1e-3f && MathF.Abs(deep.Y - 130f) < 1e-3f, "cross aim: a target already deeper than 8 m is kept");
+        C(SimGeo.CrossPastBorderNoHandoff(new Vector3(-0.1f, 24.1f, 40.2f), "W")
+          && !SimGeo.CrossPastBorderNoHandoff(new Vector3(2.2f, 24.5f, 40.2f), "W")
+          && SimGeo.CrossPastBorderNoHandoff(new Vector3(255.8f, 10f, 0), "E"), "past-border-no-handoff: x=-0.1 on the west edge, not x=2.2");
+        var back = SimGeo.CrossBackoff(new Vector3(-0.1f, 24.1f, 40.2f), "W", 0);
+        C(back.X >= 2.9f && back.X <= 3.1f, "cross backoff: a few metres back into the current region");
         // walking frame shift: a target given before the crossing, re-expressed after entering the east region
         var target = new Vector3(270, 100, 25); var inEast = target + SimGeo.Offset(east, cur);
         C(Near(inEast, new Vector3(14, 100, 25)), "walk target 270,100 becomes 14,100 after crossing east");

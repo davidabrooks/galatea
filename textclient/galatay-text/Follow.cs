@@ -1,11 +1,11 @@
 // Follow.cs (2026-10-05, David on a house tour at Peronaut: "keep about 2-3 m behind me, especially indoors, and walk around
 // the furniture instead of crowding me"; she used to close to ~0.6 m because the autopilot was aimed AT him and only cancelled
 // on the next 1 s tick).
-// - The autopilot is aimed at a STANDOFF POINT ~2.5 m from the leader on her side of him (never at him). On a nav grid the
+// - The autopilot is aimed at a STANDOFF POINT ~1.5 m from the leader on her side of him (never at him). On a nav grid the
 //   point is moved (±20..120 deg around him, radius s/s+0.4/s-0.3) to a free cell with line of sight to him, and the walk
 //   there uses the grid planner (NavFollowStep) whenever the straight line is blocked: around furniture, through doors.
-// - Bands (s = follow distance, default 2.5 m): stop when <= s+0.4 m (indoors s+0.5) or at the point; resume when > s+1.0 m
-//   (indoors s+1.2); if he stands still >= 1.5 s and she ended her own walk closer than s-0.5 m (2.0 m) she backs off to
+// - Bands (s = follow distance, default 1.5 m): stop when <= s+0.4 m (indoors s+0.5) or at the point; resume when > s+1.0 m
+//   (indoors s+1.2); if he stands still >= 1.5 s and she ended her own walk closer than s-0.5 m (1.0 m) she backs off to
 //   the standoff point (max 3 back-offs until he moves again, >= 4 s apart; if HE walks up to her she stays). 'Indoors' = on a nav grid with walls/furniture within 1.5 m.
 // - 250 ms tick (was 1 s), autopilot re-aimed at most every 0.5 s (BodyRotation kept in step), she turns to face him on stop.
 // - Stalled (< 0.3 m in ~4 s while pursuing): robust door sequence (Doors.cs DoorUnstick) if a door/gate is within 4 m,
@@ -23,7 +23,7 @@ namespace GalatayText;
 public static partial class Program
 {
     static readonly string FollowDistFile = Env("GT_FOLLOW_DIST_FILE", "/home/box/viewers/textclient/run/follow-dist.txt");
-    internal const float FollowDistMin = 1.0f, FollowDistMax = 8f, FollowDistStd = 2.5f;
+    internal const float FollowDistMin = 1.0f, FollowDistMax = 8f, FollowDistStd = 1.5f;
     static float? followDistCache;
     static float? followDistThis;   // 'follow <name> <m>': this follow only
     static float FollowDistDefault
@@ -43,12 +43,78 @@ public static partial class Program
     static float FollowDist => followDistThis ?? FollowDistDefault;
     internal static float ClampFollowDist(float d) => float.IsFinite(d) ? Math.Clamp(d, FollowDistMin, FollowDistMax) : FollowDistStd;
 
+    // Per-call distance_m (followDistThis) lasts for the whole follow session: a later 'follow Name' without metres,
+    // or the instant 'follow me' path, must not fall back to the persisted default. An explicit new metres updates it;
+    // follow off, or following a different person, clears it.
+    internal static float? NextFollowSessionDist(float? currentThis, float? requested, bool sameTarget, bool stopping) =>
+        stopping ? null
+        : requested is float r ? ClampFollowDist(r)
+        : sameTarget ? currentThis
+        : null;
+
+    // 2026-11-11 16:05:04: after David's lure TP to Ahern, follow immediately used his stale Dore object/coarse
+    // (231.9 m west in the Ahern frame) and she walked off the W border away from him. After a teleport, wait for a
+    // fresh current-region sighting; if he sent the lure, hold at the arrival. Never walk toward a position observed
+    // before the teleport, older than FollowPosMaxAgeS, or (during the post-teleport grace) from a neighbor sim.
+    internal const float FollowPosMaxAgeS = 4f;
+    internal const float FollowTeleportNeighborGraceS = 6f;
+    static DateTime followPosIgnoreBefore = DateTime.MinValue, followTeleportAt = DateTime.MinValue;
+    static DateTime followLeaderSeenAt = DateTime.MinValue;
+    static ulong followLeaderSeenHandle;
+    static bool followWaitingFreshPos;
+    static UUID followLureSender = UUID.Zero;
+
+    internal static bool FollowPosIsUsable(ulong myHandle, ulong posHandle, DateTime posAt, DateTime ignoreBefore, DateTime now, float maxAgeS, bool afterTeleport, float neighborGraceS)
+    {
+        if (myHandle == 0 || posHandle == 0) return false;
+        if (posAt == DateTime.MinValue || posAt < ignoreBefore) return false;
+        if ((now - posAt).TotalSeconds > maxAgeS) return false;
+        if (posHandle == myHandle) return true;
+        if (afterTeleport && (now - ignoreBefore).TotalSeconds < neighborGraceS) return false;
+        return true;
+    }
+
+    internal static bool FollowShouldHoldForFreshPos(bool waiting, bool haveFreshCurrentRegionPos) =>
+        waiting && !haveFreshCurrentRegionPos;
+
+    static void NoteLureAccepted(UUID from) { followLureSender = from; }
+
+    static void FollowNoteLeaderSeen(UUID id, ulong handle)
+    {
+        if (id == UUID.Zero || id != followId || handle == 0) return;
+        var now = DateTime.Now;
+        if (followPosIgnoreBefore != DateTime.MinValue && now < followPosIgnoreBefore) return;
+        followLeaderSeenAt = now;
+        followLeaderSeenHandle = handle;
+        if (followWaitingFreshPos && handle == (client.Network.CurrentSim?.Handle ?? 0))
+            followWaitingFreshPos = false;
+    }
+
+    static void FollowNoteTeleport(string why)
+    {
+        followPosIgnoreBefore = DateTime.Now;
+        followTeleportAt = DateTime.Now;
+        followLeaderSeenAt = DateTime.MinValue;
+        followLeaderSeenHandle = 0;
+        fLeaderAnchor = null;
+        fAim = null;
+        fMode = FMode.Hold;
+        try { client.Self.AutoPilotCancel(); } catch { }
+        followWaitingFreshPos = followId != UUID.Zero;
+        if (followWaitingFreshPos)
+            FLog($"teleport ({why}): holding follow until a fresh position for {followName} arrives in this region" +
+                 (followLureSender != UUID.Zero && followLureSender == followId ? " (lure sender — assuming he is at the arrival)" : ""));
+    }
+
     // ---- pure helpers (selftest) ----
     internal static (float stopAt, float resumeAt, float tooClose) FollowBands(float s, bool indoor)
         => (s + (indoor ? 0.5f : 0.4f), s + (indoor ? 1.2f : 1.0f), MathF.Max(0.8f, s - 0.5f));
     internal enum FollowAct { Hold, Pursue, Arrive, BackOff }
-    internal static FollowAct FollowDecide(float d, bool pursuing, float toTarget, double leaderStillS, float s, bool indoor, bool sheClosedIn = true, bool reband = false)
+    internal static FollowAct FollowDecide(float d, bool pursuing, float toTarget, double leaderStillS, float s, bool indoor, bool sheClosedIn = true, bool reband = false, bool sameRegion = true)
     {
+        // 2026-11-11 Ahern -> Dore: she was 1.2 m from David across the border (he in Dore at x=-1, she still in Ahern)
+        // and the standoff check treated that as arrived. Never arrive / hold / back off while a border is still between us.
+        if (!sameRegion) return FollowAct.Pursue;
         var (stopAt, resumeAt, tooClose) = FollowBands(s, indoor);
         if (pursuing) return d <= stopAt || toTarget <= 0.5f ? FollowAct.Arrive : FollowAct.Pursue;
         if (d > resumeAt) return FollowAct.Pursue;
@@ -127,10 +193,29 @@ public static partial class Program
         // and while the new region settles her, unless it put her somewhere clear (Crossing.cs ResumeMinMs, ArrivalObstacle)
         if (CrossingSettling(DateTime.Now, lastCrossingAt, ResumeMinMs, ArrivalClearForGate)) return;
         // the leader may be across a border: found in a neighbor region, position in this region's frame (Neighbors.cs);
-        // the autopilot takes global coordinates, so she walks over the border after him
+        // the autopilot takes global coordinates, so she walks over the border after him.
+        // After a teleport, ignore stale neighbor-cache positions (16:05:04 Ahern, 231.9 m into Dore).
         var found = FindAvatarAnySim(id);
-        if (found == null) return;
-        var lp = found.Value.pos; var me = client.Self.SimPosition; var now = DateTime.Now;
+        var now = DateTime.Now;
+        if (found != null && found.Value.sim.Handle == sim.Handle)
+            FollowNoteLeaderSeen(id, sim.Handle);
+        bool afterTp = followWaitingFreshPos || (followTeleportAt != DateTime.MinValue && (now - followTeleportAt).TotalSeconds < FollowTeleportNeighborGraceS);
+        ulong posHandle = found != null ? found.Value.sim.Handle : 0;
+        DateTime posAt = found == null ? DateTime.MinValue
+            : posHandle == sim.Handle ? now
+            : posHandle == followLeaderSeenHandle ? followLeaderSeenAt
+            : DateTime.MinValue;
+        bool usable = found != null && FollowPosIsUsable(sim.Handle, posHandle, posAt, followPosIgnoreBefore, now, FollowPosMaxAgeS, afterTp, FollowTeleportNeighborGraceS);
+        if (!usable)
+        {
+            if (FollowShouldHoldForFreshPos(followWaitingFreshPos, false))
+            {
+                if (fMode != FMode.Hold) { try { client.Self.AutoPilotCancel(); } catch { } fMode = FMode.Hold; fAim = null; }
+                return;
+            }
+            return;
+        }
+        var lp = found.Value.pos; var me = client.Self.SimPosition;
         float d = HDist(lp, me); if (MathF.Abs(lp.Z - me.Z) > 3f) d = Vector3.Distance(lp, me);
         fLastD = d;
         if (fLeaderAnchor == null || HDist(lp, fLeaderAnchor.Value) > 0.4f) { fLeaderAnchor = lp; fLeaderStillSince = now; fBackoffs = 0; fTightLogged = false; }
@@ -166,7 +251,8 @@ public static partial class Program
         // back-offs only correct HER overshoot (stopped inside 2 m after her own walk); if he walks up to her she stays
         bool sheClosedIn = (now - fLastArriveAt).TotalSeconds < 8 || fBackoffs > 0;
         bool reband = fDistReband; fDistReband = false;
-        var act = FollowDecide(d, fMode == FMode.Pursue, HDist(me, T3), still, s, indoor, sheClosedIn, reband);
+        bool sameRegion = found.Value.sim.Handle == sim.Handle;
+        var act = FollowDecide(d, fMode == FMode.Pursue, HDist(me, T3), still, s, indoor, sheClosedIn, reband, sameRegion);
         if (act == FollowAct.Pursue)
         {
             if (fMode != FMode.Pursue) { fMode = FMode.Pursue; fModeSince = now; fHist.Clear(); fAim = null; FLog($"{followName} is {d:F1} m away: following to {s:F1} m behind{(indoor ? " (indoors)" : "")}"); }
@@ -281,10 +367,12 @@ public static partial class Program
         var av = Avatars().FirstOrDefault(t => t.av.Name.Equals(name, StringComparison.OrdinalIgnoreCase) || t.av.Name.Equals(name + " Resident", StringComparison.OrdinalIgnoreCase));
         if (av.av == null) return $"'{name}' is not in view (must be in the same region and within draw distance)";
         if (client.Self.SittingOn != 0) StandFaceFirst();
-        followDistThis = dist;
-        if (dist != null) FollowNoteDistChange();
+        var prevThis = followDistThis;
+        followDistThis = NextFollowSessionDist(followDistThis, dist, sameTarget: followId == av.av.ID, stopping: false);
+        if (followDistThis != prevThis) FollowNoteDistChange();
+        StopRoamIfOn("follow " + av.av.Name);
         followId = av.av.ID; followName = av.av.Name;
-        return $"following {followName} ({av.dist:F1} m away), keeping {FollowDist:F1} m behind{(dist != null ? " (this follow; 'follow dist <m>' sets the default)" : "")}";
+        return $"following {followName} ({av.dist:F1} m away), keeping {FollowDist:F1} m behind{(followDistThis != null ? " (this follow; 'follow dist <m>' sets the default)" : "")}";
     }
 
     internal static string FollowSelfTest()
@@ -307,12 +395,28 @@ public static partial class Program
         C(FollowDecide(1.4f, false, 1.1f, 0.5, S, false) == FollowAct.Hold, "too close but he is moving -> hold (no back-off dance)");
         C(FollowDecide(2.2f, false, 0.3f, 10, S, false) == FollowAct.Hold, "2.2 m, he is still -> hold (2-3 m band)");
         C(FollowDecide(1.4f, false, 1.1f, 3, S, false, sheClosedIn: false) == FollowAct.Hold, "he walked up to her (she did not close in) -> she stays, no back-off");
+        C(FollowDecide(1.2f, true, 0.2f, 0, 1.0f, false, sameRegion: false) == FollowAct.Pursue, "within standoff but in a different region -> keep pursuing (do not arrive)");
+        C(FollowDecide(1.2f, false, 0.2f, 10, 1.0f, false, sameRegion: false) == FollowAct.Pursue, "holding 1.2 m across a border -> pursue, never hold or back off");
+        C(FollowDecide(1.2f, true, 0.2f, 0, 1.0f, false, sameRegion: true) == FollowAct.Arrive, "same region, 1.2 m, standoff 1.0 -> arrive as usual");
         var tp = FollowStandoffPoint(new Vector2(10, 0), Vector2.Zero, S, null);
         C(MathF.Abs(tp.X - 2.5f) < 0.01f && MathF.Abs(tp.Y) < 0.01f, $"standoff point 2.5 m from him on her side ({P2(tp)})");
         var tp2 = FollowStandoffPoint(new Vector2(10, 0), Vector2.Zero, S, p => p.Y > 0.5f);   // her side blocked (sofa): moved around him
         C(tp2.Y > 0.5f && MathF.Abs(tp2.Length() - S) < 0.45f, $"blocked side -> point moved around him at ~2.5 m ({P2(tp2)})");
         var tp3 = FollowStandoffPoint(new Vector2(10, 0), Vector2.Zero, S, p => p.Length() > 2.7f);
         C(MathF.Abs(tp3.Length() - 2.9f) < 0.01f, $"tight radius -> tries 2.9 m ({P2(tp3)})");
+        C(FollowDistStd == 1.5f, "default follow standoff is 1.5 m (per-call distance_m still overrides)");
+        C(NextFollowSessionDist(1.5f, null, sameTarget: true, stopping: false) == 1.5f, "session distance sticks on a bare re-follow of the same person");
+        C(NextFollowSessionDist(1.5f, 1.0f, sameTarget: true, stopping: false) == 1.0f, "an explicit new per-call distance updates the session");
+        C(NextFollowSessionDist(1.5f, null, sameTarget: false, stopping: false) == null, "a different person uses the default");
+        C(NextFollowSessionDist(1.5f, null, sameTarget: true, stopping: true) == null, "follow off clears the session distance");
+        var t0 = new DateTime(2026, 11, 11, 16, 5, 4);
+        ulong ahern = SimGeo.Handle(1001 * 256, 1001 * 256), dore = SimGeo.Handle(1000 * 256, 1001 * 256);
+        C(!FollowPosIsUsable(ahern, dore, t0.AddSeconds(-1), t0, t0.AddSeconds(0.1), 4, true, 6), "after a teleport, a pre-teleport neighbor position is not usable");
+        C(!FollowPosIsUsable(ahern, dore, t0.AddSeconds(0.1), t0, t0.AddSeconds(1), 4, true, 6), "after a teleport, a neighbor position during the grace window is not usable");
+        C(FollowPosIsUsable(ahern, ahern, t0.AddSeconds(0.2), t0, t0.AddSeconds(0.5), 4, true, 6), "after a teleport, a fresh current-region position is usable");
+        C(!FollowPosIsUsable(ahern, ahern, t0.AddSeconds(0.2), t0, t0.AddSeconds(5), 4, false, 6), "a position older than a few seconds is not usable");
+        C(FollowPosIsUsable(ahern, dore, t0.AddSeconds(1), DateTime.MinValue, t0.AddSeconds(2), 4, false, 6), "a walked crossing may use a fresh neighbor position");
+        C(FollowShouldHoldForFreshPos(true, false) && !FollowShouldHoldForFreshPos(true, true) && !FollowShouldHoldForFreshPos(false, false), "after a lure teleport, hold until a fresh current-region position arrives");
         C(ClampFollowDist(0.2f) == FollowDistMin && ClampFollowDist(20f) == FollowDistMax && ClampFollowDist(float.NaN) == FollowDistStd, "follow dist clamped 1..8 m");
         var (st, rs, tc) = FollowBands(S, false);
         C(st <= 3.0f && st >= 2.5f && rs > 3.4f && rs < 3.6f && tc >= 1.9f && tc <= 2.1f, $"bands for 2.5 m: stop {st:F1} / resume {rs:F1} / too close {tc:F1}");

@@ -437,14 +437,16 @@ public static partial class Program
         {
             try
             {
+                string lastResult = null;
                 for (int n = 1; n <= EmbeddedReloginMax; n++)
                 {
-                    var d = EmbeddedReloginDelayAfter(n, kicked, afterFork);
+                    var d = EmbeddedReloginDelayAfterFailure(n, kicked, afterFork, lastResult);
                     Log("disconnect", $"auto-relogin {n}/{EmbeddedReloginMax} in {d.TotalSeconds:F0} s (MCP connector: no supervisor relaunch)");
                     await Task.Delay(d);
                     var go = EmbeddedReloginDecision(DeliberateStopRequested(), LoggedIn, gen, Interlocked.Read(ref reloginGen), loginGate.CurrentCount == 0);
                     if (go != "go") { Log("disconnect", $"auto-relogin {n}: {go}"); return; }
                     var r = await LoginAsync();
+                    lastResult = r;
                     Log("disconnect", $"auto-relogin {n}: {r}");
                     if (r.StartsWith("OK")) return;
                 }

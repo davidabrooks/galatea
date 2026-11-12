@@ -38,7 +38,7 @@ public class VmForkWatchTests   // 2026-11-02 13:02 / 14:43 PT drops after host 
         var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory); while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent;
         var rr = System.IO.File.ReadAllText(System.IO.Path.Combine(d!.FullName, "textclient/galatay-text/RegionRestart.cs"));
         var prog = System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, "textclient/galatay-text/Program.cs"));
-        Assert.Contains("EmbeddedReloginDelayAfter(n, kicked, afterFork)", rr);
+        Assert.Contains("EmbeddedReloginDelayAfterFailure(n, kicked, afterFork, lastResult)", rr);
         Assert.Contains("EmbeddedReloginDecision(DeliberateStopRequested()", rr);
         Assert.Contains("await LoginAsync()", rr);
         Assert.Contains("StartVmForkWatch();", prog);

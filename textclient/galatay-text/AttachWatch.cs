@@ -156,6 +156,7 @@ public static partial class Program
             foreach (var kv in started)
             {
                 if (log) AnimLogWrite(AnimLogMsg(prev.ContainsKey(kv.Key) ? "RESTART" : "start", AnimName(kv.Key), kv.Value.Item1, SrcDesc(kv.Value.Item2), !AnimLogFull));
+                try { TypingNoteAnimStarted(kv.Key, kv.Value.Item2, SrcDesc(kv.Value.Item2)); } catch { }  // InstantReplies.cs: typist AO/head anims must not play
                 GestureNoteAnimStarted(kv.Key);   // Gestures.cs: "wait for animations" needs to know it really started
                 if (GestureAnimOwnedNow(kv.Key)) continue;   // a gesture's animation is never an AO stand/sit or a seat-off animation
                 try { AoNoteStarted(kv.Key, kv.Value.Item2, now.Keys); } catch { }   // AoSit.cs: an AO animation that starts in plain standing is a stand animation

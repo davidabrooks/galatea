@@ -7,10 +7,12 @@
 //    '--re' on it is refused. Anything else (questions, chatty lines, failed actions, quiet mode) goes to the routine.
 //    If he has just logged in and I have not said anything since, the greeting is folded into the reply ("Hi babe! On it!").
 // 2. Typing: the human-like pause before a reply is unchanged (FastTypingDelayMs). The typing indicator is
-//    sent (nearby: ChatType.Start/StopTyping; IM: InstantMessageDialog.Start/StopTyping). The TYPE animation
-//    is never started (2026-11-11 David). After StartTyping we send AnimationStop(TYPE), like Firestorm with
-//    "play typing animation" off, in case the sim starts the anim from the typing chat.
+//    sent; the typing animation must never play (2026-11-11 David). We mirror Firestorm with PlayTypingAnim
+//    off (llagent.cpp LLAgent::startTyping / stopTyping): StartTyping chat / IM typing dialog, never
+//    AnimationStart(TYPE), always AnimationStop(TYPE) on nearby stop. Worn typist AOs that fire on
+//    AGENT_TYPING are stopped while the nearby indicator is on (see TypingIsTypistAnim).
 // 'instant [status|test <text>]'.
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using LibreMetaverse;
@@ -190,10 +192,34 @@ public static partial class Program
 
     // ---- typing indicator -----------------------------------------------------------------------------------
     // 2026-11-11 David: send the typing indicator, but never play the typing animation.
-    // The delay before a reply stays. Pure helper is unit-tested.
+    // Mirror Firestorm with PlayTypingAnim off (indra/newview/llagent.cpp):
+    //   LLAgent::startTyping: if (PlayTypingAnim) sendAnimationRequest(ANIM_AGENT_TYPE, START);
+    //     always sendChatFromViewer("", CHAT_TYPE_START) — the indicator.
+    //   LLAgent::stopTyping: always sendAnimationRequest(ANIM_AGENT_TYPE, STOP) and CHAT_TYPE_STOP.
+    //   IM typing (llimview.cpp pack_instant_message IM_TYPING_START/STOP) does not start TYPE.
+    // Nearby: ChatType.Start/StopTyping, and AnimationStop(TYPE) (never AnimationStart).
+    // IM: the typing dialog only.
+    // PR 458 already did that. At 17:10 PT ANIM_AGENT_TYPE was not started (anim-events.log).
+    // What David still saw: StartTyping sets AGENT_TYPING, and worn typist scripts started
+    // 7513cd69 (Vista AO HUD @HUDCenter) and e352f82b (EvoX head @Chin) until the reply.
+    // We AnimationStop those, and any attachment typist that starts in the AGENT_TYPING window,
+    // while the nearby indicator is on. The delay before a reply stays. Pure helpers are unit-tested.
     internal const bool TypingIndicatorEnabled = true;
     static readonly TimeSpan TypingMax = TimeSpan.FromSeconds(90);
+    internal const double TypingOverrideWindowSec = 1.5;
+    // Observed 2026-11-11 17:10–17:11 in anim-events.log, in lockstep with [typing] started/stopped.
+    internal static readonly UUID TypingAnimVistaAo = new("7513cd69-a25b-1ae0-5546-5aa94b4660b8");
+    internal static readonly UUID TypingAnimEvoxHead = new("e352f82b-6253-c6a4-192b-bf5dafd48ca5");
+    static readonly ConcurrentDictionary<UUID, byte> typistOverrideAnims = TypingSeedOverrides();
+    static ConcurrentDictionary<UUID, byte> TypingSeedOverrides()
+    {
+        var d = new ConcurrentDictionary<UUID, byte>();
+        d.TryAdd(TypingAnimVistaAo, 0);
+        d.TryAdd(TypingAnimEvoxHead, 0);
+        return d;
+    }
     static int typingGen; static volatile bool typingOn; static bool typingIm;
+    static DateTime typingStartedUtc;
     // What would be sent to the sim for a typing start/stop. Empty when disabled.
     // Nearby chat: ChatType.Start/StopTyping, and AnimationStop(TYPE) (never AnimationStart).
     // IM: the typing dialog only (no animation, like a viewer).
@@ -202,10 +228,54 @@ public static partial class Program
         if (!enabled) return Array.Empty<string>();
         if (im) return new[] { on ? "im-start-typing" : "im-stop-typing" };
         // Firestorm with PlayTypingAnim off still sends the typing chat; stopTyping always stops TYPE.
-        // We also stop TYPE right after StartTyping, in case the sim starts the anim from that chat.
+        // We also stop TYPE right after StartTyping, in case anything starts it from that chat.
         return on
             ? new[] { "chat-start-typing", "anim-type-stop" }
             : new[] { "chat-stop-typing", "anim-type-stop" };
+    }
+    // Pure: stop this animation so a typist pose never plays. known is TYPE-overrides already identified
+    // (Vista AO / EvoX head, plus ones learned this session). Callers exclude gestures and seat poses.
+    internal static bool TypingIsTypistAnim(UUID id, bool fromAttachment, double secondsSinceTypingStart, IReadOnlyCollection<UUID> known)
+    {
+        if (id == UUID.Zero) return false;
+        if (id == Animations.TYPE) return true;
+        if (known != null && known.Contains(id)) return true;
+        return fromAttachment && secondsSinceTypingStart >= 0 && secondsSinceTypingStart <= TypingOverrideWindowSec;
+    }
+    internal static IReadOnlyCollection<UUID> TypingKnownOverrides() => typistOverrideAnims.Keys.ToArray();
+    // Called from OnAvatarAnimation when one of our animations starts or restarts.
+    static void TypingNoteAnimStarted(UUID id, UUID src, string srcDesc)
+    {
+        try
+        {
+            if (!TypingIndicatorEnabled || !typingOn || typingIm || !LoggedIn) return;
+            if (GestureAnimOwnedNow(id)) return;
+            if (src != UUID.Zero && IsSeatSource(src)) return;
+            var fromAtt = src != UUID.Zero && src != client.Self.AgentID;
+            var sec = (DateTime.UtcNow - typingStartedUtc).TotalSeconds;
+            if (!TypingIsTypistAnim(id, fromAtt, sec, typistOverrideAnims.Keys.ToArray())) return;
+            typistOverrideAnims.TryAdd(id, 0);
+            client.Self.AnimationStop(id, true);
+            Log("typing", $"stopped typist anim {AnimName(id)} from {srcDesc}");
+        }
+        catch (Exception ex) { Log("typing", "suppress error: " + ex.Message); }
+    }
+    static void TypingStopPlayingTypistAnims()
+    {
+        if (!typingOn || typingIm || !LoggedIn) return;
+        try
+        {
+            List<UUID> playing;
+            try { playing = client.Self.SignaledAnimations.Keys.ToList(); }
+            catch { return; }
+            var known = typistOverrideAnims.Keys.ToArray();
+            foreach (var id in playing)
+            {
+                if (!TypingIsTypistAnim(id, fromAttachment: false, secondsSinceTypingStart: double.MaxValue, known)) continue;
+                client.Self.AnimationStop(id, true);
+            }
+        }
+        catch (Exception ex) { Log("typing", "sweep error: " + ex.Message); }
     }
     static void TypingStart(bool im)
     {
@@ -216,8 +286,19 @@ public static partial class Program
             if (!typingOn || typingIm != im)
             {
                 if (typingOn) TypingSend(false);
-                typingIm = im; typingOn = true; TypingSend(true);
+                typingIm = im; typingOn = true; typingStartedUtc = DateTime.UtcNow; TypingSend(true);
                 Log("typing", $"started ({(im ? "IM" : "nearby chat")} from David; until my reply or {TypingMax.TotalSeconds:F0} s)");
+                if (!im)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        for (int i = 0; i < 10 && gen == typingGen && typingOn && !typingIm; i++)
+                        {
+                            await Task.Delay(200);
+                            TypingStopPlayingTypistAnims();
+                        }
+                    });
+                }
             }
             _ = Task.Run(async () => { await Task.Delay(TypingMax); if (gen == typingGen && typingOn) TypingStop("90 s without a reply"); });
         }

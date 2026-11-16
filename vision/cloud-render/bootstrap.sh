@@ -12,8 +12,8 @@ apt-get install -y -qq --no-install-recommends python3 python3-pip curl xz-utils
   libx11-6 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 libgl1 libegl1 libglvnd0 \
   libvulkan1 libxext6 >/dev/null
 pip3 install -q --no-cache-dir runpod==1.7.* pillow >/dev/null
-BL=blender-4.5.15-linux-x64
-BL_SHA256=0d2b8bb2efe97e6c8eb57de6b7322f8800e1984e3125b60decca5f6771e4773e   # download.blender.org/release/Blender4.5/blender-4.5.15.sha256
+BL=blender-4.5.16-linux-x64
+BL_SHA256=23432b064977908beb1ab4b7f32f024e7331105c875c187dce002aff84b10c11   # download.blender.org/release/Blender4.5/blender-4.5.16.sha256
 if [ ! -x /opt/$BL/blender ]; then
   curl -sfL https://download.blender.org/release/Blender4.5/$BL.tar.xz -o /tmp/$BL.tar.xz
   echo "$BL_SHA256  /tmp/$BL.tar.xz" | sha256sum -c --quiet -

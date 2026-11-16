@@ -19,7 +19,7 @@ import handler, make_job  # texture fetch (CDN, capped) + bake decode / region s
 MESHER = os.environ.get("SCENE_MESHER", "/home/box/tools/scene-mesher/SceneMesher.dll")
 # the text client's supervisor may not have dotnet on PATH (2026-10-04: "nice: 'dotnet': No such file"); DOTNET_ROOT is set
 DOTNET = shutil.which("dotnet") or os.path.join(os.environ.get("DOTNET_ROOT", "/home/box/.dotnet"), "dotnet")
-BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.5.15-linux-x64/blender")
+BLENDER = os.environ.get("BLENDER", "/home/box/tools/blender-4.5.16-linux-x64/blender")
 OUT = os.environ.get("GT_LOOK_OUT", "/workspace/secondlife/vision/look")
 WORK = os.environ.get("GT_LOOK_WORK", "/workspace/secondlife/vision/look-work")  # tex/ doubles as the CDN texture cache
 VIEWS = {"view": "", "around": "eye;eye:90;eye:180;eye:-90"}

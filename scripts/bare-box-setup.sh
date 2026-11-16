@@ -13,8 +13,9 @@
 # if a live text-client build or a deliberate-stop marker is already present, so it is safe to
 # syntax-check and --dry-run on a live box. Do not run it destructively against a live avatar host.
 #
-# Pins (2026-11-10):
-#   .NET SDK 10.0.403
+# Pins (2026-11-15):
+#   .NET SDK 10.0.404 (runtime 10.0.15) linux-x64  sha512 from builds.dotnet.microsoft.com release metadata
+#     (no dotnet-install.sh: the SDK tarball is downloaded directly and SHA512-checked; .NET 8 is EOL and not installed)
 #   LibreMetaverse via scripts/ci-setup-libremetaverse.sh (PIN in that script)
 #   Firestorm 7.2.5.81788  sha256 c9a0dbb1c4076f177ac2ff5e1b62d8fdc58254f04deb854baeb3520c53b5b3da
 #   Blender 4.5.15 linux-x64  sha256 0d2b8bb2efe97e6c8eb57de6b7322f8800e1984e3125b60decca5f6771e4773e
@@ -24,7 +25,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 DOTNET_DIR="${DOTNET_ROOT:-/home/box/.dotnet}"
-SDK_VERSION="10.0.403"
+SDK_VERSION="10.0.404"
+SDK_TAR="dotnet-sdk-${SDK_VERSION}-linux-x64.tar.gz"
+SDK_SHA512="577d0eb17fec33d029104c5c63a1ab0accc3e28776274abef2218dbac5af18d2109b5406d26b31d76f5c245215e3ba0926a94c20246c672c41847c9e1eb1dc50"
+SDK_URL="https://builds.dotnet.microsoft.com/dotnet/Sdk/${SDK_VERSION}/${SDK_TAR}"
 VIEWERS="${GALATEA_VIEWERS:-/home/box/viewers}"
 TC="$VIEWERS/textclient"
 TOOLS="${GALATEA_TOOLS:-/home/box/tools}"
@@ -116,14 +120,33 @@ dotnet_ok() {
 if dotnet_ok; then
   log ".NET SDK $SDK_VERSION already installed"
 else
-  log "installing .NET SDK $SDK_VERSION"
-  inst="$ROOT/textclient/dotnet-install.sh"
-  if [[ ! -f "$inst" ]]; then
-    run curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-    inst=/tmp/dotnet-install.sh
-    (( DRY )) || chmod +x "$inst"
+  # Direct SDK tarball, SHA512-checked against the pin above (taken from the official release metadata
+  # https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json and the matching
+  # checksums/<runtime>-sha.txt). Never pipe an unverified installer script.
+  log "installing .NET SDK $SDK_VERSION (sha512-checked tarball)"
+  sdk_tmp="${TMPDIR:-/tmp}/$SDK_TAR"
+  if [[ -f "$sdk_tmp" ]]; then
+    log "already have $sdk_tmp"
+  else
+    run curl -fL --retry 3 -o "$sdk_tmp" "$SDK_URL"
   fi
-  run bash "$inst" --version "$SDK_VERSION" --install-dir "$DOTNET_DIR"
+  if (( DRY )); then
+    log "DRY: would sha512sum-check $sdk_tmp against $SDK_SHA512, then tar -xzf into $DOTNET_DIR --skip-old-files"
+  else
+    got=$(sha512sum "$sdk_tmp" | awk '{print $1}')
+    if [[ "$got" != "$SDK_SHA512" ]]; then
+      echo "SHA512 mismatch for $sdk_tmp" >&2
+      echo "expected $SDK_SHA512" >&2
+      echo "got      $got" >&2
+      rm -f "$sdk_tmp"
+      exit 4
+    fi
+    log "sha512 OK $sdk_tmp"
+    mkdir -p "$DOTNET_DIR"
+    # side by side: keep existing SDKs/runtimes; --skip-old-files keeps an existing dotnet host
+    tar -xzf "$sdk_tmp" -C "$DOTNET_DIR" --skip-old-files
+    dotnet_ok || { echo ".NET SDK $SDK_VERSION not listed after extract" >&2; exit 4; }
+  fi
 fi
 export DOTNET_ROOT="$DOTNET_DIR" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 export PATH="$DOTNET_DIR:$PATH"

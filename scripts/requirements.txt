@@ -1,4 +1,5 @@
 # Python packages for /workspace/secondlife/.venv (rebuilt by scripts/ensure-venv.sh; the venv itself is NOT backed up).
+# 2026-11-15: pillow 12.3.0 -> 13.0.0 (12.3.0 had 62 OSV advisories, all fixed in 13.0.0; overhead.py output checked).
 # Used by scripts/overhead.py: the text client's `overhead` command and the 10-min wander snapshot
 # (galatay-text RouteNav.cs: GT_PY=/workspace/secondlife/.venv/bin/python, GT_OVERHEAD_PY=scripts/overhead.py).
-pillow==12.3.0
+pillow==13.0.0

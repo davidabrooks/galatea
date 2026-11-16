@@ -41,4 +41,6 @@ apply "$TC/libremetaverse-zlogger.patch"
 apply "$TC/libremetaverse-utf8stringinterpolation.patch"    # 2026-11-09: overrides live in LibreMetaverse.Assets (ZLogger/MessagePack moved there in 3.2.0)
 apply "$TC/libremetaverse-system-io-hashing.patch"
 apply "$TC/libremetaverse-stringtools.patch"               # 2026-11-08: transitive override Microsoft.NET.StringTools 18.11.0 (MessagePack floor 17.11.4)
+apply "$TC/libremetaverse-crossing-early-complete.patch"   # 2026-11-15: backport 8c357619 — complete a crossing whose MovementComplete arrives during Connect
+apply "$TC/libremetaverse-mesh-texdomain.patch"            # 2026-11-15: backport 8473aaaf — decode a mesh whose texture domain is not finite
 echo "LibreMetaverse ready at $DEST @ $PIN (patched)"

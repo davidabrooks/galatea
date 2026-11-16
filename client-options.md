@@ -29,7 +29,7 @@ Leak check: /workspace/secondlife/scripts/leak-count.py found the password 0 tim
 
 ## 2. LibreMetaverse (C#, github.com/cinderblocks/libremetaverse)
 - Maintenance: active. Last commit on master is 2026-09-14 (PR #187). NuGet `LibreMetaverse` 3.1.6. Targets net8/9/10. Uses namespace `LibreMetaverse` (renamed from OpenMetaverse).
-- Install (no root): .NET SDK 8.0.425 and 10.0.401 via dotnet-install.sh into ~/.dotnet. The source is at /home/box/viewers/textclient/src-libremetaverse (it needs SDK 10 because restore covers net9/10). Build time is about 1 min.
+- Install (no root): .NET SDK into ~/.dotnet (2026-11-15: SDK 10.0.404 / runtime 10.0.15 via scripts/bare-box-setup.sh, sha512-checked tarball; .NET 8 removed, EOL 2026-11-10). The source is at /home/box/viewers/textclient/src-libremetaverse (it needs SDK 10 because restore covers net9/10). Build time is about 1 min.
 - TestClient: builds fine (net10). I did **not** log in with it because it only accepts the password via `--pass` (argv) or a plain-text `--file`, and both break the password rules. It has the same library and login code as my clients. Its commands include say/im/siton/stand/follow/goto/moveto/findobjects/uploadscript/createnotecard/import/export/derez.
 - **galatay-text** (my daemon): a background process, with commands sent over a Unix socket and events written to a log.
 - **galatay-mcp** (Sophie-style MCP server): the same core with the MCP stdio transport (ModelContextProtocol 2.2.0 from 2026-08-13, plus Microsoft.Extensions.Hosting 10). It has 20 tools and a `poll_events` queue. The JSON-RPC test drives it end to end.

@@ -165,7 +165,7 @@
     <Compile Include="../galatay-text/Roam.cs" Link="Core/Roam.cs" />
     <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
     <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.15" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../SlTextureVision/SlTextureVision.csproj" /> <!-- texture save / faces / vendor look (TextureCmds.cs) -->

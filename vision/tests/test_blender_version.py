@@ -1,9 +1,9 @@
-"""2026-11-09: Blender 4.2.3 (EOL) -> 4.5.15 LTS. Every default path and the Runpod bootstrap name the same build, and
+"""2026-11-09: Blender 4.2.3 (EOL) -> 4.5.15 LTS; 2026-11-15: 4.5.16 LTS. Every default path and the Runpod bootstrap name the same build, and
 render_mesh drops degenerate triangles (a repeated vertex) before Mesh.update(): Blender 4.5 segfaulted there on them."""
 import os, re
 
 V = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BUILD = "blender-4.5.15-linux-x64"
+BUILD = "blender-4.5.16-linux-x64"
 
 
 def _src(*p):

@@ -185,7 +185,7 @@ git clone https://github.com/davidabrooks/galatea.git /tmp/galatea
 bash /tmp/galatea/scripts/bare-box-setup.sh
 #     That installs .NET 10.0.404 (sha512-checked), clones/sets up the repo and LibreMetaverse, builds the text client
 #     and MCP connector (build-all.sh --stage-mcp), copies launchers, installs Firestorm 7.2.5
-#     (sha256-checked), the apt fs-extra packages, Blender 4.5.15 (sha256-checked), scene-mesher,
+#     (sha256-checked), the apt fs-extra packages, Blender 4.5.16 (sha256-checked), scene-mesher,
 #     the voice sidecar, and the Python venv (ensure-venv.sh).
 
 # 6c. overlay last night's state (settings, notes, routes, shapes, Firestorm settings, backup scripts):
@@ -195,7 +195,7 @@ mkdir -p /tmp/sls && tar -xzf /tmp/drv/latest-state.tar.gz -C /tmp/sls && cp -a 
 If `scripts/bare-box-setup.sh` is not yet on the clone you have, follow its comments in the repo or
 run the same steps by hand (dotnet 10.0.404, `scripts/ci-setup-libremetaverse.sh`,
 `textclient/build-all.sh --stage-mcp`, launchers, Firestorm 7.2.5, apt packages in
-`meta/fs-extra-debs.txt` / the script, Blender 4.5.15, scene-mesher, voice `install.sh`,
+`meta/fs-extra-debs.txt` / the script, Blender 4.5.16, scene-mesher, voice `install.sh`,
 `scripts/ensure-venv.sh`) and then do 6c.
 
 Then section 3 (password via secure request, webhook, connector, daemon, hooks).

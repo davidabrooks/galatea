@@ -18,7 +18,7 @@
 #     (no dotnet-install.sh: the SDK tarball is downloaded directly and SHA512-checked; .NET 8 is EOL and not installed)
 #   LibreMetaverse via scripts/ci-setup-libremetaverse.sh (PIN in that script)
 #   Firestorm 7.2.5.81788  sha256 c9a0dbb1c4076f177ac2ff5e1b62d8fdc58254f04deb854baeb3520c53b5b3da
-#   Blender 4.5.15 linux-x64  sha256 0d2b8bb2efe97e6c8eb57de6b7322f8800e1984e3125b60decca5f6771e4773e
+#   Blender 4.5.16 linux-x64  sha256 23432b064977908beb1ab4b7f32f024e7331105c875c187dce002aff84b10c11
 # Photos/screenshots/renders are not part of this restore.
 set -euo pipefail
 
@@ -39,9 +39,9 @@ FS_TAR="${FS_NAME}.tar.xz"
 FS_SHA256="c9a0dbb1c4076f177ac2ff5e1b62d8fdc58254f04deb854baeb3520c53b5b3da"
 FS_URL="https://downloads.firestormviewer.org/release/linux/${FS_TAR}"
 
-BLENDER_VER="4.5.15"
+BLENDER_VER="4.5.16"
 BLENDER_TAR="blender-${BLENDER_VER}-linux-x64.tar.xz"
-BLENDER_SHA256="0d2b8bb2efe97e6c8eb57de6b7322f8800e1984e3125b60decca5f6771e4773e"
+BLENDER_SHA256="23432b064977908beb1ab4b7f32f024e7331105c875c187dce002aff84b10c11"
 BLENDER_URL="https://download.blender.org/release/Blender4.5/${BLENDER_TAR}"
 
 FS_APT=(libasound2-plugins libfftw3-single3 libglu1-mesa libopengl0 libpulsedsp

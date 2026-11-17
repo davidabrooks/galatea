@@ -90,6 +90,7 @@ public static partial class Program
     static async Task<string> CollarStealthPrepare(bool want, string why)
     {
         if (LoginBrokenStop("collar") is string broken) return broken;
+        if (await CollarScriptsSkip(why) is string skip) return skip;   // CollarScripts.cs: no-scripts / group-only parcel
         if (!await CollarMenuEnter()) return "collar menu busy";
         bool keep = false;
         try
@@ -143,6 +144,8 @@ public static partial class Program
             }
             finally { stealthLock.Release(); }
         }
+        // 2026-11-16 (David t3387u): no touch where my attachments' scripts cannot run (Bonifacio 'Welcome Area', scripts=group)
+        if (await CollarScriptsSkip(why) is string skip) return (skip, null);
         if (!await CollarMenuEnter()) return ("collar menu busy for 90 s", null);
         try
         {
@@ -200,7 +203,7 @@ public static partial class Program
         if (!IsAndroidOutfit(outfit)) return;
         _ = Task.Run(async () =>
         {
-            try { await Task.Delay(6000); Log("collar", $"android outfit '{outfit}': " + await CollarStealthOn("outfit " + outfit)); }
+            try { await Task.Delay(6000); var r = await CollarStealthOn("outfit " + outfit); if (!CollarSkippedForScripts(r)) Log("collar", $"android outfit '{outfit}': " + r); }
             catch (Exception ex) { Log("collar", "stealth after outfit failed: " + ex.GetBaseException().Message); }
         });
     }

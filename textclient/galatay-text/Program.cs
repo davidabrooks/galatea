@@ -1772,6 +1772,7 @@ public static partial class Program
   landmark create <name> | landmark list | landmark raw <name> | landmark tp <name|item uuid> [pos] [force]   landmarks (pos = teleport to the exact stored position instead of the landmark request; raw = stored asset text)
   sethome                     set home to the current spot; prints the server's reply (e.g. refused off your own/group land)
   parcel [x y]                teleport routing, landing point, owner/group and whether Galatay may ignore the landing point
+  collar scripts              can my collar's scripts run on this parcel? (the collar Stealth steps skip when not)
   parcel_info [x y]            current parcel (or at x,y): name, owner, area, scripts/build/fly/push/damage/voice/access, music/media URL presence
   worn links <attachment|ao>  every prim of a worn attachment/HUD: link no., local id, name, description, faces, touch flag
   material set <prim local id> <faces 0,2|all> <pbr material uuid|none> | material get <local id>   PBR material on faces of one prim of her own worn attachment (ModifyMaterialParams; logs undo)
@@ -2063,6 +2064,7 @@ public static partial class Program
             case "rlv": return RlvCmdText(a);   // Rlv.cs
             case "idlepose": return await IdlePoseCmd(a);   // IdlePose.cs
             case "collar" when a.Length == 1 && a[0] == "stealth": return await CollarStealthOn("command");   // CollarStealth.cs
+            case "collar" when a.Length == 1 && a[0] == "scripts": return "collar: " + (await CollarScriptsCheck()).Summary;   // CollarScripts.cs
             case "invdump": return await InvDumpCmd(a);   // InvDump.cs
             case "veil" when a.Length >= 1 && a[0] == "create": return await LoginVeilCreateCmd(a);   // LoginVeilCreate.cs
             case "landmark": case "landmarks": case "lm": return await LandmarkCmd(a, rest);

@@ -64,6 +64,8 @@ internal static class LoginVeil
     internal static (bool confirmed, string line) CollarLogoutReport(string result, bool? lastSeenOn)
     {
         var r = result ?? "no result (the step hit its cap)";
+        // 2026-11-16 (David t3387u): scripts off for me on this parcel -> the collar was not touched; said plainly, not a WARNING
+        if (Program.CollarSkippedForScripts(r)) return (false, "collar " + r);
         bool ok = r.Contains("now invisible") || r.Contains("already invisible");
         return (ok, ok ? $"collar Stealth confirmed on ({r})"
                        : $"WARNING: collar Stealth NOT confirmed before the veil ({r}); last state the collar showed: {(lastSeenOn == null ? "never seen this session" : lastSeenOn.Value ? "Stealth on" : "Stealth off (visible)")}");
@@ -485,7 +487,7 @@ public static partial class Program
             var m = LoginVeil.CollarMarker(wasOn, r);
             File.WriteAllText(LoginVeilCollarFile, m + "\n");
             var (ok, line) = LoginVeil.CollarLogoutReport(r, collarSeen?.On);
-            Log(ok ? "login-veil" : "warn", $"collar for logout: {line} (waits {w} ms; was {(wasOn == null ? "unknown" : wasOn.Value ? "already hidden" : "visible")}{(read == null && wasOn != null ? $" per the last read, {seen0.Why} at {seen0.At:HH:mm:ss}" : "")}; login: {(m == "show" ? "show it after the veil-off bake" : "leave as is")})");
+            Log(ok ? "login-veil" : CollarSkippedForScripts(r) ? "collar" : "warn", $"collar for logout: {line} (waits {w} ms; was {(wasOn == null ? "unknown" : wasOn.Value ? "already hidden" : "visible")}{(read == null && wasOn != null ? $" per the last read, {seen0.Why} at {seen0.At:HH:mm:ss}" : "")}; login: {(m == "show" ? "show it after the veil-off bake" : "leave as is")})");
             logoutCollarReport.TrySetResult(line);
         }
         catch (Exception ex) { Log("warn", "collar stealth for logout failed: " + ex.GetBaseException().Message); logoutCollarReport.TrySetResult("WARNING: collar Stealth step failed: " + ex.GetBaseException().Message); }
@@ -521,6 +523,7 @@ public static partial class Program
                 var (r, _) = await CollarStealthSet(false, "login veil off");
                 Log("login-veil", "collar after the veil-off bake: " + r);
                 if (r.Contains(" visible")) { File.Delete(f); return; }
+                if (CollarSkippedForScripts(r)) { Log("login-veil", "collar stays hidden for now: scripts are off for me on this parcel (the show marker is kept)"); return; }
                 await Task.Delay(5000);
             }
         }

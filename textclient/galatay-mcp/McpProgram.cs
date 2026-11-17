@@ -306,8 +306,11 @@ public sealed class SlTools
     public static Task<string> GroupLeave([Description("exact group name or uuid")] string group) => R("group leave " + Clean(group));
     [McpServerTool(Name = "texture_save"), Description("READ-ONLY: download one texture by uuid and save it as a PNG under /workspace/secondlife/textures/ (e.g. to read a HUD's button labels).")]
     public static Task<string> TextureSave(string uuid) => R("texture save " + Clean(uuid));
-    [McpServerTool(Name = "collar_stealth"), Description("Make my N° 9 collar invisible: its own menu About -> Stealth, pressed only if not already on. Changes nothing else.")]
+    [McpServerTool(Name = "collar_stealth"), Description("Make my N° 9 collar invisible: its own menu About -> Stealth, pressed only if not already on. Changes nothing else. Skipped (collar untouched) on a parcel where my scripts cannot run; see collar_scripts.")]
     public static Task<string> CollarStealth() => R("collar stealth");
+
+    [McpServerTool(Name = "collar_scripts", ReadOnly = true), Description("READ-ONLY: can my worn collar's scripts run on the parcel I stand on? Uses the parcel's script flags (no-scripts / group-only needs my active group to be the parcel group), the region's disable-scripts flag and parcel ownership. Every collar Stealth step skips the collar when they cannot.")]
+    public static Task<string> CollarScripts() => R("collar scripts");
 
     [McpServerTool(Name = "leash_status"), Description("Am I leashed (N° 9 collar chain) or following someone on the collar's follow mode? Who holds it, strict or not, distance, walk distance.")]
     public static Task<string> LeashStatus() => R("leash status");

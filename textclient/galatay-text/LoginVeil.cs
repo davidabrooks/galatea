@@ -607,6 +607,8 @@ public static partial class Program
     }
 
     /// <summary>Login: take the veil off as soon as the outfit's garments are attached and Ready (LoginVeil.Release); put the stash back.</summary>
+    /// <summary>Pure (tested): the outfit the +N s login fallback may wear. Never one when an android outfit was worn at logout.</summary>
+    internal static string LoginFallbackOutfit(bool androidAtLogout, string lastClothed) => androidAtLogout || string.IsNullOrWhiteSpace(lastClothed) ? null : lastClothed.Trim();
     static void LoginVeilStart()
     {
         int gen = Interlocked.Increment(ref loginVeilGen); var t0 = DateTime.Now;
@@ -620,6 +622,7 @@ public static partial class Program
         // and quit at +0.0 s. The veil state is set first now.
         loginVeilOffAt = id != UUID.Zero ? DateTime.MaxValue : DateTime.MinValue;
         if (id != UUID.Zero) { _ = LoginVeilEvoxPrepare(t0); _ = Task.Run(() => LoginVeilCollarPrepare(t0)); }
+        var androidLogin = AndroidAtLogout(stash);   // 2026-11-16 (David): an android login never changes outfits on its own
         var usual = stash.Count == 0 ? null : LoginVeilUsualAtLogin(stash, loginVeilStashAt);
         if (usual != null) { Log("login-veil", "login outfit: " + usual.Why); stash = usual.Stash; }
         var (early, late) = LoginVeil.SplitStash(stash); loginVeilHoldTries.Clear();
@@ -679,8 +682,9 @@ public static partial class Program
                     if (stash.Count > 0 && !retried && now >= LoginVeil.RetryAttachSec) { retried = true; _ = Task.Run(async () => { try { await LoginVeilAttach(early, "retry", ct, pre); } catch { } }); }
                     if (stash.Count > 0 && !fellBack && now >= LoginVeil.OutfitFallbackSec && early.Any(x => LoginVeil.Waits(x.Name) && !worn.Contains(x.Item)))
                     {
-                        fellBack = true; var last = LastClothedOutfit();
-                        Log("login-veil", $"stash clothes still not back at +{now:F0} s: wearing the last clothed outfit '{last ?? "-"}'");
+                        fellBack = true; var last = LoginFallbackOutfit(androidLogin, LastClothedOutfit());
+                        Log("login-veil", androidLogin ? $"stash pieces still not back at +{now:F0} s: android outfit at logout, so no fallback outfit (the retry attach keeps going)"
+                            : $"stash clothes still not back at +{now:F0} s: wearing the last clothed outfit '{last ?? "-"}'");
                         if (!string.IsNullOrWhiteSpace(last)) _ = Task.Run(async () => { try { Log("login-veil", "fallback outfit: " + (await WearOutfitWithHuds(last)).Replace("\n", " | ")); } catch (Exception ex) { Log("login-veil", "fallback outfit failed: " + ex.GetBaseException().Message); } });
                     }
                     // the waited list: the COF links, or (COF not read yet) the stash's own clothes, so a slow COF read never holds the veil

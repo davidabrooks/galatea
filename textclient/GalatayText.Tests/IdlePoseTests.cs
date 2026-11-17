@@ -255,15 +255,33 @@ public class IdlePoseTests
         var sw = src[src.IndexOf("static async Task<string> AoGroundSitSwitch()")..]; sw = sw[..sw.IndexOf("\n    }\n")];
         Assert.DoesNotContain("SitOnGround", sw); Assert.DoesNotContain("Stand()", sw); Assert.DoesNotContain("AoGroundSitToggle", sw);   // never re-sits
     }
-    [Fact] public void AndroidDefault_NeverVTechUnlessAskedByName()   // 2026-10-23 David: "never the vtech outfit unless I ask"
+    static readonly string[] MyOutfits = { "ARTi'S Strapless Top", "ARTi'S Strapless Top shorts", "Android", "Android Base", "Bikini", "Bikini top jeans", "Bikini top shorts", "Naked", "PCP Beth Tube Top", "PCP Beth Tube Top shorts" };
+    [Fact] public void OutfitName_ExactMatchBeatsGuardAndPrefix()   // 2026-11-16 15:54: 'outfit wear Android' wore 'Android Base'
     {
-        Assert.Equal("Android Base", Program.OutfitGuardResolve("Android", "Android"));          // the V-Tech folder is named 'Android'
-        Assert.Equal("Android Base", Program.OutfitGuardResolve("android form", null));
-        Assert.Equal("Android Base", Program.OutfitGuardResolve("andr", "Android"));             // partial match landing on V-Tech
-        Assert.Equal("Android", Program.OutfitGuardResolve("Android VTech", null));              // explicit V-Tech request
-        Assert.Equal("Android", Program.OutfitGuardResolve("v-tech", null));
-        Assert.Null(Program.OutfitGuardResolve("Android Base", "Android Base"));
-        Assert.Null(Program.OutfitGuardResolve("Beach", "Beach"));
+        Assert.Equal("Android", Program.ResolveOutfitName("Android", MyOutfits).Name);          // the V-Tech folder, asked for by its exact name
+        Assert.Equal("Android", Program.ResolveOutfitName("android", MyOutfits).Name);          // case-insensitive exact
+        Assert.Equal("Android", Program.ResolveOutfitName(" \"Android\" ", MyOutfits).Name);
+        Assert.Equal("Android Base", Program.ResolveOutfitName("Android Base", MyOutfits).Name);
+        Assert.Equal("Bikini", Program.ResolveOutfitName("Bikini", MyOutfits).Name);            // exact beats 'Bikini top ...'
+        Assert.Equal("PCP Beth Tube Top", Program.ResolveOutfitName("pcp beth tube top", MyOutfits).Name);
+    }
+    [Fact] public void OutfitName_AmbiguousPartialIsNotChosen()
+    {
+        var r = Program.ResolveOutfitName("Bikini top", MyOutfits);
+        Assert.Null(r.Name); Assert.Equal(new[] { "Bikini top jeans", "Bikini top shorts" }, r.Ambiguous);
+        Assert.Null(Program.ResolveOutfitName("Tube", MyOutfits).Name);
+        Assert.Equal("Naked", Program.ResolveOutfitName("nak", MyOutfits).Name);                 // a single partial match is fine
+        Assert.Null(Program.ResolveOutfitName("Tuxedo", MyOutfits).Name); Assert.Empty(Program.ResolveOutfitName("Tuxedo", MyOutfits).Ambiguous);
+    }
+    [Fact] public void AndroidDefault_NeverVTechUnlessAskedByName()   // 2026-10-23 David: "never the vtech outfit unless I ask" (non-exact requests)
+    {
+        Assert.Equal("Android Base", Program.ResolveOutfitName("android form", MyOutfits).Name);
+        Assert.Equal("Android Base", Program.ResolveOutfitName("robot", MyOutfits).Name);
+        Assert.Equal("Android Base", Program.ResolveOutfitName("andr", MyOutfits).Name);       // partial matching both android outfits -> default
+        Assert.Equal("Android Base", Program.ResolveOutfitName("droid", new[] { "Android", "Android Base" }).Name);
+        Assert.Equal("Android Base", Program.ResolveOutfitName("ndroid", new[] { "Android", "Android Base", "Bikini" }).Name);
+        Assert.Equal("Android", Program.ResolveOutfitName("Android VTech", MyOutfits).Name);   // explicit V-Tech request
+        Assert.Equal("Android", Program.ResolveOutfitName("v-tech", MyOutfits).Name);
         Assert.True(Program.IsVTechOutfit("Android")); Assert.False(Program.IsVTechOutfit("Android Base"));
     }
     [Fact] public void GroundSitStart_RandomPickAndAndroidHover()   // 2026-10-23: first sit was always the last one; 2026-10-28: and the pick comes BEFORE the sit

@@ -65,6 +65,53 @@ public class LoginOutfitRequestTests
         Assert.False(p.Changed);
         Assert.Equal(worn[0].Item, p.Stash[0].Item);
     }
+
+    // 2026-11-16 (David): a plain login in an android outfit keeps exactly what was worn at logout: no usual, daily or android swap
+    [Theory]
+    [InlineData(5)] [InlineData(120)] [InlineData(24 * 60)]
+    public void LoginTarget_AndroidAtLogout_HoldsAsWorn_NoSwap(int minutesAway)
+    {
+        var usual = new List<(UUID, string)> { (UUID.Random(), "TETRA - Chill T-Shirt - LaraX Petite") };
+        var daily = new List<(UUID, string)> { (UUID.Random(), "Beth Top :: PetiteX - White :: Pink Cream Pie") };
+        var t = UsualOutfit.LoginTarget(TimeSpan.FromMinutes(minutesAway), true, "TETRA Chill T-Shirt shorts", usual, "PCP Beth Tube Top", daily,
+            forced: true, androidAtLogout: true);
+        Assert.True(t.HoldAsWorn); Assert.False(t.Daily); Assert.Null(t.Name); Assert.Empty(t.Links);
+        var worn = new List<LoginVeil.Stashed> { new(UUID.Random(), 27, "MISAKI -Kay Body V-Tech"), new(UUID.Random(), 10, "MISAKI -Kay Headphones") };
+        var p = UsualOutfit.AtLogin(worn, t.Links, t.Name, TimeSpan.FromMinutes(minutesAway), forced: true);
+        Assert.False(p.Changed); Assert.Equal(worn.Select(x => x.Item), p.Stash.Select(x => x.Item));
+    }
+
+    [Fact]
+    public void LoginTarget_AndroidAtLogout_ExplicitRequestStillWins()
+    {
+        var t = UsualOutfit.LoginTarget(TimeSpan.FromMinutes(120), true, null, null, null, null, requestedName: "Android Base", androidAtLogout: true);
+        Assert.True(t.HoldAsWorn); Assert.Equal("Android Base", t.Name);
+    }
+
+    [Fact]
+    public void AndroidAtLogout_FromStashBodyOrLastNamed()
+    {
+        Assert.True(Program.AndroidAtLogout(new[] { "MISAKI -Kay Body V-Tech" }, new string[] { null }));
+        Assert.True(Program.AndroidAtLogout(new[] { "MISAKI -Kay Body" }, null));
+        Assert.True(Program.AndroidAtLogout(Array.Empty<string>(), new[] { "Android" }));
+        Assert.True(Program.AndroidAtLogout(null, new[] { null, "Android Base" }));
+        Assert.False(Program.AndroidAtLogout(new[] { "TETRA - Chill T-Shirt - LaraX Petite" }, new[] { "TETRA Chill T-Shirt shorts", null }));
+    }
+
+    [Fact]
+    public void LoginFallbackOutfit_NeverWhenAndroid()
+    {
+        Assert.Null(Program.LoginFallbackOutfit(true, "TETRA Chill T-Shirt shorts"));
+        Assert.Equal("TETRA Chill T-Shirt shorts", Program.LoginFallbackOutfit(false, " TETRA Chill T-Shirt shorts "));
+        Assert.Null(Program.LoginFallbackOutfit(false, null));
+    }
+
+    [Fact]
+    public void LoginOutfitPlan_AndroidWithoutRequest_Keeps()
+    {
+        Assert.Equal("keep-android", Program.LoginOutfitPlan(false, false, true, null, true, null));
+        Assert.Equal("keep-android", Program.LoginOutfitPlan(true, false, true, "tshirt", true, null));   // beach + daily pending: still no swap
+    }
 }
 
 public class AndroidEarPolicyTests

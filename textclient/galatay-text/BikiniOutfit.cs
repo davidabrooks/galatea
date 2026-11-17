@@ -44,27 +44,41 @@ public static partial class Program
     internal static bool IsVTechOutfit(string folder) =>
         folder != null && (VTechOutfitFolders.Any(v => v.Equals(folder.Trim(), StringComparison.OrdinalIgnoreCase)) || Regex.IsMatch(folder, @"v[\s-]?tech", RegexOptions.IgnoreCase));
     internal static bool AsksForVTech(string request) => Regex.IsMatch(request ?? "", @"v[\s-]?tech", RegexOptions.IgnoreCase);
-    // pure (tested): which outfit folder a request may resolve to. null = no guard needed (use the normal match)
-    internal static string OutfitGuardResolve(string request, string matchedFolder)
+    // 2026-11-16 (David): 'outfit wear Android' put on 'Android Base' because the 2026-10-23 V-Tech guard rewrote even an exact folder
+    // name. Pure (tested): which My Outfits folder a request resolves to. An exact (trimmed, case-insensitive) folder name always wins,
+    // V-Tech included. Only a non-exact request is guarded: an explicit V-Tech ask -> the V-Tech folder; a generic android alias or a
+    // partial match landing on V-Tech -> the default android outfit. Several partial matches are ambiguous: nothing is chosen.
+    internal static (string Name, IReadOnlyList<string> Ambiguous) ResolveOutfitName(string request, IEnumerable<string> folderNames)
     {
-        var r = (request ?? "").Trim();
-        if (AsksForVTech(r)) return VTechOutfitFolders[0];                                   // explicit V-Tech request
-        if (matchedFolder != null && IsVTechOutfit(matchedFolder)) return DefaultAndroidOutfit; // any other way to it -> the default
-        if (Regex.IsMatch(r, @"^(android|robot|cyborg)( form| outfit| body| mode)?$|^default android", RegexOptions.IgnoreCase)) return DefaultAndroidOutfit;
-        return null;
+        var r = (request ?? "").Trim().Trim('"', (char)39).Trim();
+        var names = (folderNames ?? Enumerable.Empty<string>()).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        string Named(string n) => names.FirstOrDefault(f => f.Trim().Equals(n, StringComparison.OrdinalIgnoreCase));
+        if (r.Length == 0) return (null, Array.Empty<string>());
+        if (Named(r) is string exact) return (exact, Array.Empty<string>());
+        if (AsksForVTech(r) && Named(VTechOutfitFolders[0]) is string vt) return (vt, Array.Empty<string>());
+        if (Regex.IsMatch(r, @"^(android|robot|cyborg)( form| outfit| body| mode)?$|^default android", RegexOptions.IgnoreCase) && Named(DefaultAndroidOutfit) is string da)
+            return (da, Array.Empty<string>());
+        var partial = names.Where(f => f.Contains(r, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (partial.Count > 1 && !partial.All(IsAndroidOutfit)) return (null, partial);
+        if (partial.Count == 0) return (null, Array.Empty<string>());
+        // partial matches all android outfits (or one match): never V-Tech unless asked for (2026-10-23 rule) -> the default android outfit
+        if (partial.Count > 1 || IsVTechOutfit(partial[0]))
+            return Named(DefaultAndroidOutfit) is string d ? (d, Array.Empty<string>()) : (null, partial);
+        return (partial[0], Array.Empty<string>());
     }
-    static async Task<InventoryFolder> FindOutfitFolder(string name, CancellationToken ct)
+    static async Task<InventoryFolder> FindOutfitFolder(string name, CancellationToken ct) => (await FindOutfitFolderChecked(name, ct)).Folder;
+    static async Task<(InventoryFolder Folder, IReadOnlyList<string> Ambiguous)> FindOutfitFolderChecked(string name, CancellationToken ct)
     {
-        var mo = await FindMyOutfits(ct); if (mo == null) return null;
+        var mo = await FindMyOutfits(ct); if (mo == null) return (null, Array.Empty<string>());
         var kids = (await ReadFolderRO(mo.UUID, ct)).OfType<InventoryFolder>().Where(f => f.ParentUUID == mo.UUID).ToList();
-        var raw = kids.FirstOrDefault(f => f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) ?? kids.FirstOrDefault(f => f.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
-        if (OutfitGuardResolve(name, raw?.Name) is string g && !g.Equals(raw?.Name, StringComparison.OrdinalIgnoreCase))
+        var (resolved, ambiguous) = ResolveOutfitName(name, kids.Select(k => k.Name));
+        if (resolved == null)
         {
-            var gf = kids.FirstOrDefault(f => f.Name.Equals(g, StringComparison.OrdinalIgnoreCase));
-            if (gf != null) { Log("outfit", $"'{name}' -> '{gf.Name}' (V-Tech only when asked for by name)"); return gf; }
+            if (ambiguous.Count > 0) Log("outfit", $"'{name}' is ambiguous: {string.Join(", ", ambiguous.Select(a => $"'{a}'"))}; nothing chosen");
+            return (null, ambiguous);
         }
-        return kids.FirstOrDefault(f => f.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            ?? kids.FirstOrDefault(f => f.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
+        if (!resolved.Trim().Equals((name ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) Log("outfit", $"'{name}' -> '{resolved}'");
+        return (kids.First(k => k.Name == resolved), Array.Empty<string>());
     }
 
     // outfit rename <old> <new> — UpdateFolderProperties (reversible: rename back)
@@ -99,8 +113,10 @@ public static partial class Program
     {
         if (!LoggedIn) return "not logged in";
         using var cts = new CancellationTokenSource(150000); var ct = cts.Token;
-        var folder = await FindOutfitFolder(name, ct);
-        if (folder == null) return $"no outfit '{name}' under My Outfits";
+        var (folder, ambiguous) = await FindOutfitFolderChecked(name, ct);
+        if (folder == null) return ambiguous.Count > 0
+            ? $"outfit '{name}' is ambiguous under My Outfits ({string.Join(", ", ambiguous.Select(a => $"'{a}'"))}): say the exact name"
+            : $"no outfit '{name}' under My Outfits";
         if (!replace)
         {
             var items = await ResolveOutfitItems(folder, ct);

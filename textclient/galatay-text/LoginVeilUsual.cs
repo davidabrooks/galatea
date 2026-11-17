@@ -39,11 +39,15 @@ internal static class UsualOutfit
     /// has clothes; else the usual outfit. Within the threshold: the usual (AtLogin then keeps the stash as worn anyway). A requested login
     /// outfit (e.g. Android Base) holds the stash as worn and skips the daily pick (HoldAsWorn); the named outfit is put on after login.</summary>
     internal static (string Name, List<(UUID Item, string Name)> Links, bool Daily, bool HoldAsWorn) LoginTarget(TimeSpan sinceLogout, bool dailyPending,
-        string usualName, List<(UUID Item, string Name)> usualLinks, string dailyName, List<(UUID Item, string Name)> dailyLinks, double afterMin = DefaultAfterMin, bool forced = false, string requestedName = null)
+        string usualName, List<(UUID Item, string Name)> usualLinks, string dailyName, List<(UUID Item, string Name)> dailyLinks, double afterMin = DefaultAfterMin, bool forced = false, string requestedName = null, bool androidAtLogout = false)
     {
         usualLinks ??= new();
         if (!string.IsNullOrWhiteSpace(requestedName))
             return (requestedName.Trim(), new(), false, true);
+        // 2026-11-16 (David): logged out in an android outfit -> the login never changes outfits on its own (no usual / daily / other
+        // android outfit, however long I was away): exactly what was worn at logout. Only an explicit login outfit argument changes it.
+        if (androidAtLogout)
+            return (null, new(), false, true);
         if ((!forced && sinceLogout < TimeSpan.FromMinutes(afterMin)) || !dailyPending || string.IsNullOrWhiteSpace(dailyName)
             || dailyLinks == null || !dailyLinks.Any(x => x.Item != UUID.Zero && IsClothes(x.Name)))
             return (usualName, usualLinks, false, false);
@@ -216,6 +220,10 @@ public static partial class Program
     {
         try { File.Delete(LoginVeilUsualFile); } catch { }
         try { File.Delete(LoginVeilDailyFile); } catch { }
+        if (AndroidWorn() || LastNamedOutfitSignals().Any(IsAndroidOutfit))
+        {   // 2026-11-16 (David): an android login keeps what was worn at logout; nothing is pre-picked for it
+            Log("login-veil", "android outfit worn at logout: no usual / daily outfit saved; login wears the stash as worn"); return;
+        }
         var name = UsualOutfit.Name(LastClothedOutfit(), lastNamedOutfit);
         if (Env("GT_VEIL_USUAL", "1") == "0" || name == null) { Log("login-veil", $"usual outfit '{name ?? "-"}' unknown: login wears the stash as worn"); return; }
         try
@@ -235,6 +243,11 @@ public static partial class Program
         catch (Exception ex) { Log("login-veil", "usual outfit read failed (login wears the stash as worn): " + ex.GetBaseException().Message); }
     }
 
+    /// <summary>Pure (tested): the stash or the last named outfit says an android outfit was worn at logout.</summary>
+    internal static bool AndroidAtLogout(IEnumerable<string> stashNames, IEnumerable<string> lastNamedOutfits)
+        => (stashNames ?? Enumerable.Empty<string>()).Any(n => IsAndroidFamily(BodyFamily(n))) || (lastNamedOutfits ?? Enumerable.Empty<string>()).Any(IsAndroidOutfit);
+    static bool AndroidAtLogout(List<LoginVeil.Stashed> stash) => AndroidAtLogout(stash?.Select(x => x.Name), LastNamedOutfitSignals());
+
     /// <summary>Login: as worn, or (away past the threshold) my usual outfit. Never throws; any failure = as worn.</summary>
     static UsualOutfit.Plan LoginVeilUsualAtLogin(List<LoginVeil.Stashed> stash, DateTime loggedOutAt)
     {
@@ -250,7 +263,10 @@ public static partial class Program
             loginOutfitChangeDue = due;
             var requested = LoadLoginOutfitRequest();
             Log("login-veil", $"outfit change {(due ? "DUE" : "not due")}: {since.TotalMinutes:F1} min away (change after {LoginVeilOutfitChangeAfterMin:F0}){(forced ? ", forced by marker" : "")}{(requested != null ? $", requested outfit '{requested}'" : "")}");
-            var t = UsualOutfit.LoginTarget(since, due, name, links, dName, dLinks, LoginVeilUsualAfterMin, forced, requested);
+            var android = AndroidAtLogout(stash);
+            var t = UsualOutfit.LoginTarget(since, due, name, links, dName, dLinks, LoginVeilUsualAfterMin, forced, requested, android);
+            if (t.HoldAsWorn && requested == null)
+                return new UsualOutfit.Plan(stash, new(), new(), false, "android outfit worn at logout: exactly as I logged out (no usual / daily / android swap at login)");
             if (t.HoldAsWorn)
                 return new UsualOutfit.Plan(stash, new(), new(), false, $"login requested outfit '{requested}': stash as worn; the named outfit is put on after login; daily pick skipped");
             var plan = UsualOutfit.AtLogin(stash, t.Links, t.Name, since, LoginVeilUsualAfterMin, forced && t.Daily);

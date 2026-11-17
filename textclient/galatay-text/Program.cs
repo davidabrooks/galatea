@@ -1821,7 +1821,7 @@ public static partial class Program
   maturity                    READ-ONLY: account maturity ceiling + preferred (General/Moderate/Adult) as the grid reports them, and the current region rating
   maturity set <general|moderate|adult> --david-ok   CHANGES the account maturity preference (UpdateAgentInformation, then read back; one try, no retry). Needs DAVID'S OK (the flag); operator socket only, refused from any automated path; the grid may refuse (age verification)
   gesture list | show <g> | play [--sound] [--chat] <g> | stop   her gestures (by default only animation + wait steps; sound / chat steps only with --sound / --chat or GT_GESTURE_SOUND / GT_GESTURE_CHAT=on) (* = active, [trigger]); play one by name or trigger (/wave): animation, sound, chat and wait steps like a viewer (Gestures.cs); an active gesture's trigger word in her own say plays it
-  login [outfit <name>]      log in (start last). outfit = wear that My Outfits folder (e.g. Android Base), skip the daily pick (also run/login-outfit.txt); daily stays pending
+  login [outfit <name>]      log in (start last). no outfit = what was worn at logout (an android outfit is never swapped). outfit = wear that exact My Outfits folder (only when David names one), skip the daily pick (also run/login-outfit.txt); daily stays pending
   logout                      log out cleanly and exit";
 
     static async Task<string> Exec(string line)

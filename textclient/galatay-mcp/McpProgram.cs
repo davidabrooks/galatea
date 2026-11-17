@@ -65,8 +65,8 @@ public sealed class SlTools
     // login / logout finish their set-up on their own task: a cancelled or dropped MCP call (the host's notifications/cancelled) never stops them half way
     static Task<string> Detached(string line) => Core.RunDetached(() => R(line), line, m => Json(new { ok = false, result = m }));
 
-    [McpServerTool(Name = "login"), Description("Log Galatay Resident into Second Life (start location 'last'). Optional outfit = a My Outfits name to wear at this login (e.g. 'Android Base'); skips the daily pick and leaves it pending. A manual outfit_wear after login starts wins over the daily pass. Refuses if Firestorm or another Galatay client is logged in. Password is read internally from the box secret store.")]
-    public static Task<string> Login([Description("optional My Outfits name to wear at this login (e.g. Android Base); skips the daily pick")] string outfit = "")
+    [McpServerTool(Name = "login"), Description("Log Galatay Resident into Second Life (start location 'last'). Leave outfit empty for a normal login: I come back in exactly what I wore at logout (an android outfit is never swapped at login). Only pass outfit when David names an outfit for this login (exact My Outfits name); it skips the daily pick and leaves it pending. A manual outfit_wear after login starts wins over the daily pass. Refuses if Firestorm or another Galatay client is logged in. Password is read internally from the box secret store.")]
+    public static Task<string> Login([Description("only when David names an outfit for this login: its exact My Outfits name; empty = keep what was worn at logout")] string outfit = "")
         => Detached(string.IsNullOrWhiteSpace(outfit) ? "login" : "login outfit " + ((char)34).ToString() + Clean(outfit).Replace(((char)34).ToString(), "") + ((char)34).ToString());
 
     [McpServerTool(Name = "logout"), Description("Log out of Second Life cleanly (the MCP server keeps running). quick_relog=true: a quick relog, she is not re-dressed by the stand on the way out (cleared at the next login).")]

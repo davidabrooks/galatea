@@ -35,6 +35,26 @@ public class FastChatTests
     }
 
     [Fact]
+    public void Requests_ask_for_low_reasoning_effort_so_a_chat_line_answers_in_seconds()
+    {   // 2026-11-16: grok-4.7 at the API default ("high") reasoned 1,439-2,958 tokens (23-52 s) on "I see your typing
+        // animation has stopped" and timed out at 25 s; "low" answered the same line in 4-12 s
+        var c = Cfg();
+        Assert.Equal("low", c.ReasoningEffort);
+        Assert.InRange(c.TimeoutS, 12, 20);   // a miss reaches the routine sooner, with headroom over the 12 s low-effort worst case
+        var body = JsonDocument.Parse(Program.BuildFastRequest(c, "at home", new List<Program.FastLine>(), "nearby", "David Nightingale", "I see your typing animation has stopped", false)).RootElement;
+        Assert.Equal("low", body.GetProperty("reasoning_effort").GetString());
+        Assert.Equal("grok-4.7", body.GetProperty("model").GetString());   // same model: no weaker-model fallback
+
+        Assert.Equal("low", Program.ParseFastCfg("{\"persona\":\"p\"}").ReasoningEffort);   // missing key -> low
+        Assert.Equal("medium", Program.ParseFastCfg("{\"persona\":\"p\",\"reasoning_effort\":\"Medium\"}").ReasoningEffort);
+        Assert.Equal("low", Program.ParseFastCfg("{\"persona\":\"p\",\"reasoning_effort\":\"turbo\"}").ReasoningEffort);   // unknown -> keep low
+        var dflt = Program.ParseFastCfg("{\"persona\":\"p\",\"reasoning_effort\":\"default\"}");
+        Assert.Null(dflt.ReasoningEffort);   // "default" -> omit the field, the API picks
+        var omitted = JsonDocument.Parse(Program.BuildFastRequest(dflt, "x", new List<Program.FastLine>(), "nearby", "David Nightingale", "hi", false)).RootElement;
+        Assert.False(omitted.TryGetProperty("reasoning_effort", out _));
+    }
+
+    [Fact]
     public void Log_lines_parse_into_separate_nearby_and_IM_scopes()
     {
         Assert.Equal(new Program.FastLine("nearby", "David Nightingale", "hi babe", false), Program.FastParseLog("chat", "David Nightingale: hi babe"));

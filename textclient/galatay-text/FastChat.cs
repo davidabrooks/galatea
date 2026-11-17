@@ -10,6 +10,11 @@
 //     WITHOUT claiming the line, and the line goes on to the chat routine with fast_ack=<ack> (the routine acts, and only
 //     reports the result / problems). For a visitor nothing is sent; the routine handles it as before.
 //   - empty reply, API error, or timeout (timeout_s, default 25 s): the line goes to the routine unchanged.
+// 2026-11-16 (David: a fast reply timed out after 25 s and the routine answered 45 s after his line): grok-4.7 reasons
+//   before answering and the API default is reasoning_effort "high". Latency is ~16 ms per reasoning token, and one chat
+//   line about her own behaviour ("I see your typing animation has stopped") reasoned 1,439-2,958 tokens (23-52 s) at
+//   "high" but 308-643 (4-12 s) at "low". reasoning_effort (default "low"; low|medium|high|xhigh, or "default" = omit
+//   the field and let the API pick) is sent with every call. Same model, so no weaker-model fallback.
 //     A reasoning-model failure or timeout is never retried with a weaker model; the line is left unclaimed.
 // 2026-11-11 David: "say / tell / thank" lines from him are instructions to speak (FastIsSpeakCommand). A trailing
 // Galatea/Galatay/Gala is him addressing her. A bare "say thanks" thanks whoever was just being thanked. A reply that
@@ -37,6 +42,7 @@ public static partial class Program
     {
         public bool Enabled = true, Visitors = true; public string Model = "grok-4.7";
         public int MaxTokens = 200, HistoryLines = 20; public double Temperature = 0.8, TimeoutS = 25;
+        public string ReasoningEffort = "low";   // null = omit the field (API default "high")
         public double PriceIn = 2.0, PriceCachedIn = 0.5, PriceOut = 6.0; public string Persona = "";
         // human-like typing delay (2026-10-08 David: replies sometimes too fast; vary with the mood): total time since the
         // incoming line = (base + per_word * words) * pace multiplier + jitter, capped (thoughtful has its own, higher cap)
@@ -79,6 +85,8 @@ public static partial class Program
             double D(string k, double def, double lo, double hi) => r.TryGetProperty(k, out var x) && x.TryGetDouble(out var n) ? Math.Clamp(n, lo, hi) : def;
             c.MaxTokens = I("max_tokens", 200, 16, 400); c.HistoryLines = I("history_lines", 20, 0, 60);
             c.Temperature = D("temperature", 0.8, 0, 2); c.TimeoutS = D("timeout_s", 25, 1, 40);
+            if (r.TryGetProperty("reasoning_effort", out var re) && re.ValueKind == JsonValueKind.String)
+                c.ReasoningEffort = ParseReasoningEffort(re.GetString(), c.ReasoningEffort);
             c.PriceIn = D("price_in_per_m", 2.0, 0, 100); c.PriceCachedIn = D("price_cached_in_per_m", 0.5, 0, 100); c.PriceOut = D("price_out_per_m", 6.0, 0, 100);
             c.TypingBaseS = D("typing_base_s", 1.5, 0, 10); c.TypingPerWordS = D("typing_per_word_s", 0.25, 0, 2);
             c.TypingMaxS = D("typing_max_s", 6, 0, 20); c.TypingJitterS = D("typing_jitter_s", 0.4, 0, 3);
@@ -156,6 +164,13 @@ public static partial class Program
         catch { }
     }
 
+    // pure: "low|medium|high|xhigh" (any case) -> that; "default"/"" -> null (omit, API default); anything else -> keep `fallback`
+    internal static string ParseReasoningEffort(string v, string fallback)
+    {
+        var t = (v ?? "").Trim().ToLowerInvariant();
+        return t switch { "low" or "medium" or "high" or "xhigh" => t, "" or "default" or "none" => null, _ => fallback };
+    }
+
     // pure: the request body. History is only the given scope; the new line is the last history entry (already logged).
     internal static string BuildFastRequest(FastCfg cfg, string state, IReadOnlyList<FastLine> hist, string scope, string from, string text, bool im, string note = null)
     {
@@ -182,6 +197,7 @@ public static partial class Program
                 new JsonObject { ["role"] = "user", ["content"] = sb.ToString() },
             },
         };
+        if (cfg.ReasoningEffort != null) body["reasoning_effort"] = cfg.ReasoningEffort;
         return body.ToJsonString();
     }
 
@@ -479,7 +495,7 @@ public static partial class Program
         {
             var o = new JsonObject
             {
-                ["t"] = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), ["model"] = c.Model, ["who"] = who, ["im"] = im,
+                ["t"] = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture), ["model"] = c.Model, ["effort"] = c.ReasoningEffort ?? "default", ["who"] = who, ["im"] = im,
                 ["ms"] = ms, ["prompt"] = r.PromptTok, ["cached"] = r.CachedTok, ["out"] = r.OutTok, ["reason"] = r.ReasonTok,
                 ["usd"] = Math.Round(FastCost(c, r.PromptTok, r.CachedTok, r.OutTok, r.ReasonTok), 6), ["outcome"] = outcome, ["error"] = r.Error,
             };
@@ -753,7 +769,7 @@ public static partial class Program
         var cfg = LoadFastCfg();
         if (a.Length > 0 && a[0] == "test") return await FastTest(cfg, a.Skip(1).ToArray(), LoggedIn ? FastState() : null);
         if (cfg == null) return $"fast chat: {FastFile} missing or invalid (no persona?); all lines go to the routine";
-        return $"fast chat {(cfg.Enabled ? "ON" : "OFF")} (model {cfg.Model}, max_tokens {cfg.MaxTokens}, timeout {cfg.TimeoutS:0.#} s, history {cfg.HistoryLines}, visitors {(cfg.Visitors ? "on" : "off")}, key {(string.IsNullOrEmpty(FastKey()) ? "MISSING" : "ok")}); " +
+        return $"fast chat {(cfg.Enabled ? "ON" : "OFF")} (model {cfg.Model}, reasoning {cfg.ReasoningEffort ?? "API default"}, max_tokens {cfg.MaxTokens}, timeout {cfg.TimeoutS:0.#} s, history {cfg.HistoryLines}, visitors {(cfg.Visitors ? "on" : "off")}, key {(string.IsNullOrEmpty(FastKey()) ? "MISSING" : "ok")}); " +
                $"this process: {fastCalls} call(s), {fastSent} sent, {fastAcked} ack(s), {fastFallbacks} to the routine ({fastGuarded} refused by the visitor guards; nearby silent {(DateTimeOffset.Now < fastGuard.SilentUntil ? "until " + fastGuard.SilentUntil.ToString("h:mm tt") : "no")}); in flight {fastPending.Count}; {FastUsageSummary(cfg)}; last: {fastLast}; last outfit: {fastOutfitLast}";
     }
 

@@ -254,7 +254,7 @@ public static partial class Program
             {
                 var p = e.Prim; if (p == null) return;
                 var ps = p.ParticleSys; var me = client.Self.AgentID;
-                bool mineEmit = p.ParentID == client.Self.LocalID || RlvOwnAttachmentRoot(p.ID) != null;
+                bool mineEmit = client.Self.IsSelfIn(e.Simulator, p.ParentID) || RlvOwnAttachmentRoot(p.ID) != null;   // local ids are per region (neighbor updates)
                 bool atMe = ps.Target != UUID.Zero && (ps.Target == me || RlvOwnAttachmentRoot(ps.Target) != null);
                 if (!mineEmit && !atMe) return;
                 var key = ps.CRC ^ (uint)ps.Target.GetHashCode();

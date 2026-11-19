@@ -1,8 +1,8 @@
 diff --git a/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs b/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
-index a9613ccb..911ffa14 100644
+index 88d1842b..353a409f 100644
 --- a/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
 +++ b/LibreMetaverse/Agent/AgentManager.PacketHandlers.cs
-@@ -603,6 +603,7 @@ namespace LibreMetaverse
+@@ -601,6 +601,7 @@ namespace LibreMetaverse
          {
              Packet packet = e.Packet;
              CrossedRegionPacket crossing = (CrossedRegionPacket)packet;
@@ -10,7 +10,7 @@ index a9613ccb..911ffa14 100644
              Uri seedCap = new Uri(Utils.BytesToString(crossing.RegionData.SeedCapability));
              IPEndPoint endPoint = new IPEndPoint(crossing.RegionData.SimIP, crossing.RegionData.SimPort);
  
-@@ -1049,6 +1050,7 @@ namespace LibreMetaverse
+@@ -1047,6 +1048,7 @@ namespace LibreMetaverse
          private void CrossedRegionEventHandler(string capsKey, IMessage message, Simulator simulator)
          {
              CrossedRegionMessage crossed = (CrossedRegionMessage)message;
@@ -19,7 +19,7 @@ index a9613ccb..911ffa14 100644
              IPEndPoint endPoint = new IPEndPoint(crossed.IP, crossed.Port);
  
 diff --git a/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs b/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
-index 37f5c3ad..4cceb295 100644
+index a2532643..480312a5 100644
 --- a/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
 +++ b/LibreMetaverse/Agent/AgentManager.RegionCrossing.cs
 @@ -25,6 +25,8 @@
@@ -31,7 +31,7 @@ index 37f5c3ad..4cceb295 100644
  using System.Net;
  using System.Threading;
  using System.Threading.Tasks;
-@@ -109,6 +111,51 @@ namespace LibreMetaverse
+@@ -113,6 +115,51 @@ namespace LibreMetaverse
          // _currentCrossing is read from monitoring methods without the semaphore — volatile ensures
          // they always see the latest reference without a torn read.
          private volatile CrossingInfo? _currentCrossing;
@@ -83,7 +83,7 @@ index 37f5c3ad..4cceb295 100644
          // Single semaphore protects all mutations of _currentCrossing and its State field.
          // Not held across awaits — acquired briefly, released before any async work begins.
          private readonly SemaphoreSlim _stateLock = new SemaphoreSlim(1, 1);
-@@ -291,11 +338,18 @@ namespace LibreMetaverse
+@@ -295,11 +342,18 @@ namespace LibreMetaverse
                  {
                      crossing.NewSimulator = newSim;
                      relativePosition = crossing.Position;
@@ -101,8 +101,8 @@ index 37f5c3ad..4cceb295 100644
 +                    }
  
                      Logger.Info($"Successfully connected to new region: {newSim.Name}", Client);
-                     return await TransitionCrossingStateAsync(CrossingState.WaitingForComplete, token).ConfigureAwait(false);
-@@ -387,6 +441,11 @@ namespace LibreMetaverse
+                     return await EnterWaitingForCompleteAsync(crossing, newSim, token).ConfigureAwait(false);
+@@ -391,6 +445,11 @@ namespace LibreMetaverse
              if (m_RegionCrossed != null)
                  OnRegionCrossed(new RegionCrossedEventArgs(crossing.OldSimulator, crossing.NewSimulator));
  
@@ -115,7 +115,7 @@ index 37f5c3ad..4cceb295 100644
              Logger.Debug($"Crossing cleanup: Old sim {crossing.OldSimulator?.Name ?? "null"}, New sim {crossing.NewSimulator?.Name ?? "null"}", Client);
              return true;
 diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
-index 74dc0810..9102fa08 100644
+index 53c83ede..7b77e235 100644
 --- a/LibreMetaverse/Appearance/AppearanceManager.cs
 +++ b/LibreMetaverse/Appearance/AppearanceManager.cs
 @@ -3085,6 +3085,13 @@ namespace LibreMetaverse
@@ -158,7 +158,7 @@ index d1cf4212..837877e6 100644
                  // We're already connected to this server, but need to set it to the default
                  SetCurrentSim(simulator, seedcaps);
 diff --git a/LibreMetaverse/ObjectManager.PacketHandlers.cs b/LibreMetaverse/ObjectManager.PacketHandlers.cs
-index eaa6f4d5..1586c983 100644
+index 65a6f064..4482634d 100644
 --- a/LibreMetaverse/ObjectManager.PacketHandlers.cs
 +++ b/LibreMetaverse/ObjectManager.PacketHandlers.cs
 @@ -397,6 +397,14 @@ namespace LibreMetaverse
@@ -176,36 +176,24 @@ index eaa6f4d5..1586c983 100644
  
                          // Update some internals if this is our avatar
                          if (block.FullID == Client.Self.AgentID && simulator == Client.Network.CurrentSim)
-@@ -631,7 +639,17 @@ namespace LibreMetaverse
-                     }
- 
-                     #region Update Client.Self
--                    if (update.LocalID == Client.Self.localID)
-+                    // local ids are per region: with neighbor regions connected (MultipleSims) another region's object
-+                    // can carry her local id, so only the current region's update is hers (galatea multisim patch)
+@@ -634,6 +642,15 @@ namespace LibreMetaverse
+                     // Local IDs are per region: with neighbor regions connected (Settings.MultipleSims) an
+                     // object there can have the same local ID as our avatar, so only the current region
+                     // speaks for us
 +                    // self-heal: a terse update for her own avatar under another local id means the id we hold is stale
 +                    // (a copy left from an earlier visit was taken for her): follow the region's id or she reads frozen
++                    // (galatea multisim patch; the per-region scoping itself is upstream IsSelfIn since 3.3.1)
 +                    if (update.Avatar && simulator == Client.Network.CurrentSim && update.LocalID != Client.Self.localID
 +                        && obj is Avatar selfAv && selfAv.ID == Client.Self.AgentID)
 +                    {
 +                        Logger.Warn($"Own avatar update under local id {update.LocalID} in {simulator.Name}, not {Client.Self.localID}: adopting it", Client);
 +                        Client.Self.localID = update.LocalID;
 +                    }
-+                    if (update.LocalID == Client.Self.localID && simulator == Client.Network.CurrentSim)
+                     if (Client.Self.IsSelfIn(simulator, update.LocalID))
                      {
                          Client.Self.collisionPlane = update.CollisionPlane;
-                         Client.Self.relativePosition = update.Position;
-@@ -1006,7 +1024,7 @@ namespace LibreMetaverse
-             var localIdsToKill = new List<uint>(kill.ObjectData.Length);
-             foreach (var objectToKill in kill.ObjectData)
-             {
--                if (objectToKill.ID == Client.Self.localID)
-+                if (objectToKill.ID == Client.Self.localID && simulator == Client.Network.CurrentSim)
-                 {
-                     continue;
-                 }
 diff --git a/LibreMetaverse/Simulator.cs b/LibreMetaverse/Simulator.cs
-index b727a2d2..4cde2fe8 100644
+index 58d0b24a..583b83e2 100644
 --- a/LibreMetaverse/Simulator.cs
 +++ b/LibreMetaverse/Simulator.cs
 @@ -953,6 +953,14 @@ namespace LibreMetaverse

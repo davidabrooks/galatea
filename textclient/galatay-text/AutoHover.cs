@@ -34,7 +34,7 @@ internal sealed partial class Hover
         double? best = sim.TerrainHeightAtPoint((int)Math.Clamp(me.X, 0, 255), (int)Math.Clamp(me.Y, 0, 255), out var th) ? th : null;
         foreach (var p in sim.ObjectsPrimitives.Values)
         {
-            if (p == null || p.ParentID != 0 && p.ParentID == h.Client.Self.LocalID) continue;
+            if (p == null || p.ParentID != 0 && h.Client.Self.IsSelfIn(sim, p.ParentID)) continue;
             var half = p.Scale * 0.5f; var c = p.Position; if (p.ParentID != 0) continue;   // root prims only (world pos known)
             if (Math.Abs(me.X - c.X) > half.X || Math.Abs(me.Y - c.Y) > half.Y) continue;
             double top = c.Z + half.Z; if (top > me.Z + 0.2 || top < me.Z - 3) continue;

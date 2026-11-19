@@ -83,7 +83,7 @@ public static partial class Program
         if (p.Properties == null) _ = EnsureProperties(sim, new() { p });
         var name = p.Properties?.Name ?? "?";
         var seat = client.Self.SittingOn;
-        if (p.ParentID == client.Self.LocalID) return $"attachment '{name}' @{p.PrimData.AttachmentPoint} item {AttachItemId(p)}";
+        if (client.Self.IsSelfIn(sim, p.ParentID)) return $"attachment '{name}' @{p.PrimData.AttachmentPoint} item {AttachItemId(p)}";
         if (seat != 0 && (p.LocalID == seat || p.ParentID == seat || (sim.ObjectsPrimitives.TryGetValue(seat, out var sp) && sp != null && (sp.ParentID == p.LocalID || (sp.ParentID != 0 && sp.ParentID == p.ParentID))))) return $"seat '{name}'";
         return $"object '{name}' {src}";
     }
@@ -789,7 +789,7 @@ public static partial class Program
         if (m.Count > 1) return (null, $"'{key}' matches {m.Count}: {string.Join(", ", m.Select(r => $"'{r.Properties?.Name}' item {AttachItemId(r)} obj {r.ID}"))}");
         var root = m[0];
         // WornPrims already requires ParentID == our LocalID; also refuse anything not owned by us when OwnerID is known.
-        if (root.ParentID != client.Self.LocalID) return (null, "refused: not attached to me");
+        if (!client.Self.IsSelfIn(sim, root.ParentID)) return (null, "refused: not attached to me");
         if (root.Properties != null && root.Properties.OwnerID != UUID.Zero && root.Properties.OwnerID != client.Self.AgentID)
             return (null, $"refused: owner is {root.Properties.OwnerID}, not me");
         return (root, null);

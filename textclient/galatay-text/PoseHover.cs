@@ -225,7 +225,7 @@ internal sealed partial class Hover
         if (Program.IsAndroidOutfit(h.CurrentOutfit)) return true;
         try
         {
-            var w = h.WornPrims().Where(p => p.ParentID == h.Client.Self.LocalID).ToList();
+            var w = h.WornPrims().Where(p => h.Client.Self.IsSelfIn(h.Client.Network.CurrentSim, p.ParentID)).ToList();
             var unnamed = UnnamedWornToAsk(w.Select(p => (p.LocalID, p.Properties?.Name)), DateTime.Now, formAskedAt);
             if (unnamed.Length > 0) { foreach (var id in unnamed) formAskedAt[id] = DateTime.Now; try { h.Client.Objects.SelectObjects(h.Client.Network.CurrentSim, unnamed, true); } catch { } }
             return FormCertain(false, w.Count, w.Count(p => !string.IsNullOrEmpty(p.Properties?.Name)));

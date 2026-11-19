@@ -52,6 +52,8 @@ pytest -q
 Covers `vision/tests` (look mesher args, optional crowd placeholders) and `textclient/galatay-voice/tests` (SDP munge / fake server smoke).  
 **Skipped in CI:** full voice WebRTC+whisper (`--voice-selftest` / `fake_voice_server.py --drive`) and crowd-placeholder mesher runs that need a large export fixture + SceneMesher.
 
+One command for all of the above on the box: `scripts/galatea-test.sh` (see `docs/box-scripts.md`).
+
 ## Run only the impacted tests (local)
 
 ```bash

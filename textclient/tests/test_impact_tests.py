@@ -234,7 +234,7 @@ def test_filter_string_lists_methods_with_fully_qualified_names():
 # ------------------------------------------------------------------ fallbacks and non-C# files
 def test_project_build_and_ci_files_run_the_full_suite():
     for path in ("textclient/galatay-text/GalatayText.csproj", "textclient/build-all.sh", ".github/workflows/ci.yml",
-                 "textclient/libremetaverse-render.patch", "pytest.ini", "scripts/ci-setup-libremetaverse.sh"):
+                 "textclient/libremetaverse-multisim.patch", "pytest.ini", "scripts/ci-setup-libremetaverse.sh"):
         p = plan_for({**FILES, path: "x"}, {path: {1}})
         assert p.full, path
 

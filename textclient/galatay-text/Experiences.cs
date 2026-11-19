@@ -433,7 +433,7 @@ public static partial class Program
             uint local = t.local;
             try
             {
-                var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == id && x.ParentID == client.Self.LocalID);
+                var p = sim.ObjectsPrimitives.Values.FirstOrDefault(x => x != null && x.ID == id && client.Self.IsSelfIn(sim, x.ParentID));
                 if (p != null) local = p.LocalID;
                 else { TempAttachGone(id); continue; }
             }

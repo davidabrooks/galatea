@@ -20,11 +20,13 @@ public class LeashParticleParseTests
         var ps = new Primitive.ParticleSystem(exact, 0);
         Assert.Equal(t, ps.Target); Assert.Equal(42u, ps.CRC);
     }
-    [Fact] public void PatchIsAppliedInCiSetup()
+    // LibreMetaverse 3.3.1 (upstream #205, 19537bc0/adbd82af) decodes the compressed update's block with an explicit
+    // 86-byte length; this replaces libremetaverse-compressed-particles.patch, so guard the library behaviour itself.
+    [Fact] public void LibraryDecodesLegacyBlockInsideLargerBuffer()
     {
-        var dir = AppContext.BaseDirectory; while (dir != null && !File.Exists(Path.Combine(dir, "scripts", "ci-setup-libremetaverse.sh"))) dir = Path.GetDirectoryName(dir);
-        Assert.NotNull(dir);
-        Assert.Contains("libremetaverse-compressed-particles.patch", File.ReadAllText(Path.Combine(dir, "scripts", "ci-setup-libremetaverse.sh")));
+        var t = UUID.Random(); var buf = new byte[200]; Buffer.BlockCopy(Legacy(t), 0, buf, 10, 86);
+        var ps = new Primitive.ParticleSystem(buf, 10, 86);
+        Assert.Equal(t, ps.Target); Assert.Equal(42u, ps.CRC);
     }
 }
 

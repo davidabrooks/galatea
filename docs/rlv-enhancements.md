@@ -38,7 +38,7 @@ What the N° 9 notecards say: the leash is a particle chain from the collar to t
 
 ## Leash diagnostics (leash-diag)
 Every leash/follow event is logged with a timestamp (`leash-diag:` lines): leash on/off, holder, length, follow on/off.
-- **Visible leash:** detected from the particle system target key on my collar's prims. Needs `libremetaverse-compressed-particles.patch`, because stock LMV parsed particle systems from compressed object updates as empty, so the hook never fired.
+- **Visible leash:** detected from the particle system target key on my collar's prims. Needed `libremetaverse-compressed-particles.patch` until LibreMetaverse 3.3.1 (upstream #205), because stock LMV parsed particle systems from compressed object updates as empty, so the hook never fired.
 - **Invisible leash** (no particles): detected from the collar's pull. If I move ≥0.4 m/s toward an avatar 0.5–40 m away (cos>0.85), without my own movement controls and without @follow, for 3 s, that is logged as "PULL toward …" and the leash starts as "collar pull (invisible leash?)". A missing chain only ends the leash after 30 s with no pull.
 
 ## Keeping up on the leash (LeashWalk.cs)

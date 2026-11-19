@@ -236,7 +236,7 @@ index 00000000..b07afe17
 +    }
 +}
 diff --git a/LibreMetaverse/ObjectManager.PacketHandlers.cs b/LibreMetaverse/ObjectManager.PacketHandlers.cs
-index 9d0160aa..eaa6f4d5 100644
+index 16000448..65a6f064 100644
 --- a/LibreMetaverse/ObjectManager.PacketHandlers.cs
 +++ b/LibreMetaverse/ObjectManager.PacketHandlers.cs
 @@ -78,6 +78,7 @@ namespace LibreMetaverse
@@ -247,7 +247,7 @@ index 9d0160aa..eaa6f4d5 100644
                  var objectupdate = new ObjectMovementUpdate();
                  //Vector4 collisionPlane = Vector4.Zero;
                  //Vector3 position;
-@@ -676,6 +677,7 @@ namespace LibreMetaverse
+@@ -679,6 +680,7 @@ namespace LibreMetaverse
  
              foreach (var block in update.ObjectData)
              {
@@ -255,7 +255,7 @@ index 9d0160aa..eaa6f4d5 100644
                  var i = 0;
  
                  try
-@@ -925,6 +927,8 @@ namespace LibreMetaverse
+@@ -931,6 +933,8 @@ namespace LibreMetaverse
          /// <summary>Process an incoming packet and raise the appropriate events</summary>
          /// <param name="sender">The sender</param>
          /// <param name="e">The EventArgs object containing the packet data</param>
@@ -264,7 +264,7 @@ index 9d0160aa..eaa6f4d5 100644
          protected void ObjectUpdateCachedHandler(object? sender, PacketReceivedEventArgs e)
          {
              if (Client.Settings.World.AlwaysRequestObjects)
-@@ -936,6 +940,36 @@ namespace LibreMetaverse
+@@ -942,6 +946,36 @@ namespace LibreMetaverse
                  var update = (ObjectUpdateCachedPacket)packet;
                  var ids = new List<uint>(update.ObjectData.Length);
  

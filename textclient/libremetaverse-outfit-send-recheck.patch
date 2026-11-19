@@ -1,5 +1,5 @@
 diff --git a/LibreMetaverse/Appearance/AppearanceManager.cs b/LibreMetaverse/Appearance/AppearanceManager.cs
-index 10e416f5..9a3f0ea0 100644
+index 58ffdb8c..c1ab5ae5 100644
 --- a/LibreMetaverse/Appearance/AppearanceManager.cs
 +++ b/LibreMetaverse/Appearance/AppearanceManager.cs
 @@ -2615,6 +2615,41 @@ namespace LibreMetaverse

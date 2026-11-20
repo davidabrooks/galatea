@@ -77,6 +77,7 @@
     <Compile Include="../galatay-text/LoginVeilUsual.cs" Link="Core/LoginVeilUsual.cs" />
     <Compile Include="../galatay-text/LoginVeilCreate.cs" Link="Core/LoginVeilCreate.cs" />
     <Compile Include="../galatay-text/LoginVeilEvox.cs" Link="Core/LoginVeilEvox.cs" />
+    <Compile Include="../galatay-text/SwapVeil.cs" Link="Core/SwapVeil.cs" />
     <Compile Include="../galatay-text/LoginHealth.cs" Link="Core/LoginHealth.cs" />
     <Compile Include="../galatay-text/LoginSecrets.cs" Link="Core/LoginSecrets.cs" />
     <Compile Include="../galatay-text/VmForkWatch.cs" Link="Core/VmForkWatch.cs" />

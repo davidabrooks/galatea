@@ -113,6 +113,7 @@ public static partial class Program
                 if (t == null) { problems.Add($"COF link '{l.Name}' -> {l.AssetUUID}: target not fetched, NOT planned"); continue; }
                 if (t.IsLink()) { problems.Add($"COF link '{l.Name}' points to another link {t.UUID}: NOT planned (never link to a link)"); continue; }
                 if (t.Name.StartsWith("#Firestorm LSL Bridge", StringComparison.OrdinalIgnoreCase)) { problems.Add($"excluded '{t.Name}' {t.UUID} (Firestorm LSL Bridge)"); continue; }
+                if (t.UUID == SwapVeilItem() || t.UUID == LoginVeilItem()) { problems.Add($"excluded '{t.Name}' {t.UUID} (veil, never part of an outfit)"); continue; }
                 plan.Add(new PlannedLink(t.UUID, t.Name, t.InventoryType, t.AssetType, l.Description ?? "", "worn (COF)"));
             }
         }

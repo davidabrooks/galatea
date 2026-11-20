@@ -100,6 +100,7 @@ public static partial class Program
         foreach (var k in KeepAttachedIds()) s.Add(k);   // routes/_keep-attached.txt (Real Kisser): never detached by outfit/undress/bikini
         foreach (var k in AlwaysWearIds()) s.Add(k);     // routes/_always-wear.txt + the hard-coded N° 9 collar: never detached either
         foreach (var k in RlvLockedItems()) s.Add(k);    // Rlv.cs: items an RLV source locked on (@detach=n)
+        var sv = SwapVeilItem(); if (sv != UUID.Zero) s.Add(sv);   // SwapVeil.cs: no alpha-follow / undress / RLV strip takes the swap veil off
         try { var ao = AoItem; if (ao != UUID.Zero) s.Add(ao); } catch { }
         foreach (var p in WornPrims())
         {
@@ -160,10 +161,18 @@ public static partial class Program
     }
 
     // Wear a My Outfits folder without stacking (see header). Returns a report.
+    // 2026-11-20 (SwapVeil.cs): android -> human changes wear the body veil before anything changes; it comes off here once the change settled
+    // (capped), also when the change throws, still inside the wardrobe lock so no other change runs under it.
     static async Task<string> OutfitWearSafe(InventoryFolder folder, CancellationToken ct)
-        => await WithWardrobe($"outfit wear '{folder.Name}'", async () => { var r = await OutfitWearSafeLocked(folder, ct); WardrobeDressed(folder.Name); CollarStealthAfterOutfit(folder.Name); currentOutfit = folder.Name; NoteClothedOutfit(folder.Name); preStripOutfit = null; VAutoCheckSoon("outfit " + folder.Name); return r; }, ct);
+        => await WithWardrobe($"outfit wear '{folder.Name}'", async () =>
+        {
+            SwapVeilRun veil = null; string r = null;
+            try { r = await OutfitWearSafeLocked(folder, ct, async plan => (veil = await SwapVeilOnIfWanted(folder.Name, plan))?.Id ?? UUID.Zero); }
+            finally { if (veil != null) { var v = await SwapVeilOffAfterSettle(veil, failed: r == null); if (r != null) r += "\n  " + v; } }
+            WardrobeDressed(folder.Name); CollarStealthAfterOutfit(folder.Name); currentOutfit = folder.Name; NoteClothedOutfit(folder.Name); preStripOutfit = null; VAutoCheckSoon("outfit " + folder.Name); return r;
+        }, ct);
 
-    static async Task<string> OutfitWearSafeLocked(InventoryFolder folder, CancellationToken ct)
+    static async Task<string> OutfitWearSafeLocked(InventoryFolder folder, CancellationToken ct, Func<SwapPlan, Task<UUID>> beforeChange = null)
     {
         await IdlePoseExitAsync("outfit change");   // IdlePose.cs
         IdleNoteActivity();   // 2026-11-11: an outfit change is not idle; restart the wait even if she was not posed
@@ -191,6 +200,10 @@ public static partial class Program
                 if (!attach.Contains(aw)) attach.Add(aw);
                 sb.AppendLine($"  always-wear: '{awi.Name}' goes on with every outfit");
             }
+            // the swap veil (SwapVeil.cs) goes on HERE: planned, nothing changed yet; it is kept out of this change's layer removal
+            var keepLayer = beforeChange == null ? UUID.Zero : await beforeChange(new SwapPlan(items,
+                attach.Select(a => (a, objs.FirstOrDefault(o => o.UUID == a)?.Name ?? a.ToString())).ToList(),
+                detach.Select(d => (d, worn.FirstOrDefault(w => w.Item == d)?.Name ?? d.ToString())).ToList()));
 
             // plan the wearables first (body parts replace by type, clothing layers swapped), then run everything in one
             // batch (RedressFast.OutfitSwapOrder): old attachments off together, layer + COF changes in one go each, the bake
@@ -213,6 +226,7 @@ public static partial class Program
                 foreach (var (aid, anm) in ClothedAlphas())
                 { var ai = await FetchItemRO(aid, ct); if (ai is InventoryWearable && string.Equals(ai.Name?.Trim(), anm, StringComparison.OrdinalIgnoreCase)) clothedAlphaItems.Add(ai); }
             var tClothIds = EffectiveOutfitLayers(tCloth.Select(c => c.UUID), clothedAlphaItems.Select(c => c.UUID), IsClothedOutfit(folder.Name));
+            if (keepLayer != UUID.Zero) tClothIds.Add(keepLayer);   // the swap veil: not removed here, never added as an outfit layer
             foreach (var ai in clothedAlphaItems) if (!tCloth.Any(c => c.UUID == ai.UUID)) tCloth.Add((InventoryWearable)ai);
             var removeCloth = new List<InventoryItem>();
             foreach (var cid in LayersNotInOutfit(curCloth.Select(c => c.ItemID), tClothIds)) // incl. system Alpha layers

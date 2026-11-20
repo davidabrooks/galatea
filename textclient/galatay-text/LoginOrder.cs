@@ -100,5 +100,9 @@ public static partial class Program
     }
     static void LoginOrderNoteSeen(UUID item) { if (item != UUID.Zero && loginOrderT0 != DateTime.MinValue) loginSeenAt.TryAdd(item, DateTime.Now); }
     static void LoginOrderNoteChat(ChatSourceType src, string from, string msg)
-    { if (src == ChatSourceType.Object && loginOrderT0 != DateTime.MinValue && (msg ?? "").TrimStart().StartsWith("Ready", StringComparison.Ordinal)) loginReadyAt.TryAdd(from ?? "", DateTime.Now); }
+    {
+        if (src != ChatSourceType.Object || !(msg ?? "").TrimStart().StartsWith("Ready", StringComparison.Ordinal)) return;
+        objectReadyAt[from ?? ""] = DateTime.Now;   // SwapVeil.cs: the latest Ready of every object (outfit changes after login)
+        if (loginOrderT0 != DateTime.MinValue) loginReadyAt.TryAdd(from ?? "", DateTime.Now);
+    }
 }

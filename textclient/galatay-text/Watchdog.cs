@@ -9,6 +9,11 @@
 //   -> log, keep the wander flag, clean logout (10 s cap), exit code 75 = "relaunch me" (text-galatay.sh supervisor).
 // - Unexpected disconnects (NetworkTimeout etc.) that are not region restarts also exit 75 (Program.cs); region
 //   restart disconnects keep the in-process reconnect (RegionRestart.cs).
+// - 2026-11-20: the MCP connector never started any of this (only the daemon's Main did), so the 10:15:29 PT NetworkTimeout
+//   left no trace. EnsureWatchdog() now starts it from every login (idempotent). In the MCP connector nothing exits:
+//   a freeze or stale connection while logged in drops the dead circuit (NetworkTimeout -> the normal in-process
+//   auto-relogin, RegionRestart.cs), a stalled heartbeat is only logged, and deliberate-stop means log only (WdAction).
+//   The watchdog thread also samples per-region packet ages and checks the Ticker for a blocked step (ConnectionDiag.cs).
 using System.Diagnostics;
 using LibreMetaverse;
 using LibreMetaverse.Packets;
@@ -61,6 +66,28 @@ public static partial class Program
         return null;
     }
 
+    static int watchdogStarted;
+    /// <summary>Heartbeat loop + watchdog thread, once per process (daemon Main and every LoginCoreAsync call it).</summary>
+    static void EnsureWatchdog()
+    {
+        if (Interlocked.Exchange(ref watchdogStarted, 1) == 1) return;
+        _ = Task.Run(HeartbeatLoop);
+        StartWatchdog();
+    }
+
+    /// <summary>Pure (tested): what a watchdog finding does. "exit-relaunch" (daemon: clean logout, exit 75 for the supervisor),
+    /// "drop-circuit" (MCP connector: shut the dead circuit down as a NetworkTimeout, so the in-process auto-relogin runs), or "log".</summary>
+    internal static string WdAction(string why, bool exitOnLogout, bool loggedIn, bool deliberateStop)
+    {
+        if (why == null || !loggedIn) return "log";        // nothing to save: no session (a login may be running)
+        if (exitOnLogout) return "exit-relaunch";           // daemon: unchanged since 2026-09-26
+        if (deliberateStop) return "log";
+        if (why.StartsWith("heartbeat stalled", StringComparison.Ordinal)) return "log";   // the session may be fine: only the thread pool is slow
+        return "drop-circuit";
+    }
+    internal const int WdRepeatSec = 60;
+    static long wdLastActionTicks = long.MinValue / 2;
+
     static void StartWatchdog()
     {
         if (wdThread != null) return;
@@ -80,10 +107,28 @@ public static partial class Program
                 catch { }
                 lastWall = nowWall; lastMono = nowMono;
                 if (++udpTick % 5 == 0) CheckUdpDrops();   // every ~10 s (UdpDrops.cs)
-                if (why != null) WdRelaunch(why);
+                try { SamplePacketAges(nowMono); MaybeLogPacketStats(nowMono); CheckTickerStall(nowMono); } catch { }   // ConnectionDiag.cs
+                if (why != null) WdAct(why);
             }
         }) { IsBackground = true, Name = "watchdog" };
         wdThread.Start();
+    }
+
+    static void WdAct(string why)
+    {
+        var action = WdAction(why, ExitOnLogout, LoggedIn, DeliberateStopRequested());
+        if (action == "exit-relaunch") { WdRelaunch(why); return; }
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref wdLastActionTicks) < WdRepeatSec * 1000L) return;   // a lasting condition: one line a minute
+        Interlocked.Exchange(ref wdLastActionTicks, now);
+        wdLastEvent = $"{DateTime.Now:HH:mm:ss} {why}";
+        if (action == "log") { Log("watchdog", $"{why} (logged only{(LoggedIn ? "" : ": not logged in")}{(DeliberateStopRequested() ? ", deliberate-stop" : "")}); {PacketAgesSummary()}; {TickerStatus()}"); return; }
+        Log("watchdog", $"{why} -> dropping the dead circuit; the in-process auto-relogin logs back in; {PacketAgesSummary()}; {TickerStatus()}");
+        _ = Task.Run(async () =>
+        {
+            try { await client.Network.ShutdownAsync(NetworkManager.DisconnectType.NetworkTimeout, "watchdog: " + why); }
+            catch (Exception ex) { Log("watchdog", "circuit shutdown error: " + ex.GetBaseException().Message); }
+        });
     }
 
     static void WdRelaunch(string why)

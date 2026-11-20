@@ -7,6 +7,8 @@
 //  - a NetworkTimeout within 5 min of a fork uses a 5 s first relogin delay instead of 30 s.
 // The relogin is the same LoginAsync as always (full normal login: veil, persisted stand cooldown, LoginFaceHim), and all
 // existing cancellations (manual login/logout generation, deliberate-stop marker, loginGate) still apply.
+// 2026-11-20: a fork while logged out but with a login request in flight cancels that request (LoginRequest.cs), so the
+// login retries it at once instead of hanging until LibreMetaverse's 60 s LoginTimeout.
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using LibreMetaverse;
@@ -78,7 +80,14 @@ public static partial class Program
                 Interlocked.Exchange(ref lastVmForkTicks, seen);
                 LastVmForkEvent = $"{DateTime.Now:HH:mm:ss} {label}";
                 if (LoggedIn && !shuttingDown) { Log("keepalive", $"{label} while logged in: checking the session"); _ = Task.Run(() => VmForkHealthCheck(label, seen)); }
-                else Log("keepalive", $"{label} (not logged in)");
+                else
+                {
+                    Log("keepalive", $"{label} (not logged in)");
+                    // LoginRequest.cs (2026-11-20 10:16:46): a fork during the login request kills its connection; cancel it now
+                    // (only while the login server has not answered: no double login) so the login retries it at once
+                    if (!DeliberateStopRequested() && CancelLoginRequest($"fork: {label} landed while the login request was in flight"))
+                        Log("keepalive", $"{label}: cancelled the in-flight login request; the login retries it now");
+                }
             }
             prev = now;
         }

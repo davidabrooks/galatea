@@ -426,11 +426,21 @@ public static partial class Program
     // pure (tested): delay before embedded relogin try n (1-based); kicked by another login of this account: wait much longer
     internal static TimeSpan EmbeddedReloginDelay(int tryN, bool kicked) => kicked ? TimeSpan.FromMinutes(10 * tryN) : TimeSpan.FromSeconds(Math.Min(300, 30 * Math.Pow(2, tryN - 1)));
     internal const int EmbeddedReloginMax = 5;
-    static int embeddedReloginRunning;
+    // 2026-11-20: one loop per relogin generation. A failed manual login re-arms a fresh loop (Program.cs Exec "login") while
+    // the older loop, whose generation the manual login bumped, skips at its next check and ends; its finally must not
+    // clear the newer loop's slot.
+    static readonly object embeddedReloginLock = new();
+    static int embeddedReloginLoopId, embeddedReloginLoopSeq;
+    static long embeddedReloginLoopGen = -1;
     static void ScheduleEmbeddedRelogin(bool kicked)
     {
-        if (Interlocked.Exchange(ref embeddedReloginRunning, 1) == 1) return;
-        var gen = Interlocked.Read(ref reloginGen);   // LoginHealth.cs: a manual login or logout after this cancels it
+        long gen; int loopId;
+        lock (embeddedReloginLock)
+        {
+            gen = Interlocked.Read(ref reloginGen);   // LoginHealth.cs: a manual login (once past loginGate) or a logout after this cancels it
+            if (!EmbeddedReloginScheduleNeeded(embeddedReloginLoopId != 0, embeddedReloginLoopGen, gen)) return;
+            loopId = ++embeddedReloginLoopSeq; embeddedReloginLoopId = loopId; embeddedReloginLoopGen = gen;
+        }
         bool afterFork = VmForkRecent(Interlocked.Read(ref lastVmForkTicks), Environment.TickCount64);   // VmForkWatch.cs
         if (afterFork) Log("disconnect", $"disconnect follows a {LastVmForkEvent}: fast relogin");
         _ = Task.Run(async () =>
@@ -443,7 +453,15 @@ public static partial class Program
                     var d = EmbeddedReloginDelayAfterFailure(n, kicked, afterFork, lastResult);
                     Log("disconnect", $"auto-relogin {n}/{EmbeddedReloginMax} in {d.TotalSeconds:F0} s (MCP connector: no supervisor relaunch)");
                     await Task.Delay(d);
-                    var go = EmbeddedReloginDecision(DeliberateStopRequested(), LoggedIn, gen, Interlocked.Read(ref reloginGen), loginGate.CurrentCount == 0);
+                    string Decide() => EmbeddedReloginDecision(DeliberateStopRequested(), LoggedIn, gen, Interlocked.Read(ref reloginGen), loginGate.CurrentCount == 0);
+                    var go = Decide();
+                    for (int waited = 0; go.StartsWith("wait", StringComparison.Ordinal) && waited < EmbeddedReloginWaitMaxSec; waited += EmbeddedReloginWaitStepSec)
+                    {
+                        if (waited == 0) Log("disconnect", $"auto-relogin {n}: {go}; checking again every {EmbeddedReloginWaitStepSec} s");
+                        await Task.Delay(EmbeddedReloginWaitStepSec * 1000);
+                        go = Decide();
+                    }
+                    if (go.StartsWith("wait", StringComparison.Ordinal)) { Log("disconnect", $"auto-relogin {n}: still waiting after {EmbeddedReloginWaitMaxSec} s ({go}); next try"); lastResult = "BUSY"; continue; }
                     if (go != "go") { Log("disconnect", $"auto-relogin {n}: {go}"); return; }
                     var r = await LoginAsync();
                     lastResult = r;
@@ -453,7 +471,7 @@ public static partial class Program
                 Log("disconnect", "auto-relogin: giving up after 5 tries");
             }
             catch (Exception ex) { Log("disconnect", "auto-relogin error: " + ex.GetBaseException().Message); }
-            finally { Interlocked.Exchange(ref embeddedReloginRunning, 0); }
+            finally { lock (embeddedReloginLock) { if (embeddedReloginLoopId == loopId) embeddedReloginLoopId = 0; } }
         });
     }
     static bool MaybeScheduleReconnect(NetworkManager.DisconnectType reason, string message)

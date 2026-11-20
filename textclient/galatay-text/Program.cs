@@ -48,7 +48,7 @@ public static partial class Program
     public static bool ExitOnLogout = true; // daemon mode: process ends after logout
     public record EventItem(string time, string kind, string text);
     public static readonly ConcurrentQueue<EventItem> Events = new();
-    static readonly HashSet<string> NonEvents = new() { "greet-reply", "cmd", "ready", "webhook", "profile", "height", "muted-drop", "mute", "voice-sc" };
+    static readonly HashSet<string> NonEvents = new() { "greet-reply", "cmd", "ready", "webhook", "profile", "height", "muted-drop", "mute", "voice-sc", "net-stats" };
     // Incoming avatar chat/IM notification (MCP webhook wake-up). Invoked AFTER the event is queued for poll_events.
     public record IncomingChat(string type, string from, string from_id, string text, string time, double? distance, string region, long? msg_id = null, string parcel = null, string context = null, string channel = null, string trigger = null, string line = null);
     public static Action<IncomingChat> OnIncoming;
@@ -273,7 +273,7 @@ public static partial class Program
         using var sigInt = PosixSignalRegistration.Create(PosixSignal.SIGINT, c => { c.Cancel = true; _ = Task.Run(() => Shutdown("SIGINT")); });
         var res = await LoginAsync();
         if (!res.StartsWith("OK")) { Log("exit", $"login failed ({res}); exit {ExitRelaunch} (supervisor retries with backoff)"); return ExitRelaunch; }
-        _ = Task.Run(HeartbeatLoop); StartWatchdog(); // Watchdog.cs
+        EnsureWatchdog(); // Watchdog.cs (idempotent; LoginCoreAsync starts it too, for the MCP connector)
         _ = Task.Run(WanderAutoResume); // resumes if wander-state.json is on, unless stale after a deliberate stop (Wander.cs WanderResumeDecision)
         _ = Task.Run(QuietLoop); // session detector / quiet mode every 10 s (Quiet.cs)
 
@@ -285,10 +285,18 @@ public static partial class Program
     }
 
 
-    public static async Task<string> LoginAsync()
+    // manual = the login command / tool. 2026-11-20 10:17:14: a manual login refused as BUSY still cancelled the pending
+    // auto-relogin, and nothing retried after the running login failed. Now a manual login cancels pending auto-relogins
+    // only once it holds loginGate (LoginHealth.cs).
+    public static async Task<string> LoginAsync(bool manual = false)
     {
         if (!await loginGate.WaitAsync(0)) { Log("login", "refused: another login is running"); return "BUSY: another login is running"; }
-        try { return await LoginCoreAsync(); } finally { loginGate.Release(); }
+        try
+        {
+            if (manual) CancelPendingRelogin("manual login");
+            return await LoginCoreAsync();
+        }
+        finally { loginGate.Release(); }
     }
     static async Task<string> LoginCoreAsync()
     {
@@ -345,8 +353,11 @@ public static partial class Program
         HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
         HookParcelWatch(); // our parcel + who is on it, entry/leave events (ParcelWatch.cs)
         StartVmForkWatch(); // VmForkWatch.cs (idempotent)
+        EnsureWatchdog(); // Watchdog.cs: heartbeat, freeze/stale checks, UDP drops, packet ages (idempotent; MCP connector too)
+        StartLastOnlineTimer(); // ConnectionDiag.cs: run/last-online.txt on its own timer (idempotent)
         StartSeatAdjustWatch(); // SeatAdjustRun.cs: every sit gets a render check (idempotent)
         HookWatchdog(); // packet-arrival stamp for the stale-connection check (Watchdog.cs)
+        HookPacketAges(); // per-region last packet received / processed (ConnectionDiag.cs)
         HookQuiet(); // other avatars' ground-sit animations for the session detector (Quiet.cs)
         HookAnimClock(); // every avatar's playing animations + since when, for scene export / look (SceneExport.cs)
         HookNeighbors(); // neighbor regions (child agents), border crossings (Neighbors.cs)
@@ -365,12 +376,22 @@ public static partial class Program
         var sw = Stopwatch.StartNew();
         bool ok;
         bool ghostPending = File.Exists(GhostMarkerPath);   // CrashGuard.cs: the previous connector died logged in
-        for (int attempt = 1; ; attempt++)
+        int ghostTries = 0, timeoutRetries = 0, forkRetries = 0;
+        while (true)
         {
-            try { ok = await client.Network.LoginAsync(lp); }
+            string cancelled;
+            try { (ok, cancelled) = await LoginAttemptAsync(lp); }   // LoginRequest.cs: own limit on the login-server reply; a VM fork cancels it
             catch (Exception ex) { var b = ex.GetBaseException(); Log("error", $"login exception: {ex.Message} / {b.GetType().Name}: {b.Message}"); return "FAILED: " + b.Message; }
-            if (ok || !ShouldRetryGhostLogin(client.Network.LoginMessage, ghostPending, attempt)) break;
-            Log("ghost", $"login refused while the ghost session of the dead connector is still on the grid ({client.Network.LoginMessage}); retrying in 20 s (attempt {attempt + 1}/3)");
+            var retry = ok ? null : LoginRequestRetry(cancelled, timeoutRetries, forkRetries, DeliberateStopRequested());
+            if (retry != null)
+            {
+                if (retry == "timeout") timeoutRetries++; else forkRetries++;
+                ghostPending = true;   // the grid may have finished the cancelled login: wait out a "presence" refusal like a ghost
+                Log("login", $"login request cancelled after {sw.Elapsed.TotalSeconds:F1}s ({cancelled}); retrying now");
+                continue;
+            }
+            if (ok || !ShouldRetryGhostLogin(client.Network.LoginMessage, ghostPending, ++ghostTries)) break;
+            Log("ghost", $"login refused while the ghost session of the dead connector is still on the grid ({client.Network.LoginMessage}); retrying in 20 s (attempt {ghostTries + 1}/3)");
             await Task.Delay(20000);
         }
         lp.Password = "";
@@ -637,7 +658,7 @@ public static partial class Program
         client.Network.SimChanged += (s, e) => { Log("region", $"now in {client.Network.CurrentSim?.Name}"); if (LoggedIn) { _ = RecoverAfterRegionChange(); _ = Ensure360ForCurrentRegion("region change"); _ = Task.Run(async () => { await Task.Delay(3000); await PostHover(PinnedHover(), "region change"); }); hoverSvc.HoverCheckRequest("region", 12000); } };
         client.Network.Disconnected += (s, e) =>
         {
-            Log("disconnect", $"{e.Reason}: {e.Message}");
+            Log("disconnect", $"{e.Reason}: {e.Message}" + (e.Reason == NetworkManager.DisconnectType.NetworkTimeout ? $"; last packets: {PacketAgesSummary()}; {TickerStatus()}" : ""));   // ConnectionDiag.cs
             try { if (File.Exists(LockPath) && File.ReadAllText(LockPath).Trim() == Environment.ProcessId.ToString()) File.Delete(LockPath); } catch { }
             if (!shuttingDown && MaybeScheduleReconnect(e.Reason, e.Message)) return; // region restart/shutdown -> re-login later (RegionRestart.cs)
             if (!shuttingDown && e.Reason != NetworkManager.DisconnectType.ClientInitiated)
@@ -684,12 +705,13 @@ public static partial class Program
         while (!cts.IsCancellationRequested)
         {
             // follow itself runs in FollowLoop (Follow.cs, 250 ms: standoff point, bands, doors)
-            try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } // AutoFollow.cs
-            try { CameraAnchorTick(); } catch { }
-            try { LastOnlineHeartbeat(); } catch { }
-            try { ParcelWatchTick(); } catch (Exception ex) { Log("parcel", "tick error: " + ex.GetBaseException().Message); } // ParcelWatch.cs
-            try { NeighborTick(); } catch (Exception ex) { Log("regions", "tick error: " + ex.GetBaseException().Message); } // Neighbors.cs crossing watch + neighbor cap
-            try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } // OutfitZones.cs beach/house
+            // 2026-11-20: every step is timed (ConnectionDiag.cs: > 5 s is logged, and the watchdog logs a step still running);
+            // LastOnlineHeartbeat moved to its own timer (StartLastOnlineTimer)
+            TickerStepBegin("AutoFollowTick"); try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // AutoFollow.cs
+            TickerStepBegin("CameraAnchorTick"); try { CameraAnchorTick(); } catch { } TickerStepEnd();
+            TickerStepBegin("ParcelWatchTick"); try { ParcelWatchTick(); } catch (Exception ex) { Log("parcel", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // ParcelWatch.cs
+            TickerStepBegin("NeighborTick"); try { NeighborTick(); } catch (Exception ex) { Log("regions", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // Neighbors.cs crossing watch + neighbor cap
+            TickerStepBegin("OutfitZoneTick"); try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // OutfitZones.cs beach/house
             try { await Task.Delay(1000, cts.Token); } catch { }
         }
     }
@@ -1835,14 +1857,19 @@ public static partial class Program
         if (cmd != "status" && cmd != "where" && cmd != "help" && line != "anim list") Log("cmd", line);
         if (cmd == "login")
         {
-            CancelPendingRelogin("manual login");
             var outfit = UsualOutfit.ParseLoginOutfitArg(rest);
             if (outfit != null)
             {
                 if (LoggedIn) return $"already logged in (use outfit wear '{outfit}' to change now)";
                 WriteLoginOutfitRequest(outfit);
             }
-            return await LoginAsync();
+            var lr = await LoginAsync(manual: true);   // cancels pending auto-relogins only once it holds loginGate (BUSY cancels nothing)
+            if (ManualLoginRearm(lr, LoggedIn, DeliberateStopRequested(), embedded: !ExitOnLogout))   // LoginHealth.cs: a failed manual login must not leave nothing retrying
+            {
+                Log("disconnect", $"manual login failed ({lr.Trim()}): auto-relogin re-armed");
+                ScheduleEmbeddedRelogin(false);
+            }
+            return lr;
         }
         if (cmd == "remind") return RemindCmd(a); // works logged out (FriendWatch.cs)
         if (!LoggedIn && cmd != "help" && cmd != "restart") return "not logged in" + (cmd is "status" or "where" ? "" : " (use login)");

@@ -32,15 +32,33 @@ public static partial class Program
         return g;
     }
 
-    /// <summary>Pure (tested): may a scheduled auto-relogin try go now? "go" or "skip: reason" (skip = give up for good).</summary>
+    /// <summary>Pure (tested): may a scheduled auto-relogin try go now? "go", "wait: reason" (check again shortly, the try is not
+    /// used up) or "skip: reason" (give up for good). 2026-11-20: "another login is running" was a skip, so a login that then
+    /// failed left nothing retrying; it is a wait now.</summary>
     internal static string EmbeddedReloginDecision(bool deliberateStop, bool loggedIn, long scheduledGen, long currentGen, bool loginRunning)
     {
         if (deliberateStop) return "skip: deliberate-stop marker present";
         if (scheduledGen != currentGen) return "skip: a manual login or logout happened since the disconnect";
         if (loggedIn) return "skip: already logged in again";
-        if (loginRunning) return "skip: another login is running";
+        if (loginRunning) return "wait: another login is running";
         return "go";
     }
+    internal const int EmbeddedReloginWaitStepSec = 5, EmbeddedReloginWaitMaxSec = 120;
+
+    /// <summary>Pure (tested): after a manual login, start a fresh auto-relogin? Only in the MCP connector (embedded relogin),
+    /// only for a real login failure (not BUSY / REFUSED / OK, not a missing password: retrying cannot fix that), only when
+    /// still logged out and with no deliberate-stop marker.</summary>
+    internal static bool ManualLoginRearm(string result, bool loggedIn, bool deliberateStop, bool embedded)
+    {
+        if (!embedded || loggedIn || deliberateStop || result == null) return false;
+        if (!result.StartsWith("FAILED", StringComparison.Ordinal)) return false;
+        return !(result.Contains("secrets file", StringComparison.OrdinalIgnoreCase) || result.Contains("password empty", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Pure (tested): schedule a new auto-relogin loop? Not when one is already running for the same generation
+    /// (a duplicate); yes when none runs, or the running one belongs to an older generation (it skips and ends on its own).</summary>
+    internal static bool EmbeddedReloginScheduleNeeded(bool loopRunning, long runningGen, long currentGen)
+        => !loopRunning || runningGen != currentGen;
 
     /// <summary>Pure (tested): null when the login looks healthy at +15 s, else why it failed.</summary>
     internal static string LoginHealthProblem(string region, int objectsKnown, bool hasFetchInventory2, bool hasUploadBakedTexture)

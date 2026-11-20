@@ -30,13 +30,18 @@ public static partial class Program
         catch { return null; }
     }
 
-    // heartbeat: called from the 1 s ticker while logged in (writes once a minute) and at logout
+    // heartbeat: called from its own 5 s timer while logged in (writes once a minute; ConnectionDiag.cs StartLastOnlineTimer,
+    // 2026-11-20: it was a Ticker step, and a blocked Ticker stopped it) and at logout
+    static readonly object lastOnlineLock = new();
     static void LastOnlineHeartbeat(bool force = false)
     {
         if (!LoggedIn && !force) return;
-        var now = DateTime.UtcNow; if (!force && now - lastOnlineWrite < TimeSpan.FromSeconds(60)) return;
-        lastOnlineWrite = now;
-        try { File.WriteAllText(LastOnlineFile, now.ToString("o", CultureInfo.InvariantCulture)); } catch { }
+        lock (lastOnlineLock)
+        {
+            var now = DateTime.UtcNow; if (!force && now - lastOnlineWrite < TimeSpan.FromSeconds(60)) return;
+            lastOnlineWrite = now;
+            try { File.WriteAllText(LastOnlineFile, now.ToString("o", CultureInfo.InvariantCulture)); } catch { }
+        }
     }
 
     // 2026-10-12 16:05 David: after a quick relog that was seated, do NOT re-sit or re-pick a pose: log in, step to the

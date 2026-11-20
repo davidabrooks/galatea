@@ -16,6 +16,8 @@
   <ItemGroup>
     <Compile Include="../galatay-text/HandPose.cs" Link="Core/HandPose.cs" />
     <Compile Include="../galatay-text/LoginStart.cs" Link="Core/LoginStart.cs" />
+    <Compile Include="../galatay-text/ConnectionDiag.cs" Link="Core/ConnectionDiag.cs" />
+    <Compile Include="../galatay-text/LoginRequest.cs" Link="Core/LoginRequest.cs" />
     <Compile Include="../galatay-text/JoinDavid.cs" Link="Core/JoinDavid.cs" />
     <Compile Include="../galatay-text/SitFixes.cs" Link="Core/SitFixes.cs" />
     <Compile Include="../galatay-text/CoupleRoles.cs" Link="Core/CoupleRoles.cs" />

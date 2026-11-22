@@ -412,6 +412,13 @@ public static partial class Program
             else if (id != DavidId && dist >= 0 && dist <= 40f)
                 WLog($"chat from {name}: not a come request; replying in place (no approach)");
             if (!WanderChatShouldPause(im, dist)) return; // local chat from farther than 5 m or unknown position doesn't pause; IMs still do
+            // 2026-11-22 (WanderPoseRequest.cs): David asking for a pose change while she sits keeps the wander and the sit running
+            if (PoseRequestKeepsWander(WanderOn, client.Self.SittingOn != 0, wanderPause, id == DavidId, text))
+            {
+                wPoseChangeAsked = true; wPoseChangeAskedBy = name;
+                WLog($"{(im ? "IM" : "chat")} from {name}: pose change request ('{text}'): no chat pause; the sit changes pose at its next tick");
+                return;
+            }
             wLastIncoming = DateTime.Now;
             var p = wanderPause;
             if (p is "hold" or "user" or "ao") { WLog($"{(im ? "IM" : "chat")} from {name} while paused ({p}): no action"); return; }
@@ -572,6 +579,15 @@ public static partial class Program
                 }
                 if (pause == "rest" && RestStateNow() != "rest" && wanderPause == "rest") { wanderPause = null; continue; }
                 await Task.Delay(1000, ct); continue;
+            }
+            // 2026-11-22 (WanderPoseRequest.cs): still seated undressed after an interrupted tub sit: dress at the seat before any leg
+            if (RedressBeforeLeg(pendingDressOutfit != null || pendingToilet != null, client.Self.SittingOn != 0, wanderPause))
+            {
+                WLog("RESUME after an interrupted undress sit: standing and dressing at the seat before walking anywhere");
+                wanderPhase = "dressing after the seat";
+                await EnsureStandingForWalk(ct);
+                await DressAfterSeatIfPending();
+                continue;
             }
             // 2026-10-08 14:51 David: rest after 3 failed walks, then wander again by herself (WanderRest.cs)
             var rs = RestStateNow();
@@ -843,6 +859,7 @@ public static partial class Program
         var t0 = DateTime.Now;
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
+        wPoseChangeAsked = false;   // a request from before this sit is not for it
         bool menu = false, waterOn = false;
         var fixedMenu = forceMenu ?? HomeSeatMenu(info, wRnd);
         if (boat)
@@ -875,10 +892,12 @@ public static partial class Program
             while (SeatAdjust.SitKeepsSitting((DateTime.Now - t0).TotalSeconds, stay, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
             {
                 await Task.Delay(1000, ct);
-                if (SeatAdjust.SitChangesPose((DateTime.Now - t0).TotalSeconds, changeAt, changed, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
+                bool asked = TakePoseChangeRequest(client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy);
+                if (asked || SeatAdjust.SitChangesPose((DateTime.Now - t0).TotalSeconds, changeAt, changed, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
                 {
-                    changed = true;
+                    if (!asked) changed = true;   // a requested change leaves the timed rotation (and the stay) as it was
                     try { if (boat) WLog($"BOAT POSE change '{c.name}': {(await BoatPose(c.p, c.name, ct)).msg}"); else await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
+                    if (asked) continue;
                     changeAt = NextPoseChangeAt((DateTime.Now - t0).TotalSeconds, stay, wRnd);
                     if (changeAt < double.MaxValue) { changed = false; WLog($"POSE '{c.name}': next pose change in {changeAt - (DateTime.Now - t0).TotalSeconds:F0} s (long stay)"); }
                 }
@@ -1285,6 +1304,7 @@ public static partial class Program
         var t0 = DateTime.Now;
         wanderPhase = $"sitting on '{c.name}' ({stay} s)";
         WLog($"SAT on '{c.name}' {c.p.ID} ({r}); staying {stay} s");
+        wPoseChangeAsked = false;   // a request from before this sit is not for it
         bool menu = false;
         try
         {
@@ -1297,9 +1317,10 @@ public static partial class Program
         while (SeatAdjust.SitKeepsSitting((DateTime.Now - t0).TotalSeconds, stay, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
         {
             await Task.Delay(1000, ct);
-            if (SeatAdjust.SitChangesPose((DateTime.Now - t0).TotalSeconds, changeAt, changed, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
+            bool asked = TakePoseChangeRequest(client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy);
+            if (asked || SeatAdjust.SitChangesPose((DateTime.Now - t0).TotalSeconds, changeAt, changed, client.Self.SittingOn != 0, wanderPause != null, SeatAdjustBusy))
             {
-                changed = true;
+                if (!asked) changed = true;
                 try { await SeatPose(c.p, c.name, DateTime.Now, true, ct, preferPgSolo: true); } catch (OperationCanceledException) { throw; } catch (Exception ex) { WLog("POSE change error: " + ex.GetBaseException().Message); }
             }
         }

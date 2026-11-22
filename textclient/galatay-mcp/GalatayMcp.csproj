@@ -168,6 +168,7 @@
     <Compile Include="../galatay-text/TextureCmds.cs" Link="Core/TextureCmds.cs" />
     <Compile Include="../galatay-text/TpOffer.cs" Link="Core/TpOffer.cs" />
     <Compile Include="../galatay-text/Roam.cs" Link="Core/Roam.cs" />
+    <Compile Include="../galatay-text/FreezeRecovery.cs" Link="Core/FreezeRecovery.cs" />
     <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
     <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.15" />

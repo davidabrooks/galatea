@@ -274,7 +274,7 @@ public static partial class Program
         var res = await LoginAsync();
         if (!res.StartsWith("OK")) { Log("exit", $"login failed ({res}); exit {ExitRelaunch} (supervisor retries with backoff)"); return ExitRelaunch; }
         EnsureWatchdog(); // Watchdog.cs (idempotent; LoginCoreAsync starts it too, for the MCP connector)
-        _ = Task.Run(WanderAutoResume); // resumes if wander-state.json is on, unless stale after a deliberate stop (Wander.cs WanderResumeDecision)
+        _ = Task.Run(() => WanderAutoResume()); // resumes if wander-state.json is on, unless stale after a deliberate stop (Wander.cs WanderResumeDecision)
         _ = Task.Run(QuietLoop); // session detector / quiet mode every 10 s (Quiet.cs)
 
         var server = Task.Run(SocketServer);

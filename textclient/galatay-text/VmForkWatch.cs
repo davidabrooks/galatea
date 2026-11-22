@@ -79,7 +79,7 @@ public static partial class Program
                 var seen = Environment.TickCount64;
                 Interlocked.Exchange(ref lastVmForkTicks, seen);
                 LastVmForkEvent = $"{DateTime.Now:HH:mm:ss} {label}";
-                if (LoggedIn && !shuttingDown) { Log("keepalive", $"{label} while logged in: checking the session"); _ = Task.Run(() => VmForkHealthCheck(label, seen)); }
+                if (LoggedIn && !shuttingDown) { FreezeStopWalking(label); Log("keepalive", $"{label} while logged in: checking the session"); _ = Task.Run(() => VmForkHealthCheck(label, seen)); }
                 else
                 {
                     Log("keepalive", $"{label} (not logged in)");

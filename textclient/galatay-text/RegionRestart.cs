@@ -441,8 +441,13 @@ public static partial class Program
             if (!EmbeddedReloginScheduleNeeded(embeddedReloginLoopId != 0, embeddedReloginLoopGen, gen)) return;
             loopId = ++embeddedReloginLoopSeq; embeddedReloginLoopId = loopId; embeddedReloginLoopGen = gen;
         }
-        bool afterFork = VmForkRecent(Interlocked.Read(ref lastVmForkTicks), Environment.TickCount64);   // VmForkWatch.cs
+        long nowT = Environment.TickCount64;
+        bool afterFork = VmForkRecent(Interlocked.Read(ref lastVmForkTicks), nowT);   // VmForkWatch.cs
+        // FreezeRecovery.cs (2026-11-22): any freeze gets the fast relogin, not only a VM-fork line (11:12:57 Nov 20 waited 30 s)
+        bool afterFreeze = !afterFork && FreezeRecent(Interlocked.Read(ref lastFreezeTicks), Interlocked.Read(ref wdTickTicks), Volatile.Read(ref watchdogStarted) == 1, nowT);
         if (afterFork) Log("disconnect", $"disconnect follows a {LastVmForkEvent}: fast relogin");
+        else if (afterFreeze) Log("disconnect", $"disconnect follows a box freeze ({LastFreezeEvent ?? "watchdog thread late"}): fast relogin");
+        afterFork |= afterFreeze;
         _ = Task.Run(async () =>
         {
             try
@@ -466,7 +471,12 @@ public static partial class Program
                     var r = await LoginAsync();
                     lastResult = r;
                     Log("disconnect", $"auto-relogin {n}: {r}");
-                    if (r.StartsWith("OK")) return;
+                    if (r.StartsWith("OK"))
+                    {
+                        // FreezeRecovery.cs (2026-11-22): the disconnect kept the wander flag; resume it like a daemon restart does
+                        _ = Task.Run(() => WanderAutoResume("in-process auto-relogin"));
+                        return;
+                    }
                 }
                 Log("disconnect", "auto-relogin: giving up after 5 tries");
             }

@@ -72,18 +72,43 @@ internal static partial class SeatAdjust
         if (waterSeat && r.Gap!.Value < Band(r).lo) return $"a sit in water: the sunk reading {r.Gap:+0.000;-0.000} m is the water surface over her, unmeasurable";
         return null;
     }
-    // ---- too-dark retakes (2026-11-22, dark-widen): level 1 = the wide retake (GT_SUPPORT_WIDE=1, 1.6-3.0 m as before); while the retake is still
-    // too dark, level 2 (3.2-6.0 m) and 3 (6.4-8.0 m) step the camera further back (render_mesh.py widen_width / widen_level, GT_WIDEN) ----
-    internal const int MaxWidenLevel = 3;
+    // ---- retakes (David 2026-11-22: "Cap every retake at 1 m, then rotate 180"): retake 1 = the wide retake (GT_SUPPORT_WIDE=1), its camera never
+    // more than 1 m from her (render_mesh RETAKE_MAX_CAM_M; the lens widens instead); retake 2, only while retake 1 is still too dark = the same retake
+    // from the opposite side (GT_RETAKE_TURN=180, same height and distance). Still too dark after that = unmeasurable, nothing pressed. ----
+    internal const int MaxRetake = 2;
     internal const string DarkGatePrefix = "the close-up is too dark";
-    // pure (tested): the next retake level after a failed gate, 0 = stop. Only a too-dark frame steps further back; any other failure (no surface,
-    // overexposed, a huge gap) would not be cured by a wider view, so it stops at the wide retake as before.
-    internal static int NextWidenLevel(int level, string gateFail)
-        => level >= 1 && level < MaxWidenLevel && gateFail != null && gateFail.StartsWith(DarkGatePrefix, StringComparison.Ordinal) ? level + 1 : 0;
-    // pure (tested): the render env for a widen level (null = the plain close-up)
-    internal static Dictionary<string, string> WidenEnv(int level)
-        => level <= 0 ? null : new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1", ["GT_WIDEN"] = Math.Min(level, MaxWidenLevel).ToString(CultureInfo.InvariantCulture) };
-    internal static string WidenLabel(int level) => level <= 1 ? "wide retake" : $"wider retake (level {level})";
+    // pure (tested): the next retake after a failed gate, 0 = stop. Only a too-dark retake 1 gets the opposite side; any other failure stops there.
+    internal static int NextRetake(int retake, string gateFail)
+        => retake == 1 && gateFail != null && gateFail.StartsWith(DarkGatePrefix, StringComparison.Ordinal) ? 2 : 0;
+    // pure (tested): the render env for a retake (null = the plain close-up)
+    internal static Dictionary<string, string> RetakeEnv(int retake)
+        => retake <= 0 ? null : retake == 1 ? new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1" }
+         : new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1", ["GT_RETAKE_TURN"] = "180" };
+    internal static string RetakeLabel(int retake) => retake <= 1 ? "wide retake" : "opposite-side retake (180)";
+
+    // ---- unmeasurable -> tell David in world (David 2026-11-22: "tell me in world when you are unable to measure so we can troubleshoot") ----
+    // pure (tested): the run's outcome is "unmeasurable" when the decision undid (or never made) a nudge because a render was not good enough
+    internal static string UnmeasurableFromSave(SaveCall call, string why)
+        => call == SaveCall.Revert && why != null && why.Contains("not good enough", StringComparison.Ordinal) ? why : null;
+    // pure (tested): the reason in a few words: the last step of a gate trail ("...; opposite-side retake (180): the close-up is too dark (81 %)")
+    internal static string ShortReason(string why)
+    {
+        if (string.IsNullOrWhiteSpace(why)) return "the render was not usable";
+        var r = why.Split("; ").Last().Trim();
+        foreach (var lbl in new[] { "wide retake: ", "opposite-side retake (180): " }) if (r.StartsWith(lbl, StringComparison.Ordinal)) r = r[lbl.Length..];
+        r = Regex.Replace(r, @"\s*\(/[^)]*\.(png|jpg)\)", "");
+        return r.Length > 160 ? r[..157] + "..." : r;
+    }
+    // pure (tested): the IM, short and in her voice
+    internal static string UnmeasurableIm(string seatName, string pose, string why)
+    {
+        var leaf = (pose ?? "").Split('>').Last().Trim();
+        var where = string.IsNullOrWhiteSpace(seatName) ? "this seat" : seatName.Trim();
+        return $"I couldn't measure my seat on {where}{(leaf.Length > 0 && !leaf.StartsWith("(") ? " / " + leaf : "")}: {ShortReason(why)}. Want to troubleshoot?";
+    }
+    // pure (tested): send? once per sit and pose (key = seat + pose; the set is cleared when she stands), and only while David is online
+    internal static (bool send, string why) UnmeasurableNotifyDecision(ISet<string> notified, string key, bool davidOnline)
+        => !davidOnline ? (false, "David is offline") : notified.Contains(key) ? (false, "already told David for this sit and pose") : (true, null);
     internal static bool SameClass(SupportReading a, SupportReading b) => a?.Kind == b?.Kind && a != null && b != null && a.Bearing.OrderBy(x => x).SequenceEqual(b.Bearing.OrderBy(x => x));
 
     // Save = press the furniture's Save button for this posed position. Revert = the presses are undone (nothing unproven stays). CannotSave =

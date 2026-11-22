@@ -63,7 +63,7 @@ public static partial class Program
                 {
                     Thread.Sleep(2000);
                     uint now = LoggedIn ? client.Self.SittingOn : 0, prev = seatWatchPrev; seatWatchPrev = now;
-                    if (now == 0) { seatAdjustCheckedSeat = 0; continue; }
+                    if (now == 0) { seatAdjustCheckedSeat = 0; lock (seatUnmeasNotified) seatUnmeasNotified.Clear(); continue; }   // stood up: the next sit may IM again
                     if (Volatile.Read(ref seatPosePicking) > 0) { seatWatchPrev = prev; continue; }   // mid-pick: wait, the pick starts its own check
                     if (!SeatAdjust.SitNeedsCheck(prev, now, seatAdjustCheckedSeat)) continue;
                     var seat = Sim?.ObjectsPrimitives.Values.FirstOrDefault(p => p != null && p.LocalID == now);
@@ -75,6 +75,25 @@ public static partial class Program
             }
         }) { IsBackground = true, Name = "seatadjust-watch" }; }
         seatWatchThread.Start();
+    }
+
+    // David 2026-11-22: "You should tell me in world when you are unable to measure so we can troubleshoot." One short IM per sit and pose, only
+    // while he is online; the set is cleared when she stands (seatadjust-watch). Logged either way.
+    static readonly HashSet<string> seatUnmeasNotified = new();
+    static void SeatUnmeasurable(Primitive seat, string seatName, string pose, string why)
+    {
+        try
+        {
+            var key = $"{seat?.LocalID}|{pose}";
+            bool online; try { online = davidOnline || client.Friends.FriendList.TryGetValue(DavidAgent, out var f) && f.IsOnline; } catch { online = davidOnline; }
+            string line; (bool send, string skip) dec;
+            lock (seatUnmeasNotified) { dec = SeatAdjust.UnmeasurableNotifyDecision(seatUnmeasNotified, key, online); if (dec.send) seatUnmeasNotified.Add(key); }
+            line = SeatAdjust.UnmeasurableIm(seatName, pose, why);
+            if (!dec.send) { SALog($"'{seatName}' {pose}: unmeasurable, not IMed ({dec.skip}): {line}"); return; }
+            var (sent, skip) = ImGuardedSend(DavidAgent.ToString(), DavidName, true, true, () => client.Self.InstantMessage(DavidAgent, line), null, false, null, line);
+            SALog($"'{seatName}' {pose}: unmeasurable: IM to David {(sent ? "sent" : "skipped " + skip)}: {line}");
+        }
+        catch (Exception ex) { SALog($"'{seatName}' {pose}: unmeasurable IM failed: {ex.GetBaseException().Message}"); }
     }
 
     static void SAUnsaved(string seatName, string pose, double applied, string why)
@@ -119,22 +138,22 @@ public static partial class Program
         else SALog($"'{seatName}': switched away from bugged {pose}: {res}");
         return seatAdjustLast;
     }
-    // one render, gated; a failed gate gets ONE wide retake (the bearing parts and the surface under them in frame). 2026-11-22 (dark-widen,
-    // David 11-03 "when a close-up is too dark, ZOOM OUT"): while the retake is still too dark, step further back (GT_WIDEN 2, then 3) and judge from that.
+    // one render, gated; a failed gate gets ONE wide retake (the bearing parts and the surface under them in frame, camera at most 1 m from her).
+    // 2026-11-22 (David: "Cap every retake at 1 m, then rotate 180"): if that retake is still too dark, ONE more from the opposite side; then stop.
     static async Task<(SeatAdjust.SupportReading r, string img, string why, SeatAdjust.Quality q, string gate)> SeatAdjustGatedRender(bool waterSeat = false)
     {
         var (r, img, why, q) = await hoverSvc.SupportRender();
         var g = SeatAdjust.GateFail(r, q, waterSeat);
         if (g == null || r is not { Conclusive: true } && why != null && r == null) return (r, img, why, q, g);
         var best = (r, img, why, q, g); var trail = g;
-        for (int level = 1; level > 0; )
+        for (int retake = 1; retake > 0; )
         {
-            var (r2, img2, why2, q2) = await hoverSvc.SupportRender(widen: level);
+            var (r2, img2, why2, q2) = await hoverSvc.SupportRender(retake: retake);
             var g2 = SeatAdjust.GateFail(r2, q2, waterSeat);
-            trail += $"; {SeatAdjust.WidenLabel(level)}: {g2 ?? "ok"}";
+            trail += $"; {SeatAdjust.RetakeLabel(retake)}: {g2 ?? "ok"}";
             if (g2 == null || r2 != null) best = (r2, img2, why2, q2, g2 == null ? null : trail);
             if (g2 == null) break;
-            level = SeatAdjust.NextWidenLevel(level, g2);
+            retake = SeatAdjust.NextRetake(retake, g2);
         }
         return best;
     }
@@ -149,10 +168,10 @@ public static partial class Program
         if (bug != null) return await SeatAdjustOnBugged(seat, seatName, pose, bug, img0);
         seatBuggedSwitches = 0;
         // 2026-11-22: a huge gap from the render alone is unmeasurable, never a denylist (the tub in water, the Mirage bed's bad saved offset)
-        if (SeatAdjust.SuspectReason(r0, water) is string suspect) { SALog($"'{seatName}' {pose}: {suspect}: nothing pressed ({img0})"); return seatAdjustLast; }
-        if (r0 is not { Conclusive: true }) { SALog($"'{seatName}' {pose}: render inconclusive ({w0 ?? SeatAdjust.Describe(r0)}): nothing pressed ({img0})"); return seatAdjustLast; }
+        if (SeatAdjust.SuspectReason(r0, water) is string suspect) { SALog($"'{seatName}' {pose}: {suspect}: nothing pressed ({img0})"); SeatUnmeasurable(seat, seatName, pose, suspect); return seatAdjustLast; }
+        if (r0 is not { Conclusive: true }) { SALog($"'{seatName}' {pose}: render inconclusive ({w0 ?? SeatAdjust.Describe(r0)}): nothing pressed ({img0})"); SeatUnmeasurable(seat, seatName, pose, g0 ?? w0 ?? "the render gave no usable reading"); return seatAdjustLast; }
         if (SeatAdjust.InBand(r0) && g0 == null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)}: contact good, no adjust ({img0})"); return seatAdjustLast; }
-        if (g0 != null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)} but the render cannot be trusted ({g0}): nothing pressed ({img0})"); return seatAdjustLast; }
+        if (g0 != null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)} but the render cannot be trusted ({g0}): nothing pressed ({img0})"); SeatUnmeasurable(seat, seatName, pose, g0); return seatAdjustLast; }
         // 2026-11-03: one seat READING is HoverSamples renders now (the median), so the backstop the run had for ONE reading's worth of
         // renders scales with it; it is a guard against a hung menu, never the normal end of a run
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150 * Hover.HoverSamples)); var ct = cts.Token;
@@ -211,6 +230,7 @@ public static partial class Program
             else outcome = $"not saved ({why}); {(applied != 0 ? $"undid Z {-applied:+0.00;-0.00}" : "nothing moved")}";
         }
         SALog($"'{seatName}' {pose}: {outcome}: before {SeatAdjust.Describe(before)}, after {SeatAdjust.Describe(cur)}");
+        if (SeatAdjust.UnmeasurableFromSave(call, why) is string um) SeatUnmeasurable(seat, seatName, pose, um);
         return seatAdjustLast;
     }
 
@@ -266,6 +286,7 @@ public static partial class Program
             outcome = $"not kept ({why}); {(net != 0 ? "undid the presses" : "nothing moved")}";
         }
         SALog($"'{seatName}' {pose}: {outcome}: before {SeatAdjust.Describe(before)}, after {SeatAdjust.Describe(cur)}");
+        if (SeatAdjust.UnmeasurableFromSave(call, why) is string um) SeatUnmeasurable(seat, seatName, pose, um);
         return seatAdjustLast;
     }
 

@@ -106,6 +106,7 @@ public static partial class Program
                 }
                 catch { }
                 lastWall = nowWall; lastMono = nowMono;
+                Interlocked.Exchange(ref wdTickTicks, nowMono);   // FreezeRecovery.cs: a disconnect while this thread is late = a freeze
                 if (++udpTick % 5 == 0) CheckUdpDrops();   // every ~10 s (UdpDrops.cs)
                 try { SamplePacketAges(nowMono); MaybeLogPacketStats(nowMono); CheckTickerStall(nowMono); } catch { }   // ConnectionDiag.cs
                 if (why != null) WdAct(why);
@@ -117,12 +118,19 @@ public static partial class Program
     static void WdAct(string why)
     {
         var action = WdAction(why, ExitOnLogout, LoggedIn, DeliberateStopRequested());
-        if (action == "exit-relaunch") { WdRelaunch(why); return; }
         var now = Environment.TickCount64;
+        if (FreezeFinding(why)) FreezeStopWalking("watchdog: " + why.Split(" (")[0]);   // FreezeRecovery.cs: stop the walk first, every time
+        if (action == "exit-relaunch") { WdRelaunch(why); return; }
         if (now - Interlocked.Read(ref wdLastActionTicks) < WdRepeatSec * 1000L) return;   // a lasting condition: one line a minute
         Interlocked.Exchange(ref wdLastActionTicks, now);
         wdLastEvent = $"{DateTime.Now:HH:mm:ss} {why}";
         if (action == "log") { Log("watchdog", $"{why} (logged only{(LoggedIn ? "" : ": not logged in")}{(DeliberateStopRequested() ? ", deliberate-stop" : "")}); {PacketAgesSummary()}; {TickerStatus()}"); return; }
+        if (FreezeFinding(why))   // FreezeRecovery.cs (2026-11-22): probe first; Nov 20 10:58:44 dropped a session whose packets were arriving again
+        {
+            Log("watchdog", $"{why} -> walk stopped; probing the session for {FreezeProbeSec} s before dropping it; {PacketAgesSummary()}; {TickerStatus()}");
+            _ = Task.Run(() => FreezeProbeThenDrop(why, now));
+            return;
+        }
         Log("watchdog", $"{why} -> dropping the dead circuit; the in-process auto-relogin logs back in; {PacketAgesSummary()}; {TickerStatus()}");
         _ = Task.Run(async () =>
         {

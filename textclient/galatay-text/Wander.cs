@@ -246,7 +246,7 @@ public static partial class Program
         return (true, $"flag on, stale (saved {savedAt:HH:mm:ss}, {ago} ago) but the last shutdown was not deliberate (last write '{reason}': reboot, crash, kill or outage)");
     }
     // called after a successful login (Main): resume per WanderResumeDecision (daemon restart / deploy / reboot / crash)
-    static async Task WanderAutoResume()
+    static async Task WanderAutoResume(string ctx = "daemon restart")
     {
         try
         {
@@ -262,8 +262,8 @@ public static partial class Program
                 if (WanderOn || !LoggedIn || RestartActive || !InWanderRegion) { WLog("auto-resume skipped (already on, restart handling, or left wander region)"); return; }
                 var (e2, _, _, _) = LoadWanderFlag();
                 if (!e2) { WLog("auto-resume cancelled: the flag was cleared meanwhile ('wander stop')"); return; }
-                WLog($"auto-resume after daemon restart (state flag on){(attempt > 1 ? $", attempt {attempt}" : "")}");
-                var r = StartWander("auto-resume after restart");
+                WLog($"auto-resume after {ctx} (state flag on){(attempt > 1 ? $", attempt {attempt}" : "")}");
+                var r = StartWander("auto-resume after " + ctx);
                 if (!r.StartsWith("refused: AO")) return;
                 if (attempt < 5) { WLog("auto-resume: AO not active yet; re-checking in 30 s"); await Task.Delay(30000, cts.Token); }
                 else { WLog("auto-resume gave up: AO still not active after 5 checks (flag kept; 'wander start' when the AO is on)"); SaveWanderFlag(true, "auto-resume waiting for the AO"); }
@@ -557,6 +557,11 @@ public static partial class Program
             if (pause != null)
             {
                 wanderPhase = "paused (" + pause + ")";
+                if (pause == "freeze")   // FreezeRecovery.cs: walk stopped at a freeze; resume once sim packets flow again
+                {
+                    if (FreezePauseOver() && wanderPause == "freeze") { wanderPause = null; WLog("RESUME after the freeze: sim packets flowing again; checking her spot before walking"); continue; }
+                    await Task.Delay(1000, ct); continue;
+                }
                 if (pause == "greet")
                 {
                     var gav = Avatars().FirstOrDefault(t => t.av.ID == wGreetWho && t.dist >= 0);
@@ -580,6 +585,8 @@ public static partial class Program
                 if (pause == "rest" && RestStateNow() != "rest" && wanderPause == "rest") { wanderPause = null; continue; }
                 await Task.Delay(1000, ct); continue;
             }
+            // 2026-11-22 (FreezeRecovery.cs): underwater or far off the path graph (a freeze let the sim walk her off the pier) -> 'home' first
+            if (client.Self.SittingOn == 0 && SafeSpotCheckDueNow(wanderPause) && await SafeSpotRecover(g, "home wander loop", ct)) continue;
             // 2026-11-22 (WanderPoseRequest.cs): still seated undressed after an interrupted tub sit: dress at the seat before any leg
             if (RedressBeforeLeg(pendingDressOutfit != null || pendingToilet != null, client.Self.SittingOn != 0, wanderPause))
             {
@@ -944,6 +951,11 @@ public static partial class Program
             if (pause != null)
             {
                 wanderPhase = "paused (" + pause + ")";
+                if (pause == "freeze")   // FreezeRecovery.cs: walk stopped at a freeze; resume once sim packets flow again
+                {
+                    if (FreezePauseOver() && wanderPause == "freeze") { wanderPause = null; WLog("RESUME after the freeze: sim packets flowing again; checking her spot before walking"); continue; }
+                    await Task.Delay(1000, ct); continue;
+                }
                 if (pause == "greet")
                 {
                     var gav = Avatars().FirstOrDefault(t => t.av.ID == wGreetWho && t.dist >= 0);

@@ -18,6 +18,7 @@ public static class McpProgram
         if (args.Contains("--webhook-selftest")) return await Webhook.SelfTest();
         Core.ExitOnLogout = false;
         Core.InstallCrashHandlers(); Core.GhostSessionAtStart();   // CrashGuard.cs: log unhandled exceptions; a dead predecessor's ghost session
+        Core.EnsureRmemMaxAtStart();   // HostTuning.cs: net.core.rmem_max back to 16 MB after a box reboot (warning only on failure)
         LibreMetaverse.Settings.LogLevel = LogLevel.Warning;
         // library logs -> stderr only
         LibreMetaverse.Logger.SetLoggerFactory(LoggerFactory.Create(b =>

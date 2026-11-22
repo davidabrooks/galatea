@@ -72,6 +72,18 @@ internal static partial class SeatAdjust
         if (waterSeat && r.Gap!.Value < Band(r).lo) return $"a sit in water: the sunk reading {r.Gap:+0.000;-0.000} m is the water surface over her, unmeasurable";
         return null;
     }
+    // ---- too-dark retakes (2026-11-22, dark-widen): level 1 = the wide retake (GT_SUPPORT_WIDE=1, 1.6-3.0 m as before); while the retake is still
+    // too dark, level 2 (3.2-6.0 m) and 3 (6.4-8.0 m) step the camera further back (render_mesh.py widen_width / widen_level, GT_WIDEN) ----
+    internal const int MaxWidenLevel = 3;
+    internal const string DarkGatePrefix = "the close-up is too dark";
+    // pure (tested): the next retake level after a failed gate, 0 = stop. Only a too-dark frame steps further back; any other failure (no surface,
+    // overexposed, a huge gap) would not be cured by a wider view, so it stops at the wide retake as before.
+    internal static int NextWidenLevel(int level, string gateFail)
+        => level >= 1 && level < MaxWidenLevel && gateFail != null && gateFail.StartsWith(DarkGatePrefix, StringComparison.Ordinal) ? level + 1 : 0;
+    // pure (tested): the render env for a widen level (null = the plain close-up)
+    internal static Dictionary<string, string> WidenEnv(int level)
+        => level <= 0 ? null : new Dictionary<string, string> { ["GT_SUPPORT_WIDE"] = "1", ["GT_WIDEN"] = Math.Min(level, MaxWidenLevel).ToString(CultureInfo.InvariantCulture) };
+    internal static string WidenLabel(int level) => level <= 1 ? "wide retake" : $"wider retake (level {level})";
     internal static bool SameClass(SupportReading a, SupportReading b) => a?.Kind == b?.Kind && a != null && b != null && a.Bearing.OrderBy(x => x).SequenceEqual(b.Bearing.OrderBy(x => x));
 
     // Save = press the furniture's Save button for this posed position. Revert = the presses are undone (nothing unproven stays). CannotSave =

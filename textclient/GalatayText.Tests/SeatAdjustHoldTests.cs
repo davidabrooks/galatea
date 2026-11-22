@@ -52,7 +52,7 @@ public class SeatAdjustHoldTests
         while (d != null && !Directory.Exists(Path.Combine(d.FullName, "textclient/galatay-text"))) d = d.Parent;
         var w = File.ReadAllText(Path.Combine(d!.FullName, "textclient/galatay-text/Wander.cs"));
         Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(w, @"while \(SeatAdjust\.SitKeepsSitting\(").Count);
-        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(w, @"if \(SeatAdjust\.SitChangesPose\(").Count);
+        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(w, @"if \(asked \|\| SeatAdjust\.SitChangesPose\(").Count);   // 2026-11-22: or a pose request (WanderPoseRequest.cs), itself held by an adjust
         Assert.DoesNotContain("if (!changed && (DateTime.Now - t0).TotalSeconds >= changeAt", w);   // the inline shape is gone
         var run = File.ReadAllText(Path.Combine(d!.FullName, "textclient/galatay-text/SeatAdjustRun.cs"));
         Assert.Contains("SeatAdjustBusy => Volatile.Read(ref seatAdjustBusyCount) > 0", run);

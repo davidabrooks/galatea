@@ -119,15 +119,24 @@ public static partial class Program
         else SALog($"'{seatName}': switched away from bugged {pose}: {res}");
         return seatAdjustLast;
     }
-    // one render, gated; a failed gate gets ONE wide retake (the bearing parts and the surface under them in frame)
+    // one render, gated; a failed gate gets ONE wide retake (the bearing parts and the surface under them in frame). 2026-11-22 (dark-widen,
+    // David 11-03 "when a close-up is too dark, ZOOM OUT"): while the retake is still too dark, step further back (GT_WIDEN 2, then 3) and judge from that.
     static async Task<(SeatAdjust.SupportReading r, string img, string why, SeatAdjust.Quality q, string gate)> SeatAdjustGatedRender(bool waterSeat = false)
     {
         var (r, img, why, q) = await hoverSvc.SupportRender();
         var g = SeatAdjust.GateFail(r, q, waterSeat);
         if (g == null || r is not { Conclusive: true } && why != null && r == null) return (r, img, why, q, g);
-        var (r2, img2, why2, q2) = await hoverSvc.SupportRender(wide: true);
-        var g2 = SeatAdjust.GateFail(r2, q2, waterSeat);
-        return g2 == null || r2 != null ? (r2, img2, why2, q2, g2 == null ? null : $"{g}; wide retake: {g2}") : (r, img, why, q, g);
+        var best = (r, img, why, q, g); var trail = g;
+        for (int level = 1; level > 0; )
+        {
+            var (r2, img2, why2, q2) = await hoverSvc.SupportRender(widen: level);
+            var g2 = SeatAdjust.GateFail(r2, q2, waterSeat);
+            trail += $"; {SeatAdjust.WidenLabel(level)}: {g2 ?? "ok"}";
+            if (g2 == null || r2 != null) best = (r2, img2, why2, q2, g2 == null ? null : trail);
+            if (g2 == null) break;
+            level = SeatAdjust.NextWidenLevel(level, g2);
+        }
+        return best;
     }
 
     internal static async Task<string> SeatAdjustRun(Primitive seat, string seatName, string pose, int gen)

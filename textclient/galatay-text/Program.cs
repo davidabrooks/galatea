@@ -266,6 +266,7 @@ public static partial class Program
         if (args.Length > 0) { Console.Error.WriteLine("usage: galatay-text [--check|--worn-selftest|--pose-selftest|--pose-keeper-selftest|--attach-move-selftest|--detach-cof-selftest|--bugfix-selftest|--follow-door-selftest|--exp-selftest|--voice-selftest|--voice-wake-selftest|--chat-guard-selftest|--imguard-selftest]  (config via GT_* env vars; no secrets on the command line)"); return 2; }
 
         if (Interlocked.Exchange(ref myImSeeded, 1) == 0) SeedMyIms(); // im guard + webhook hint: my last IM / their latest IM per avatar, from the log
+        EnsureRmemMaxAtStart(); // HostTuning.cs: net.core.rmem_max back to 16 MB after a box reboot (warning only on failure; LoginCoreAsync re-checks)
         LoadOfferStore(); // pending group invites / offers from before the restart (OfferStore.cs), before login so re-deliveries match
         LoadLocalMutes(); // muted avatars are dropped from the first packet on (MuteGuard.cs)
         GalatayMcp.Webhook.Init(); // chat/IM wake-up push (silent no-op until URL + key exist)

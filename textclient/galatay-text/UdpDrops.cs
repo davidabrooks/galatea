@@ -47,6 +47,7 @@ public static partial class Program
     }
     static void CheckUdpRcvbufLimit()
     {
+        EnsureRmemMaxAtStart();   // HostTuning.cs: re-apply 16 MB (a box reboot resets it); warning only if that fails
         try
         {
             var w = UdpRcvbufWarning(long.Parse(File.ReadAllText("/proc/sys/net/core/rmem_max").Trim()), UdpSockBufWanted);

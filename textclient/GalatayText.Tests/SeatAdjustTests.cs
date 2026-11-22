@@ -189,8 +189,8 @@ public class SeatAdjustTests
         var run = File.ReadAllText(Path.Combine(Root(), "textclient/galatay-text/SeatAdjustRun.cs"));
         var z = run[run.IndexOf("if (a.Length > 0 && string.Equals(a[0], \"z\", StringComparison.OrdinalIgnoreCase))")..];
         z = z[..z.IndexOf("if (a.Length > 0 && (a[0] == \"restore\" || a[0] == \"default\"))")];
-        Assert.Contains("SeatAdjust.ParseZ(a)", z); Assert.Contains("SeatAdjust.PlanZ(dz, st0)", z);   // the tested planner, not a second one
-        Assert.Contains("await SeatAdjustPress(seat, zd, pr, zcts.Token)", z);                        // the presses it lays out, one by one
+        Assert.Contains("SeatAdjust.ParseZ(a)", z); Assert.Contains("SeatAdjust.NextZPress(dz, st0)", z);   // the tested planner, not a second one
+        Assert.Contains("await SeatAdjustDriveZ(seat, zd, dz, zcts.Token)", z);                        // the shared driver presses one by one (2026-11-22)
         Assert.Contains("NOT saved", z);
         foreach (var never in new[] { "[SAVE]", "CorrectionZ", "SeatAdjustRun(", "PostHover", "SetHover" }) Assert.DoesNotContain(never, z);   // no save, no measurement, no full check, no hover
     }

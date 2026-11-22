@@ -1518,6 +1518,13 @@ def seat_view_deg(hits_by_deg):
     best = min(hits_by_deg, key=lambda d: (hits_by_deg[d], CONTACT_VIEW_DEGS.index(d) if d in CONTACT_VIEW_DEGS else 99))
     return best
 
+def widen_width(min_width, max_width, level):
+    """2026-11-03 (David: "when a close-up is too dark, ZOOM OUT - step the camera back to a wider view and judge from that"): the frame width for a
+    widen level. Level 0 = the part / hips frame; each level back doubles the frame until it reaches the wide retake's own limits. The camera is
+    derived from the width by feet_camera_spec, so backing out moves it back along the same line; nothing per furniture or per pose."""
+    lo = 1.6 if level > 0 else min_width; hi = 3.0 if level > 0 else max_width
+    return (lo, min(hi, lo * (2.0 ** (level - 1)))) if level > 0 else (lo, hi)
+
 def contact_frame_width(cpts, pad, min_width, max_width):
     """the frame width for a contact close-up: the contact's own extent plus a small pad, never below min_width / above max_width"""
     if not cpts: return min_width
@@ -2056,9 +2063,11 @@ if SCENE:
                 if wp_: cp = list(cp) + wp_; floor = min([floor] + [q[2] for q in wp_])
             # 2026-11-03 (David): if the furniture under the contact is not visible from the side, turn around her; and zoom in on the contact itself
             deg = deg if (wide_ or not sup_info) else seat_deg_from_blockers(px, py, pyaw, deg, cp, zlow, floor, res, lens)
-            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res,
-                                                  min_width=1.6 if wide_ else 0.35 if part_view else 0.55,
-                                                  max_width=3.0 if wide_ else 0.8 if part_view else 1.1)
+            # GT_WIDEN=n (the client's dark-frame retake): 1 = the wide frame, 2.. = wider still, the camera stepping back along the same line
+            wlevel = int(os.environ.get("GT_WIDEN", "0") or 0)
+            mw_, xw_ = widen_width(0.35 if part_view else 0.55, 0.8 if part_view else 1.1, 1 if wide_ else wlevel)
+            loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=mw_, max_width=xw_)
+            if wlevel > 0 or wide_: print(f"GT: seat view: widened to level {max(1, wlevel)} (frame {width:.2f} m wide, camera {d:.2f} m away)", flush=True)
             if sup_info is not None:
                 zb_ = min(floor, zlow) - 0.06
                 print(support_quality_line(sup_info[0], zb_, zb_ + width * min(res) / max(res), seat_z is not None), flush=True)

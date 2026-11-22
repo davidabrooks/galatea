@@ -3,14 +3,21 @@
 Backup system written 2026-09-26. This file is kept in `/home/box/backups/`, `/home/box/backups/archives/`,
 `/workspace/secondlife-backups/`, the git repo, and inside every archive.
 
+> **2026-11-22: the hourly local backup is RETIRED** (David). `backup-loop.sh` is no longer started anywhere
+> (the boot hook was removed from `galatay-mcp.sh` on 2026-11-09) and `bin/backup-loop.sh start` refuses while
+> `/home/box/backups/loop.retired` exists; `loop.stop` stays. The last local full archive, `/home/box/backups/sl-repo`,
+> its `/workspace/secondlife-backups/sl-repo.git` mirror and `latest-offbox.tar.gz` were deleted on 2026-11-22 (David's OK).
+> **Restore path: the nightly Google Drive backup (`latest-state.tar.gz`, section 6) plus GitHub `davidabrooks/galatea`.**
+> Sections 1, 2, 4 and 5 describe the retired local archives and are kept only for reference.
+
 ## Where the backups are (newest first, in order of preference)
 
 | copy | path | survives |
 |---|---|---|
-| primary archives (newest 6 runs + hourly 6 h + daily 3 d, no weekly) | `/home/box/backups/archives/sl-full-<UTC>-s<seq>.tar.gz` + `.sha256` | reboot, deleting /workspace |
-| git history (one commit per run that saw a change) | `/home/box/backups/sl-repo` | reboot |
-| git mirror (bare) | `/workspace/secondlife-backups/sl-repo.git` | reboot, deleting /home/box/backups |
-| off-box upload copy (newest verified) | `/workspace/secondlife-backups/latest-offbox.tar.gz` + `.sha256` + `.json` | copied to Google Drive by Galatea |
+| RETIRED 2026-11-22, none kept: primary archives (newest 6 runs + hourly 6 h + daily 3 d, no weekly) | `/home/box/backups/archives/sl-full-<UTC>-s<seq>.tar.gz` + `.sha256` | reboot, deleting /workspace |
+| RETIRED 2026-11-22, deleted: git history (one commit per run that saw a change) | `/home/box/backups/sl-repo` | reboot |
+| RETIRED 2026-11-22, deleted: git mirror (bare) | `/workspace/secondlife-backups/sl-repo.git` | reboot, deleting /home/box/backups |
+| RETIRED 2026-11-22, deleted: off-box upload copy (newest verified) | `/workspace/secondlife-backups/latest-offbox.tar.gz` + `.sha256` + `.json` | copied to Google Drive by Galatea |
 | screenshots/images (historical only; no longer produced as of 2026-11-10, David's decision — do not include photos in backups) | existing copies may still be under `/home/box/backups/media/` and `/workspace/secondlife-backups/latest-offbox-media.tar.gz`; they are not part of a restore | left in place, not updated |
 | off-box | Google Drive "Grok Bots/Galatea/Galatea SL Backups" (folder id 1DEZTJgQpJsZwfha0wLb2pho-GzVCMKkF), one dated folder per night (see section 6) | box reset or loss |
 
@@ -31,7 +38,7 @@ sl-full-<stamp>-s<seq>/
 ```
 `*.log.tail` files are only the last 1 MB of big logs (e.g. textclient.log). Do not copy them over live logs.
 
-## 1. Pick and check an archive
+## 1. Pick and check an archive (retired: no local archive exists since 2026-11-22; use section 6)
 
 ```bash
 A=$(ls /home/box/backups/archives/sl-full-*.tar.gz | sed 's/.*-s\([0-9]*\)\.tar\.gz$/\1 &/' | sort -n | tail -1 | cut -d' ' -f2)   # newest; or any copy above
@@ -99,12 +106,17 @@ sudo dpkg -i /home/box/viewers/fs-extra-debs/*.deb || sudo apt-get -f install -y
 4. **Daemon**: the restored `textclient/run/deliberate-stop` (if present) means "she was stopped on purpose";
    `text-galatay.sh start` clears it. Start: `/home/box/viewers/text-galatay.sh start`, check with
    `/home/box/viewers/text-galatay.sh status`. The wander resumes by itself if `textclient/wander-state.json` says enabled.
-5. **Hooks**: `galatay-mcp.sh` (restored) already detaches `galatay-autostart.sh` (text client, once per boot) and
-   `/home/box/backups/bin/backup-loop.sh start` (hourly backups). To start backups by hand:
-   `/home/box/backups/bin/backup-loop.sh start`, then `/home/box/backups/bin/backup-now` and `/home/box/backups/bin/verify-backups`.
-   If `/home/box/backups/sl-repo` is gone: `git clone /workspace/secondlife-backups/sl-repo.git /home/box/backups/sl-repo`.
+5. **Hooks**: `galatay-mcp.sh` (restored) detaches `galatay-autostart.sh` (text client, once per boot), the iCloud mail
+   watcher and the scratch cleaner. It no longer starts the hourly backup loop: that loop is **retired** (2026-11-22, see the
+   note at the top); do not start it (`backup-loop.sh start` refuses while `loop.retired` exists). Backups after a restore
+   are the nightly Drive backup (bin/make-slim-backup.sh + bin/drive-backup.sh, run by Galatea's nightly routine) plus GitHub.
 
 ## 4. Roll back ONE file (bad edit) from git history
+
+Since 2026-11-22 `/home/box/backups/sl-repo` is gone. A tracked source file: take it from GitHub history
+(`git -C /workspace/galatea log -- <path>`, `git show <commit>:<path>`). A state file (notes, routes, settings): take it
+from a recent nightly `latest-state.tar.gz` on Drive (`tar -xzf latest-state.tar.gz -O state/<absolute path>`).
+The steps below are the retired local-repo method, kept for reference.
 
 ```bash
 cd /home/box/backups/sl-repo
@@ -120,13 +132,14 @@ Then rebuild/redeploy if it was source (step 2d, app-staging, cp + mv of the cha
 From an archive instead: `tar -xzf ARCHIVE -O sl-full-<stamp>-s<seq>/files/home/box/<path> > /tmp/restored-file`.
 Binaries, log tails and the LibreMetaverse tree are only in the archives (not in git).
 
-## 5. When STATUS says ERROR
+## 5. When STATUS says ERROR (retired: STATUS belongs to the hourly loop; its last run was 2026-11-09)
 
 * `LOW DISK SPACE`: free space on / (the run skipped itself and deleted nothing), then `backup-now`.
 * `archive failed verification, discarded`: the previous verified archive is untouched; run `backup-now` again;
   if it repeats, run `verify-backups` and check `logs/backup.log`.
 * `previous run did not finish`: a run was killed or crashed; its temp files were removed by the next run. Harmless if the later run is OK.
-* `STALE` in verify-backups / loop NOT running: `/home/box/backups/bin/backup-loop.sh start`.
+* `STALE` in verify-backups / loop NOT running: expected since 2026-11-22, the hourly loop is retired. Do not start it;
+  check the nightly Drive upload instead (`/workspace/secondlife-backups/drive-backup.log`).
 * `SECRET FOUND`: that archive was never published; the offending file is named (value never shown). Remove the secret
   from that file (or add it to the deny list in `bin/slbackup.py`) and run `backup-now`.
 
@@ -148,7 +161,7 @@ dated folder (`YYYY-MM-DD`) per night with:
 
 **Photos, screenshots and renders are not backed up** (David 2026-10-31 and 2026-11-10; HD photos
 are handled by a separate Photographer bot). The slim archive and the local full backup
-(`slbackup.py` / `backup-loop.sh`) both skip image and media files (jpg, png, exr, hdr, webp, j2c,
+(`slbackup.py` / `backup-loop.sh`, retired 2026-11-22) both skip image and media files (jpg, png, exr, hdr, webp, j2c,
 tga, and other IMG_EXT types), including under `textclient/routes` and `textclient/shape-backups`.
 Older photo archives that may still exist on Drive or under `/home/box/backups/media/` are
 historical only and are not required for a restore. Do not delete local photos on the box as part

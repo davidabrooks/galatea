@@ -1518,29 +1518,34 @@ def seat_view_deg(hits_by_deg):
     best = min(hits_by_deg, key=lambda d: (hits_by_deg[d], CONTACT_VIEW_DEGS.index(d) if d in CONTACT_VIEW_DEGS else 99))
     return best
 
-WIDE_MIN_W, WIDE_MAX_W = 1.6, 3.0   # the wide retake (GT_SUPPORT_WIDE, level 1): unchanged since 2026-11-02
-WIDEN_MAX_LEVEL = 3                 # GT_WIDEN cap: level 3 = 6.4-8.0 m, the whole furniture plus the floor around it
-WIDEN_CAP_W = 8.0                   # no seat close-up frame is ever wider than this
+RETAKE_MAX_CAM_M = 1.0   # David 2026-11-22 ("cap every retake at 1 m, then rotate 180"): no seat-check retake camera is farther than this from her
+RETAKE_MIN_W, RETAKE_MAX_W = 1.6, 3.0   # the retake's frame (the bearing parts and the surface under them); the 1 m cap widens the lens instead
 
-def widen_width(min_width, max_width, level):
-    """2026-11-03 (David: "when a close-up is too dark, ZOOM OUT - step the camera back to a wider view and judge from that"), finished 2026-11-22:
-    the (min, max) frame width for a widen level. Level 0 = the part / hips close-up's own limits; level 1 = the wide retake (1.6-3.0 m, exactly
-    as before); each level after that doubles both limits (2 = 3.2-6.0 m, 3 = 6.4-8.0 m), never past WIDEN_CAP_W. The camera is derived from the
-    width by feet_camera_spec, so backing out moves it back along the same line; nothing per furniture or per pose."""
-    if level <= 0: return (min_width, max_width)
-    k = 2.0 ** (min(level, WIDEN_MAX_LEVEL) - 1)
-    return (min(WIDE_MIN_W * k, WIDEN_CAP_W), min(WIDE_MAX_W * k, WIDEN_CAP_W))
-
-def widen_level(raw, wide):
-    """GT_WIDEN as the client sends it -> (level, note). Only the wide retake widens (no wide = level 0); with it the level is at least 1.
-    A value that is not a whole number, or is negative, falls back to the plain wide retake with a note (never an exception); above the cap = the cap."""
-    if not wide: return 0, (f"GT_WIDEN={raw!r} ignored without GT_SUPPORT_WIDE=1" if raw not in (None, "", "0") else None)
-    if raw in (None, ""): return 1, None
+def retake_turn(raw, wide):
+    """GT_RETAKE_TURN as the client sends it -> (degrees, note). Only the retake turns (no GT_SUPPORT_WIDE=1 = 0); accepted: 0 or 180 (the opposite
+    side of her, same height and distance). Anything else falls back to 0 (the normal retake side) with a note; never an exception."""
+    if raw in (None, "", "0"): return 0, None
+    if not wide: return 0, f"GT_RETAKE_TURN={raw!r} ignored without GT_SUPPORT_WIDE=1"
     try: n = int(str(raw).strip())
-    except ValueError: return 1, f"GT_WIDEN={raw!r} is not a whole number; using level 1 (the wide retake)"
-    if n < 1: return 1, (f"GT_WIDEN={raw!r} is below 1; using level 1 (the wide retake)" if n < 0 else None)
-    if n > WIDEN_MAX_LEVEL: return WIDEN_MAX_LEVEL, f"GT_WIDEN={raw!r} is above the cap; using level {WIDEN_MAX_LEVEL}"
-    return n, None
+    except ValueError: return 0, f"GT_RETAKE_TURN={raw!r} is not 0 or 180; using the normal retake side"
+    if n % 360 == 180: return 180, None
+    if n % 360 == 0: return 0, None
+    return 0, f"GT_RETAKE_TURN={raw!r} is not 0 or 180; using the normal retake side"
+
+def cap_camera_distance(loc, tgt, x, y, max_m=RETAKE_MAX_CAM_M):
+    """move the camera toward its target along the same line until it is at most max_m (horizontal) from her position (x, y); its height and aim stay.
+    -> (location, capped?). If even the target is farther than max_m from her, the camera stops 0.05 m in front of the target."""
+    lx, ly, lz = loc; tx, ty, tz = tgt
+    if math.hypot(lx - x, ly - y) <= max_m + 1e-9: return loc, False
+    ux, uy = lx - tx, ly - ty; L = math.hypot(ux, uy)
+    if L < 1e-9: return loc, False
+    ux, uy = ux / L, uy / L
+    # |t + u*s - p| = max_m  ->  s^2 + 2 s (u.(t-p)) + |t-p|^2 - max_m^2 = 0, take the far root (the camera stays on its side)
+    bx, by = tx - x, ty - y; b = ux * bx + uy * by; c = bx * bx + by * by - max_m * max_m
+    disc = b * b - c
+    s_ = (-b + math.sqrt(disc)) if disc >= 0 else 0.0
+    s_ = max(0.05, min(L, s_))
+    return (tx + ux * s_, ty + uy * s_, lz), True
 
 def contact_frame_width(cpts, pad, min_width, max_width):
     """the frame width for a contact close-up: the contact's own extent plus a small pad, never below min_width / above max_width"""
@@ -2002,7 +2007,7 @@ if SCENE:
             a_ = np.empty(len(ob.data.vertices) * 3, np.float64); ob.data.vertices.foreach_get("co", a_); m_ = np.array(ob.matrix_world, np.float64)
             chunks.append(a_.reshape(-1, 3) @ m_[:3, :3].T + m_[:3, 3])
         allv = np.concatenate(chunks) if chunks else np.zeros((0, 3))
-        sc_ = None
+        sc_ = None; retake_cap = [None]   # (her x, y, turn) when this is a seat-check retake: its camera is capped at RETAKE_MAX_CAM_M below
         want_parts = [q for q in os.environ.get("GT_HC_PARTS", "").split(",") if q]; part_cp = None
         if HC and not mst and M.get("bones") and len(M["bones"]) == 25:   # the hover check: the gap under every body part, against the floor drawn here (the client picks the supporting ones)
             segs_w = [[tuple(to_world(b[:3], (x, y, z0), yaw)), tuple(to_world(b[3:], (x, y, z0), yaw))] for b in M["bones"]]
@@ -2080,13 +2085,14 @@ if SCENE:
                 if wp_: cp = list(cp) + wp_; floor = min([floor] + [q[2] for q in wp_])
             # 2026-11-03 (David): if the furniture under the contact is not visible from the side, turn around her; and zoom in on the contact itself
             deg = deg if (wide_ or not sup_info) else seat_deg_from_blockers(px, py, pyaw, deg, cp, zlow, floor, res, lens)
-            # GT_WIDEN=n (the client's too-dark retake, with GT_SUPPORT_WIDE=1): 1 = the wide frame, 2..3 = wider still, the camera stepping back
-            # along the same line. A bad value falls back to level 1 with a note, never a crash.
-            wlevel, wnote = widen_level(os.environ.get("GT_WIDEN"), wide_)
-            if wnote: print(f"GT: seat view: {wnote}", flush=True)
-            mw_, xw_ = widen_width(0.35 if part_view else 0.55, 0.8 if part_view else 1.1, wlevel)
+            # 2026-11-22 (David): the retake's camera is never more than RETAKE_MAX_CAM_M from her (capped below, the lens widens instead), and when
+            # the retake was still too dark the client asks for the opposite side: GT_RETAKE_TURN=180 (same height and distance, same aim).
+            turn_, tnote = retake_turn(os.environ.get("GT_RETAKE_TURN"), wide_)
+            if tnote: print(f"GT: seat view: {tnote}", flush=True)
+            deg = (deg + turn_) % 360
+            mw_, xw_ = (RETAKE_MIN_W, RETAKE_MAX_W) if wide_ else ((0.35, 0.8) if part_view else (0.55, 1.1))
             loc, tgt, d, width = feet_camera_spec(px, py, pyaw, deg, cp, zlow, floor, lens=lens, res=res, min_width=mw_, max_width=xw_)
-            if wlevel > 0: print(f"GT: seat view: widened to level {wlevel} (frame {width:.2f} m wide, camera {d:.2f} m away)", flush=True)
+            if wide_: retake_cap[0] = (px, py, turn_)
             if sup_info is not None:
                 zb_ = min(floor, zlow) - 0.06
                 print(support_quality_line(sup_info[0], zb_, zb_ + width * min(res) / max(res), seat_z is not None), flush=True)
@@ -2109,7 +2115,12 @@ if SCENE:
         u = (Vector(loc) - Vector(tgt)).normalized(); s0 = max(0.0, max(u.x * (p[0] - tgt[0]) + u.y * (p[1] - tgt[1]) for p in cp)) + 0.05
         hit, hl, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), Vector(tgt) + u * s0, u, distance=max(0.01, d - s0))
         if hit: loc = tuple(Vector(hl) - u * 0.15)
+        if retake_cap[0] is not None:   # a seat-check retake: never more than RETAKE_MAX_CAM_M from her (after the wall rule, which only moves it closer)
+            rx_, ry_, rt_ = retake_cap[0]; loc, capped_ = cap_camera_distance(tuple(loc), tuple(tgt), rx_, ry_)
         da = (Vector(loc) - Vector(tgt)).length
+        if retake_cap[0] is not None:
+            print(f"GT: seat view: retake{' from the opposite side (180)' if rt_ else ''}, camera {math.hypot(loc[0] - rx_, loc[1] - ry_):.2f} m from her "
+                  f"(cap {RETAKE_MAX_CAM_M:g} m{', capped' if capped_ else ''}), lens {self_body_lens(d, da, lens):.0f} mm", flush=True)
         return loc, tgt, d, res, self_body_lens(d, da, lens)
     def set_view(view):
         h = heads["me"]; DOF_SUBJECT[0] = dof_subject(view, heads)

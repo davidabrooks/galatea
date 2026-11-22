@@ -481,9 +481,9 @@ internal sealed partial class Hover
     internal static bool KneelStill(Program.IdlePoseState posed, string pose, float speed) => posed is { kind: "collar" } && string.Equals(posed.pose, pose, StringComparison.OrdinalIgnoreCase) && speed < 0.1f;
 
     // SeatAdjust.cs: ONE seated render; the weight-bearing reading (null = export failed / not seated / a check is running) and the close-up path
-    // widen = the retake after a failed quality gate: 0 = the close-up; 1 = GT_SUPPORT_WIDE=1 (the bearing parts AND the surface under them in frame,
-    // wider, level from the side); 2..SeatAdjust.MaxWidenLevel = the too-dark retakes, GT_WIDEN=n stepping the camera further back (render_mesh.widen_width)
-    internal async Task<(SeatAdjust.SupportReading r, string img, string why, SeatAdjust.Quality q)> SupportRender(int widen = 0)
+    // retake after a failed quality gate: 0 = the close-up; 1 = GT_SUPPORT_WIDE=1 (the bearing parts AND the surface under them in frame, level from the
+    // side, camera at most 1 m from her); 2 = the same from the opposite side (GT_RETAKE_TURN=180), for a retake that was still too dark
+    internal async Task<(SeatAdjust.SupportReading r, string img, string why, SeatAdjust.Quality q)> SupportRender(int retake = 0)
     {
         if (!h.LoggedIn || h.Client.Self.SittingOn == 0) return (null, null, "not sitting on an object", null);
         if (!await poseGate.WaitAsync(0)) return (null, null, "a check is already running", null);
@@ -503,7 +503,7 @@ internal sealed partial class Hover
                 if (!scene.EndsWith("scene.json")) { bad ??= $"sample {si + 1}: export failed"; continue; }
                 if (h.Client.Self.SittingOn == 0) return (null, null, "no longer sitting", null);
                 hoverLastSupport = null; hoverLastSeatText = null;
-                var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, hover, "seat", seat: true, extraEnv: SeatAdjust.WidenEnv(widen));
+                var (_, img) = await HoverCheckRender(Path.GetDirectoryName(scene)!, 0, hover, "seat", seat: true, extraEnv: SeatAdjust.RetakeEnv(retake));
                 var text = (hoverLastSeatText ?? "") + "\n" + await RenderQualityText(img);
                 readings.Add(hoverLastSupport); qs.Add(SeatAdjust.ParseQuality(text)); imgs.Add(img);
                 if (hoverLastSupport == null) bad ??= "the render printed no support line";

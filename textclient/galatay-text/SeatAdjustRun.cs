@@ -283,16 +283,11 @@ public static partial class Program
                 if (zd == null) return "seatadjust: no AVsitter personal adjust menu on this furniture (nothing pressed)";
                 if (SeatAdjust.Classify(zd.Message, zd.ButtonLabels) != SeatAdjust.Menu.Personal) return "seatadjust: this furniture's adjust is not AVsitter's personal menu (nothing pressed)";
                 var st0 = SeatAdjust.PersonalState(zd.ButtonLabels).step ?? 0.05;
-                var (presses, stepAfter) = SeatAdjust.PlanZ(dz, st0);
-                if (presses.Count == 0) return $"seatadjust: z {dz:+0.00;-0.00} m is under one {SeatAdjust.Step * 100:0} cm step: nothing pressed";
-                double moved = 0, st = st0;
-                foreach (var pr in presses)
-                {
-                    zd = await SeatAdjustPress(seat, zd, pr, zcts.Token);
-                    if (zd == null) { SALog($"'{seat.Properties?.Name ?? seat.ID.ToString()}' z {dz:+0.00;-0.00}: the presses stopped early after {moved:+0.00;-0.00} m (no answer from the furniture)"); return $"seatadjust: the presses got no answer after {moved:+0.00;-0.00} m; nothing saved"; }
-                    if (pr is "Z+" or "Z-") moved += pr == "Z+" ? st : -st; else st = SeatAdjust.StepCycle[(Array.IndexOf(SeatAdjust.StepCycle, st) + 1) % 3];
-                }
-                var zm = $"'{seat.Properties?.Name}' {SeatAdjust.PoseLabelFor(wLastPose, SeatRootOf(seat).ID.ToString())}: pressed Z {moved:+0.00;-0.00} m in {presses.Count} press(es) (asked {dz:+0.00;-0.00}, step now {stepAfter:0.00} m): not measured, so the gap is unread; NOT saved";
+                if (SeatAdjust.NextZPress(dz, st0) == null) return $"seatadjust: z {dz:+0.00;-0.00} m is under one {SeatAdjust.Step * 100:0} cm step: nothing pressed";
+                var (zd2, moved, count) = await SeatAdjustDriveZ(seat, zd, dz, zcts.Token);
+                if (zd2 == null) { SALog($"'{seat.Properties?.Name ?? seat.ID.ToString()}' z {dz:+0.00;-0.00}: the presses stopped early after {moved:+0.00;-0.00} m (no answer from the furniture)"); return $"seatadjust: the presses got no answer after {moved:+0.00;-0.00} m; nothing saved"; }
+                var stepAfter = SeatAdjust.PersonalState(zd2.ButtonLabels).step ?? st0;
+                var zm = $"'{seat.Properties?.Name}' {SeatAdjust.PoseLabelFor(wLastPose, SeatRootOf(seat).ID.ToString())}: pressed Z {moved:+0.00;-0.00} m in {count} press(es) (asked {dz:+0.00;-0.00}, step now {stepAfter:0.00} m): not measured, so the gap is unread; NOT saved";
                 SALog(zm); return "seatadjust: " + zm;
             }
             finally { Interlocked.Decrement(ref seatAdjustBusyCount); }
@@ -335,7 +330,8 @@ public static partial class Program
             var kind = SeatAdjust.Classify(d.Message, d.ButtonLabels);
             if (kind == SeatAdjust.Menu.Personal)
             {
-                if (!SeatAdjust.PersonalState(d.ButtonLabels).position) d = await SeatAdjustPress(seat, d, "Rotation", ct);
+                if (!SeatAdjust.PersonalState(d.ButtonLabels).position)
+                    d = SeatAdjust.ModeToggle(d.ButtonLabels) is { } tg ? await SeatAdjustPress(seat, d, tg, ct) : null;
                 return d != null && SeatAdjust.PersonalState(d.ButtonLabels).position && SeatAdjust.PersonalState(d.ButtonLabels).step != null ? d : null;
             }
             if (kind == SeatAdjust.Menu.Generic) return d;
@@ -346,14 +342,21 @@ public static partial class Program
         return null;
     }
     static async Task<ScriptDialogEventArgs> SeatAdjustPressZ(Primitive seat, ScriptDialogEventArgs d, double dz, CancellationToken ct)
+        => (await SeatAdjustDriveZ(seat, d, dz, ct)).d;
+    // presses toward dz, re-reading the step in force after each step-button press (NextZPress). d = null when the furniture
+    // stopped answering or left the personal menu; moved = metres actually pressed.
+    static async Task<(ScriptDialogEventArgs d, double moved, int presses)> SeatAdjustDriveZ(Primitive seat, ScriptDialogEventArgs d, double dz, CancellationToken ct)
     {
+        double moved = 0; int n = 0;
         var st = SeatAdjust.PersonalState(d.ButtonLabels).step ?? 0.05;
-        var (presses, _) = SeatAdjust.PlanZ(dz, st);
-        foreach (var p in presses)
+        for (string p; n < SeatAdjust.MaxZPresses && (p = SeatAdjust.NextZPress(dz - moved, st)) != null; n++)
         {
             d = await SeatAdjustPress(seat, d, p, ct);
-            if (d == null || SeatAdjust.Classify(d.Message, d.ButtonLabels) != SeatAdjust.Menu.Personal) return null;
+            if (d == null || SeatAdjust.Classify(d.Message, d.ButtonLabels) != SeatAdjust.Menu.Personal) return (null, moved, n + 1);
+            if (p is "Z+" or "Z-") moved += p == "Z+" ? st : -st;
+            else if (SeatAdjust.PersonalState(d.ButtonLabels).step is double ns) st = ns;
+            else return (null, moved, n + 1);   // the step label vanished: not a menu we understand
         }
-        return d;
+        return (d, moved, n);
     }
 }

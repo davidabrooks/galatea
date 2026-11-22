@@ -119,10 +119,26 @@ internal static partial class SeatAdjust
     internal static (bool position, double? step) PersonalState(IReadOnlyList<string> labels)
     {
         var l = labels.Select(x => x.Trim()).ToList();
-        bool pos = l.Contains("Position") && !l.Contains("Rotation");
+        // AVsitter 2 names the mode in force "Position" / "Rotation"; AVsitter 1.29 (Nammos Beach boat, 2026-11-20 11:15:22) says "POS" / "ROT"
+        bool pos = (l.Contains("Position") && !l.Contains("Rotation")) || (l.Contains("POS") && !l.Contains("ROT"));
         double? st = l.Contains("0.05m") ? 0.05 : l.Contains("0.25m") ? 0.25 : l.Contains("0.01m") ? 0.01 : null;
         return (pos, st);
     }
+    // pure (tested): the button that switches the personal menu from rotation to position mode (null = none found)
+    internal static string ModeToggle(IReadOnlyList<string> labels)
+    {
+        var l = (labels ?? Array.Empty<string>()).Select(x => x.Trim()).ToList();
+        return l.Contains("Rotation") ? "Rotation" : l.Contains("ROT") ? "ROT" : null;
+    }
+    // pure (tested): the next press toward dz from the step in force (null = done). The driver re-reads the step the menu
+    // shows after every step-button press and plans again, so a furniture whose step button cycles in another order
+    // (AVsitter 1) still moves by exactly the planned amount.
+    internal static string NextZPress(double remaining, double curStep)
+    {
+        var (p, _) = PlanZ(remaining, curStep);
+        return p.Count == 0 ? null : p[0];
+    }
+    internal const int MaxZPresses = 60;
     internal static readonly double[] StepCycle = { 0.05, 0.25, 0.01 };   // pressing the step button: 0.05 -> 0.25 -> 0.01 -> 0.05
     static string StepLabel(double s) => s switch { 0.05 => "0.05m", 0.25 => "0.25m", _ => "0.01m" };
     // pure (tested): the button presses that move her dz metres up (+) or down (-) from step `cur`: whole 0.25 / 0.05 / 0.01 steps, cycling the step button

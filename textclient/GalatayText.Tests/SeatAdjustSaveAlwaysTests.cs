@@ -27,12 +27,18 @@ public class SeatAdjustSaveAlwaysTests
         Assert.Contains("reads differently after the nudge", why);       // the log still tells the story
         Assert.Contains("hips+thighs", why); Assert.Contains("hips+thighs+hands", why);
     }
-    [Fact] public void AnAppliedNudge_IsSaved_EvenWhenTheReRenderCannotConfirmIt()
+    [Fact] public void AnAppliedNudge_IsUndone_NotSaved_WhenTheReRenderCannotConfirmIt()
     {
+        // 2026-11-22 (Nov 11 11:17 Mirage 'texting': nudged -0.24 and SAVED on a 91 % dark re-render): a failed confirming render never saves
         var (call, why) = SeatAdjust.SaveConfidence(R("sitting", 0.12, "hips"), SeatAdjust.ParseQuality(GoodQ),
                                                    R("sitting", 0.03, "hips"), SeatAdjust.ParseQuality(UnconfirmedQ));
-        Assert.Equal(SeatAdjust.SaveCall.Save, call);
+        Assert.Equal(SeatAdjust.SaveCall.Revert, call);
         Assert.Contains("not good enough to confirm", why);
+        Assert.Contains("never saved", why);
+        // the real Nov 11 numbers: kneeling +0.243 -> lying -0.016 on a 91 % dark close-up
+        var dark = SeatAdjust.ParseQuality(GoodQ.Replace("dark 0.100", "dark 0.910"));
+        Assert.Equal(SeatAdjust.SaveCall.Revert, SeatAdjust.SaveDecision(R("kneeling", 0.243, "shins"), SeatAdjust.ParseQuality(GoodQ),
+            R("lying", -0.016, "chest"), dark, 24, true, true).call);
     }
     [Fact] public void AnAppliedNudge_ThatReadsBetterButOutOfBand_IsSaved()
     {
@@ -70,8 +76,8 @@ public class SeatAdjustSaveAlwaysTests
         var run = Src("SeatAdjustRun.cs");
         Assert.DoesNotContain("KeepUnsaved", run);                                      // the outcome that left a nudge on but unsaved is gone
         Assert.Contains("SeatAdjust.SaveDecision(before, q0, cur, qcur,", run);                                  // the tested rule, not a second one
-        Assert.Contains("(int)Math.Round(Math.Abs(applied) / SeatAdjust.Step), SeatAdjustOnSeat(seat, gen), d != null);", run);
-        Assert.Contains("SeatAdjust.SaveDecision(before, q0, cur, qcur, net, SeatAdjustOnSeat(seat, gen), d != null, save != null);", run);   // the generic path
+        Assert.Contains("(int)Math.Round(Math.Abs(applied) / SeatAdjust.Step), SeatAdjustOnSeat(seat, gen), d != null, waterSeat: water);", run);
+        Assert.Contains("SeatAdjust.SaveDecision(before, q0, cur, qcur, net, SeatAdjustOnSeat(seat, gen), d != null, save != null, water);", run);   // the generic path
         Assert.Contains("saved ([SAVE]): {why}", run);                                  // the log says what the old confidence rule thought
         Assert.Contains("saved ('{save}'): {why}", run);
         // the [SAVE] press is still the furniture's own button on the open menu, and it is still waited on

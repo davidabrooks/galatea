@@ -9,6 +9,12 @@
 //  3) Bugged pose: evidence from OBJECT DATA (her body vs the seat linkset's box: floating high over it / buried under it), the render (a huge gap),
 //     the anims (no seat pose anim playing). A bugged pose goes on the per-furniture denylist (_pose-rules.json "bugged_poses"), another pose on the
 //     SAME furniture is picked; she only leaves when no solo pose is left. No per-object numbers anywhere: the thresholds are body-scale constants.
+//  4) 2026-11-22 (fixes list, Nov 11 11:17 + Nov 20 incidents): a nudge is NOT saved when the re-render that should confirm it fails the gate (Nov 11:
+//     Mirage 'texting' misread as kneeling +0.243, nudged -0.24 and SAVED on a 91 % dark re-render, which left her sunk in the bed). Such a nudge is
+//     undone instead. A re-render that passes the gate still saves as David asked on 11-04, whatever it reads. And the render alone no longer
+//     denylists a pose: a huge render gap was a false positive 3 times of 4 (the tub's water surface read as a surface over her, 'read book' and
+//     'shave'; the Mirage bed's bad saved offset read as 'lying on chest -0.263'). Only object data (floating / buried) or no pose animation denylist;
+//     a huge render gap is unmeasurable and nothing is pressed. In a water seat (tub, pool, hot tub) a sunk reading is unmeasurable too.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -44,8 +50,12 @@ internal static partial class SeatAdjust
             hits, surf, rq.Success ? D(rq.Groups[1].Value) : null, rq.Success ? D(rq.Groups[2].Value) : null);
     }
 
-    // pure (tested): may this reading be acted on? (null = yes, else why not)
-    internal static string GateFail(SupportReading r, Quality q)
+    // pure (tested): a seat she sits IN water in (bath tub, hot tub, pool...): the linkset's water surface lies over her body, so the render reads
+    // a sunk gap that is not one (Nov 20: Dutchie tub 'soak' -0.189 nudged +0.19 read worse; 'read book' -0.319 and 'shave' -0.489 denylisted)
+    static readonly Regex WaterSeatName = new(@"\b(bath|bathtub|tub|hot ?tub|hottub|jacuzzi|pool|spa|onsen|pond)s?\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    internal static bool IsWaterSeat(string seatName) => !string.IsNullOrWhiteSpace(seatName) && WaterSeatName.IsMatch(seatName);
+    // pure (tested): may this reading be acted on? (null = yes, else why not). waterSeat: a sunk reading (below the contact band) is unmeasurable there.
+    internal static string GateFail(SupportReading r, Quality q, bool waterSeat = false)
     {
         if (r is not { Conclusive: true }) return "no conclusive support reading";
         if (q == null || q.FrameLo == null) return "the render gave no quality evidence (frame / surface hits)";
@@ -58,7 +68,8 @@ internal static partial class SeatAdjust
             if (!q.Hits.TryGetValue(b, out var n) || n < MinHits) return $"no furniture surface under her {b} ({(q.Hits.TryGetValue(b, out var n2) ? n2 : 0)} ray hits)";
             if (!q.SurfaceZ.TryGetValue(b, out var z) || z < q.FrameLo - FrameSlack || z > q.FrameHi + FrameSlack) return $"the surface under her {b} is not in the frame";
         }
-        if (Math.Abs(r.Gap!.Value) > HugeGap) return $"gap {r.Gap:+0.000;-0.000} m is beyond any fit ({HugeGap} m): a broken pose, not an adjustment";
+        if (Math.Abs(r.Gap!.Value) > HugeGap) return $"gap {r.Gap:+0.000;-0.000} m is beyond any fit ({HugeGap} m): unmeasurable (a misread pose kind, a surface over her, or a bad saved offset), not an adjustment";
+        if (waterSeat && r.Gap!.Value < Band(r).lo) return $"a sit in water: the sunk reading {r.Gap:+0.000;-0.000} m is the water surface over her, unmeasurable";
         return null;
     }
     internal static bool SameClass(SupportReading a, SupportReading b) => a?.Kind == b?.Kind && a != null && b != null && a.Bearing.OrderBy(x => x).SequenceEqual(b.Bearing.OrderBy(x => x));
@@ -75,14 +86,15 @@ internal static partial class SeatAdjust
          : pressesApplied == 0 ? "no presses were applied"
          : !saveButton ? "this furniture's adjust menu has no Save button"
          : null;
-    // pure (tested): David 2026-11-04: an APPLIED nudge is always Saved; the confidence reading is still made, but it is only the `why` the log tells
-    // ("the pose reads differently after the nudge ...", "better but still outside the contact band"). Undone is reserved for a nudge that is worse
-    // than before, or one resting on a first render that never passed the gate (nothing else may stand on an untrusted measurement).
-    internal static (SaveCall call, string why) SaveConfidence(SupportReading before, Quality qb, SupportReading after, Quality qa)
+    // pure (tested): David 2026-11-04: an APPLIED nudge is Saved once a re-render that passes the gate confirms it; the confidence reading is
+    // still made, but it is only the `why` the log tells ("the pose reads differently after the nudge ...", "better but still outside the contact
+    // band"). Undone: a nudge that is worse than before, one resting on a first render that never passed the gate, and (2026-11-22, the Nov 11
+    // Mirage save) one whose confirming re-render fails the gate: nothing may be saved on an untrusted measurement.
+    internal static (SaveCall call, string why) SaveConfidence(SupportReading before, Quality qb, SupportReading after, Quality qa, bool waterSeat = false)
     {
         if (after is { Conclusive: true } && before is { Conclusive: true } && Math.Abs(after.Gap!.Value) > Math.Abs(before.Gap!.Value) + ImproveMin) return (SaveCall.Revert, "the re-render is worse than before");
-        if (GateFail(before, qb) is string fb) return (SaveCall.Revert, "the first render was not good enough: " + fb);
-        if (GateFail(after, qa) is string fa) return (SaveCall.Save, "the re-render is not good enough to confirm it: " + fa);
+        if (GateFail(before, qb, waterSeat) is string fb) return (SaveCall.Revert, "the first render was not good enough: " + fb);
+        if (GateFail(after, qa, waterSeat) is string fa) return (SaveCall.Revert, "the re-render is not good enough to confirm it, so the nudge is undone, never saved: " + fa);
         if (!SameClass(before, after)) return (SaveCall.Save, $"the pose reads differently after the nudge ({Describe(before)} -> {Describe(after)})");
         if (Math.Abs(after.Gap!.Value) > Math.Abs(before.Gap!.Value) - ImproveMin) return (SaveCall.Revert, "no measurable improvement");
         if (!InBand(after)) return (SaveCall.Save, "better but still outside the contact band");
@@ -93,10 +105,10 @@ internal static partial class SeatAdjust
     // into CannotSave: a nudge the re-render shows to be WORSE is still undone, whatever state the menu is in, so a run that could not land its
     // undo still says so (PR #427).
     internal static (SaveCall call, string why) SaveDecision(SupportReading before, Quality qb, SupportReading after, Quality qa,
-        int pressesApplied, bool onSameSeat, bool menuAlive, bool saveButton = true)
+        int pressesApplied, bool onSameSeat, bool menuAlive, bool saveButton = true, bool waterSeat = false)
     {
         if (pressesApplied == 0) return (SaveCall.CannotSave, "no presses were applied");
-        var r = SaveConfidence(before, qb, after, qa);
+        var r = SaveConfidence(before, qb, after, qa, waterSeat);
         return r.call == SaveCall.Save && CannotSaveWhy(pressesApplied, onSameSeat, menuAlive, saveButton) is string why ? (SaveCall.CannotSave, why) : r;
     }
 
@@ -115,6 +127,8 @@ internal static partial class SeatAdjust
         return (Math.Abs(r20) * sx + Math.Abs(r21) * sy + Math.Abs(r22) * sz) / 2;
     }
     // pure (tested): a reason when the pose is broken, else null. avatarZ = her centre (SimPosition), height = her size z.
+    // 2026-11-22: only OBJECT DATA (floating / buried) or the anims denylist a pose. A huge render gap alone is SuspectReason (logged, never
+    // denylisted): David confirmed three such poses fine (tub 'read book' / 'shave' in water, the Mirage 'texting' sunk by a bad saved offset).
     internal static string BuggedReason(double? avatarZ, double? height, BoxZ seat, SupportReading r, bool? poseAnimPlaying)
     {
         if (poseAnimPlaying == false) return "the seat's pose animation is not playing (only built-in anims)";
@@ -124,9 +138,13 @@ internal static partial class SeatAdjust
             if (lo > seat.Top + FloatOverTop) return $"floating: her lowest point is {lo - seat.Top:0.00} m above the top of the furniture";
             if (hi < seat.Bottom - BuriedUnder) return $"buried: her highest point is {seat.Bottom - hi:0.00} m below the bottom of the furniture";
         }
-        if (r is { Conclusive: true } && Math.Abs(r.Gap!.Value) > HugeGap) return $"the render shows {Describe(r)}: beyond any fit";
         return null;
     }
+    // pure (tested): a render-only reading too far off to be a fit problem: told in the log, nothing pressed, NOT denylisted
+    internal static string SuspectReason(SupportReading r, bool waterSeat)
+        => r is { Conclusive: true } && Math.Abs(r.Gap!.Value) > HugeGap
+            ? $"the render shows {Describe(r)}{(waterSeat && r.Gap < 0 ? " in a water seat (the water surface over her)" : "")}: beyond any fit from the render alone, so unmeasurable, not denylisted"
+            : null;
     // pure (tested): the pose label a check is for: the last pose choice only when it was made on THIS seat (17:14 makeup table run was labelled the tub's 'shave')
     internal static string PoseLabelFor(string lastPose, string seatId)
     {

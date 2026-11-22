@@ -42,10 +42,11 @@ public class SeatAdjustGateTests
         Assert.Equal(SeatAdjust.SaveCall.Save, SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), q, R("kneeling", -0.004, "shins", "feet"), q).call);
         // the tub: an untrusted first render never leads to a Save (nothing else may stand on it)
         Assert.NotEqual(SeatAdjust.SaveCall.Save, SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), bad, R("kneeling", -0.014, "shins", "feet"), bad).call);
-        // 2026-11-04 David ("just save your adjustments anyway"): these three used to stay UNSAVED; now they save and the reason is only the log line
+        // 2026-11-22 (the Nov 11 Mirage save): a re-render that fails the gate no longer confirms a save; the nudge is undone
         var reRenderUnconfirmed = SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), q, R("kneeling", -0.004, "shins", "feet"), bad);
-        Assert.Equal(SeatAdjust.SaveCall.Save, reRenderUnconfirmed.call);
+        Assert.Equal(SeatAdjust.SaveCall.Revert, reRenderUnconfirmed.call);
         Assert.Contains("not good enough to confirm", reRenderUnconfirmed.why);
+        // 2026-11-04 David ("just save your adjustments anyway"): these two used to stay UNSAVED; they still save and the reason is only the log line
         var bearingChanged = SeatAdjust.SaveConfidence(R("kneeling", 0.077, "shins", "feet"), q, R("sitting", -0.004, "hips", "thighs"), q);
         Assert.Equal(SeatAdjust.SaveCall.Save, bearingChanged.call);
         Assert.Contains("reads differently after the nudge", bearingChanged.why);       // hips+thighs -> hips+thighs+hands, in the log
@@ -88,7 +89,10 @@ public class SeatAdjustGateTests
         Assert.Null(SeatAdjust.BuggedReason(21.0, 1.75, tub, R("sitting", 0.01, "hips"), true));        // sitting in it: fine
         Assert.Contains("buried", SeatAdjust.BuggedReason(17.0, 1.75, tub, null, true));
         Assert.Contains("animation", SeatAdjust.BuggedReason(21.0, 1.75, tub, null, false));
-        Assert.Contains("beyond any fit", SeatAdjust.BuggedReason(21.0, 1.75, tub, R("lying", -0.40, "chest"), true));
+        // 2026-11-22: a huge render gap alone never denylists (tub 'read book' -0.319, 'shave' -0.489, Mirage 'texting' -0.263 were all fine)
+        Assert.Null(SeatAdjust.BuggedReason(21.0, 1.75, tub, R("lying", -0.40, "chest"), true));
+        Assert.Contains("beyond any fit", SeatAdjust.SuspectReason(R("lying", -0.40, "chest"), false));
+        Assert.Contains("not denylisted", SeatAdjust.SuspectReason(R("lying", -0.40, "chest"), false));
         Assert.Null(SeatAdjust.LinksetZ(Array.Empty<(double, double)>()));
         Assert.Equal(0.9, SeatAdjust.HalfZ(1.8, 0.9, 0.7, 0, Math.Sin(Math.PI / 4), 0, Math.Cos(Math.PI / 4)), 6);   // turned 90 deg about y: its x length stands up
     }

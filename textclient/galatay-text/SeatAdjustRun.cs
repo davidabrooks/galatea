@@ -2,6 +2,8 @@
 // 2026-11-04 David ("just save your adjustments anyway ... you will always be checking them"): the old save only on a measurably better, in-band,
 // same-kind re-render left nudges UNSAVED and pinged him to look. An applied nudge is now saved and the old confidence verdict is only in the log
 // line; what still stops a save is losing the furniture (stood up / seat changed / menu lost) or pressing nothing, reported honestly.
+// 2026-11-22: ...but only on a re-render that passes the gate: a nudge whose confirming render fails it is undone, never saved (Nov 11 Mirage
+// 'texting': -0.24 saved on a 91 % dark re-render left her sunk). A huge gap from the render alone is unmeasurable, not a denylist.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -118,24 +120,27 @@ public static partial class Program
         return seatAdjustLast;
     }
     // one render, gated; a failed gate gets ONE wide retake (the bearing parts and the surface under them in frame)
-    static async Task<(SeatAdjust.SupportReading r, string img, string why, SeatAdjust.Quality q, string gate)> SeatAdjustGatedRender()
+    static async Task<(SeatAdjust.SupportReading r, string img, string why, SeatAdjust.Quality q, string gate)> SeatAdjustGatedRender(bool waterSeat = false)
     {
         var (r, img, why, q) = await hoverSvc.SupportRender();
-        var g = SeatAdjust.GateFail(r, q);
+        var g = SeatAdjust.GateFail(r, q, waterSeat);
         if (g == null || r is not { Conclusive: true } && why != null && r == null) return (r, img, why, q, g);
         var (r2, img2, why2, q2) = await hoverSvc.SupportRender(wide: true);
-        var g2 = SeatAdjust.GateFail(r2, q2);
+        var g2 = SeatAdjust.GateFail(r2, q2, waterSeat);
         return g2 == null || r2 != null ? (r2, img2, why2, q2, g2 == null ? null : $"{g}; wide retake: {g2}") : (r, img, why, q, g);
     }
 
     internal static async Task<string> SeatAdjustRun(Primitive seat, string seatName, string pose, int gen)
     {
         if (!SeatAdjustStill(seat, gen)) return "moved on";
-        var (r0, img0, w0, q0, g0) = await SeatAdjustGatedRender();
+        bool water = SeatAdjust.IsWaterSeat(seatName);
+        var (r0, img0, w0, q0, g0) = await SeatAdjustGatedRender(water);
         if (!SeatAdjustStill(seat, gen)) return "moved on";
         var bug = SeatAdjustBugged(seat, r0);
         if (bug != null) return await SeatAdjustOnBugged(seat, seatName, pose, bug, img0);
         seatBuggedSwitches = 0;
+        // 2026-11-22: a huge gap from the render alone is unmeasurable, never a denylist (the tub in water, the Mirage bed's bad saved offset)
+        if (SeatAdjust.SuspectReason(r0, water) is string suspect) { SALog($"'{seatName}' {pose}: {suspect}: nothing pressed ({img0})"); return seatAdjustLast; }
         if (r0 is not { Conclusive: true }) { SALog($"'{seatName}' {pose}: render inconclusive ({w0 ?? SeatAdjust.Describe(r0)}): nothing pressed ({img0})"); return seatAdjustLast; }
         if (SeatAdjust.InBand(r0) && g0 == null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)}: contact good, no adjust ({img0})"); return seatAdjustLast; }
         if (g0 != null) { SALog($"'{seatName}' {pose}: {SeatAdjust.Describe(r0)} but the render cannot be trusted ({g0}): nothing pressed ({img0})"); return seatAdjustLast; }
@@ -154,16 +159,17 @@ public static partial class Program
             applied += dz;
             await Task.Delay(2500, ct);
             if (!SeatAdjustStill(seat, gen)) { v = SeatAdjust.Verdict.Inconclusive; break; }
-            var (r, img, _, q, g) = await SeatAdjustGatedRender();
+            var (r, img, _, q, g) = await SeatAdjustGatedRender(water);
             SALog($"'{seatName}' {pose}: nudged Z {dz:+0.00;-0.00} (total {applied:+0.00;-0.00}): {SeatAdjust.Describe(cur)} -> {SeatAdjust.Describe(r)}{(g != null ? $" [gate: {g}]" : "")} ({img})");
             v = g != null ? SeatAdjust.Verdict.Inconclusive : SeatAdjust.Decide(cur, r);
             cur = r; qcur = q;
             if (v is not (SeatAdjust.Verdict.Save or SeatAdjust.Verdict.Continue)) break;
         }
-        // David 2026-11-04: an applied nudge is always SAVED. What still stops it is only the run losing its handle on the furniture (stood up,
-        // seat changed, menu lost) or having pressed nothing at all; the confidence rule is read for the log, never for the decision to save.
+        // David 2026-11-04: an applied nudge is SAVED once a re-render that passes the gate confirms it (2026-11-22: a failed confirming render
+        // undoes it instead, the Nov 11 Mirage save). What else stops it is the run losing its handle on the furniture (stood up, seat changed,
+        // menu lost) or having pressed nothing at all; the confidence rule past the gate is read for the log, never for the decision to save.
         var (call, why) = SeatAdjust.SaveDecision(before, q0, cur, qcur,
-            (int)Math.Round(Math.Abs(applied) / SeatAdjust.Step), SeatAdjustOnSeat(seat, gen), d != null);
+            (int)Math.Round(Math.Abs(applied) / SeatAdjust.Step), SeatAdjustOnSeat(seat, gen), d != null, waterSeat: water);
         string outcome;
         if (call == SeatAdjust.SaveCall.Save)
         {
@@ -202,7 +208,7 @@ public static partial class Program
     // non-AVsitter adjust (nPose and the like): the step per press is unknown, so it is MEASURED: one press, re-render, gap change = step
     static async Task<string> SeatAdjustGeneric(Primitive seat, string seatName, string pose, int gen, ScriptDialogEventArgs d, SeatAdjust.SupportReading r0, SeatAdjust.Quality q0, CancellationToken ct)
     {
-        var (up, down, save) = SeatAdjust.GenericButtons(d.ButtonLabels);
+        var (up, down, save) = SeatAdjust.GenericButtons(d.ButtonLabels); bool water = SeatAdjust.IsWaterSeat(seatName);
         int net = 0; var before = r0; var cur = r0; var qcur = q0; SeatAdjust.Verdict v = SeatAdjust.Verdict.Continue; double? step = null;
         async Task<bool> Press(int n)
         {
@@ -221,7 +227,7 @@ public static partial class Program
             if (!await Press(n)) { v = SeatAdjust.Verdict.Inconclusive; break; }
             await Task.Delay(2500, ct);
             if (!SeatAdjustStill(seat, gen)) { v = SeatAdjust.Verdict.Inconclusive; break; }
-            var (r, img, _, q, g) = await SeatAdjustGatedRender();
+            var (r, img, _, q, g) = await SeatAdjustGatedRender(water);
             if (g != null) { v = SeatAdjust.Verdict.Inconclusive; cur = r; qcur = q; SALog($"'{seatName}' {pose}: pressed {(n > 0 ? up : down)} x{Math.Abs(n)}: re-render untrusted ({g}) ({img})"); break; }
             SALog($"'{seatName}' {pose}: pressed {(n > 0 ? up : down)} x{Math.Abs(n)} (net {net:+0;-0}): {SeatAdjust.Describe(cur)} -> {SeatAdjust.Describe(r)} ({img})");
             if (step == null && r is { Conclusive: true } && cur.Gap is double g0 && r.Gap is double g1) step = (g0 - g1) / n;   // gap shrinks as she moves toward the surface
@@ -230,7 +236,7 @@ public static partial class Program
             if (v is SeatAdjust.Verdict.Save or SeatAdjust.Verdict.Continue) { cur = r; qcur = q; }
         }
         // David 2026-11-04: an applied press sequence is always SAVED (its own save button); only losing the furniture stops it
-        var (call, why) = SeatAdjust.SaveDecision(before, q0, cur, qcur, net, SeatAdjustOnSeat(seat, gen), d != null, save != null);
+        var (call, why) = SeatAdjust.SaveDecision(before, q0, cur, qcur, net, SeatAdjustOnSeat(seat, gen), d != null, save != null, water);
         double appliedM = before.Gap is double b && cur.Gap is double c ? b - c : 0;
         string outcome;
         if (call == SeatAdjust.SaveCall.Save)

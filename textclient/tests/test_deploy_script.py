@@ -75,3 +75,81 @@ def test_rollback_roundtrip_and_tamper(tmp_path):
     assert run("--rollback", pre, "--live", lv, "--no-restart").returncode == 0
     assert (snap(lv / "app"), snap(lv / "mcp-app")) == start
     assert not list(lv.glob(".deploy-tmp-*"))
+
+
+# ---------- renderer step (2026-11-22): vision/ of the renderer checkout follows the staged commit ----------
+def git(cwd, *a):
+    return subprocess.run(["git", "-C", str(cwd), *a], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def renderer_setup(tmp: Path):
+    """repo with commit A (live renderer) and B (staged): B edits render_mesh.py, removes old.py, adds new.py"""
+    repo = tmp / "repo"; (repo / "vision" / "cloud-render").mkdir(parents=True); (repo / "textclient").mkdir()
+    git(repo, "init", "-q", "-b", "main"); git(repo, "config", "user.email", "t@t"); git(repo, "config", "user.name", "t")
+    (repo / "vision" / "look.py").write_text("look A\n"); (repo / "vision" / "cloud-render" / "render_mesh.py").write_text("mesh A\n")
+    (repo / "vision" / "old.py").write_text("old\n"); (repo / "textclient" / "keep.txt").write_text("k")
+    git(repo, "add", "-A"); git(repo, "commit", "-qm", "A"); a = git(repo, "rev-parse", "HEAD")
+    (repo / "vision" / "cloud-render" / "render_mesh.py").write_text("mesh B\n"); (repo / "vision" / "old.py").unlink()
+    (repo / "vision" / "new.py").write_text("new B\n"); git(repo, "add", "-A"); git(repo, "commit", "-qm", "B")
+    vis = tmp / "sl-repo"; subprocess.run(["git", "clone", "-q", str(repo), str(vis)], check=True); git(vis, "checkout", "-q", "--detach", a)
+    st = repo / "textclient"; new = tree(tmp / "new", "new")
+    shutil.copytree(new / "app", st / "app-staging"); shutil.copytree(new / "mcp-app", st / "mcp-app-staging")
+    (repo / ".gitignore").write_text("textclient/app-staging/\ntextclient/mcp-app-staging/\n"); git(repo, "add", "-A"); git(repo, "commit", "-qm", "ignore")
+    return st, vis, live(tmp)
+
+
+def vrun(st, vis, lv, tmp, *extra):
+    return run("--tag", "prV", "--live", lv, "--viewers", tmp, "--no-restart", "--allow-unmerged", "--vision", vis, *extra, st)
+
+
+def test_renderer_dry_run_plans_and_writes_nothing(tmp_path):
+    st, vis, lv = renderer_setup(tmp_path); before = snap(vis / "vision")
+    r = vrun(st, vis, lv, tmp_path, "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "renderer: " in r.stdout and "2 to update, 1 to remove" in r.stdout and "renderer: sync 2 + remove 1" in r.stdout
+    assert snap(vis / "vision") == before
+
+
+def test_renderer_sync_backup_verify_and_rollback(tmp_path):
+    st, vis, lv = renderer_setup(tmp_path)
+    (vis / "vision" / "scratch-photographer.txt").write_text("not ours")          # untracked: never touched
+    start = snap(vis / "vision")
+    r = vrun(st, vis, lv, tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "renderer OK:" in r.stdout and "sha256-verified" in r.stdout
+    v = vis / "vision"
+    assert (v / "cloud-render" / "render_mesh.py").read_text() == "mesh B\n" and (v / "new.py").read_text() == "new B\n" and not (v / "old.py").exists()
+    assert (v / "look.py").read_text() == "look A\n" and (v / "scratch-photographer.txt").read_text() == "not ours"
+    b = next((lv / "app-backups").glob("deploy-*"))
+    assert (b / "vision" / "old.py").read_text() == "old\n" and (b / "renderer-installed-sha256.json").is_file()
+    assert "renderer OK:" in (b / "notes-entry.md").read_text()
+    time.sleep(1.1)
+    r = run("--rollback", b, "--live", lv, "--no-restart", "--vision", vis)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert snap(v) == start                                                        # mesh A, old.py back, new.py gone, scratch kept
+
+
+def test_renderer_refuses_unknown_local_work_and_a_busy_renderer(tmp_path):
+    st, vis, lv = renderer_setup(tmp_path)
+    (vis / "vision" / "cloud-render" / "render_mesh.py").write_text("someone's uncommitted edit\n")
+    before, app_before = snap(vis / "vision"), snap(lv / "app")
+    r = vrun(st, vis, lv, tmp_path)
+    assert r.returncode == 2 and "unaccounted" in r.stdout, r.stdout + r.stderr
+    assert snap(vis / "vision") == before and snap(lv / "app") == app_before and not (lv / "app-backups").exists()
+    git(vis, "checkout", "-q", "--", "vision")                                   # back to commit A content
+    p = subprocess.Popen(["python3", "-c", "import time; time.sleep(30)", str(vis / "vision" / "look.py")]); time.sleep(0.3)     # a render from that tree is running
+    try:
+        r = vrun(st, vis, lv, tmp_path)
+        assert r.returncode == 3 and "renderer is in use" in r.stdout, r.stdout + r.stderr
+    finally:
+        p.kill()
+    assert snap(lv / "app") == app_before
+
+
+def test_renderer_content_from_history_counts_as_accounted(tmp_path):
+    st, vis, lv = renderer_setup(tmp_path)
+    (vis / "vision" / "cloud-render" / "render_mesh.py").write_text("mesh B\n")   # e.g. a hand checkout of a merged file: known content
+    (vis / "vision" / "look.py").write_text("look A\n")
+    r = vrun(st, vis, lv, tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "1 to update, 1 to remove" in r.stdout

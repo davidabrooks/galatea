@@ -103,7 +103,14 @@ public static partial class Program
     static readonly ConcurrentQueue<string> xlineHistory = new();
     static DateTime selfLastMoveAt = DateTime.MinValue; static Simulator selfLastMoveSim;
     static TaskCompletionSource<bool> regionChangedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    static bool FastCrossing { get => AgentManager.FastCrossing; set => AgentManager.FastCrossing = value; }
+    // GT_FAST_CROSSING (default on) -> LibreMetaverse AgentSettings.FastRegionCrossing (upstream #217, opt-in there, off by default).
+    // Kept here as well because a new GridClient is made at every login: HookCrossingTimeline applies it to the new client.
+    static bool fastCrossingWanted = true;
+    static bool FastCrossing
+    {
+        get => fastCrossingWanted;
+        set { fastCrossingWanted = value; var agent = client?.Settings?.Agent; if (agent != null) agent.FastRegionCrossing = value; }
+    }
     static DateTime LocalOf(DateTime utc) => utc == default ? DateTime.MinValue : utc.ToLocalTime();
 
     // pure (selftest): a point in the old region's frame -> the new region's frame
@@ -334,19 +341,15 @@ public static partial class Program
     {
         if (a.Length > 0 && a[0] is not ("fast" or "push" or "pump" or "lmv" or "resume" or "trace" or "gate")) a = a[1..];   // tolerate a leading word ("crossing set fast off")
         var sub = a.Length > 0 ? a[0].ToLowerInvariant() : "";
-        if (sub == "lmv" && a.Length > 2)
-        {
-            bool on = a[2] is "on" or "1" or "true";
-            switch (a[1]) { case "circuit": AgentManager.FastCrossingCircuit = on; break; case "caps": AgentManager.FastCrossingCaps = on; break; case "appearance": AgentManager.FastCrossingAppearance = on; break; }
-            Log("crossing", $"library fast hand-over part {a[1]} {(on ? "ON" : "OFF")}");
-        }
+        if (sub == "lmv" && a.Length > 2)   // the per-part switches went with our patch: upstream FastRegionCrossing is one switch
+            Log("crossing", $"library fast hand-over part {a[1]}: no per-part switch since LibreMetaverse 3.4.0 (use 'crossing fast on|off')");
         if (sub == "resume" && a.Length > 1 && int.TryParse(a[1], out var rms)) { ResumeMinMs = rms; Log("crossing", $"walk resumes no sooner than {rms} ms after CrossedRegion"); }
         if (sub == "push" && a.Length > 1) { PushThrough = a[1] is "on" or "1" or "true"; Log("crossing", $"push-through {(PushThrough ? "ON" : "OFF")}"); }
         if (sub == "gate" && a.Length > 1) { ArrivalGate = a[1] is "on" or "1" or "true"; Log("crossing", $"arrival gate {(ArrivalGate ? "ON" : "OFF")}"); }
         if (sub == "trace" && a.Length > 1) { CrossTrace = a[1] is "on" or "1" or "true"; Log("crossing", $"self-update trace {(CrossTrace ? "ON" : "OFF")}"); }
         if (sub == "pump" && a.Length > 1) { HandoffPump = a[1] is "on" or "1" or "true"; Log("crossing", $"hand-over AgentUpdate pump {(HandoffPump ? "ON" : "OFF")}"); }
         if (sub == "fast" && a.Length > 1) { FastCrossing = a[1] is "on" or "1" or "true"; Log("crossing", $"fast hand-over {(FastCrossing ? "ON" : "OFF")}"); }
-        var sb = new System.Text.StringBuilder($"crossing: fast hand-over {(FastCrossing ? "ON" : "OFF")} (GT_FAST_CROSSING), push-through {(PushThrough ? "ON" : "OFF")}, pump {(HandoffPump ? "ON" : "OFF")}, resume>={ResumeMinMs} ms (arrival gate {(ArrivalGate ? "ON" : "OFF")}: clear arrival = at her first update), library circuit/caps/appearance {(AgentManager.FastCrossingCircuit ? 1 : 0)}{(AgentManager.FastCrossingCaps ? 1 : 0)}{(AgentManager.FastCrossingAppearance ? 1 : 0)}; state {crossing.State}; {crossing.Crossings} crossings, {crossing.Failures} failures\n");
+        var sb = new System.Text.StringBuilder($"crossing: fast hand-over {(FastCrossing ? "ON" : "OFF")} (GT_FAST_CROSSING), push-through {(PushThrough ? "ON" : "OFF")}, pump {(HandoffPump ? "ON" : "OFF")}, resume>={ResumeMinMs} ms (arrival gate {(ArrivalGate ? "ON" : "OFF")}: clear arrival = at her first update), library FastRegionCrossing {(client?.Settings?.Agent?.FastRegionCrossing == true ? "ON" : "OFF")}; state {crossing.State}; {crossing.Crossings} crossings, {crossing.Failures} failures\n");
         var cs = client.Network.CurrentSim;
         if (cs != null)
         {   // which avatar entries in this region are her (stale copies from earlier visits made her read frozen once)

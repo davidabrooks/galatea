@@ -1,7 +1,7 @@
 // SlDns.cs (2026-10-09): since 2026-10-08 20:13 PT the box's system DNS answers Second Life hosts with 198.18.0.1, a proxy
 // that only passes port 443, so the seed caps / event queue on simhost-*.agni.secondlife.io:12043 time out (no inventory,
 // no AO HUD, no parcel lookup, no InterestList). Connecting to the host's REAL address works. So the caps HttpClient
-// (LibreMetaverse GridClient.CapsConnectCallback, libremetaverse-doh-connect.patch) connects through SlConnectAsync:
+// (LibreMetaverse GridClient.SetCapsConnectCallback, upstream #215 since 2026-11-23; was libremetaverse-doh-connect.patch) connects through SlConnectAsync:
 //   SL host (*.secondlife.io / *.lindenlab.com / *.secondlife.com) on a port other than 443, and the system DNS gives a
 //   198.18.0.0/15 address (or fails) -> resolve the A record with DNS-over-HTTPS (dns.google, then cloudflare-dns.com, both
 //   on 443), cache it for its TTL (30 s .. 1 h; a stale entry is used if DoH is down) and connect to that IP.

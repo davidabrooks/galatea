@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# install-box-tools.sh (2026-11-18): copy the box helper scripts from a git ref (default origin/main) into
+# install-box-tools.sh (2026-11-23): copy the box helper scripts from a git ref (default origin/main) into
 # /home/box/tools/bin, so they run without a worktree and survive worktree cleanup.
 #
 #   install-box-tools.sh [--ref REF] [--dest DIR] [--dry-run]
 #
-# Installs: galatea-test.sh galatea-ship.sh lmv-pr.sh dep-scan.sh pr-automerge.sh (scripts/) and deploy.sh
+# Installs: galatea-test.sh galatea-ship.sh lmv-pr.sh dep-scan.sh pr-automerge.sh
+# galatea-wt-new.sh galatea-wt-cleanup.sh galatea-wt-report.sh (scripts/) and deploy.sh
 # check-lmv-patches.sh restart-connector.sh (textclient/; deploy.sh calls the other two from its own directory).
 # A replaced file that differs is saved under <dest>-backups/<time>/ first. Unchanged files are left alone.
 set -euo pipefail
@@ -15,6 +16,7 @@ git -C "$REPO" fetch -q origin main || true
 sha=$(git -C "$REPO" rev-parse --short "$REF")
 BK="$DEST-backups/$(date +%Y%m%d-%H%M%S)"; n=0
 for f in scripts/galatea-test.sh scripts/galatea-ship.sh scripts/lmv-pr.sh scripts/dep-scan.sh scripts/pr-automerge.sh \
+         scripts/galatea-wt-new.sh scripts/galatea-wt-cleanup.sh scripts/galatea-wt-report.sh \
          textclient/deploy.sh textclient/check-lmv-patches.sh textclient/restart-connector.sh; do
   b=$(basename "$f"); tmp=$(mktemp)
   git -C "$REPO" show "$REF:$f" >"$tmp" || { echo "missing $f at $REF"; rm -f "$tmp"; exit 1; }

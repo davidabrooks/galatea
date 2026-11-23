@@ -1,4 +1,4 @@
-# Box scripts: build, test, ship, deploy, upstream PRs, dependency scan
+# Box scripts: build, test, ship, deploy, worktrees, upstream PRs, dependency scan
 
 These replace steps that used to be done by hand with many tool calls. Each prints a short summary and keeps full logs in
 `/tmp`. Install or refresh the box copies in `/home/box/tools/bin` after a merge with `scripts/install-box-tools.sh`.
@@ -12,5 +12,8 @@ These replace steps that used to be done by hand with many tool calls. Each prin
 | `textclient/deploy.sh --rollback <backup-dir>` | Same checks; backs up the current live to `app-backups/rollback-pre-<ts>` and installs the backup's `app` + `mcp-app`, and its `vision/` files when the backup has them (same refusals). |
 | `scripts/lmv-pr.sh new\|commit\|test\|open\|cleanup\|list` | LibreMetaverse upstream PRs from worktrees of `/workspace/wt/lmv-main`: commits as David Brooks, tests with the right filter, opens the PR from the fork against `cinderblocks/libremetaverse` only after a passing test of HEAD, cleans up after merge. |
 | `scripts/dep-scan.sh [--tree DIR] [--baseline FILE]` | Read-only NuGet vulnerable/outdated scan, deployed-vs-source drift, LibreMetaverse pin vs upstream, .NET servicing, Python pins against OSV; diff against the last weekly baseline. |
+| `scripts/galatea-wt-new.sh <short-name> <branch>` | Create a git worktree at `/workspace/wt/<short-name>` from `/workspace/galatea`, branched from `origin/main`, and copy LibreMetaverse source without a nested `.git` (shared cache at `/home/box/lib/libremetaverse-cache`). |
+| `scripts/galatea-wt-cleanup.sh [--apply] <path> ...` or `--merged` | Dry-run by default. After a PR is merged or closed, if the tree is clean and not in use: remove the worktree, delete the local and remote branch, prune. `--merged` scans worktrees of known hosts. Named branches are matched to a PR by branch name only. |
+| `scripts/galatea-wt-report.sh` | Read-only inventory of Galatea working copies under `/workspace`: size, branch, PR state, unpushed or uncommitted work, last modified, and a mechanical SAFE/KEEP/LOOK verdict. Does not delete anything. |
 
 Not scriptable: pausing/resuming the keep-awake routines (agent routine tool) and logging in/out (connector login/logout tools).

@@ -142,6 +142,46 @@ def is_galatea(p):
         return True
     return False
 
+# --- classify helpers (tested) ---
+def is_deploy_branch(branch):
+    return bool(branch) and branch != "(detached)" and branch.startswith("deploy/")
+
+def newest_deploy_branch(branches):
+    deps = [b for b in branches if is_deploy_branch(b)]
+    return max(deps) if deps else None
+
+def pr_for(branch, detached, head, by_branch, by_sha):
+    # Named branches: match like `gh pr list --head <branch>` only. SHA matching
+    # is only for detached HEADs, because a branch created from origin/main
+    # shares the latest merge-commit SHA and must not be treated as "that PR".
+    if not detached and branch in by_branch:
+        return by_branch[branch]
+    if detached and head in by_sha:
+        return by_sha[head]
+    return None
+
+def classify(r, newest_deploy):
+    hostish = r["path"] in ("/workspace/galatea", "/workspace/galatea-sl-repo")
+    if hostish:
+        return "KEEP (host clone)"
+    if is_deploy_branch(r["branch"]) and r["branch"] == newest_deploy:
+        return "KEEP (live rollback)"
+    if r["in_use"]:
+        return "KEEP (in use)"
+    if r["dirty"]:
+        return "KEEP (uncommitted)"
+    if r["unpushed"].startswith("none") is False and r["unpushed"] != "—":
+        return "KEEP (unpushed)"
+    if is_deploy_branch(r["branch"]):
+        # superseded by a newer deploy/* tree; SAFE only if otherwise clean and pushed
+        return "SAFE (mechanical)"
+    if r["pr_state"] in ("MERGED", "CLOSED"):
+        return "SAFE (mechanical)"
+    if r["pr_state"] == "":
+        return "LOOK (no PR match)"
+    return f"KEEP (PR {r['pr_state']})"
+# --- end classify helpers ---
+
 # PRs once
 c,o,e=run(["gh","pr","list","--repo","davidabrooks/galatea","--state","all","--limit","500","--json","number,state,headRefName,headRefOid,mergeCommit"], timeout=60)
 prs=[]
@@ -171,11 +211,7 @@ for p in discover():
     detached = (branch=="HEAD" or not branch)
     if detached:
         branch="(detached)"
-    pr=None
-    if not detached and branch in by_branch:
-        pr=by_branch[branch]
-    elif head in by_sha:
-        pr=by_sha[head]
+    pr=pr_for(branch, detached, head, by_branch, by_sha)
     pr_s="—"
     pr_state=""
     if pr:
@@ -188,7 +224,7 @@ for p in discover():
         c,o,e=git(p,"log","--oneline","--not","--remotes","HEAD")
         commits=[ln for ln in o.splitlines() if ln.strip()]
         unpushed = f"{len(commits)} unique" if commits else "none"
-        if head in by_sha:
+        if detached and head in by_sha:
             unpushed="none (known PR sha)"
     used=in_use(p)
     size=du(p)
@@ -200,22 +236,9 @@ for p in discover():
     })
 
 # classify mechanical safe
+newest_deploy = newest_deploy_branch(r["branch"] for r in copies)
 for r in copies:
-    hostish = r["path"] in ("/workspace/galatea","/workspace/galatea-sl-repo")
-    if r["in_use"]:
-        r["verdict"]="KEEP (in use)"
-    elif hostish:
-        r["verdict"]="KEEP (host clone)"
-    elif r["dirty"]:
-        r["verdict"]="KEEP (uncommitted)"
-    elif r["unpushed"].startswith("none") is False and r["unpushed"]!="—":
-        r["verdict"]="KEEP (unpushed)"
-    elif r["pr_state"] in ("MERGED","CLOSED"):
-        r["verdict"]="SAFE (mechanical)"
-    elif r["pr_state"]=="":
-        r["verdict"]="LOOK (no PR match)"
-    else:
-        r["verdict"]=f"KEEP (PR {r['pr_state']})"
+    r["verdict"] = classify(r, newest_deploy)
 
 copies.sort(key=lambda r: (-r["size"], r["path"]))
 print(f"{'Size':>9}  {'Kind':<11}  {'PR':<18}  {'Unpushed':<16}  {'Dirty':>5}  {'In use':<6}  {'Source mtime':<18}  Verdict  Path  Branch")
@@ -281,6 +304,6 @@ else:
     print(f"  {len(found)} folder(s), {nflag} older than 7 days. Report only; delete after the result is in notes.")
 
 print()
-print("SAFE (mechanical) means: merged/closed PR, no unique uncommitted or unpushed work, not in use, not a host clone.")
-print("This is a report only. Confirm Look/Keep items (live vision tree, recent deploys, unique work) before deleting.")
+print("SAFE (mechanical) means: merged/closed PR (or a deploy/* worktree superseded by a newer one), no unique uncommitted or unpushed work, not in use, not a host clone. The newest deploy/* worktree is KEEP (live rollback).")
+print("This is a report only. Confirm Look/Keep items (live vision tree, live rollback, unique work) before deleting.")
 PY

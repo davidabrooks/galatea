@@ -77,9 +77,9 @@ public class ConnectionRecoveryTests
         Assert.Equal("slow step OutfitZoneTick: 7.2 s (the 1 s ticker waited for it)", Program.TickerSlowStepNote("OutfitZoneTick", 7.21, true));
         Assert.Equal("step NeighborTick still running after 12 s (the 1 s ticker is blocked)", Program.TickerSlowStepNote("NeighborTick", 12.3, false));
         var ticker = Between(Src("Program.cs"), "static async Task Ticker()", "static readonly TimeSpan CmdReplyCap");
-        foreach (var step in new[] { "AutoFollowTick", "CameraAnchorTick", "ParcelWatchTick", "NeighborTick", "OutfitZoneTick" })
+        foreach (var step in new[] { "AutoFollowTick", "CameraAnchorTick", "ParcelWatchTick", "ScriptsWatchTick", "NeighborTick", "OutfitZoneTick" })
             Assert.Contains($"TickerStepBegin(\"{step}\")", ticker);
-        Assert.Equal(5, System.Text.RegularExpressions.Regex.Matches(ticker, @"TickerStepEnd\(\)").Count);
+        Assert.Equal(6, System.Text.RegularExpressions.Regex.Matches(ticker, @"TickerStepEnd\(\)").Count);
         Assert.DoesNotContain("LastOnlineHeartbeat()", ticker);   // its own timer now: a blocked step no longer stops last-online.txt
         Assert.Contains("LastOnlineHeartbeat()", Between(Src("ConnectionDiag.cs"), "static void StartLastOnlineTimer()", "\n    }\n"));
     }

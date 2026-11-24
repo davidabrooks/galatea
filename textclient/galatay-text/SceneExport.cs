@@ -330,6 +330,11 @@ public static partial class Program
             var dir = Path.Combine(parent, name);
             var tmp = Path.Combine(parent, $".{name}.{Guid.NewGuid():N}.alloc");
             Directory.CreateDirectory(tmp);
+            // Leave a marker so the moved dir is never empty. On Linux, rename(2) of a
+            // directory onto an existing empty directory succeeds and replaces it, so two
+            // same-second callers could both return export-<stamp> before either wrote
+            // scene.json. A non-empty dest makes the second Move throw and fall through to -2.
+            File.WriteAllBytes(Path.Combine(tmp, ".allocated"), Array.Empty<byte>());
             try
             {
                 Directory.Move(tmp, dir);

@@ -1,5 +1,5 @@
 // scene-mesher: `scene export` dump -> geometry batches for the Blender worker (no SL login; assets from the public CDN).
-//   dotnet run -- --selftest | --mem-selftest | <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r] [--anim=<uuid>] [--nav]
+//   dotnet run -- --selftest | --mem-selftest | --prim-selftest | <export dir> [near_m=20] [avatar|scene|all] [cx,cy,cz r] [--anim=<uuid>] [--nav]
 //   (scene prims only within r of c; --anim=a,b,.. poses her with the held frame of SL animations (priority-blended), e.g. the default sit)
 //   Without --anim she is posed from the export's me.anims (the client's animation clock). Other avatars (export "avatars"
 //   with agent_id, 2026-10-04+) get their own shape, bakes and animations, one group "avatar:<id8>" each (mesh.json "others").
@@ -443,9 +443,96 @@ static class Mesher
         return ok;
     }
 
+    // pure (CI: --prim-selftest): MeshFoundry unit box is a closed volume of 1.0, a hollow box's
+    // inner wall is face 5, and PathTwist=0.2 is applied in degrees (not treated as radians).
+    // Regression for LMV issue #222 (cinderblocks commits 312d3584 / cf64363a, 2026-11-24).
+    internal static bool PrimSelftest()
+    {
+        var mf = new MeshFoundry();
+        const float tol = 1e-3f;
+
+        static Primitive Box(float hollow = 0f, float twist = 0f)
+        {
+            return new Primitive
+            {
+                PrimData = new Primitive.ConstructionData
+                {
+                    PCode = PCode.Prim,
+                    PathCurve = PathCurve.Line,
+                    ProfileCurve = ProfileCurve.Square,
+                    PathScaleX = 1f,
+                    PathScaleY = 1f,
+                    PathBegin = 0f,
+                    PathEnd = 1f,
+                    ProfileBegin = 0f,
+                    ProfileEnd = 1f,
+                    ProfileHollow = hollow,
+                    ProfileHole = HoleType.Same,
+                    PathRevolutions = 1f,
+                    PathTwist = twist
+                }
+            };
+        }
+
+        static (double vol, float nlen, int faces, int? innermost, int verts) Measure(FacetedMesh mesh)
+        {
+            double volume = 0;
+            var normalSum = Vector3.Zero;
+            int verts = 0;
+            int? innermost = null;
+            float bestR = float.MaxValue;
+            // MeshFoundry lists one FacetedMesh face per prim face number; Face.ID is left at 0.
+            for (int fi = 0; fi < mesh.Faces.Count; fi++)
+            {
+                var face = mesh.Faces[fi];
+                verts += face.Vertices.Count;
+                float r = 0;
+                int n = 0;
+                var seen = new HashSet<int>();
+                foreach (var i in face.Indices)
+                {
+                    if (!seen.Add(i)) continue;
+                    var v = face.Vertices[i].Position;
+                    r += MathF.Sqrt(v.X * v.X + v.Y * v.Y);
+                    n++;
+                }
+                if (n > 0)
+                {
+                    r /= n;
+                    if (r < bestR) { bestR = r; innermost = fi; }
+                }
+                for (var i = 0; i + 2 < face.Indices.Count; i += 3)
+                {
+                    var v1 = face.Vertices[face.Indices[i]].Position;
+                    var v2 = face.Vertices[face.Indices[i + 1]].Position;
+                    var v3 = face.Vertices[face.Indices[i + 2]].Position;
+                    volume += (v1.X * (v2.Y * v3.Z - v3.Y * v2.Z)
+                             - v1.Y * (v2.X * v3.Z - v3.X * v2.Z)
+                             + v1.Z * (v2.X * v3.Y - v3.X * v2.Y)) / 6.0;
+                    normalSum += (v2 - v1) % (v3 - v1) * 0.5f;
+                }
+            }
+            return (volume, normalSum.Length(), mesh.Faces.Count, innermost, verts);
+        }
+
+        var boxMesh = mf.GenerateFacetedMesh(Box(), DetailLevel.High);
+        var hollowMesh = mf.GenerateFacetedMesh(Box(0.3f), DetailLevel.High);
+        var twistedMesh = mf.GenerateFacetedMesh(Box(0f, 0.2f), DetailLevel.High);
+        if (boxMesh == null || hollowMesh == null || twistedMesh == null) return false;
+        var box = Measure(boxMesh);
+        var hollow = Measure(hollowMesh);
+        var twisted = Measure(twistedMesh);
+        bool ok = Math.Abs(box.vol - 1.0) < tol && box.nlen < tol && box.faces == 6;
+        ok &= hollow.faces == 7 && hollow.innermost == 5;
+        // 36° of twist (PathTwist 0.2 × 180) adds a couple of path steps; treating 36 as radians added ~131.
+        ok &= Math.Abs(twisted.vol - 1.0) < 0.05 && twisted.nlen < 0.05 && twisted.verts < box.verts * 4;
+        return ok;
+    }
+
     static async Task<int> Main(string[] args)
     {
         if (args.Length == 1 && args[0] == "--pbr-selftest") { bool pok = PbrSelftest(); Console.WriteLine(pok ? "pbr selftest ok" : "pbr selftest FAILED"); return pok ? 0 : 1; }
+        if (args.Length == 1 && args[0] == "--prim-selftest") { bool rok = PrimSelftest(); Console.WriteLine(rok ? "prim selftest ok" : "prim selftest FAILED"); return rok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--skin-selftest") { bool sok = SkinSelftest(); Console.WriteLine(sok ? "skin selftest ok" : "skin selftest FAILED"); return sok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--bodysize-selftest") { bool bok = BodySizeSelftest(); Console.WriteLine(bok ? "bodysize selftest ok" : "bodysize selftest FAILED"); return bok ? 0 : 1; }
         if (args.Length == 1 && args[0] == "--mem-selftest") { bool mok = MemSelftest(); Console.WriteLine(mok ? "mem selftest ok" : "mem selftest FAILED"); return mok ? 0 : 1; }
@@ -481,6 +568,7 @@ static class Mesher
                   && CachePath(null, "mesh", UUID.Random()) == null && CachePath("/c", "../x", UUID.Random()) == null && CachePath("/c", "mesh", UUID.Zero) == null;
             ok &= AvatarLod(2) == DetailLevel.Highest && AvatarLod(6) == DetailLevel.High && AvatarLod(15) == DetailLevel.Medium && AvatarLod(35) == DetailLevel.Low;
             ok &= LodSelftest();
+            ok &= PrimSelftest();
             ok &= Projector(null, Quaternion.Identity) == null && Projector(new Primitive.LightImage { LightTexture = UUID.Random(), Params = new Vector3(1, 0, 0) }, Quaternion.Identity) != null;
             ok &= LegacyShiny(Shininess.None) == null && LegacyShiny(Shininess.High) == 0.75f;
             ok &= !Impostor(15, 16) && Impostor(16, 16) && !Impostor(99, 0);

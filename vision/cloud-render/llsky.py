@@ -219,8 +219,16 @@ def preset_env(name, doc=None):
     return out
 
 def photo_env(doc, sky=None):
-    """photo hd: the shared environment (default, sky None / "shared") or a named preset; ValueError for an unknown one"""
-    if not sky or sky.lower() == "shared": return env_at(doc)
+    """photo hd: the shared environment (default, sky None / "shared") or a named preset; ValueError for an unknown one.
+    When the export has no usable EEP (look/scene-export noenv, or a missing day cycle), fall back to the viewer
+    library Default sky rather than leaving env unset (the quick-look flat world)."""
+    if not sky or sky.lower() == "shared":
+        e = env_at(doc)
+        if e is None:
+            e = preset_env("default", doc)
+            if e is not None:
+                e["source"] = "default-fallback:" + str(e.get("source") or "preset:Default")
+        return e
     e = preset_env(sky, doc)
     if e is None: raise ValueError(f"unknown sky preset '{sky}' (shared, {', '.join(sorted(presets()))})")
     return e

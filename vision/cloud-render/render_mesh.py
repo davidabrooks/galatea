@@ -575,6 +575,44 @@ def hd_fov():
     """photo hd vertical FOV in degrees (GT_HD_FOV, default 60 = Firestorm's camera), None outside photo hd"""
     return float(os.environ.get("GT_HD_FOV", "60")) if os.environ.get("GT_HD") == "1" else None
 
+def portrait_shot_fits(mid, cam, need_dist, slop=0.05):
+    """True when camera `cam` is far enough from the subject centre `mid` to keep the framed body in shot."""
+    d = math.sqrt(sum((float(c) - float(m)) ** 2 for c, m in zip(cam, mid)))
+    return d >= need_dist * (1.0 - slop)
+
+def portrait_low_obstacle(hit_z, head_z, mid_z):
+    """A hit well below the head is a curb or retaining wall, not a room wall that must stop the camera."""
+    return hit_z < min(head_z - 0.25, mid_z + 0.4)
+
+def portrait_framing(rx, ry, hd, tight=False):
+    """(m, lift_frac) for photo hd self. m scales camera distance (larger = more surroundings).
+    Landscape uses a longer shot and a level camera so a standing figure does not fill the
+    short side of a 16:9 frame and hide the sky and ground (a 0.15*dist lift looks down).
+    When the backdrop has no useful sky or distant scenery (a wall, hill, or nearby terrain),
+    tight=True frames her closer so she fills most of a landscape frame, still level so head
+    and feet stay in shot. Portrait is already a tight frame."""
+    if not hd:
+        return 0.6, 0.15
+    if rx > ry:
+        return (0.45, 0.0) if tight else (0.85, 0.0)
+    return 0.45, 0.15
+
+# Backdrop samples: None = sky (ray miss), else metres past the subject. Distant scenery starts at
+# PORTRAIT_BG_FAR_M; a view is closed (frame tight) when less than PORTRAIT_BG_OPEN_FRAC of the
+# samples are sky or that far — a nearby wall, hill, or terrain filling the frame, little or no sky.
+PORTRAIT_BG_FAR_M = 15.0
+PORTRAIT_BG_OPEN_FRAC = 0.25
+
+def portrait_background_closed(depths, far_m=15.0, open_frac=0.25):
+    """True when the view behind the subject has little sky or distant scenery.
+    `depths` are metres past the subject along camera rays; None means the ray missed (sky)."""
+    vals = list(depths)
+    if not vals:
+        return False
+    return sum(1 for d in vals if d is None or d >= far_m) / len(vals) < open_frac
+
+PORTRAIT_YAW_OFFSETS = (0, 20, -20, 35, -35, 50, -50, 70, -70)
+
 def camera(loc, target, lens, res):
     cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam")); sc.collection.objects.link(cam); sc.camera = cam
     cam.location = loc; cam.rotation_euler = (Vector(target) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
@@ -2162,24 +2200,112 @@ if SCENE:
         elif view.startswith("portrait"):
             # `photo hd self` (2026-10-13): her whole body from in front, in the real scene; "portrait[:yaw offset]".
             # Framed on her world bounding box (standing, sitting or lying), lens 50; Blender's sensor fit = the long side
-            a = math.radians(yaw + (float(view[9:]) if view.startswith("portrait:") else 0)); f = Vector((math.cos(a), math.sin(a), 0))
+            yaw0 = yaw + (float(view[9:]) if view.startswith("portrait:") else 0)
             rx, ry = (int(v) for v in os.environ.get("GT_RES", "2160x3840").split("x"))
             bpy.context.view_layer.update()
             pts = [ob.matrix_world @ Vector(c) for ob in obs for c in ob.bound_box]
             blo = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts))); bhi = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
-            mid = (blo + bhi) / 2; ext = bhi - blo; side = abs(ext.x * f.y) + abs(ext.y * f.x)   # width across the view
+            mid = (blo + bhi) / 2; ext = bhi - blo
             # photo hd (2026-10-14 David): Firestorm's 60 deg vertical view angle (GT_HD_FOV), subject framing kept by
             # moving the camera to keep her well framed, with Firestorm's wider surroundings around her
             lens = lens_for_vfov(hd_fov(), rx, ry) if hd_fov() else 50.0
             hf = 2 * math.atan(18 / lens * (rx / ry if ry >= rx else 1)); vf = 2 * math.atan(18 / lens * (1 if ry >= rx else ry / rx))
             # margin: half-extent / tan(half fov); 0.6 = body fills ~83% of the frame (old 50 mm close-up). At 60 deg
             # that would put the lens ~1.5 m from her (wide-angle distortion), so at 60 deg she fills ~70% of the frame, matched to David's Firestorm boat shot 2026-10-14
-            m = 0.45 if hd_fov() else 0.6
-            dist = max(ext.z * m / math.tan(vf / 2), side * m / math.tan(hf / 2), 0.4 if hd_fov() else 1.2) + max(ext.x, ext.y) / 2
-            want = mid + f * dist + Vector((0, 0, 0.15 * dist)); e = want - h; u = e.normalized()
-            # a wall in front of her: stop just before it (cast from her head: a seat or table isn't a wall)
-            hit, loc, *_ = sc.ray_cast(bpy.context.evaluated_depsgraph_get(), h + u * 0.5, u, distance=max(0.01, e.length - 0.5))
-            camera(loc - u * 0.15 if hit else want, mid, lens, (rx, ry))
+            m, lift_frac = portrait_framing(rx, ry, bool(hd_fov()))
+            def dist_for(f):
+                side = abs(ext.x * f.y) + abs(ext.y * f.x)   # width across the view
+                return max(ext.z * m / math.tan(vf / 2), side * m / math.tan(hf / 2), 0.4 if hd_fov() else 1.2) + max(ext.x, ext.y) / 2
+            dg = bpy.context.evaluated_depsgraph_get()
+            _camlog = []
+            def try_dir(f, off=None):
+                # a wall in front of her: stop just before it (cast from her head: a seat or table isn't a wall).
+                # A low curb or retaining wall that would crop her head or feet is not treated as a room wall:
+                # raise the camera over it, or try a nearby yaw, so the whole body stays in frame.
+                dist = dist_for(f)
+                want = mid + f * dist + Vector((0, 0, lift_frac * dist)); e = want - h; el = e.length
+                if el < 1e-6: return None, "degenerate"
+                u = e.normalized()
+                hit, loc, nrm, _idx, ob, _m = sc.ray_cast(dg, h + u * 0.5, u, distance=max(0.01, el - 0.5))
+                if not hit: return want, "clear"
+                cam = loc - u * 0.15
+                _camlog.append(f"  try off={off} dist={dist:.2f} want={[round(float(v),2) for v in want]} hit={[round(float(v),2) for v in loc]} z={loc.z:.2f} headz={h.z:.2f} ob={getattr(ob,'name',ob)} fit={portrait_shot_fits(mid, cam, dist)} camdist={(cam-mid).length:.2f}")
+                if portrait_shot_fits(mid, cam, dist): return cam, "stopped"
+                # Too close to fit her (a path lip or retaining wall often hits near head height, so this
+                # is not limited to low curbs): raise and, if needed, pull back so the camera looks over
+                # the occluder. A tall room wall still blocks these tries, and the caller then tries another yaw.
+                for raise_m, scale in ((0.5, 1.0), (1.0, 1.0), (1.5, 1.0), (2.0, 1.2), (3.0, 1.3), (4.0, 1.5), (5.0, 1.2)):
+                    w2 = mid + f * (dist * scale) + Vector((0, 0, lift_frac * dist * scale + raise_m))
+                    e2 = w2 - h; l2 = e2.length
+                    if l2 < 1e-6: continue
+                    u2 = e2.normalized()
+                    hit2, loc2, *_ = sc.ray_cast(dg, h + u2 * 0.5, u2, distance=max(0.01, l2 - 0.5))
+                    if not hit2: return w2, "raised"
+                    cam2 = loc2 - u2 * 0.15
+                    if portrait_shot_fits(mid, cam2, dist): return cam2, "raised-stopped"
+                return None, "blocked"
+            def place_cam():
+                loc = None; why = "blocked"; used_off = 0
+                for off in PORTRAIT_YAW_OFFSETS:
+                    a = math.radians(yaw0 + off); f = Vector((math.cos(a), math.sin(a), 0))
+                    loc, why = try_dir(f, off)
+                    _camlog.append(f"off={off} -> {why} loc={None if loc is None else [round(float(v),2) for v in loc]}")
+                    if loc is not None:
+                        used_off = off; break
+                if loc is None:
+                    f = Vector((math.cos(math.radians(yaw0)), math.sin(math.radians(yaw0)), 0))
+                    dist = dist_for(f); want = mid + f * dist + Vector((0, 0, lift_frac * dist)); e = want - h; u = e.normalized()
+                    hit, hloc, *_ = sc.ray_cast(dg, h + u * 0.5, u, distance=max(0.01, e.length - 0.5))
+                    loc = hloc - u * 0.15 if hit else want; why = "fallback"
+                    _camlog.append(f"fallback hit={bool(hit)} loc={[round(float(v),2) for v in loc]}")
+                return loc, why, used_off
+            def sample_background(cam):
+                # Rays through the chosen camera's frame, skipping her body and foreground (the path
+                # in front). A miss is sky; a hit's depth is metres past the subject.
+                depths = []; forward = mid - Vector(cam)
+                if forward.length < 1e-6: return depths
+                dist_s = forward.length; forward = forward.normalized()
+                right = forward.cross(Vector((0, 0, 1)))
+                right = Vector((1, 0, 0)) if right.length < 1e-6 else right.normalized()
+                up = right.cross(forward).normalized(); subject = set(obs)
+                for i in range(9):
+                    v = 0.5 - (i + 0.5) / 9
+                    for j in range(13):
+                        u = (j + 0.5) / 13 - 0.5
+                        d = (forward + right * (2 * u * math.tan(hf / 2)) + up * (2 * v * math.tan(vf / 2))).normalized()
+                        o = Vector(cam) + d * 0.05; leftover = 200.0; depth = None
+                        for _ in range(6):
+                            hit, hloc, *_rest, ob, _m = sc.ray_cast(dg, o, d, distance=leftover)
+                            if not hit:
+                                depth = None; break
+                            behind = (hloc - Vector(cam)).length - dist_s
+                            if ob in subject or behind < -0.4:
+                                o = hloc + d * 0.05; leftover = max(0.01, 200.0 - (o - Vector(cam)).length); continue
+                            depth = max(0.0, behind); break
+                        depths.append(depth)
+                return depths
+            loc, why, used_off = place_cam()
+            if hd_fov() and rx > ry and loc is not None:
+                depths = sample_background(loc)
+                n = len(depths); sky_n = sum(1 for d in depths if d is None)
+                far_n = sum(1 for d in depths if d is not None and d >= PORTRAIT_BG_FAR_M)
+                closed = portrait_background_closed(depths)
+                _camlog.append(f"background n={n} sky={sky_n} far={far_n} closed={closed}")
+                if closed:
+                    m, lift_frac = portrait_framing(rx, ry, True, tight=True)
+                    loc, why, used_off = place_cam()
+                    why = why + "+tight"
+            print(f"GT: portrait camera {why} offset {used_off} deg at {[round(float(v), 2) for v in loc]}", flush=True)
+            try:
+                import os as _os
+                _p = _os.environ.get("GT_PORTRAIT_CAM_LOG")
+                if _p:
+                    open(_p, "w").write("mid=%s head=%s yaw0=%.2f dist0=%.2f\n%s\nfinal %s offset %s loc %s\n" % (
+                        [round(float(v),2) for v in mid], [round(float(v),2) for v in h], yaw0, dist_for(Vector((math.cos(math.radians(yaw0)), math.sin(math.radians(yaw0)), 0))),
+                        "\n".join(_camlog), why, used_off, [round(float(v),2) for v in loc]))
+            except Exception as _e:
+                print("GT: portrait cam log failed", _e, flush=True)
+            camera(loc, mid, lens, (rx, ry))
         elif view.startswith("headshot"):
             # `photo hd self headshot` (2026-10-21 David: profile photo): head and shoulders from in front, at a portrait
             # lens (HEADSHOT_FOV deg vertical unless `fov` was given: 60 deg at ~0.7 m distorts a face); the frame spans

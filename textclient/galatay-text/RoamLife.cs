@@ -238,6 +238,25 @@ public static partial class Program
 
     /// <summary>Before a leg: maybe detour to a seat near it. True when she sat (and stood again) or the detour walk
     /// moved her, so the caller re-plans from where she is now.</summary>
+    // pure (tested): one check of a roam sit, each second while seated. An adult pose is never kept in roam (after a short
+    // grace for the seat's own animation to settle); someone standing her, or a logout, ends the sit without a stand.
+    internal enum RoamSeated { Stay, LoggedOut, StoodUp, AdultPose }
+    internal const double RoamSitAdultGraceS = 4;
+    internal const int RoamSeatAdjustWaitMaxTicks = 60;
+    internal static RoamSeated RoamSeatedCheck(bool loggedIn, bool sitting, double seatedS, Func<bool> adultPoseRunning) =>
+        !loggedIn ? RoamSeated.LoggedOut
+        : !sitting ? RoamSeated.StoodUp
+        : seatedS > RoamSitAdultGraceS && adultPoseRunning() ? RoamSeated.AdultPose
+        : RoamSeated.Stay;
+
+    // waits (one tick at a time, at most maxTicks) while busy() holds; returns the ticks waited
+    internal static async Task<int> RoamWaitWhile(Func<bool> busy, Func<Task> tick, int maxTicks)
+    {
+        int i = 0;
+        for (; i < maxTicks && busy(); i++) await tick();
+        return i;
+    }
+
     static async Task<bool> RoamMaybeSitDetour(Vector3 legTo, IReadOnlyDictionary<ulong, RoamRegionView> views, CancellationToken ct)
     {
         var sim = client.Network.CurrentSim; if (sim == null) return false;
@@ -292,11 +311,13 @@ public static partial class Program
             while ((DateTime.Now - t0).TotalSeconds < stay)
             {
                 await Task.Delay(1000, ct);
-                if (!LoggedIn) return true;
-                if (client.Self.SittingOn == 0) { RoamLog("sit: I'm standing already (someone or something stood me); going on"); return true; }
-                if ((DateTime.Now - t0).TotalSeconds > 4 && SexualPoseRunningNow()) { RoamLog("sit: the seat started an adult pose; standing now (never in roam)"); break; }
+                bool on = LoggedIn;
+                var step = RoamSeatedCheck(on, on && client.Self.SittingOn != 0, (DateTime.Now - t0).TotalSeconds, SexualPoseRunningNow);
+                if (step == RoamSeated.LoggedOut) return true;
+                if (step == RoamSeated.StoodUp) { RoamLog("sit: I'm standing already (someone or something stood me); going on"); return true; }
+                if (step == RoamSeated.AdultPose) { RoamLog("sit: the seat started an adult pose; standing now (never in roam)"); break; }
             }
-            for (int i = 0; i < 60 && SeatAdjustBusy; i++) await Task.Delay(1000, ct);   // never stand in the middle of a seat adjust
+            await RoamWaitWhile(() => SeatAdjustBusy, () => Task.Delay(1000, ct), RoamSeatAdjustWaitMaxTicks);   // never stand in the middle of a seat adjust
             var sr = await Exec("stand");
             for (int i = 0; i < 10 && client.Self.SittingOn != 0; i++) await Task.Delay(500, ct);
             RoamLog($"sit: stood up after {(DateTime.Now - t0).TotalSeconds:F0} s ({sr}); roaming on");

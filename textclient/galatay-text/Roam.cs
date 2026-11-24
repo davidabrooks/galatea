@@ -29,12 +29,13 @@ public static partial class Program
     internal const float RoamChatQuietS = 60f;
     internal const int RoamPauseMinS = 20;
     internal const int RoamPauseMaxS = 60;
+    internal const float RoamArriveTolM = 2.0f;   // a leg ends within this horizontal distance of its spot (WalkPath lastTol)
     // Governor Linden (mainland / welcome-area owner). 2026-11-23: was ...-7227138161bb (wrong); the Ahern
     // welcome-area parcel owner in the log, and world.secondlife.com/resident/<id>, are ...-722652995cf1.
     internal static readonly UUID RoamGovernorLinden = new("3d6181b0-6a4b-97ef-18d8-722652995cf1");
 
-    static CancellationTokenSource roamCts;
-    static Task roamTask;
+    internal static CancellationTokenSource roamCts;   // internal: RoamLoopTests drive StopRoamIfOn
+    internal static Task roamTask;
     static volatile string roamPause; // null | "chat"
     static DateTime roamQuietSince = DateTime.MinValue, roamStartedAt;
     static float roamRadius = RoamDefaultRadiusM;
@@ -46,7 +47,7 @@ public static partial class Program
     static readonly object roamLock = new();
     static readonly HashSet<int> roamParcelsLogged = new();
 
-    static bool RoamOn => roamTask != null && !roamTask.IsCompleted;
+    internal static bool RoamOn => roamTask != null && !roamTask.IsCompleted;
 
     internal enum RoamMapCell { Open, Water, Build }
     internal enum RoamPathReject { Ok, Wall, Ledge, Water, Edge, Restricted }
@@ -116,9 +117,6 @@ public static partial class Program
             best = best == null ? t : MathF.Max(best.Value, t);
         return best ?? terrain ?? avatarZ;
     }
-
-    internal static RoamPrim RoamPrimBox(float cx, float cy, float sx, float sy, float top) =>
-        new(cx - sx * 0.5f, cy - sy * 0.5f, cx + sx * 0.5f, cy + sy * 0.5f, top);
 
     // pure (tested): world floor box of a (possibly rotated) prim: null when it is no floor (under 0.8 m across, or tilted
     // more than ~10 degrees so its top is a slope or a wall). Footprint = the rotated box's axis-aligned bounds.
@@ -225,7 +223,54 @@ public static partial class Program
 
     static void RoamLog(string m) => Log("roam", m);
 
-    static void StopRoamIfOn(string why)
+    // ---- the main loop's decisions, pure (tested in RoamLoopTests) -----------------------------------------
+    // 2026-11-23: pulled out of RoamCmd / RoamLoop unchanged so the loop's stop, re-plan and give-up rules are testable.
+    internal enum RoamStop { None, LoggedOut, SatDown, Follow, Leashed, NoRegion, LeftArea }
+
+    // checked at the top of every loop pass, in this order; a roam-owned sit (RoamLife.cs) is not a stop
+    internal static RoamStop RoamStopCheck(bool loggedIn, bool sitting, bool roamOwnSit, bool following, bool leashed, bool hasRegion, bool inArea) =>
+        !loggedIn ? RoamStop.LoggedOut
+        : sitting && !roamOwnSit ? RoamStop.SatDown
+        : following ? RoamStop.Follow
+        : leashed ? RoamStop.Leashed
+        : !hasRegion ? RoamStop.NoRegion
+        : !inArea ? RoamStop.LeftArea
+        : RoamStop.None;
+
+    // why `roam on` is refused (null = start). ao/status are read only when that check is reached.
+    internal static string RoamStartRefusal(bool loggedIn, bool roamOn, Func<string> status, bool wanderOn, bool inPeronaut,
+        bool sitting, bool leashed, Func<(bool active, string why)> ao)
+    {
+        if (!loggedIn) return "not logged in";
+        if (roamOn) return "roam already running (" + status() + ")";
+        if (wanderOn) return "wander is running; 'wander stop' first (roam is for non-home sims)";
+        if (inPeronaut) return "roam is for sims other than home (Peronaut); use wander there";
+        if (sitting) return "refused: sitting; stand first";
+        if (leashed) return "refused: leashed; not starting a roam";
+        if (!sitting && !ao().active) return "refused: AO not active (" + ao().why + "); not starting a roam";
+        return null;
+    }
+
+    // the loop's leg bookkeeping: an eject or two failed legs in a row re-plan from where she is (each eject once);
+    // a good leg resets both counters; too many re-plans without a good leg, or too many failed legs, stop the roam.
+    internal sealed class RoamLegBook
+    {
+        internal const int ReplanAfterFails = 2, MaxReplans = 4, MaxFails = 12;
+        DateTime ejectSeen;
+        internal int Fails { get; private set; }
+        internal int Replans { get; private set; }
+        internal RoamLegBook(DateTime ejectSeenAtStart) => ejectSeen = ejectSeenAtStart;
+        internal bool Ejected(DateTime ejectAt) => ejectAt > ejectSeen;
+        internal bool ReplanDue(DateTime ejectAt) => Ejected(ejectAt) || Fails == ReplanAfterFails;
+        internal void EjectHandled(DateTime ejectAt) => ejectSeen = ejectAt;
+        internal bool ReplanLimitHit() => ++Replans > MaxReplans;   // counts this re-plan; true = stop instead
+        internal void Replanned() => Fails = 0;
+        internal void LegFailed() => Fails++;
+        internal bool TooManyFails => Fails > MaxFails;
+        internal void LegOk() { Fails = 0; Replans = 0; }
+    }
+
+    internal static void StopRoamIfOn(string why)
     {
         if (!RoamOn) return;
         try
@@ -271,13 +316,8 @@ public static partial class Program
         if (act is "status" or "") return RoamStatus();
         if (act is "off" or "stop") { if (!RoamOn) return "roam was not running"; StopRoamIfOn("command"); return "roam off"; }
         if (act is not ("on" or "start")) return "usage: roam on|off|status [radius_m=40]";
-        if (!LoggedIn) return "not logged in";
-        if (RoamOn) return "roam already running (" + RoamStatus() + ")";
-        if (WanderOn) return "wander is running; 'wander stop' first (roam is for non-home sims)";
-        if (InPeronaut) return "roam is for sims other than home (Peronaut); use wander there";
-        if (client.Self.SittingOn != 0) return "refused: sitting; stand first";
-        if (leash is { mode: "leash" }) return "refused: leashed; not starting a roam";
-        if (client.Self.SittingOn == 0 && !AoStateNow().active) return "refused: AO not active (" + AoStateNow().why + "); not starting a roam";
+        { var no = RoamStartRefusal(LoggedIn, RoamOn, RoamStatus, WanderOn, InPeronaut, LoggedIn && client.Self.SittingOn != 0,
+              leash is { mode: "leash" }, () => { var s = AoStateNow(); return (s.active, s.why); }); if (no != null) return no; }
         { var mr = MoverClaim(MoverKind.Roam, "roam on"); if (mr != null) return mr; }   // Movers.cs: stops a follow / walk / wander sit
         float radius = RoamDefaultRadiusM;
         if (a.Length > 1 && F(a[1], out var r)) radius = Math.Clamp(r, 10f, 200f);
@@ -698,25 +738,27 @@ public static partial class Program
         }
         var cands = Plan(roamStartGlobal, me0.Z, "start");
         if (cands.Count == 0) return;
-        DateTime ejectSeen = roamEjectAt;
+        var book = new RoamLegBook(roamEjectAt);
         Vector3 lastStop = me0; ulong lastStopHandle = startSim.Handle;
 
-        int fails = 0, legs = 0, replans = 0;
+        int legs = 0;
         var recent = new List<(double x, double y)> { roamStartGlobal };
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                if (!LoggedIn) { RoamLog("logged out; stopping"); return; }
-                if (client.Self.SittingOn != 0 && !roamOwnSit) { RoamLog("sat down; stopping"); return; }
-                if (followId != UUID.Zero) { RoamLog("follow started; stopping"); return; }
-                if (leash is { mode: "leash" }) { RoamLog("leashed; stopping"); return; }
-                var cur = client.Network.CurrentSim;
-                if (cur == null) { RoamLog("no region; stopping"); return; }
-                lock (roamLock)
+                bool loggedIn = LoggedIn;
+                var cur = loggedIn ? client.Network.CurrentSim : null;
+                bool inArea; lock (roamLock) inArea = cur != null && roamHandles.Contains(cur.Handle);
+                switch (RoamStopCheck(loggedIn, loggedIn && client.Self.SittingOn != 0, roamOwnSit, followId != UUID.Zero,
+                            leash is { mode: "leash" }, cur != null, inArea))
                 {
-                    if (!roamHandles.Contains(cur.Handle))
-                    { RoamLog($"left the roam area ({cur.Name}); stopping (teleport or unexpected region)"); return; }
+                    case RoamStop.LoggedOut: RoamLog("logged out; stopping"); return;
+                    case RoamStop.SatDown: RoamLog("sat down; stopping"); return;
+                    case RoamStop.Follow: RoamLog("follow started; stopping"); return;
+                    case RoamStop.Leashed: RoamLog("leashed; stopping"); return;
+                    case RoamStop.NoRegion: RoamLog("no region; stopping"); return;
+                    case RoamStop.LeftArea: RoamLog($"left the roam area ({cur.Name}); stopping (teleport or unexpected region)"); return;
                 }
 
                 if (roamPause == "chat")
@@ -732,23 +774,23 @@ public static partial class Program
                 // 17:20:41 Peacock Park live: "You have been ejected from this land." moved her 25 m and 11 m down; roam kept
                 // walking back toward the ejecting parcel (3 legs x 90 s timeouts). Now: that parcel is no-go for this roam
                 // and the spots are planned again from where she is. Two failed legs in a row also re-plan from here.
-                if (roamEjectAt > ejectSeen || fails == 2)
+                if (book.ReplanDue(roamEjectAt))
                 {
                     string why;
-                    if (roamEjectAt > ejectSeen)
+                    if (book.Ejected(roamEjectAt))
                     {
-                        ejectSeen = roamEjectAt;
+                        book.EjectHandled(roamEjectAt);
                         var lsim = client.Network.Simulators.ToArray().FirstOrDefault(x => x.Handle == lastStopHandle);
                         var par = lsim != null ? ParcelUnderMe(lsim, lastStop) : null;
                         if (lsim != null && par != null) lock (roamNoGo) roamNoGo.Add((lsim.Handle, par.LocalID));
                         why = $"ejected ('{roamEjectMsg}') from parcel '{par?.Name ?? "?"}' (local {par?.LocalID.ToString() ?? "?"}), no-go for this roam";
                     }
                     else why = "two failed legs in a row";
-                    if (++replans > 4) { RoamLog($"{why}; re-planned 4 times without a good leg; stopping"); return; }
+                    if (book.ReplanLimitHit()) { RoamLog($"{why}; re-planned {RoamLegBook.MaxReplans} times without a good leg; stopping"); return; }
                     RoamLog($"{why}; re-planning from {V(meNow)}");
                     cands = Plan(meG, meNow.Z, "re-plan");
                     if (cands.Count == 0) return;
-                    roamBad.Clear(); fails = 0;
+                    roamBad.Clear(); book.Replanned();
                 }
                 var avNow = new List<(double x, double y)>();
                 try { foreach (var a in Avatars()) if (a.av != null && a.av.ID != client.Self.AgentID && a.dist >= 0) avNow.Add(RoamToGlobal(cur.Handle, a.pos.X, a.pos.Y)); } catch { }
@@ -775,14 +817,14 @@ public static partial class Program
                 {
                     // WalkPath is crossing-aware (Neighbors.cs / WalkLeg). no flying (default). 2 m arrival: these are
                     // open spots, not seats (17:16 live: 1.8 m short of a blocked spot burned the 90 s leg timeout).
-                    ok = await WalkPath(new List<Vector3> { destLocal }, ct, lastTol: 2.0f);
+                    ok = await WalkPath(new List<Vector3> { destLocal }, ct, lastTol: RoamArriveTolM);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { RoamLog("walk error: " + ex.Message); ok = false; }
                 if (ct.IsCancellationRequested) return;
                 if (!ok)
                 {
-                    fails++;
+                    book.LegFailed();
                     roamBad.Add(key);
                     RoamLog($"stuck or failed at {V(client.Self.SimPosition)}; stepping back, marking this target bad ({key})");
                     try
@@ -796,10 +838,10 @@ public static partial class Program
                         try { client.Self.AutoPilotCancel(); } catch { }
                     }
                     catch { }
-                    if (fails > 12) { RoamLog("too many failed legs; stopping"); return; }
+                    if (book.TooManyFails) { RoamLog("too many failed legs; stopping"); return; }
                     continue;
                 }
-                fails = 0; replans = 0;
+                book.LegOk();
                 recent.Add((pick.X, pick.Y)); if (recent.Count > 12) recent.RemoveAt(0);
                 int pause = roamRnd.Next(RoamPauseMinS, RoamPauseMaxS + 1);
                 var arrived = client.Self.SimPosition;

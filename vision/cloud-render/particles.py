@@ -36,7 +36,9 @@ def snapshot(ps, pos, seed=0):
         d = np.stack([np.sin(th) * np.cos(ph), np.sin(th) * np.sin(ph), np.cos(th)], 1)
     else:   # explode: any direction
         d = rng.normal(size=(n, 3)); d /= np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-9)
-    sp = rng.uniform(float(ps.get("burst_speed_min") or 0), float(ps.get("burst_speed_max") or 0), n)
+    lo, hi = float(ps.get("burst_speed_min") or 0), float(ps.get("burst_speed_max") or 0)
+    if hi < lo: lo, hi = hi, lo
+    sp = rng.uniform(lo, hi, n)
     acc = _v(ps.get("part_acceleration"))
     p = _v(pos) + d * (float(ps.get("burst_radius") or 0) + (sp * age)[:, None]) + acc * (age ** 2 / 2)[:, None]
     fl = int(ps.get("part_data_flags") or 0)

@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TC="$ROOT/textclient"
 DEST="$TC/src-libremetaverse"
+# 2026-11-24: master cf64363a (3 commits past 56af5f6d). PrimMesher: restore missing bottom cap,
+# degrees-to-radians twist, HasProfileCut/HasHollow, numPrimFaces (issue #222 parts 1-3);
+# hollow-box inner wall is face 5 not 6 (part 4). Also seeds group/conference chat rosters
+# from session-start agent_info and stops mute-only updates wiping moderator flags. All 7
+# local patches still apply, including outfit-send (#218 still open).
 # 2026-11-23 evening: master 56af5f6d (5 commits past 3ee812f5). Dropped object-cache.patch: Cinder closed #219 and
 # landed the cache in LibreMetaverse.Caching as IObjectCacheProvider; the client assigns
 # Objects.CacheProvider = new ObjectDiskCache(dir, cap). Also landed (behavior unchanged for us): IAssetCacheProvider
@@ -17,7 +22,7 @@ DEST="$TC/src-libremetaverse"
 # compressed-particles (#205), udp-rcvbuf (#211), crossing-early-complete + mesh-texdomain backports, hosting/maintenance/zlogger
 # package bumps. multisim rebased onto upstream AgentManager.IsSelfIn (d1d0a781, replaces our self-local-id checks).
 # 2026-11-09: v3.3.0 (was v3.1.6 1844571e); seed-retry, messagepack-security and corej2k dropped then.
-PIN="${LIBREMETAVERSE_SHA:-56af5f6d8fa4453bd99f7a6df6507af718ccf02c}"
+PIN="${LIBREMETAVERSE_SHA:-cf64363a8a6c3775f9eacfc7c5502a2e2e099dd0}"
 REPO="${LIBREMETAVERSE_REPO:-https://github.com/cinderblocks/libremetaverse.git}"
 
 if [[ -d "$DEST/.git" ]]; then

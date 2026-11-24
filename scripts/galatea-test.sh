@@ -4,7 +4,7 @@
 #   galatea-test.sh [--full | --impact | --csharp | --python] [--no-build] [--tree DIR]
 #
 #   --full     (default) build-all.sh --tests (text client + MCP -> app-staging, xUnit project), scene-mesher build +
-#              --lod/--skin/--mem-selftest, xUnit suite (dotnet test --no-build), pytest: what CI runs
+#              --lod/--skin/--mem/--prim-selftest, xUnit suite (dotnet test --no-build), pytest: what CI runs
 #   --impact   scripts/impact_tests.py: only the tests the diff vs origin/main touches (falls back to full when unsure)
 #   --csharp   build + mesher selftests + xUnit   --python   pytest only   --no-build   skip build-all.sh (full/csharp)
 #   --tree     working tree (default: the git toplevel of the current directory)
@@ -44,10 +44,10 @@ if [[ $MODE == full || $MODE == csharp ]]; then
     M=vision/scene-mesher/SceneMesher.csproj; LMVP=-p:LMV="$TREE/textclient/src-libremetaverse"
     if dotnet build "$M" -c Release "$LMVP" --nologo -v q >"$LOGS/mesher.log" 2>&1; then
       MD=$(dotnet msbuild "$M" -nologo -getProperty:TargetDir -p:Configuration=Release "$LMVP" 2>/dev/null | tail -1); m=0
-      for st in --lod-selftest --skin-selftest --mem-selftest; do
+      for st in --lod-selftest --skin-selftest --mem-selftest --prim-selftest; do
         dotnet "${MD}SceneMesher.dll" "$st" >>"$LOGS/mesher.log" 2>&1 || { m=1; echo "  mesher $st failed"; }
       done
-      if (( m )); then rc=1; echo "mesher selftests: FAIL (log $LOGS/mesher.log)"; else echo "mesher selftests: PASS (lod, skin, mem)"; fi
+      if (( m )); then rc=1; echo "mesher selftests: FAIL (log $LOGS/mesher.log)"; else echo "mesher selftests: PASS (lod, skin, mem, prim)"; fi
     else rc=1; echo "mesher selftests: FAIL (build)"; grep -E ': error ' "$LOGS/mesher.log" | sort -u | head -10; fi
   else echo "mesher selftests: SKIP (no textclient/src-libremetaverse; run build-all.sh first)"; fi
   export GALATAY_TEXT_EXE="$TREE/textclient/app-staging/galatay-text"

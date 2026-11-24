@@ -55,7 +55,7 @@ You can also run one selftest directly:
 
 ```bash
 dotnet build vision/scene-mesher/SceneMesher.csproj -c Release -p:LMV="$PWD/textclient/src-libremetaverse"
-for t in --lod-selftest --skin-selftest --mem-selftest; do dotnet vision/scene-mesher/bin/Release/net10.0/SceneMesher.dll $t; done
+for t in --lod-selftest --skin-selftest --mem-selftest --prim-selftest; do dotnet vision/scene-mesher/bin/Release/net10.0/SceneMesher.dll $t; done
 ```
 
 ### 5. Python tests (pytest)

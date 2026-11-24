@@ -6,16 +6,22 @@
 #      be in galatay-text/GalatayText.csproj, and every Include must point to an existing file. Mismatch -> exit 3.
 #   2. dotnet build galatay-text -> textclient/app-staging      (text client; deploy = cp+mv galatay-text.dll/.pdb into app/)
 #   3. dotnet build galatay-mcp  -> textclient/mcp-app-staging  (MCP connector; never writes into the live mcp-app/)
+#   2026-11-23: each project builds into its normal bin/Release output and that output is copied into *-staging (cp -a,
+#   byte-identical files). Building with `-o <staging>` changed the output path of every referenced project, including
+#   the LibreMetaverse source generators, so the next build without -o (the xUnit project's, the MCP connector's)
+#   recompiled LibreMetaverse and the whole text client again: about 20 s locally, 25 s in CI, per extra build.
 # Options: --check-only   only the source-list check
+#          --tests        also build GalatayText.Tests (reuses the build above), so `dotnet test --no-build` can run next
 #          --stage-mcp    after a good build, copy mcp-app-staging to mcp-app-next (+READY) for galatay-mcp.sh to swap in
 #                         at the connector's next launch (the running connector is never touched)
-# Exit: 0 ok, 3 source-list mismatch, 4 text client build failed, 5 MCP build failed, 6 a staged LibreMetaverse.dll is unpatched (check-lmv-patches.sh).
+# Exit: 0 ok, 3 source-list mismatch, 4 text client build failed, 5 MCP build failed, 6 a staged LibreMetaverse.dll is unpatched (check-lmv-patches.sh),
+#       7 the xUnit project failed to build (--tests).
 set -uo pipefail
 # GT_TEXTCLIENT_ROOT overrides; otherwise the directory containing this script (repo or /home/box/viewers/textclient).
 TC="${GT_TEXTCLIENT_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
 export PATH="/home/box/.dotnet:$PATH" DOTNET_ROOT="${DOTNET_ROOT:-/home/box/.dotnet}" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
-CHECK_ONLY=0; STAGE=0
-for a in "$@"; do case "$a" in --check-only) CHECK_ONLY=1;; --stage-mcp) STAGE=1;; *) echo "usage: $0 [--check-only] [--stage-mcp]"; exit 2;; esac; done
+CHECK_ONLY=0; STAGE=0; TESTS=0
+for a in "$@"; do case "$a" in --check-only) CHECK_ONLY=1;; --stage-mcp) STAGE=1;; --tests) TESTS=1;; *) echo "usage: $0 [--check-only] [--stage-mcp] [--tests]"; exit 2;; esac; done
 
 python3 - "$TC" <<'PY' || exit 3
 import sys, os, re, glob
@@ -40,14 +46,19 @@ print(f'source-list check OK: {len(text_cs)} shared galatay-text/*.cs all in Gal
 PY
 (( CHECK_ONLY )) && exit 0
 
-build() {  # dir outdir label
-  local out; out=$(cd "$TC/$1" && dotnet build -c Release -o "$TC/$2" 2>&1); local rc=$?
+build() {  # dir outdir(or "") label
+  local out; out=$(cd "$TC/$1" && dotnet build -c Release 2>&1); local rc=$?
   local errs warns; errs=$(grep -cE ': error ' <<<"$out"); warns=$(grep -E ': warning ' <<<"$out" | sort -u | wc -l)
   if (( rc != 0 || errs > 0 )); then echo "$3 build FAILED (rc $rc):"; grep -E ': error ' <<<"$out" | sort -u | head -30; return 1; fi
+  [[ -z $2 ]] && { echo "$3 build OK (0 errors, $warns distinct warnings)"; return 0; }
+  local td; td=$(cd "$TC/$1" && dotnet msbuild -nologo -getProperty:TargetDir -p:Configuration=Release 2>/dev/null | tail -1)
+  [[ -n $td && -d $td ]] || { echo "$3 build: cannot find its output dir ($td)"; return 1; }
+  mkdir -p "$TC/$2" && cp -a "$td". "$TC/$2/" || { echo "$3 build: copying $td to $TC/$2 failed"; return 1; }
   echo "$3 build OK -> $TC/$2 (0 errors, $warns distinct warnings)"
 }
 build galatay-text app-staging "text client" || exit 4
 build galatay-mcp mcp-app-staging "MCP connector" || exit 5
+if (( TESTS )); then build GalatayText.Tests "" "xUnit project" || exit 7; fi
 "$TC/check-lmv-patches.sh" "$TC/app-staging" "$TC/mcp-app-staging" || { echo "refusing: a staged LibreMetaverse.dll lacks the galatea patches (run scripts/ci-setup-libremetaverse.sh)"; exit 6; }
 if (( STAGE )); then
   rm -rf "$TC/mcp-app-next.tmp" && cp -a "$TC/mcp-app-staging" "$TC/mcp-app-next.tmp" \

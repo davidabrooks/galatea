@@ -1,8 +1,11 @@
 # Testing Galatea
 
-Automated tests are meant to run on every pull request and every push to `main` via GitHub Actions.
+Automated tests run on every pull request and every push to `main` via GitHub Actions:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) (two jobs: C# and Python). Locally, `scripts/galatea-test.sh` runs
+the same steps (see below and `docs/box-scripts.md`).
 
-The workflow file is checked in as [`docs/ci/github-actions-ci.yml`](docs/ci/github-actions-ci.yml). Copy it to `.github/workflows/ci.yml` once the GitHub token has the `workflow` scope (OAuth apps need that scope to create workflow files). Until then, run the suite locally as below.
+Size (2026-11-23): about 2,060 xUnit tests and 420 pytest tests. Full local run on the box: about 45 s
+(build 13 s, mesher selftests, xUnit 10 s, pytest 7 s in parallel); it was 104 s before the build and parallel changes.
 
 **Nothing in CI logs in to Second Life or needs secrets.**
 
@@ -19,17 +22,23 @@ Clones [cinderblocks/libremetaverse](https://github.com/cinderblocks/libremetave
 ### 2. Build the text client
 
 ```bash
-bash textclient/build-all.sh
+bash textclient/build-all.sh --tests
 ```
 
-Produces `textclient/app-staging/galatay-text`.
+Produces `textclient/app-staging/galatay-text` (and `mcp-app-staging/`); `--tests` also builds the xUnit project. Each
+project builds into its normal `bin/Release` output, which is then copied into `*-staging`: an `-o` output override made
+every later build recompile LibreMetaverse and the client again (about 20 s each).
 
 ### 3. C# tests (xUnit wrapping offline selftests)
 
 ```bash
 export GALATAY_TEXT_EXE="$PWD/textclient/app-staging/galatay-text"
-dotnet test textclient/GalatayText.Tests/GalatayText.Tests.csproj -c Release
+dotnet test textclient/GalatayText.Tests/GalatayText.Tests.csproj -c Release --no-build   # drop --no-build without step 2's --tests
 ```
+
+xUnit runs test classes in parallel. Classes that change process-wide state (environment variables, `Program.*Override`
+hooks, static fields such as the running roam) carry `[Collection(ProcessStateCollection.Name)]`
+(`GalatayText.Tests/ProcessStateCollection.cs`): that collection never runs alongside anything else. Add new such classes to it.
 
 These invoke the same `--*-selftest` entry points as the binary (pose, pose-keeper, chat-guard, imguard, attach-move, detach-cof, follow-door, exp, worn, voice-wake, bugfix). No login.
 
@@ -42,15 +51,33 @@ You can also run one selftest directly:
 # …
 ```
 
-### 4. Python tests (pytest)
+### 4. scene-mesher selftests
 
 ```bash
-pip install -r requirements-ci.txt
-pytest -q
+dotnet build vision/scene-mesher/SceneMesher.csproj -c Release -p:LMV="$PWD/textclient/src-libremetaverse"
+for t in --lod-selftest --skin-selftest --mem-selftest; do dotnet vision/scene-mesher/bin/Release/net10.0/SceneMesher.dll $t; done
 ```
 
-Covers `vision/tests` (look mesher args, optional crowd placeholders) and `textclient/galatay-voice/tests` (SDP munge / fake server smoke).  
-**Skipped in CI:** full voice WebRTC+whisper (`--voice-selftest` / `fake_voice_server.py --drive`) and crowd-placeholder mesher runs that need a large export fixture + SceneMesher.
+### 5. Python tests (pytest)
+
+```bash
+pip install -r requirements-ci.txt     # includes pytest-xdist
+pytest -q -n auto                      # parallel; plain `pytest -q` runs serially
+```
+
+Covers `vision/tests` (look mesher args, crowd placeholders on a small synthetic export in
+`vision/tests/fixtures/crowd-placeholders/`, which runs wherever SceneMesher is built) and `textclient/galatay-voice/tests`
+(SDP munge / fake server smoke). Tests must not depend on order or shared files, since xdist runs them in several processes.
+
+### Slow tier (opt-in)
+
+Tests that need the real voice venv and speech model (minutes each) are marked `@pytest.mark.slow` (pytest, `conftest.py`)
+or `[SlowFact]` (xUnit, `GalatayText.Tests/SlowFactAttribute.cs`). They are skipped unless `GALATEA_SLOW_TESTS=1`
+(`pytest --run-slow` also works). Neither CI nor the default `galatea-test.sh` run them:
+
+```bash
+GALATEA_SLOW_TESTS=1 scripts/galatea-test.sh
+```
 
 One command for all of the above on the box: `scripts/galatea-test.sh` (see `docs/box-scripts.md`).
 
@@ -63,8 +90,7 @@ python3 scripts/impact_tests.py --full        # everything CI runs
 python3 scripts/impact_tests.py --commit <sha> --dry-run   # analyse a past commit or merge
 ```
 
-The full xUnit suite is ~600 tests and a full local run (build + tests) takes over a minute; most changes touch a handful of
-them. The script tokenises every C# file under `textclient/`, splits it into members, picks the members whose lines the diff
+The full xUnit suite is ~2,000 tests and a full local run takes about 45 s; most changes touch a handful of them. The script tokenises every C# file under `textclient/`, splits it into members, picks the members whose lines the diff
 changed, follows who uses them (names, narrowed by `Type.member`, private access, declared receiver type and call arity)
 and runs only those `[Fact]`/`[Theory]` methods with `dotnet test --filter`. `--*-selftest` flags in `Program.Main` are
 tracked too, so the `SelftestCliTests` theory runs only the flags whose code changed. Routes JSON, scripts and Python files map to the code and tests that
@@ -98,12 +124,20 @@ a base type is not followed). Tests for the mapper: `textclient/tests/test_impac
 ## What must never run in CI
 
 - Second Life login / any use of `box-secrets.json` or account passwords  
-- Downloading the faster-whisper speech model (mark those tests `Skip`)  
+- Downloading the faster-whisper speech model (mark those tests slow: `@pytest.mark.slow` / `[SlowFact]`)  
 - Live webhook POSTs to production URLs  
 
 ## On the box (Galatea live client)
 
 Deploy is unchanged: build with `textclient/build-all.sh` (or the viewers copy), then cp+mv dlls into `app/` and `text-galatay.sh` stop/start. Tests do not touch the live session.
+
+## Writing tests that survive tuning
+
+Assert behaviour, not tuning numbers. Durations, odds, weights, radii, margins and tolerances come from the `Program`
+constants (e.g. `Program.RoamEdgeMarginM`, `Program.RoamArriveTolM`, `Program.RoamLegBook.MaxReplans`), so retuning them
+does not break a test. `RoamLoopTests` is the pattern: it pins the roam loop's invariants (eject re-plans once, stops on
+logout/sit/follow/leash/teleport, gives up after the re-plan limit, never keeps an adult pose) and reads every number.
+Wait for conditions by polling (or a fake clock), not fixed sleeps.
 
 ## Connector proxy (restart without remove + re-add)
 

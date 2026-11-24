@@ -19,6 +19,11 @@ def test_not_applied():
     assert gh(None, {"sun_dir": [0, 0.8, 0.6]}, True, None) is None
 
 
+def test_shared_day_cycle_is_not_replaced_by_golden_hour():
+    # a look-env export with a usable shared day cycle keeps that cycle, even after sunset
+    assert ns["golden_hour_env"](None, {**ENV, "source": "shared"}, True, None) is None
+
+
 def _bin(tri_z):
     P = [(-5, -5, tri_z), (5, -5, tri_z), (0, 5, tri_z)]
     raw = b"".join(struct.pack("3f", *p) for p in P) + b"\0" * (3 * 32 - 36) + struct.pack("3I", 0, 1, 2)

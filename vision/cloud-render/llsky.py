@@ -137,19 +137,21 @@ def _water_from_frame(f):
 
 def track_keys(dc, track_i, frac):
     """The two day-cycle keyframes around `frac` (0..1) on track `track_i`, and the blend weight toward the second.
-    Returns (frame_a, frame_b, weight), or None when the track is missing or empty."""
+    Returns (frame_a, frame_b, weight, meta), or None when the track is missing or empty.
+    A missing key_keyframe is treated as 0 (Linden Region (legacy) midnight keys omit it)."""
     try:
-        keys = sorted(((k.get("key_keyframe") or 0.0), dc["frames"][k["key_name"]]) for k in dc["tracks"][track_i])
+        keys = sorted(((k.get("key_keyframe") or 0.0), k.get("key_name"), dc["frames"][k["key_name"]]) for k in dc["tracks"][track_i])
     except (KeyError, TypeError, IndexError):
         return None
     if not keys:
         return None
     if len(keys) == 1:
-        return keys[0][1], keys[0][1], 0.0
-    i = max(j for j, (t, _) in enumerate(keys) if t <= frac)
-    (t0, a), (t1, b) = keys[i], keys[(i + 1) % len(keys)]
+        t0, n0, a = keys[0]
+        return a, a, 0.0, {"track": track_i, "name_a": n0, "name_b": n0, "t0": t0, "t1": t0}
+    i = max(j for j, (t, _, _) in enumerate(keys) if t <= frac)
+    (t0, n0, a), (t1, n1, b) = keys[i], keys[(i + 1) % len(keys)]
     w = (frac - t0) / (((t1 - t0) % 1.0) or 1.0)
-    return a, b, w
+    return a, b, w, {"track": track_i, "name_a": n0, "name_b": n1, "t0": t0, "t1": t1}
 
 def water_of(doc, frac=0.0):
     """the day cycle's water track (track 0) at `frac`, blended between the two keys around that time."""
@@ -160,7 +162,7 @@ def water_of(doc, frac=0.0):
     pair = track_keys(dc, 0, frac)
     if not pair:
         return None
-    a, b, w = pair
+    a, b, w = pair[0], pair[1], pair[2]
     wa, wb = _water_from_frame(a), _water_from_frame(b)
     if not wa: return wb
     if not wb or w == 0.0 or wa == wb: return wa
@@ -237,7 +239,7 @@ def env_at(doc, alt=None):
         pair = track_keys(dc, sky_track(doc, dc, alt), frac)
         if not pair:
             return None
-        a, b, w = pair
+        a, b, w, meta = pair
     except (KeyError, TypeError, ValueError, IndexError):
         return None
     p = mix(params(a), params(b), w)
@@ -246,9 +248,27 @@ def env_at(doc, alt=None):
     hz = lambda f: z0(f.get("legacy_haze", {}).get("blue_horizon", [0.3, 0.4, 0.6]))
     out = build_env(p, sun, moon, frac, at, [x + (y - x) * w for x, y in zip(hz(a), hz(b))][:3])
     out["source"] = "shared"
+    out["track"] = meta["track"]
+    out["blend"] = {"a": meta["name_a"], "a_at": meta["t0"], "b": meta["name_b"], "b_at": meta["t1"], "w": w}
     wt = water_of(doc, frac)
     if wt: out["water"] = wt
     return out
+
+def env_log_line(env):
+    """One line for the photo hd log: which environment was used, and for a shared cycle which frames were blended."""
+    if not env:
+        return "photo hd env: none"
+    sun = env.get("sun_dir") or [0, 0, 1]
+    elev = math.degrees(math.asin(max(-1.0, min(1.0, float(sun[2])))))
+    parts = [f"photo hd env: source={env.get('source') or '?'}", f"sun_elev={elev:.2f} deg"]
+    if env.get("frac") is not None:
+        parts.append(f"frac={float(env['frac']):.4f}")
+    if env.get("track") is not None:
+        parts.append(f"track={env['track']}")
+    b = env.get("blend") or {}
+    if b.get("a") is not None:
+        parts.append("frames=%s@%g + %s@%g w=%.3f" % (b.get("a"), b.get("a_at") or 0, b.get("b"), b.get("b_at") or 0, float(b.get("w") or 0)))
+    return " ".join(parts)
 
 # ---- named sky presets (photo hd ... sunset): the viewer library's fixed skies, overriding the shared environment ----
 _PRESETS = None

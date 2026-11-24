@@ -343,12 +343,15 @@ public static partial class Program
 
     static string StartWalk(string what, Func<CancellationToken, Task<string>> job, bool? fly = null)
     {
+        var refused = MoverClaim(MoverKind.Walk, what);   // Movers.cs: one mover at a time (stops a running walk too)
+        if (refused != null) return refused;
         if (walkTask != null && !walkTask.IsCompleted) return "a walk is already running (walk_stop first)";
         walkCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         var ct = walkCts.Token;
         walkState = what + ": starting";
         walkTask = Task.Run(async () =>
         {
+            moverSelf.Value = MoverKind.Walk;
             walkFlyOverride = fly;
             try { var r = await job(ct); walkState = $"done: {r}"; Log("walk", $"{what} finished: {r}"); }
             catch (OperationCanceledException) { client.Self.AutoPilotCancel(); walkState = "cancelled"; Log("walk", $"{what} cancelled"); }

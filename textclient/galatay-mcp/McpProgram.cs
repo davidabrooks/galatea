@@ -292,8 +292,13 @@ public sealed class SlTools
     [McpServerTool(Name = "rlv_log"), Description("Last n lines of the RLV log (/workspace/secondlife/rlv/rlv-log.md): every @ command my worn items sent and what I did.")]
     public static Task<string> RlvLogTail(int n = 30) => R("rlv log " + Math.Clamp(n, 1, 200));
 
-    [McpServerTool(Name = "outfit_wear"), Description("Change into a saved outfit from My Outfits by name (the always-wear collar stays on; Android* outfits also turn the collar's Stealth on and hide the EvoX ears; a human outfit shows the ears again). During login, this wins over the daily pick.")]
-    public static Task<string> OutfitWear(string name) => R("outfit wear " + Clean(name));
+    [McpServerTool(Name = "outfit_wear"), Description("START a change into a saved outfit from My Outfits by name and return at once (the bedroom walk + swap can take a minute). The always-wear collar stays on; Android* outfits also turn the collar's Stealth on and hide the EvoX ears; a human outfit shows the ears again. During login, this wins over the daily pick. Progress and result: status -> outfit_change {name, state: starting|walking|swapping|post-steps|done|failed, started, finished, summary}, plus [outfit-job] events in poll_events. A second call while a change runs is refused (ok=false) and names the running one.")]
+    public static async Task<string> OutfitWear(string name)
+    {
+        var t = (await Core.Run("outfit start " + Clean(name))).TrimEnd();
+        bool started = t.StartsWith("started outfit change");
+        return Json(new { ok = started, started, result = t, outfit_change = Core.OutfitJobStatus() });
+    }
 
     [McpServerTool(Name = "idle_pose"), Description("Idle pose (IdlePose.cs): action status | on | off | now [collar|groundsit] | stop | idle <seconds> | rotate on|off (pause automatic pose switching) | aomap <face> <u,v> (map the Martha AO 'force sitg' button). Collar visible or a visible leash -> a random collar pose (cutie/coy/kneel/nadu/pretty/shy/tower), cleared with the Pose menu's STOP before any movement; collar hidden and no visible leash -> AO ground sit.")]
     public static Task<string> IdlePose([Description("status | on | off | now [collar|groundsit] | stop | idle <s> | aomap <face> <u,v>")] string action = "status") => R("idlepose " + Clean(action));

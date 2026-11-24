@@ -72,6 +72,7 @@ public static partial class Program
         float quiet = level.Count == 0 ? 999f : level.Min(t => HDist(t.pos, p.Position));
         var cand = new SeatCand(p, p.Properties?.Name ?? info.Name, Vector3.Distance(p.Position, client.Self.SimPosition), d, quiet, qpt);
 
+        { var mr = MoverClaim(MoverKind.WanderSit, $"wander sit '{info.Name}'"); if (mr != null) { WLog("wander sit " + mr); return mr; } }   // Movers.cs: e.g. stops a follow (16:55 fight)
         bool wasOn = WanderOn; var prevPause = wanderPause;
         if (wasOn) { StopWander("wander sit visit", clearFlag: false); try { await Task.WhenAny(wanderTask, Task.Delay(5000)); } catch { } }
         wanderPause = null;
@@ -79,6 +80,7 @@ public static partial class Program
         WLog($"WANDER SIT: one visit to '{info.Name}' {info.Id}{(info.Special != null ? ", special " + info.Special : "")} (wander was {(wasOn ? "on" : "off")})");
         wSitTask = Task.Run(async () =>
         {
+            moverSelf.Value = MoverKind.WanderSit;
             bool ok = false;
             try { if (client.Self.SittingOn != 0) { await EnsureStandingForWalk(ct); } ok = await HomeRandomSit(g, ct, force: cand, onRequest: true); }
             catch (OperationCanceledException) { WLog("wander sit visit cancelled"); }

@@ -784,6 +784,7 @@ public static partial class Program
             pending_lure = pendingLure?.name, queued_events = Events.Count,
             rss_mb = proc.WorkingSet64 / 1048576, objects_known = sim?.ObjectsPrimitives.Count, avatars_known = sim?.ObjectsAvatars.Count,
             neighbor_regions = ViewSims().Skip(1).Select(v => v.sim.Name).ToArray(),
+            outfit_change = OutfitJobStatus(),   // OutfitJob.cs
             scripts_allowed = ScriptsAllowedValue(scriptsState, sim?.Handle ?? 0), scripts_detail = ScriptsDetail()   // ScriptsWatch.cs
         };
     }
@@ -2031,7 +2032,7 @@ public static partial class Program
             case "sit":
             {
                 if (!UUID.TryParse(rest, out var id)) return "usage: sit <object uuid>";
-                followId = UUID.Zero; client.Self.AutoPilotCancel();
+                MoverClaim(MoverKind.Sit, "sit " + id); client.Self.AutoPilotCancel();   // Movers.cs (a sit is never refused)
                 await DetachSeatOffBeforeSit(); // AO off before sitting (attach-block.txt)
                 var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 void H(object s, AvatarSitResponseEventArgs e) => tcs.TrySetResult(true);
@@ -2154,6 +2155,8 @@ public static partial class Program
             case "kiss": return KissCmd(rest);
             case "hands": return await HandsCmd(a);
             case "seatadjust": return await SeatAdjustCmd(a);
+            case "outfit" when a.Length >= 1 && a[0] == "start": return OutfitJobStart(a[1..]);   // OutfitJob.cs: MCP outfit_wear, returns at once
+            case "outfit" when a.Length >= 2 && a[0] == "wear" && OutfitWearBlockedByJob() is string ob: return ob;   // OutfitJob.cs: never two swaps
             case "outfit" when a.Length >= 2 && a[0] == "wear":
             {
                 bool force = a.Any(x => x.Equals("force", StringComparison.OrdinalIgnoreCase)); a = a.Where(x => !x.Equals("force", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -2187,7 +2190,7 @@ public static partial class Program
             {
                 if (client.Self.SittingOn == 0 && !AoStateNow().active) { AoLog($"moveto REFUSED: {AoStateNow().why}"); return "refused: AO not active (" + AoStateNow().why + "); not walking"; }
                 if (a.Length != 3 || !F(a[0], out var x) || !F(a[1], out var y) || !F(a[2], out var z)) return "usage: moveto <x> <y> <z>  (region-local)";
-                followId = UUID.Zero;
+                { var mr = MoverClaim(MoverKind.Walk, $"moveto {x:F0},{y:F0},{z:F0}"); if (mr != null) return mr; }   // Movers.cs
                 if (!SimGeo.InRegion(new Vector3(x, y, z)) && client.Self.SittingOn == 0)   // across a border: walk it with crossing-aware legs (Neighbors.cs)
                     return await NavCmds("walk_to", $"{x.ToString(CultureInfo.InvariantCulture)} {y.ToString(CultureInfo.InvariantCulture)} {z.ToString(CultureInfo.InvariantCulture)}", new[] { x.ToString(CultureInfo.InvariantCulture), y.ToString(CultureInfo.InvariantCulture), z.ToString(CultureInfo.InvariantCulture) });
                 {   // NavPlan.cs: on a nav grid with the straight line blocked, walk the planned route (walls, doors) instead
@@ -2204,6 +2207,7 @@ public static partial class Program
             {
                 if (a.Length < 1 || !F(a[0], out var m)) return "usage: walk <meters>";
                 if (client.Self.SittingOn != 0 || !AoStateNow().active) { AoLog($"walk REFUSED: {AoStateNow().why}"); return "refused: AO not active or seated (" + AoStateNow().why + "); not walking"; }
+                { var mr = MoverClaim(MoverKind.Walk, $"walk {m} m"); if (mr != null) return mr; }   // Movers.cs
                 var d0 = Vector3.UnitX * client.Self.SimRotation; var dir = new Vector3(d0.X, d0.Y, 0f);
                 if (dir.Length() < 0.01f) dir = Vector3.UnitX; dir = Vector3.Normalize(dir);
                 var tgt = client.Self.SimPosition + dir * m;
@@ -2250,8 +2254,7 @@ public static partial class Program
                     if (block != null) { Log("robe", $"WARNING teleport to {region} {x},{y},{z} {block} ({robeHow})"); return block; }
                     if (robeOn && tpForce && !region.Equals(HomeSeatRegion, StringComparison.OrdinalIgnoreCase)) Log("robe", $"WARNING forced teleport to {region} while the robe is worn ({robeHow})");
                 }
-                followId = UUID.Zero;
-                StopRoamIfOn("teleport");
+                MoverClaim(MoverKind.Teleport, $"teleport to {region}");   // Movers.cs: stops follow, roam, walk, wander sit
                 var dest = new Vector3(x, y, z);
                 bool sameRegion = region.Equals(client.Network.CurrentSim?.Name, StringComparison.OrdinalIgnoreCase);
                 var ok = await client.Self.TeleportAsync(region, dest);
@@ -2265,6 +2268,7 @@ public static partial class Program
                     var block = RobeTpBlock("home (Firestorm Orientation)", robeOn, rest.Equals("force", StringComparison.OrdinalIgnoreCase));
                     if (block != null) { Log("robe", $"WARNING go home {block} ({robeHow})"); return block; }
                 }
+                MoverClaim(MoverKind.Teleport, "go home");   // Movers.cs
                 var ok = await client.Self.GoHomeAsync();
                 return ok ? $"home: {client.Network.CurrentSim?.Name}" : $"go home failed: {client.Self.TeleportMessage}";
             }

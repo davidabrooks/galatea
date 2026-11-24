@@ -117,6 +117,7 @@ public static partial class Program
             || !float.TryParse(p[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var y)
             || !float.TryParse(p[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z)) return "bad tpto";
         if (rlv.Has("tploc")) return "refused: @tploc";
+        MoverClaim(MoverKind.Teleport, "rlv @tpto", forced: true);   // Movers.cs
         uint gx = (uint)(Math.Floor(x / 256) * 256), gy = (uint)(Math.Floor(y / 256) * 256);
         client.Self.RequestTeleport(Utils.UIntsToLong(gx, gy), new Vector3(x - gx, y - gy, z));
         return $"teleport requested to {x:F0}/{y:F0}/{z:F0}";

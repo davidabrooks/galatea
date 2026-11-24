@@ -197,14 +197,17 @@ public static partial class Program
     // pure (tested): first button whose label contains any of the words (case-insensitive), null = none
     internal static string MenuPick(IEnumerable<string> buttons, params string[] words) =>
         (buttons ?? Array.Empty<string>()).FirstOrDefault(b => b != null && words.Any(w => b.Contains(w, StringComparison.OrdinalIgnoreCase)));
+    /// <summary>The post-swap steps of the last outfit change (EvoX ears + Android collar Stealth); OutfitJob.cs waits for them.</summary>
+    internal static volatile Task outfitPostSteps = Task.CompletedTask;
     static void CollarStealthAfterOutfit(string outfit)
     {
         EvoxEarsAfterOutfit(outfit);
-        if (!IsAndroidOutfit(outfit)) return;
-        _ = Task.Run(async () =>
+        var ears = evoxEarsAfterTask;
+        if (!IsAndroidOutfit(outfit)) { outfitPostSteps = ears; return; }
+        outfitPostSteps = Task.WhenAll(ears, Task.Run(async () =>
         {
             try { await Task.Delay(6000); var r = await CollarStealthOn("outfit " + outfit); if (!CollarSkippedForScripts(r)) Log("collar", $"android outfit '{outfit}': " + r); }
             catch (Exception ex) { Log("collar", "stealth after outfit failed: " + ex.GetBaseException().Message); }
-        });
+        }));
     }
 }

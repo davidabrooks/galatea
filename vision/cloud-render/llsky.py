@@ -76,24 +76,104 @@ def sky_rgb(p, light_y, sun_up, glow_factor, elev_deg, light_dot=0.0):
     col = [c + (b - c) * (1 - math.sqrt(math.sqrt(t))) for c, b, t in zip(col, below, tr)]
     return [min(5.0, max(0.0, 2 * c)) for c in col]
 
-def day_frac(doc):
-    """LL: (now + day_offset) % day_length / day_length at the export time"""
-    e = doc["environment"]["environment"]
-    at = datetime.datetime.fromisoformat(doc["exported_at"][:26] + doc["exported_at"][-6:]).timestamp()
-    return ((at + e["day_offset"]) % e["day_length"]) / e["day_length"], at
-
-def water_of(doc):
-    """the day cycle's water track (track 0; EEP water frames have no time of day in practice: first key) -> render dict"""
-    try:
-        dc = doc["environment"]["environment"]["day_cycle"]; f = dc["frames"][dc["tracks"][0][0]["key_name"]]
-    except (KeyError, TypeError, IndexError):
+def eep_inner(doc):
+    """The ExtEnvironment `environment` map (day_cycle, day_length, day_offset), or None if the block is
+    missing or an error / noenv string (`skipped: noenv`, `error: ...`)."""
+    env = doc.get("environment") if isinstance(doc, dict) else None
+    if not isinstance(env, dict):
         return None
-    if f.get("type") != "water": return None
+    inner = env.get("environment")
+    return inner if isinstance(inner, dict) else None
+
+def _parse_iso(s):
+    """Unix seconds from an ISO-8601 timestamp (exported_at / exported_at_utc, including 7-digit fractions and Z)."""
+    s = str(s).strip()
+    if s.endswith("Z") or s.endswith("z"):
+        s = s[:-1] + "+00:00"
+    # 2026-11-23T18:00:00.7634633-08:00: fromisoformat accepts at most 6 fractional digits
+    if "." in s:
+        head, rest = s.split(".", 1)
+        frac, tz = rest, ""
+        for i, c in enumerate(rest):
+            if c in "+-":
+                frac, tz = rest[:i], rest[i:]
+                break
+        frac = (frac + "000000")[:6]
+        s = f"{head}.{frac}{tz}"
+    return datetime.datetime.fromisoformat(s).timestamp()
+
+def _export_unix(doc):
+    wrap = doc.get("environment") if isinstance(doc.get("environment"), dict) else {}
+    s = wrap.get("exported_at_utc") or doc.get("exported_at")
+    if not s:
+        raise KeyError("exported_at")
+    return _parse_iso(s)
+
+def day_frac(doc):
+    """Place in the day as a 0..1 fraction, and a unix timestamp for cloud scroll.
+    A `look ... env` export already stores region_time_s = (unix + day_offset) % day_length; use that
+    when present. Older exports fall back to (exported_at + day_offset) % day_length, as the viewer does."""
+    e = eep_inner(doc)
+    if not e:
+        raise KeyError("environment")
+    length = int(e.get("day_length") or 0)
+    if length <= 0:
+        raise ValueError("day_length")
+    wrap = doc["environment"] if isinstance(doc.get("environment"), dict) else {}
+    at = _export_unix(doc)
+    if wrap.get("region_time_s") is not None:
+        rt = int(wrap["region_time_s"])
+        return ((rt % length) + length) % length / length, at
+    offset = int(e.get("day_offset") or wrap.get("day_offset") or 0)
+    return ((at + offset) % length) / length, at
+
+def _water_from_frame(f):
+    if not f or f.get("type") != "water": return None
     return {"fog_color": z0(f.get("water_fog_color", [0.0157, 0.149, 0.251]))[:3], "fog_density": f.get("water_fog_density", 10) or 0.0,
             "underwater_fog_mod": f.get("underwater_fog_mod", 0.25) or 0.0, "fresnel_scale": f.get("fresnel_scale", 0.4) or 0.0,
             "fresnel_offset": f.get("fresnel_offset", 0.5) or 0.0, "normal_scale": z0(f.get("normal_scale", [2, 2, 2]))[:3],
             "wave1": z0(f.get("wave1_direction", [1.05, -0.42]))[:2], "wave2": z0(f.get("wave2_direction", [1.11, -1.16]))[:2],
             "blur_multiplier": f.get("blur_multiplier", 0.04) or 0.0, "normal_map": f.get("normal_map")}
+
+def track_keys(dc, track_i, frac):
+    """The two day-cycle keyframes around `frac` (0..1) on track `track_i`, and the blend weight toward the second.
+    Returns (frame_a, frame_b, weight), or None when the track is missing or empty."""
+    try:
+        keys = sorted(((k.get("key_keyframe") or 0.0), dc["frames"][k["key_name"]]) for k in dc["tracks"][track_i])
+    except (KeyError, TypeError, IndexError):
+        return None
+    if not keys:
+        return None
+    if len(keys) == 1:
+        return keys[0][1], keys[0][1], 0.0
+    i = max(j for j, (t, _) in enumerate(keys) if t <= frac)
+    (t0, a), (t1, b) = keys[i], keys[(i + 1) % len(keys)]
+    w = (frac - t0) / (((t1 - t0) % 1.0) or 1.0)
+    return a, b, w
+
+def water_of(doc, frac=0.0):
+    """the day cycle's water track (track 0) at `frac`, blended between the two keys around that time."""
+    try:
+        dc = eep_inner(doc)["day_cycle"]
+    except (KeyError, TypeError):
+        return None
+    pair = track_keys(dc, 0, frac)
+    if not pair:
+        return None
+    a, b, w = pair
+    wa, wb = _water_from_frame(a), _water_from_frame(b)
+    if not wa: return wb
+    if not wb or w == 0.0 or wa == wb: return wa
+    out = {}
+    for k, v in wa.items():
+        u = wb.get(k)
+        if isinstance(v, list) and isinstance(u, list):
+            out[k] = [x + (y - x) * w for x, y in zip(v, u)]
+        elif isinstance(v, (int, float)) and isinstance(u, (int, float)):
+            out[k] = v + (u - v) * w
+        else:
+            out[k] = v if w < 0.5 else u
+    return out
 
 def build_env(p, sun, moon, frac=None, t=0.0, horizon=None):
     """interpolated sky params + sun/moon directions -> the render's env dict (shared by the region track and presets)"""
@@ -122,8 +202,8 @@ def build_env(p, sun, moon, frac=None, t=0.0, horizon=None):
 
 TRACK_ALTITUDES = [0.0, 1000.0, 2000.0, 3000.0]   # LL region defaults (water, sky 1-3 floors); an export may carry its own
 
-def sky_track(doc, dc):
-    """EEP sky track for her altitude, as LLEnvironment::calculateSkyTrackForAltitude: tracks 1 (ground) .. 4 (sky 3) by the region's track
+def sky_track(doc, dc, alt=None):
+    """EEP sky track for the camera (or subject) altitude, as LLEnvironment::calculateSkyTrackForAltitude: tracks 1 (ground) .. 4 (sky 3) by the region's track
     altitudes; an empty track falls back to the next lower one (finally the ground track). Oct 19 2026: Warehouse 21 floats at 2003 m: its
     parcel day cycle has a dark club sky on tracks 2-4 and a bright default on the ground track, and we always used the ground track.
     GT_SKY_TRACK=<1-4> forces a track, GT_SKY_TRACK=ground the ground track, GT_SKY_TRACK=region uses the altitude track only with the region's own altitudes. Default (Oct 19 2026 re-fit to David's viewer photo): the altitude track only when the export carries the region's own
@@ -137,32 +217,36 @@ def sky_track(doc, dc):
         alts = env.get("track_altitudes") or (env.get("environment") or {}).get("track_altitudes")
         if not alts and force == "region": return 1
         alts = alts or TRACK_ALTITUDES
-        try: z = float(((doc.get("me") or {}).get("pos") or [0, 0, 0])[2] or 0)
-        except (TypeError, ValueError): z = 0.0
+        if alt is None:
+            try: z = float(((doc.get("me") or {}).get("pos") or [0, 0, 0])[2] or 0)
+            except (TypeError, ValueError): z = 0.0
+        else:
+            z = float(alt)
         i = next((j for j, a in enumerate(alts) if not z > float(a)), len(alts))
         t = 1 if i == 0 else 4 if i >= len(alts) else min(i, 4)
     t = max(1, min(t, 4))
     while t > 1 and (t >= len(tracks) or not tracks[t]): t -= 1
     return t
 
-def env_at(doc):
-    """scene.json -> env dict (see module doc), or None without a usable day cycle"""
+def env_at(doc, alt=None):
+    """scene.json -> env dict (see module doc), or None without a usable day cycle.
+    `alt` is an optional camera height in metres; the default is the subject's agent z."""
     try:
-        e = doc["environment"]["environment"]; dc = e["day_cycle"]
+        e = eep_inner(doc); dc = e["day_cycle"]
         frac, at = day_frac(doc)
-        keys = sorted(((k.get("key_keyframe") or 0.0), dc["frames"][k["key_name"]]) for k in dc["tracks"][sky_track(doc, dc)])
-        i = max(j for j, (t, _) in enumerate(keys) if t <= frac)
+        pair = track_keys(dc, sky_track(doc, dc, alt), frac)
+        if not pair:
+            return None
+        a, b, w = pair
     except (KeyError, TypeError, ValueError, IndexError):
         return None
-    (t0, a), (t1, b) = keys[i], keys[(i + 1) % len(keys)]
-    w = (frac - t0) / (((t1 - t0) % 1.0) or 1.0)
     p = mix(params(a), params(b), w)
     rot = lambda k: qrot_x(slerp(a[k], b[k], w)) if a.get(k) and b.get(k) else None
     sun = rot("sun_rotation") or z0(doc.get("sun_dir", [0, 0, 1])); moon = rot("moon_rotation")
     hz = lambda f: z0(f.get("legacy_haze", {}).get("blue_horizon", [0.3, 0.4, 0.6]))
     out = build_env(p, sun, moon, frac, at, [x + (y - x) * w for x, y in zip(hz(a), hz(b))][:3])
     out["source"] = "shared"
-    wt = water_of(doc)
+    wt = water_of(doc, frac)
     if wt: out["water"] = wt
     return out
 
@@ -220,7 +304,7 @@ def preset_env(name, doc=None):
 
 def photo_env(doc, sky=None):
     """photo hd: the shared environment (default, sky None / "shared") or a named preset; ValueError for an unknown one.
-    When the export has no usable EEP (look/scene-export noenv, or a missing day cycle), fall back to the viewer
+    When the export has no usable EEP (look/scene-export noenv, an `error: ...` string, or a missing day cycle), fall back to the viewer
     library Default sky rather than leaving env unset (the quick-look flat world)."""
     if not sky or sky.lower() == "shared":
         e = env_at(doc)

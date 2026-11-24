@@ -10,7 +10,8 @@ def tree(root: Path, tag: str):
     for d, dll in (("app", "galatay-text.dll"), ("mcp-app", "galatay-mcp.dll")):
         p = root / d; (p / "sub").mkdir(parents=True)
         (p / dll).write_text(f"{d} {tag}")
-        (p / "LibreMetaverse.dll").write_bytes(b"MZ....#Strings\0ScheduleSeedRetry\0Caps\0ObjectDiskCache\0")
+        (p / "LibreMetaverse.dll").write_bytes(b"MZ....#Strings\0ScheduleSeedRetry\0Caps\0")
+        (p / "LibreMetaverse.Caching.dll").write_bytes(b"MZ....#Strings\0ObjectDiskCache\0")
         (p / "sub" / "x.json").write_text(tag)
     return root
 

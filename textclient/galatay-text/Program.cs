@@ -311,16 +311,20 @@ public static partial class Program
         shuttingDown = false;
         client = new GridClient();
         client.SetCapsConnectCallback(SlConnectAsync);   // SlDns.cs: SL hosts the box DNS proxies -> DoH + real IP (routes/_net.json); upstream #215 (LMV 3.4.0)
-        // GT_HANDSHAKE_FLAGS (hex): RegionHandshakeReply flags; 0x7 = LibreMetaverse's "cache empty, send full updates for everything"
-        if (uint.TryParse(Env("GT_HANDSHAKE_FLAGS", "").Replace("0x", ""), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hsf))
-            client.Settings.World.RegionHandshakeFlags = hsf;
-        // on-disk object cache (VOCache-like, LibreMetaverse ObjectDiskCache): revisits load the scene from disk, so the sim's
-        // object stream carries avatars and their attachments first. GT_OBJECT_CACHE=off disables it.
-        var objCache = Env("GT_OBJECT_CACHE", "/home/box/viewers/textclient/objcache");
-        ObjectDiskCache.Dir = objCache == "off" ? null : objCache;
-        // revisit: hold the requests for objects not in the cache for 30 s after arriving, so attachments stream first
-        ObjectDiskCache.DeferMissesMs = int.TryParse(Env("GT_OBJECT_CACHE_DEFER_MS", "30000"), out var dms) ? dms : 30000;
-        Log("net", $"region handshake flags 0x{client.Settings.World.RegionHandshakeFlags:X}; object cache {(ObjectDiskCache.Enabled ? ObjectDiskCache.Dir : "off")}");
+        // on-disk object cache (LibreMetaverse.Caching.ObjectDiskCache via ObjectManager.CacheProvider):
+        // a region entered again loads from disk and the sim answers with cache probes, so the object stream
+        // is left to what changed (avatars and attachments). GT_OBJECT_CACHE=off leaves the provider null.
+        try { LiveObjectCache?.Dispose(); } catch { }
+        LiveObjectCache = null;
+        var objCache = Env("GT_OBJECT_CACHE", ObjectCacheDefaultDir);
+        LiveObjectCache = ConfigureObjectCache(client, objCache, ObjectCacheMaxEntriesPerRegion);
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GT_HANDSHAKE_FLAGS")))
+            Log("net", "GT_HANDSHAKE_FLAGS is ignored: LibreMetaverse now sets RegionHandshakeReply to 0x7 itself and clears 0x2 when the object cache has entries for the region");
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GT_OBJECT_CACHE_DEFER_MS")))
+            Log("net", "GT_OBJECT_CACHE_DEFER_MS is ignored: miss deferral is not in upstream ObjectDiskCache");
+        Log("net", LiveObjectCache == null
+            ? "object cache off"
+            : $"object cache {LiveObjectCache.Directory}, cap {LiveObjectCache.MaxEntriesPerRegion}");
         client.Settings.World.StoreLandPatches = true; // terrain heights for walking (NavWalk.cs)
         client.Settings.Connection.MfaEnabled = true;
         // (2026-09-26 12:58, David) login outfit re-send: off (default) = leave the sim's attachments exactly as they are;
@@ -466,7 +470,7 @@ public static partial class Program
         ExitCode = ShutdownExitCode(why, deliberate, ExitCode);
         try { WanderOnShutdown(deliberate); } catch { }
         try { if (LoggedIn) await LoginVeilOnForLogout(); else if (wasLoggedIn) LoginVeilMissedWrite("before the veil step (session lost during the stand)"); } catch { }   // LoginVeil.cs: the next login starts with the body hidden
-        try { ObjectDiskCache.SaveAll(); } catch { }
+        try { LiveObjectCache?.Flush(); } catch { }
         try { await VoiceShutdown(); } catch { } // leave voice (Voice.cs); the sidecar finishes its transcript on its own
         if (deliberate && ExitOnLogout) MarkDeliberateStop(why); // daemon only: a logout command also keeps her down across a reboot
         Log("logout", $"logging out ({why}{(deliberate ? "; deliberate stop" : "")})");
@@ -480,6 +484,9 @@ public static partial class Program
             }
         }
         catch (Exception ex) { Log("error", "logout: " + ex.Message); }
+        try { LiveObjectCache?.Dispose(); } catch { }
+        LiveObjectCache = null;
+        if (client?.Objects != null) client.Objects.CacheProvider = null;
         try { if (File.Exists(LockPath) && File.ReadAllText(LockPath).Trim() == Environment.ProcessId.ToString()) File.Delete(LockPath); } catch { }
         followId = UUID.Zero;
         if (ExitOnLogout) cts.Cancel();

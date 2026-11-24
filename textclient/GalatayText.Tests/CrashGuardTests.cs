@@ -9,15 +9,17 @@ public class CrashGuardTests
     [Fact] public void TheLoadedLibreMetaverseCarriesEveryGalateaPatch()
     {
         Assert.Empty(Program.LmvMissingPatches(typeof(LibreMetaverse.GridClient).Assembly, Program.RequiredLmvMarkers));
+        Assert.Empty(Program.LmvMissingPatches(typeof(LibreMetaverse.Caching.ObjectDiskCache).Assembly, Program.RequiredCachingMarkers));
         Assert.Null(Program.LmvPatchGuard());
     }
     [Fact] public void AnUnpatchedLibreMetaverseIsReportedByPatchName()
     {
         // an assembly without the marker type/member stands in for the stale DLL
         var missing = Program.LmvMissingPatches(typeof(string).Assembly, Program.RequiredLmvMarkers);
-        Assert.Equal(new[] { "LibreMetaverse v3.2.0+ (upstream seed-capability retry fix d58a7283)", "libremetaverse-object-cache.patch" }, missing);
+        Assert.Equal(new[] { "LibreMetaverse v3.2.0+ (upstream seed-capability retry fix d58a7283)" }, missing);
+        Assert.Equal(new[] { "LibreMetaverse.Caching (ObjectDiskCache)" }, Program.LmvMissingPatches(typeof(string).Assembly, Program.RequiredCachingMarkers));
         Assert.Equal(new[] { "x.patch" }, Program.LmvMissingPatches(typeof(LibreMetaverse.Caps).Assembly, new[] { ("LibreMetaverse.Caps", "NoSuchMember", "x.patch") }));
-        Assert.Equal(2, Program.LmvMissingPatches(null, Program.RequiredLmvMarkers).Count);
+        Assert.Equal(1, Program.LmvMissingPatches(null, Program.RequiredLmvMarkers).Count);
     }
     [Fact] public void GhostPidIsADeadPidNamedByTheLock()
     {

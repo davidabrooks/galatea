@@ -225,7 +225,7 @@ public static partial class Program
         var head = $"crowd within {r:F0} m: {near.Count} avatar(s) streamed{(nb.Count > 0 ? $" + {nb.Count} in neighbor regions" : "")} ({sim.ObjectsAvatars.Count} in region objects, {coarseNow.Count} on the map); " +
                    string.Join(", ", counts.OrderBy(k => k.Key).Select(k => $"{k.Value} {k.Key}")) +
                    $"; objects={sim.ObjectsPrimitives.Count}; interest={(interestState.TryGetValue(sim.Handle, out var s) && s.ok ? "360" : "NOT 360")}";
-        return head + "\n" + ObjectDiskCache.Stats() + "\n" + sb.ToString().TrimEnd();
+        return head + "\n" + ObjectCacheStatus() + "\n" + sb.ToString().TrimEnd();
     }
 
     internal static string CrowdSelfTest()
@@ -253,7 +253,7 @@ public static partial class Program
         var bid = new UUID("0123abcd-0000-0000-0000-000000000001");
         C(BakeCachePath("/c", bid) == "/c/01/0123abcd-0000-0000-0000-000000000001.j2c" && BakeCachePath("/c", UUID.Zero) == null && BakeCachePath("", bid) == null,
           "bake cache path: keyed by bake texture id, sharded, none for a zero id or no cache dir");
-        C(ObjectDiskCache.SelfTest(out var ocWhy), "object disk cache: file and block round trip " + ocWhy);
+        C(ObjectCacheSelfTest(out var ocWhy), "object disk cache: file and block round trip " + ocWhy);
         C(LookStallMs(2, 61, 10000) == 3000 && LookStallMs(3, 61, 10000) == 3000 && LookStallMs(4, 61, 10000) == 10000
           && LookStallMs(2, 10, 10000) == 3000 && LookStallMs(3, 10, 10000) == 10000 && LookStallMs(0, 0, 2000) == 2000,
           "look wait: 3 s stall window once only a few stragglers remain (max(2, 5%)), full window otherwise");

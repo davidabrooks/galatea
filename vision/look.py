@@ -249,8 +249,10 @@ def hovercheck_exposure():
 def golden_hour_env(doc, env, portrait, sky):
     """2026-10-21 David's beach portrait exported after sunset: an outdoor photo hd portrait (self) with the sun below the horizon and
     no named sky gets golden hour instead of night: the `sunset` preset, its sun turned to the export's sun azimuth. None when it
-    doesn't apply (the caller also checks she is not under a roof: mesh_under_roof)"""
+    doesn't apply (the caller also checks she is not under a roof: mesh_under_roof).
+    A usable shared day cycle (source=shared, from look ... env) is kept as-is: HD photos use the sim's entire shared environment."""
     if not (portrait and env and not sky and env.get("sun_dir") and env["sun_dir"][2] < 0): return None
+    if env.get("source") == "shared": return None
     import math
     g = llsky.preset_env("sunset", doc); sd = g["sun_dir"]; alt = math.asin(max(-1.0, min(1.0, sd[2])))
     az = math.atan2(env["sun_dir"][1], env["sun_dir"][0])
@@ -717,6 +719,7 @@ def main(a):
     meta["env"] = env_for(doc, hd, sky); gold = golden_hour_env(doc, meta["env"], photo_self, sky)
     if gold and not mesh_under_roof(meta, f"{d}/mesh.bin"):
         meta["env"] = gold; print("photo hd portrait: sun below the horizon outdoors -> golden hour (sunset sky, sun azimuth kept)", file=sys.stderr)
+    if hd: print(llsky.env_log_line(meta.get("env")), file=sys.stderr)
     if far or terrain_hd: meta["water_height"] = doc.get("water_height")
     os.makedirs(f"{WORK}/tex", exist_ok=True); shutil.move(f"{d}/mesh.bin", f"{WORK}/mesh.bin")
     tj = (far or terrain_hd or self_floor) and doc.get("terrain") or {"x0": 0, "y0": 0, "step": 1, "nx": 0, "ny": 0, "heights": []}  # region heightmap (exports 2026-10-04+)

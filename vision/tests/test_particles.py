@@ -1,5 +1,5 @@
 """2026-10-13 graphics audit: SL particle systems snapshot (the purple orb on the Peronaut porch is particles)."""
-import os, sys
+import math, os, sys
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "cloud-render"))
 import particles  # noqa: E402
@@ -22,3 +22,10 @@ def test_no_particles_when_off_and_capped():
     assert len(particles.snapshot({**ORB, "burst_part_count": 250, "part_max_age": 30}, [0, 0, 0])) == particles.MAX_PER_SOURCE
     drop = particles.snapshot({**ORB, "pattern": 1, "part_acceleration": [0, 0, -1]}, [0, 0, 10])
     assert all(p["pos"][2] <= 10 for p in drop)
+
+
+def test_inverted_burst_speed_is_swapped():
+    """SL exports sometimes have burst_speed_min > burst_speed_max; treat as a range, like angles."""
+    ps = particles.snapshot({**ORB, "burst_speed_min": 6.9, "burst_speed_max": 2.8}, [0, 0, 0])
+    assert len(ps) == 40
+    assert all(all(map(math.isfinite, p["pos"])) for p in ps)

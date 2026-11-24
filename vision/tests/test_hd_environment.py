@@ -157,3 +157,22 @@ def test_photo_env_error_string_falls_back_to_default_sky():
     assert llsky.photo_env({})["source"].startswith("default-fallback:")
     assert llsky.env_at({"environment": "error: no environment"}) is None
 
+
+def test_empty_altitude_tracks_fall_back_to_ground():
+    """Region (legacy) shape: first sky key omits key_keyframe, tracks 2-4 are empty. A high camera still uses track 1."""
+    d = far_env({"m": MIDNIGHT, "n": NOON}, [(None, "m"), (0.5, "n")], extra_sky_tracks=[[], [], []],
+                me_z=28.0, region_time_s=int(0.25 * 14400))
+    dc = d["environment"]["environment"]["day_cycle"]
+    assert dc["tracks"][1][0] == {"key_keyframe": 0.0, "key_name": "m"} or dc["tracks"][1][0].get("key_name") == "m"
+    # far_env writes 0.0 when key is None — also accept a key with no key_keyframe, as the real export does
+    d["environment"]["environment"]["day_cycle"]["tracks"][1][0] = {"key_name": "m"}
+    assert llsky.sky_track(d, dc, alt=2500.0) == 1
+    assert llsky.sky_track(d, dc) == 1
+    e = llsky.env_at(d)
+    assert e is not None and e["source"] == "shared" and e["track"] == 1
+    assert abs(e["frac"] - 0.25) < 1e-9
+    assert e["blend"]["a"] == "m" and e["blend"]["b"] == "n"
+    line = llsky.env_log_line(e)
+    assert line.startswith("photo hd env: source=shared") and "track=1" in line and "frames=m@" in line
+    assert "default-fallback" not in line
+

@@ -313,6 +313,36 @@ public static partial class Program
         if (ids.Count > 0) await Task.Delay(int.TryParse(Env("GT_LOOK_REFRESH_MS", "2000"), out var ms) ? ms : 2000);
     }
 
+    // 2026-11-23: two exports starting in the same second used to share export-yyyyMMdd-HHmmss and collide
+    // on scene.json.tmp (FileShare.None). Keep the unsuffixed name when it's free so cleaners, notes and
+    // scripts that match export-YYYYMMDD-HHMMSS still work; on collision, export-...-2, -3, ...
+    // Creation is atomic: mkdir a temp name, then rename into place (rename fails if the dest exists).
+    // No global export gate: PoseHover calls SceneExport without lookGate, and a shared lock could stall
+    // those checks. Unique directories make parallel exports safe.
+    internal static string AllocateExportDir(string parent, DateTime now)
+    {
+        Directory.CreateDirectory(parent);
+        var stamp = now.ToString("yyyyMMdd-HHmmss");
+        const int max = 1000;
+        for (int n = 1; n <= max; n++)
+        {
+            var name = n == 1 ? $"export-{stamp}" : $"export-{stamp}-{n}";
+            var dir = Path.Combine(parent, name);
+            var tmp = Path.Combine(parent, $".{name}.{Guid.NewGuid():N}.alloc");
+            Directory.CreateDirectory(tmp);
+            try
+            {
+                Directory.Move(tmp, dir);
+                return dir;
+            }
+            catch (IOException)
+            {
+                try { Directory.Delete(tmp, true); } catch { }
+            }
+        }
+        throw new IOException($"could not allocate a unique export directory under {parent} for {stamp}");
+    }
+
     static async Task<string> SceneExport(string[] a)
     {
         float r = 48; bool noEnv = a.Contains("noenv"); a = a.Where(x => x != "noenv").ToArray();
@@ -343,8 +373,7 @@ public static partial class Program
             }
         }
         int nbPrims = 0;
-        var dir = $"/workspace/secondlife/vision/export-{DateTime.Now:yyyyMMdd-HHmmss}";
-        Directory.CreateDirectory(dir);
+        var dir = AllocateExportDir("/workspace/secondlife/vision", DateTime.Now);
         var scenePath = Path.Combine(dir, "scene.json");
         var primPart = Path.Combine(dir, "prims.part");
         int nPrims = 0, mine = 0, theirs = 0;

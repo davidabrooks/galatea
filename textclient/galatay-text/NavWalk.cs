@@ -169,7 +169,7 @@ public static partial class Program
             if (navTrack && (++trackTick % 3) == 0) Log("navpos", V(p));
             walkState = $"leg {label}: at {V(p)}, {HDist(p, target):F1} m to go";
             if (!AoStateNow().active) { await Task.Delay(1000, ct); if (!AoStateNow().active) { client.Self.AutoPilotCancel(); AoLog($"walk leg {label}: AO DROPPED mid-walk at {V(p)} ({AoStateNow().why}): stopped"); if (!await AoRestore("dropped mid-walk (walk_path)", ct)) { Log("walk", $"leg {label}: stopped, AO not active; staying put"); return false; } AutoPilotTo(goal); hist.Clear(); legStart = legStart.AddSeconds(30); continue; } }
-            if (HDist(p, target) <= tol)
+            if (WalkCloseEnough(HDist(p, target), MathF.Abs(p.Z - target.Z), tol))
             {
                 client.Self.AutoPilotCancel();
                 if (flew) { client.Self.Movement.Fly = false; client.Self.Movement.SendUpdate(true); Log("walk", "fly off (landed)"); }

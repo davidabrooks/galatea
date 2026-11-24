@@ -293,8 +293,6 @@ public static partial class Program
         }
         if (pend != null) PoseSitDefaultEval(pend, poseSitPendingAt, "sit changed");
     }
-    internal static bool PoseSitDefaultWindowOk(DateTime sitAt, DateTime now, string pathAtSit, string pathNow) =>
-        sitAt != DateTime.MinValue && (now - sitAt).TotalSeconds <= PoseSitWindowS && pathAtSit == pathNow;
 
     // pure: may the first pose menu after a sit be recorded as this seat's sit-alone default? (record, conclusive, pose, reason).
     // conclusive=false means "ask again later" (sit state not known yet, another object's dialog, seat-select menu).

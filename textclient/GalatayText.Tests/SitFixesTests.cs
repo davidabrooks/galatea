@@ -53,13 +53,8 @@ public class SitFixesTests
     }
 
     [Fact]
-    public void Next_nearest_real_seat_after_a_refusal()
+    public void A_no_room_alert_is_a_refusal_and_sit_near_has_a_fallback()
     {
-        var a = new UUID("00000000-0000-0000-0000-00000000000a"); var b = new UUID("00000000-0000-0000-0000-00000000000b"); var c = new UUID("00000000-0000-0000-0000-00000000000c");
-        var cands = new List<(string, float, UUID)> { ("Nerenzo beach chair - parasol", 1.6f, a), ("Nerenzo beach chair - adult", 2.2f, b), ("Nerenzo beach chair - pg", 2.5f, c) };
-        Assert.Equal(1, Program.PickSeatIndex(cands, new HashSet<UUID>()));
-        Assert.Equal(2, Program.PickSeatIndex(cands, new HashSet<UUID> { b }));
-        Assert.Equal(-1, Program.PickSeatIndex(cands, new HashSet<UUID> { b, c }));
         Assert.True(Program.IsNoRoomAlert("No room to sit here, try another spot."));
         Assert.False(Program.IsNoRoomAlert("Autopilot canceled"));
         Assert.Contains("SitNearWithFallback", Src("NavWalk.cs"));

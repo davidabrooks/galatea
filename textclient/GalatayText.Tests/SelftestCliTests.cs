@@ -32,7 +32,7 @@ public class SelftestCliTests
     [Fact]
     public void Bugfix_bundle_passes() => SelftestRunner.AssertPass("--bugfix-selftest", 180_000);
 
-    // PR #47 full voice WebRTC+whisper selftest: skipped in CI (downloads speech model, slow/flaky).
-    [Fact(Skip = "Needs faster-whisper model download and ~150s; run locally with --voice-selftest")]
-    public void Voice_full_selftest_skipped_in_ci() => SelftestRunner.AssertPass("--voice-selftest", 200_000);
+    // PR #47 full voice WebRTC+whisper selftest (needs the voice venv, may download the speech model, ~150 s): slow tier only.
+    [SlowFact]
+    public void Voice_full_selftest() => SelftestRunner.AssertPass("--voice-selftest", 200_000);
 }

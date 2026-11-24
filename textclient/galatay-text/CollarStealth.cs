@@ -13,7 +13,7 @@ public static partial class Program
     // pure (tested): the Stealth button in the collar's About menu: (label, on). label null = no Stealth button
     internal static (string label, bool on) StealthButton(IEnumerable<string> buttons)
     {
-        var b = (buttons ?? Array.Empty<string>()).FirstOrDefault(x => x != null && x.Contains("Stealth", StringComparison.OrdinalIgnoreCase));
+        var b = MenuPick(buttons, "Stealth");
         return (b, b != null && (b.Contains('☑') || b.Contains('☒') || b.Contains('■')));
     }
 
@@ -62,9 +62,8 @@ public static partial class Program
     static readonly SemaphoreSlim stealthLock = new(1, 1);
     internal const int CollarMenuWaitMs = 90000;
     static async Task<bool> CollarMenuEnter() => await stealthLock.WaitAsync(CollarMenuWaitMs);
-    // pure (tested): which collar menu is this? (the Pose list has STOP; the main menu has About + Extras)
+    // pure (tested): is this the collar's Pose list? (it has STOP)
     internal static bool CollarLooksLikePoseMenu(IEnumerable<string> b) => (b ?? Array.Empty<string>()).Any(x => x != null && x.Equals("STOP", StringComparison.OrdinalIgnoreCase));
-    internal static bool CollarLooksLikeMainMenu(IEnumerable<string> b) { var l = (b ?? Array.Empty<string>()).ToList(); return l.Contains("About") && l.Contains("Extras"); }
     // wait for a NEW collar dialog the predicate accepts (others, e.g. a stray page from another flow, are skipped)
     static async Task<ScriptDialogEventArgs> CollarDialogWhere(ScriptDialogEventArgs prev, Func<ScriptDialogEventArgs, bool> ok, int ms)
     {

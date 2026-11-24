@@ -35,7 +35,6 @@ partial class Program
     // pure (tested): seated/posed while leashed and he starts moving (walking speed, or already past the start gap) -> stand now
     internal static bool LeashMustStand(bool leashed, bool seatedOrPosed, bool hisMotion, float hisSpeed, float gap, float length)
         => leashed && seatedOrPosed && (hisSpeed > LeashRiseSpeed || (hisMotion && gap > LeashStartGap(length)));
-    internal static bool LeashIdleMustRise(bool leashed, bool hisMotionAway, float gap, float length) => leashed && hisMotionAway && gap > LeashStartGap(length);
     // pure (tested): start gap: just over the collar-pull hold distance (stop + 0.1 m), at most the old "gap > leash"
     internal static float LeashStartGap(float length) => Math.Max(LeashWalkStop(length) + 0.1f, Math.Min(length, LeashWalkStop(length) + 0.3f));
     // pure (tested): may I start walking on his motion yet?

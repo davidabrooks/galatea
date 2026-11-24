@@ -253,7 +253,7 @@ public static partial class Program
             if (src != UUID.Zero && IsSeatSource(src)) return;
             var fromAtt = src != UUID.Zero && src != client.Self.AgentID;
             var sec = (DateTime.UtcNow - typingStartedUtc).TotalSeconds;
-            if (!TypingIsTypistAnim(id, fromAtt, sec, typistOverrideAnims.Keys.ToArray())) return;
+            if (!TypingIsTypistAnim(id, fromAtt, sec, TypingKnownOverrides())) return;
             typistOverrideAnims.TryAdd(id, 0);
             client.Self.AnimationStop(id, true);
             Log("typing", $"stopped typist anim {AnimName(id)} from {srcDesc}");
@@ -268,7 +268,7 @@ public static partial class Program
             List<UUID> playing;
             try { playing = client.Self.SignaledAnimations.Keys.ToList(); }
             catch { return; }
-            var known = typistOverrideAnims.Keys.ToArray();
+            var known = TypingKnownOverrides();
             foreach (var id in playing)
             {
                 if (!TypingIsTypistAnim(id, fromAttachment: false, secondsSinceTypingStart: double.MaxValue, known)) continue;

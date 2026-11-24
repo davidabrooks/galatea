@@ -14,17 +14,7 @@ public class PoseCouplesSexualRuleTests
     static readonly List<string> MirageTop = new() { "[SWAP]", "[<<]", "[>>]", "Fist*", "MF*", "[ADJUST]", "CUDDLES*", "ZERO G*", "WARM UP*", "F waits", "SOLO F*", "SLEEP*" };
     static readonly List<string> MirageFist = new() { "fist & balls", "full job", "[ADJUST]", "fist 2", "fist 3", "fist him", "[BACK]", "fist 1" };
 
-    [Theory]
-    [InlineData("Fist*")] [InlineData("fist & balls")] [InlineData("full job")] [InlineData("fist 2")] [InlineData("fist 3")]
-    [InlineData("fist him")] [InlineData("fist 1")] [InlineData("MF*")] [InlineData("Handjob")] [InlineData("Gangbang*")] [InlineData("BJ")]
-    public void Mirage_sexual_names_are_classified_sexual(string name)
-        => Assert.True(Program.PosePathIsSexual(new[] { name }), name);
-
-    [Theory]
-    [InlineData("CUDDLES*")] [InlineData("ZERO G*")] [InlineData("WARM UP*")] [InlineData("F waits")] [InlineData("SOLO F*")] [InlineData("SLEEP*")]
-    [InlineData("selfie")] [InlineData("champagne")] [InlineData("texting")] [InlineData("reading")] [InlineData("laptop")]
-    public void Mirage_harmless_names_stay_harmless(string name)
-        => Assert.False(Program.PosePathIsSexual(new[] { name }), name);
+    // the Mirage menu names (sexual and harmless) are in AdultPoseClassifyTests' two name tables
 
     [Fact]
     public void Explicit_couples_top_menu_never_picks_Fist_when_sexual_not_allowed()

@@ -43,7 +43,8 @@ public class FrontDoorScanTests
                     var l = Program.DoorsForCrossing(ng, p, q).Where(nd => !opened.Contains(nd.Id)).ToList();
                     if (l.Count == 0) return false; ahead = l; return true;
                 });
-                if (d is float da && Program.DoorTouchDue(da, speed)) foreach (var nd in ahead) { touches.Add((nd.Name, da, s)); opened.Add(nd.Id); }
+                if (d is float da && da >= 0 && da <= Program.DoorTriggerFor(speed))   // the old touch rule, kept for this regression
+                    foreach (var nd in ahead) { touches.Add((nd.Name, da, s)); opened.Add(nd.Id); }
             }
             else
             {

@@ -173,10 +173,5 @@ public class PoseBackToRootTests
         var key = "seat-" + Guid.NewGuid();
         Assert.True(Program.PoseRecordSitDefault(key, "F waits", alone: true, changeOrRecovery: false));
         Assert.Equal("F waits", Program.PickDefaultPoseButton(Root, "F waits").pick);
-        var t = DateTime.Now;
-        Assert.True(Program.PoseSitDefaultWindowOk(t, t.AddSeconds(5), "", ""));
-        Assert.False(Program.PoseSitDefaultWindowOk(t, t.AddSeconds(30), "", ""));          // not the first menu after sitting
-        Assert.False(Program.PoseSitDefaultWindowOk(t, t.AddSeconds(5), "", "SOLO F*>selfie")); // a pose was pressed since the sit
-        Assert.False(Program.PoseSitDefaultWindowOk(DateTime.MinValue, t, "", ""));
     }
 }

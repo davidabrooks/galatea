@@ -29,12 +29,16 @@ public class AdultPoseClassifyTests
     [InlineData("Grope")] [InlineData("PussyRub")] [InlineData("Diddle")] [InlineData("Vibrator")] [InlineData("Dildo")] [InlineData("Foreplay*")]
     [InlineData("Fist*")] [InlineData("fist & balls")] [InlineData("Blowjobs*")] [InlineData("Mutual FP*")] [InlineData("Adult M+F*")] [InlineData("MF*")]
     [InlineData("Sex Behind*")] [InlineData("Handjobs*")] [InlineData("Going Down*")] [InlineData("Jerk off")] [InlineData("Wank")]
+    // BENTO PHYSICS MIRAGE BED 1.0 (2026-10-16 13:17, merged from PoseCouplesSexualRuleTests)
+    [InlineData("full job")] [InlineData("fist 2")] [InlineData("fist 3")] [InlineData("fist him")] [InlineData("fist 1")] [InlineData("Handjob")] [InlineData("Gangbang*")] [InlineData("BJ")]
     public void Sexual_names_are_classified_sexual(string name) => Assert.True(Program.PosePathIsSexual(new[] { name }), name);
 
     [Theory]
     [InlineData("Lady")] [InlineData("So Pretty")] [InlineData("Phone Talk")] [InlineData("Legs Up")] [InlineData("Check Sit")] [InlineData("Coy")]
     [InlineData("Stand Preen*")] [InlineData("Pictures*")] [InlineData("Solo Sits*")] [InlineData("selfie")] [InlineData("champagne")] [InlineData("texting")]
     [InlineData("reading")] [InlineData("laptop")] [InlineData("SOLO F*")] [InlineData("Cross legs")] [InlineData("Hang out")] [InlineData("Vogue")] [InlineData("Quietly")]
+    // Mirage bed (merged from PoseCouplesSexualRuleTests)
+    [InlineData("CUDDLES*")] [InlineData("ZERO G*")] [InlineData("WARM UP*")] [InlineData("F waits")] [InlineData("SLEEP*")]
     public void Plain_names_stay_plain(string name) => Assert.False(Program.PosePathIsSexual(new[] { name }), name);
 
     [Fact]

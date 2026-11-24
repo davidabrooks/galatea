@@ -556,7 +556,7 @@ public static partial class Program
             }
         };
         client.Self.IM += (s, e) => HandleIm(e.IM);
-        client.Self.AlertMessage += (s, e) => { NoteAlertForSit(e.Message); Log("alert", e.Message); };
+        client.Self.AlertMessage += (s, e) => { NoteAlertForSit(e.Message); Log("alert", e.Message); RoamNoteAlert(e.Message); };
         RlvHook();   // Rlv.cs
         HookRest();
     }

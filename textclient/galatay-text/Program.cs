@@ -353,6 +353,7 @@ public static partial class Program
         HookRestart(); // region restart warnings -> evacuate + return (RegionRestart.cs)
         HookCoarse(); // region map avatar list for coarse-only avatars (Crowd.cs)
         HookParcelWatch(); // our parcel + who is on it, entry/leave events (ParcelWatch.cs)
+        HookScriptsWatch(); // do my attachments' scripts run on this parcel? [scripts] line + status (ScriptsWatch.cs)
         StartVmForkWatch(); // VmForkWatch.cs (idempotent)
         EnsureWatchdog(); // Watchdog.cs: heartbeat, freeze/stale checks, UDP drops, packet ages (idempotent; MCP connector too)
         StartLastOnlineTimer(); // ConnectionDiag.cs: run/last-online.txt on its own timer (idempotent)
@@ -711,6 +712,7 @@ public static partial class Program
             TickerStepBegin("AutoFollowTick"); try { AutoFollowTick(); } catch (Exception ex) { Log("autofollow", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // AutoFollow.cs
             TickerStepBegin("CameraAnchorTick"); try { CameraAnchorTick(); } catch { } TickerStepEnd();
             TickerStepBegin("ParcelWatchTick"); try { ParcelWatchTick(); } catch (Exception ex) { Log("parcel", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // ParcelWatch.cs
+            TickerStepBegin("ScriptsWatchTick"); try { ScriptsWatchTick(); } catch (Exception ex) { Log("scripts", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // ScriptsWatch.cs
             TickerStepBegin("NeighborTick"); try { NeighborTick(); } catch (Exception ex) { Log("regions", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // Neighbors.cs crossing watch + neighbor cap
             TickerStepBegin("OutfitZoneTick"); try { await OutfitZoneTick(); } catch (Exception ex) { Log("outfit-zone", "tick error: " + ex.GetBaseException().Message); } TickerStepEnd(); // OutfitZones.cs beach/house
             try { await Task.Delay(1000, cts.Token); } catch { }
@@ -781,7 +783,8 @@ public static partial class Program
             auto_accept_lures_from = autoLure ? LureAllow : Array.Empty<string>(),
             pending_lure = pendingLure?.name, queued_events = Events.Count,
             rss_mb = proc.WorkingSet64 / 1048576, objects_known = sim?.ObjectsPrimitives.Count, avatars_known = sim?.ObjectsAvatars.Count,
-            neighbor_regions = ViewSims().Skip(1).Select(v => v.sim.Name).ToArray()
+            neighbor_regions = ViewSims().Skip(1).Select(v => v.sim.Name).ToArray(),
+            scripts_allowed = ScriptsAllowedValue(scriptsState, sim?.Handle ?? 0), scripts_detail = ScriptsDetail()   // ScriptsWatch.cs
         };
     }
 

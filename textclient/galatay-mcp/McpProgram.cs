@@ -73,7 +73,7 @@ public sealed class SlTools
     [McpServerTool(Name = "logout"), Description("Log out of Second Life cleanly (the MCP server keeps running). quick_relog=true: a quick relog, she is not re-dressed by the stand on the way out (cleared at the next login).")]
     public static Task<string> Logout([Description("true for a quick relog: keep her outfit as it is (no automatic re-dress after the logout stand)")] bool quick_relog = false) => Detached(quick_relog ? "logout quick" : "logout");
 
-    [McpServerTool(Name = "status"), Description("Connection state, region, position, seat, follow target, pending teleport offer, memory use.")]
+    [McpServerTool(Name = "status"), Description("Connection state, region, position, seat, follow target, pending teleport offer, memory use, and scripts_allowed (true / false / \"unknown\": do my attachments' scripts run on the parcel I stand on) with scripts_detail.")]
     public static string Status() => Json(Core.StatusObj());
 
     [McpServerTool(Name = "poll_events"), Description("Drain queued incoming events (local chat, IMs, teleport offers, dialogs, alerts, sit/teleport results) since the last poll. Returns a JSON array oldest-first.")]

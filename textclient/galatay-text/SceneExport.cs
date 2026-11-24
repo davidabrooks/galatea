@@ -12,6 +12,7 @@
 // vision/scene-mesher (keeps meshing out of this process). Never touches, sends or edits anything.
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using LibreMetaverse;
 using LibreMetaverse.Assets;
 using LibreMetaverse.StructuredData;
@@ -199,6 +200,81 @@ public static partial class Program
     // pure (neighbor selftest)
     internal static bool EnvCacheHit((ulong handle, int parcel, DateTime t, OSD env) c, ulong handle, int parcel, DateTime now)
         => c.env != null && c.handle == handle && c.parcel == parcel && (now - c.t).TotalMinutes < 10;
+
+    // a usable ExtEnvironment GET reply has an environment map with the day cycle and/or day_length
+    internal static bool EnvReplyUsable(OSDMap reply)
+        => reply != null && reply["environment"] is OSDMap em && (em.ContainsKey("day_cycle") || em.ContainsKey("day_length"));
+
+    // parcel GET may already return the region env (parcel_id = -1) when the parcel has none
+    internal static string EnvReplySource(OSDMap reply, string asked)
+        => asked == "parcel" && reply != null && reply.ContainsKey("parcel_id") && reply["parcel_id"].AsInteger() < 0
+            ? "region" : asked;
+
+    // the ExtEnvironment cap URL is a secret: never write it into the export or a log line
+    internal static string EnvErrorText(string message)
+        => "error: " + EnvRedactUrls(message ?? "failed");
+
+    internal static string EnvRedactUrls(string s)
+        => string.IsNullOrEmpty(s) ? s : Regex.Replace(s, @"https?://\S+", "[redacted]", RegexOptions.IgnoreCase);
+
+    static bool OsdLooksLikeUrl(OSD v)
+        => v != null && v.Type == OSDType.String && (v.AsString().StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || v.AsString().StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+    // wrap the raw ExtEnvironment reply with source, region, parcel id and timestamps; keep every day_cycle frame and track
+    internal static OSDMap WrapExportEnvironment(OSDMap reply, string source, int askedParcelId, string regionName, DateTime utcNow)
+    {
+        var env = new OSDMap();
+        if (reply != null)
+            foreach (var key in reply.Keys)
+                if (!OsdLooksLikeUrl(reply[key])) env[key] = reply[key];
+        env["source"] = source ?? "";
+        env["region"] = regionName ?? "";
+        if (source == "parcel") env["parcel_id"] = askedParcelId;
+        else if (!env.ContainsKey("parcel_id")) env["parcel_id"] = askedParcelId > 0 ? askedParcelId : -1;
+        var utc = utcNow.Kind == DateTimeKind.Utc ? utcNow : utcNow.ToUniversalTime();
+        env["exported_at_utc"] = utc.ToString("o");
+        if (env["environment"] is OSDMap em && em.ContainsKey("day_length") && em["day_length"].AsInteger() > 0)
+        {
+            int len = em["day_length"].AsInteger();
+            int off = em.ContainsKey("day_offset") ? em["day_offset"].AsInteger() : 0;
+            long unix = new DateTimeOffset(utc).ToUnixTimeSeconds();
+            env["region_time_s"] = (int)(((unix + off) % len + len) % len);
+        }
+        return env;
+    }
+
+    // the whole env path is gated on !noEnv: a quick look (including far) never looks up the cap, reads the cache,
+    // fetches, parses, or adds env metadata. On fetch failure the export still succeeds with an error string.
+    // Fetch is read-only GET (LMV ExtEnvironment, parcel then region), same order as sl-viewer LmvSession.FetchEnv.
+    internal static async Task<(OSD env, (ulong handle, int parcel, DateTime t, OSD env)? cache)> ResolveExportEnvironment(
+        bool noEnv, ulong handle, int parcelId, string regionName, DateTime utcNow,
+        (ulong handle, int parcel, DateTime t, OSD env) cache,
+        Func<int, Task<OSDMap>> fetchParcel, Func<Task<OSDMap>> fetchRegion)
+    {
+        if (noEnv) return (OSD.FromString("skipped: noenv"), null);
+        if (EnvCacheHit(cache, handle, parcelId, utcNow)) return (cache.env, null);
+        try
+        {
+            OSDMap reply = null; string source = null;
+            if (parcelId > 0 && fetchParcel != null)
+            {
+                reply = await fetchParcel(parcelId);
+                if (EnvReplyUsable(reply)) source = EnvReplySource(reply, "parcel");
+                else reply = null;
+            }
+            if (reply == null)
+            {
+                reply = fetchRegion != null ? await fetchRegion() : null;
+                source = "region";
+            }
+            if (!EnvReplyUsable(reply)) return (OSD.FromString("error: no environment"), null);
+            var wrapped = WrapExportEnvironment(reply, source, parcelId, regionName, utcNow);
+            return (wrapped, (handle, parcelId, utcNow, wrapped));
+        }
+        catch (Exception ex) { return (OSD.FromString(EnvErrorText(ex.Message)), null); }
+    }
+
 
     // her parcel's local id: the parcel map (filled by every ParcelProperties, incl. the one sent on arrival), else
     // one ParcelProperties request; 0 if unknown
@@ -412,22 +488,32 @@ public static partial class Program
         Stage("materials", $"(pbr assets {pbrN}/{pbrIds.Count}; {matIds.Count} ids, {matIds.Count - missing.Count} cached, {matFetched} fetched)");
 
         var vparams = self == null ? new OSDMap() : Params(self);
-        OSD env; var parcelId = await ParcelIdAt(sim, myPos);
-        // `noenv` (her quick looks, David 2026-10-13): no EEP fetch at all; only `photo hd` renders the environment
-        if (noEnv) env = OSD.FromString("skipped: noenv");
-        else if (EnvCacheHit(envCache, sim.Handle, parcelId, DateTime.UtcNow)) env = envCache.env;
+        OSD env;
+        // `noenv` (quick looks, including far; David 2026-10-13 / 2026-11-23): zero environment work — no parcel
+        // lookup, cap, HTTP, cache, or parse. `photo hd` and `look ... env` (Photographer) fetch the full EEP reply.
+        if (noEnv)
+        {
+            env = OSD.FromString("skipped: noenv");
+            Stage("env", "(noenv)");
+        }
         else
         {
-            env = new OSDMap();
-            try
+            var parcelId = await ParcelIdAt(sim, myPos);
+            async Task<OSDMap> FetchParcel(int id)
             {
-                var e = parcelId > 0 ? await client.Environment.GetParcelEnvironmentAsync(parcelId) : null;
-                e ??= await client.Environment.GetRegionEnvironmentAsync();
-                if (e != null) { env = e.Serialize(); envCache = (sim.Handle, parcelId, DateTime.UtcNow, env); }
+                var e = await client.Environment.GetParcelEnvironmentAsync(id);
+                return e?.Serialize();
             }
-            catch (Exception ex) { env = $"error: {ex.Message}"; }
+            async Task<OSDMap> FetchRegion()
+            {
+                var e = await client.Environment.GetRegionEnvironmentAsync();
+                return e?.Serialize();
+            }
+            var (resolved, cacheWrite) = await ResolveExportEnvironment(false, sim.Handle, parcelId, sim.Name, DateTime.UtcNow, envCache, FetchParcel, FetchRegion);
+            env = resolved;
+            if (cacheWrite is { } w) envCache = w;
+            Stage("env", $"(parcel {parcelId})");
         }
-        Stage("env", $"(parcel {parcelId})");
         var doc = new OSDMap
         {
             ["materials"] = mats, ["gltf_overrides"] = gltf, ["visual_params"] = vparams, ["environment"] = env,

@@ -59,7 +59,7 @@ public static partial class Program
     }
 
     // pure (test): the MCP `look` arguments -> the client command line. target: self | view | around | <avatar or object name>
-    internal static string McpLookLine(string target, string views, bool fast, bool far, IEnumerable<(string key, string val)> options = null)
+    internal static string McpLookLine(string target, string views, bool fast, bool far, IEnumerable<(string key, string val)> options = null, bool env = false)
     {
         var t = (target ?? "").Trim(); if (t.Length == 0) t = "self";
         var w = new List<string> { "look" }; var tl = t.ToLowerInvariant();
@@ -71,6 +71,7 @@ public static partial class Program
         else { w.Add("at"); w.Add(string.Join(" ", t.Split(new[] { '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries)).Trim()); }
         if (fast) w.Add("fast");
         if (far) w.Add("far");
+        if (env) w.Add("env");
         foreach (var (k, v) in options ?? Array.Empty<(string, string)>())
         {
             if (string.IsNullOrWhiteSpace(v)) continue;
@@ -90,10 +91,10 @@ public static partial class Program
         return (images, summary, pending, failed, (txt ?? "").Trim());
     }
 
-    public static async Task<object> LookObj(string target, string views, bool fast, bool far, IEnumerable<(string key, string val)> options)
+    public static async Task<object> LookObj(string target, string views, bool fast, bool far, IEnumerable<(string key, string val)> options, bool env = false)
     {
         if (!LoggedIn) return new { ok = false, result = "not logged in" };
-        var line = McpLookLine(target, views, fast, far, options);
+        var line = McpLookLine(target, views, fast, far, options, env);
         var txt = await Exec(line);
         var (images, summary, pending, failed, text) = ParseLookOutput(txt);
         object sum = null; try { if (summary != null) { var d = JsonDocument.Parse(summary).RootElement; sum = new { seconds = d.TryGetProperty("total", out var tt) ? tt.GetDouble() : (double?)null, mode = d.TryGetProperty("mode", out var mm) ? mm.GetString() : null }; } } catch { }

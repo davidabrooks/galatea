@@ -23,7 +23,12 @@ sky only; the water settings stay the shared ones.
 ## Quick looks (her own vision)
 
 `look` exports with `noenv` (the client does not fetch the parcel/region environment) and look.py / look_cam.py pass no
-env to the renderer: a fixed neutral sun and sky, whatever the time of day in-world.
+env to the renderer: a fixed neutral sun and sky, whatever the time of day in-world. Plain `look ... far` stays on this
+quick path: no cap lookup, no HTTP fetch, no cache, no parse, and no extra environment fields.
+
+`look ... env` (for example `look around far env`) is the Photographer opt-in. That export includes the full shared
+ExtEnvironment reply (every day-cycle frame and track, day_length, day_offset, parcel or region source, and the export
+timestamp). Use it only for HD scenery renders, not for her own quick looks.
 
 ## What the client receives
 

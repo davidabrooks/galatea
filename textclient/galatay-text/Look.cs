@@ -15,6 +15,18 @@ namespace GalatayText;
 public static partial class Program
 {
     static readonly SemaphoreSlim lookGate = new(1, 1);
+    // One try/finally around the look body. If work throws or returns without taking ownership,
+    // the gate is released in finally. keepHeld() transfers ownership to look.py's exit path
+    // (including "still rendering after N s"), which releases when the process exits.
+    internal static async Task<string> RunWithLookGate(SemaphoreSlim gate, Func<Action, Task<string>> work)
+    {
+        if (!await gate.WaitAsync(0)) return "look: another look is still rendering; try again shortly";
+        var keepHeld = false;
+        try { return await work(() => keepHeld = true); }
+        catch (Exception e) { return "look failed: " + e.Message; }
+        finally { if (!keepHeld) gate.Release(); }
+    }
+
     static readonly string LookPy = Env("GT_LOOK_PY", "/workspace/galatea-sl-repo/vision/look.py");   // the main worktree (galatea-vr is a feature-branch clone)
     static readonly string LookPython = Env("GT_LOOK_PYTHON", "/home/box/tools/imgvenv/bin/python");
 
@@ -207,9 +219,8 @@ public static partial class Program
         if (mode == "self" && w.Length > 1 && views == null) return usage + "  (sides: front, back, left, right, all, or degrees -360..360 counter-clockwise from her front; comma list, max 8)";
         if (mode == null || (mode == "at" && w.Length < 2) || (mode == "around" && w.Length > 1)) return usage;
         if (!File.Exists(LookPy)) return $"look: {LookPy} not found (set GT_LOOK_PY)";
-        if (!await lookGate.WaitAsync(0)) return "look: another look is still rendering; try again shortly";
         var sw = Stopwatch.StartNew();
-        try
+        return await RunWithLookGate(lookGate, async keepHeld =>
         {
             if (mode == "at")   // root prim names for the target match: same property fetch `nearby` uses
                 await EnsureProperties(Sim, Sim.ObjectsPrimitives.Values.Where(p => p != null && p.ParentID == 0 && p.PrimData.PCode == PCode.Prim
@@ -232,7 +243,7 @@ public static partial class Program
             var ex = await SceneExport(exArgs);   // far: backdrop beyond 30 m (look.py --far)
             tEx = sw.Elapsed.TotalSeconds - tEx;
             var scene = ex.Split('\n').Last();
-            if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }
+            if (!scene.EndsWith("scene.json")) return "look: export failed: " + ex;
             var psi = new ProcessStartInfo(LookPython) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             psi.ArgumentList.Add(LookPy); psi.ArgumentList.Add(Path.GetDirectoryName(scene)!); psi.ArgumentList.Add(mode);
             if (mode == "at") psi.ArgumentList.Add(string.Join(" ", w[1..]));   // argv, never a shell: names can't inject
@@ -257,10 +268,10 @@ public static partial class Program
             pr.BeginOutputReadLine(); pr.BeginErrorReadLine();
             string Result() { lock (outText) lock (errText) return pr.ExitCode == 0 ? outText.ToString().Trim() : $"look failed (exit {pr.ExitCode}): {(errText.ToString() + outText).Trim()}"; }
             var done = pr.WaitForExitAsync().ContinueWith(_ => { var r = Result(); Log("look", $"{mode} {string.Join(" ", w.Skip(1))}: {r.Replace('\n', ' ')}"); lookGate.Release(); return r; });
+            keepHeld();   // look.py owns the gate until it exits, including the 'still rendering after N s' path
             int wait = hd != null ? 5 : int.TryParse(Env("GT_LOOK_WAIT_S", "75"), out var ws) && ws > 0 ? ws : 75;
             if (await Task.WhenAny(done, Task.Delay(TimeSpan.FromSeconds(Math.Max(1, wait - sw.Elapsed.TotalSeconds)))) == done) return await done;
             return $"look: still rendering after {sw.Elapsed.TotalSeconds:F0} s (pid {pr.Id}); the image path(s) will be logged as [look] in the client log";
-        }
-        catch (Exception e) { lookGate.Release(); return "look failed: " + e.Message; }
+        });
     }
 }

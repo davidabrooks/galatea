@@ -19,6 +19,7 @@
   <ItemGroup>
     <Compile Include="../galatay-mcp/Webhook.cs" Link="Webhook.cs" />
     <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
+    <ProjectReference Include="../src-libremetaverse/LibreMetaverse.Caching/LibreMetaverse.Caching.csproj" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../SlTextureVision/SlTextureVision.csproj" /> <!-- texture save / faces / vendor look (TextureCmds.cs) -->

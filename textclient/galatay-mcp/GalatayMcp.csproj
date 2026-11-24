@@ -71,6 +71,7 @@
     <Compile Include="../galatay-text/AutoHover.cs" Link="Core/AutoHover.cs" />
     <Compile Include="../galatay-text/HoverHost.cs" Link="Core/HoverHost.cs" />
     <Compile Include="../galatay-text/CrashGuard.cs" Link="Core/CrashGuard.cs" />
+    <Compile Include="../galatay-text/ObjectCache.cs" Link="Core/ObjectCache.cs" />
     <Compile Include="../galatay-text/LoginCover.cs" Link="Core/LoginCover.cs" />
     <Compile Include="../galatay-text/HoverFeetWiring.cs" Link="Core/HoverFeetWiring.cs" />
     <Compile Include="../galatay-text/AoSit.cs" Link="Core/AoSit.cs" />
@@ -175,6 +176,7 @@
     <Compile Include="../galatay-text/RoamLife.cs" Link="Core/RoamLife.cs" />
     <Compile Include="../galatay-text/FreezeRecovery.cs" Link="Core/FreezeRecovery.cs" />
     <ProjectReference Include="../src-libremetaverse/LibreMetaverse/LibreMetaverse.csproj" />
+    <ProjectReference Include="../src-libremetaverse/LibreMetaverse.Caching/LibreMetaverse.Caching.csproj" />
     <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.15" />
   </ItemGroup>

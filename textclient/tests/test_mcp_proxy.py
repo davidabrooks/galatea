@@ -99,7 +99,7 @@ class Client:
                 s = self.state()
                 if pred(s): return s
             except Exception: pass
-            time.sleep(0.2)
+            time.sleep(0.05)
         raise AssertionError(f"state never matched: {self.state()}\n{(self.tmp / 'proxy.err').read_text()[-1500:]}")
 
     def close(self):
@@ -195,10 +195,10 @@ def test_stub_soft_restart_refused_while_logged_in_force_and_trigger_file(tmp_pa
         c.p.send_signal(signal.SIGUSR1)                       # force
         s = c.wait_state(lambda s: s["child_pid"] != pid1 and s["last_result"].startswith("ok"))
         (c.run / "sl-session.pid").unlink()
-        time.sleep(1.1); trig.write_text("")                  # logged out: touched file restarts (soft)
+        touch_newer(trig, "")                                 # logged out: touched file restarts (soft)
         s2 = c.wait_state(lambda s: s["restarts"] == 2)
         assert s2["child_pid"] != s["child_pid"]
-        time.sleep(1.1); (c.run / "sl-session.pid").write_text(str(s2["child_pid"])); trig.write_text("force")
+        (c.run / "sl-session.pid").write_text(str(s2["child_pid"])); touch_newer(trig, "force")
         s3 = c.wait_state(lambda s: s["restarts"] == 3)
         assert s3["child_pid"] != s2["child_pid"]
     finally:
@@ -218,10 +218,35 @@ def fake_app(tcd, name, marker):
     return d
 
 
-def run_child_sh(tmp, tcd, pname, extra=None):
+def run_child_sh(tmp, tcd, pname, extra=None, tag="child"):
+    """The launcher with stderr in a file (poll it with wait_for) and stdout in another (must stay empty)."""
     env = {**os.environ, "GT_TCD": str(tcd), "GT_SOCK": str(tmp / "run" / "galatay.sock"), "GT_CHILD_PROC_NAME": pname,
            "GT_SWAP_LOG": str(tmp / "swap.log"), **(extra or {})}
-    return subprocess.Popen(["bash", str(CHILD_SH)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out, err = tmp / f"{tag}.out", tmp / f"{tag}.err"
+    p = subprocess.Popen(["bash", str(CHILD_SH)], env=env, stdout=open(out, "w"), stderr=open(err, "w"), text=True)
+    p.out_file, p.err_file = out, err
+    return p
+
+
+def wait_for(pred, timeout=15, every=0.05):
+    """Poll instead of a fixed sleep: returns as soon as pred() is true, fails after timeout."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if pred(): return True
+        except OSError: pass
+        time.sleep(every)
+    raise AssertionError("condition not met within %.0f s" % timeout)
+
+
+def text(path): return path.read_text() if path.exists() else ""
+
+
+def touch_newer(path, content):
+    """Write the trigger file with an mtime the proxy cannot mistake for the previous one (no 1.1 s sleep for coarse clocks)."""
+    prev = path.stat().st_mtime_ns if path.exists() else 0
+    path.write_text(content)
+    if path.stat().st_mtime_ns <= prev: os.utime(path, ns=(prev + 10**9, prev + 10**9))
 
 
 def test_state_settles_past_an_env_launcher_stage(tmp_path, stub):
@@ -242,8 +267,9 @@ def test_state_settles_past_an_env_launcher_stage(tmp_path, stub):
 def test_child_sh_swaps_staged_build_when_no_child_runs(tmp_path):
     tcd = tmp_path / "tcd"; fake_app(tcd, "mcp-app", "OLD"); nxt = fake_app(tcd, "mcp-app-next", "NEW"); (nxt / "READY").write_text("x")
     p = run_child_sh(tmp_path, tcd, "no-such-process-name")
-    time.sleep(1.0); p.kill(); out, err = p.communicate()
-    assert "NEW" in err and out == ""                     # new build started, stdout stays clean
+    try: wait_for(lambda: "NEW" in text(p.err_file))      # new build started
+    finally: p.kill(); p.wait()
+    assert text(p.out_file) == ""                         # stdout stays clean
     assert not (tcd / "mcp-app-next").exists() and list((tcd / "mcp-app-backups").glob("mcp-app-*"))
     assert "staged connector build installed" in (tmp_path / "swap.log").read_text()
 
@@ -255,14 +281,20 @@ def test_child_sh_waits_for_other_child_then_swaps_or_gives_up(tmp_path):
     try:
         tcd = tmp_path / "tcd"; fake_app(tcd, "mcp-app", "OLD"); nxt = fake_app(tcd, "mcp-app-next", "NEW"); (nxt / "READY").write_text("x")
         t0 = time.time()
-        p = run_child_sh(tmp_path, tcd, name, {"GT_SWAP_WAIT_S": "2"})
-        time.sleep(3.5); p.kill(); out, err = p.communicate()
-        assert "OLD" in err and (tcd / "mcp-app-next").exists()   # gave up: old build, staged build kept
-        assert "NOT installed" in (tmp_path / "swap.log").read_text()
+        p = run_child_sh(tmp_path, tcd, name, {"GT_SWAP_WAIT_S": "1"}, tag="giveup")
+        try: wait_for(lambda: "OLD" in text(p.err_file))
+        finally: p.kill(); p.wait()
+        assert (tcd / "mcp-app-next").exists()                    # gave up: old build, staged build kept
+        assert "NOT installed" in text(tmp_path / "swap.log")
         # now the other child exits while the launcher is waiting: swap happens
-        p = run_child_sh(tmp_path, tcd, name, {"GT_SWAP_WAIT_S": "20"})
-        time.sleep(1.0); busy.kill(); busy.wait(); time.sleep(2.0); p.kill(); out, err = p.communicate()
-        assert "NEW" in err and not (tcd / "mcp-app-next").exists()
+        p = run_child_sh(tmp_path, tcd, name, {"GT_SWAP_WAIT_S": "20"}, tag="swap")
+        try:
+            time.sleep(0.6)                                       # one 0.5 s round of the launcher's wait loop: it saw the busy child
+            assert "NEW" not in text(p.err_file) and "OLD" not in text(p.err_file)
+            busy.kill(); busy.wait()
+            wait_for(lambda: "NEW" in text(p.err_file))
+        finally: p.kill(); p.wait()
+        assert not (tcd / "mcp-app-next").exists()
     finally:
         busy.kill()
 
@@ -369,7 +401,7 @@ def test_real_connector_survives_cancelled_inflight_calls_behind_the_proxy(tmp_p
         for rid in ids[1::2]: assert "result" in c.wait_resp(rid)
         for _ in range(3):
             assert "not logged in" in json.dumps(c.call("tools/call", {"name": "nearby", "arguments": {}}))
-        time.sleep(2)
+        time.sleep(1.2)   # one proxy supervision round (wake.wait(1.0)) plus margin: a child death would show by now
         s = c.state()
         assert s["child_pid"] == pid and alive(pid) and s["restarts"] == 0 and s["last_result"] == "started", s
         assert "exited unexpectedly" not in c.err()

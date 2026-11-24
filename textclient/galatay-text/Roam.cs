@@ -246,8 +246,8 @@ public static partial class Program
         if (InPeronaut) return "roam is for sims other than home (Peronaut); use wander there";
         if (client.Self.SittingOn != 0) return "refused: sitting; stand first";
         if (leash is { mode: "leash" }) return "refused: leashed; not starting a roam";
-        if (followId != UUID.Zero) return "refused: already following; 'follow off' first";
         if (client.Self.SittingOn == 0 && !AoStateNow().active) return "refused: AO not active (" + AoStateNow().why + "); not starting a roam";
+        { var mr = MoverClaim(MoverKind.Roam, "roam on"); if (mr != null) return mr; }   // Movers.cs: stops a follow / walk / wander sit
         float radius = RoamDefaultRadiusM;
         if (a.Length > 1 && F(a[1], out var r)) radius = Math.Clamp(r, 10f, 200f);
         roamRadius = radius;
@@ -255,7 +255,7 @@ public static partial class Program
         roamPause = null; roamBad.Clear(); roamCandidatesLog.Clear(); roamParcelsLogged.Clear();
         roamStartedAt = DateTime.Now;
         var ct = roamCts.Token;
-        roamTask = Task.Run(() => RoamLoop(radius, ct));
+        roamTask = Task.Run(() => { moverSelf.Value = MoverKind.Roam; return RoamLoop(radius, ct); });
         return $"roam on, radius {radius:F0} m (watching [roam] lines; 'roam status' / 'roam off')";
     }
 

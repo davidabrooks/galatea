@@ -94,6 +94,8 @@
     <Compile Include="../galatay-text/AlphaFollow.cs" Link="Core/AlphaFollow.cs" />
     <Compile Include="../galatay-text/CollarScripts.cs" Link="Core/CollarScripts.cs" />
     <Compile Include="../galatay-text/ScriptsWatch.cs" Link="Core/ScriptsWatch.cs" />
+    <Compile Include="../galatay-text/Movers.cs" Link="Core/Movers.cs" />
+    <Compile Include="../galatay-text/OutfitJob.cs" Link="Core/OutfitJob.cs" />
     <Compile Include="../galatay-text/CollarStealth.cs" Link="Core/CollarStealth.cs" />
     <Compile Include="../galatay-text/AutoFollow.cs" Link="Core/AutoFollow.cs" />
     <Compile Include="../galatay-text/OfferStore.cs" Link="Core/OfferStore.cs" />

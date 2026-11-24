@@ -278,10 +278,11 @@ public static partial class Program
     }
 
     /// <summary>After an outfit change or an android login: hide ears on Android* outfits, show them again on human outfits; lashes unchanged.</summary>
+    static volatile Task evoxEarsAfterTask = Task.CompletedTask;   // OutfitJob.cs waits for it (via outfitPostSteps)
     static void EvoxEarsAfterOutfit(string outfit)
     {
         var hide = IsAndroidOutfit(outfit);
-        _ = Task.Run(async () =>
+        evoxEarsAfterTask = Task.Run(async () =>
         {
             try
             {

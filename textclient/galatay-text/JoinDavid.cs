@@ -119,6 +119,8 @@ public static partial class Program
     {
         try
         {
+            MoverClaim(MoverKind.ComeHere, "come-here (" + source + ")");   // Movers.cs: stops the other movers
+            moverSelf.Value = MoverKind.ComeHere;                              // its own walk / follow afterwards are its steps
             var pos = DavidPos();
             bool same = pos != null;
             float dist = pos != null ? Vector3.Distance(pos.Value, client.Self.SimPosition) : -1f;
@@ -345,8 +347,8 @@ public static partial class Program
         followDavidAfterCome = false;
         try
         {
+            { var mr = MoverClaim(MoverKind.Follow, "follow David (" + source + ")", followTarget: DavidId); if (mr != null) { Log("follow", $"not following David ({source}): {mr}"); return; } }   // Movers.cs
             if (WanderOn) StopWander("follow David");
-            StopRoamIfOn("follow David");
             if (client.Self.SittingOn != 0) StandFaceFirst();
             // Keep a per-call session standoff if one is already set; otherwise the default (1.5 m) applies.
             followId = DavidId;

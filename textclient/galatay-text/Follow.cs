@@ -63,6 +63,13 @@ public static partial class Program
     static ulong followLeaderSeenHandle;
     static bool followWaitingFreshPos;
     static UUID followLureSender = UUID.Zero;
+    static DateTime followLureAt = DateTime.MinValue;
+    static bool followTpLeaderLured;   // this teleport came from the leader's own lure (accepted < 2 min before it)
+    // 2026-11-23 (one mover at a time, Movers.cs): after a teleport that the leader did not lure me on, a follow whose leader
+    // does not show up in the new region within this many seconds ends (it used to wait for him forever).
+    internal const double FollowTeleportGiveUpS = 15;
+    internal static bool FollowGiveUpAfterTeleport(bool waitingFreshPos, bool leaderLured, double sinceTeleportS) =>
+        waitingFreshPos && !leaderLured && sinceTeleportS >= FollowTeleportGiveUpS;
 
     internal static bool FollowPosIsUsable(ulong myHandle, ulong posHandle, DateTime posAt, DateTime ignoreBefore, DateTime now, float maxAgeS, bool afterTeleport, float neighborGraceS)
     {
@@ -77,7 +84,11 @@ public static partial class Program
     internal static bool FollowShouldHoldForFreshPos(bool waiting, bool haveFreshCurrentRegionPos) =>
         waiting && !haveFreshCurrentRegionPos;
 
-    static void NoteLureAccepted(UUID from) { followLureSender = from; }
+    static void NoteLureAccepted(UUID from)
+    {
+        followLureSender = from; followLureAt = DateTime.Now;
+        MoverClaim(MoverKind.Teleport, "teleport offer accepted from " + NameOf(from), keepFollowOf: from);   // Movers.cs: a follow of the sender stays
+    }
 
     static void FollowNoteLeaderSeen(UUID id, ulong handle)
     {
@@ -101,9 +112,10 @@ public static partial class Program
         fMode = FMode.Hold;
         try { client.Self.AutoPilotCancel(); } catch { }
         followWaitingFreshPos = followId != UUID.Zero;
+        followTpLeaderLured = followLureSender != UUID.Zero && followLureSender == followId && (DateTime.Now - followLureAt).TotalSeconds < 120;
         if (followWaitingFreshPos)
             FLog($"teleport ({why}): holding follow until a fresh position for {followName} arrives in this region" +
-                 (followLureSender != UUID.Zero && followLureSender == followId ? " (lure sender — assuming he is at the arrival)" : ""));
+                 (followTpLeaderLured ? " (lure sender — assuming he is at the arrival)" : $" (not his lure: the follow ends if he is not here within {FollowTeleportGiveUpS:0} s)"));
     }
 
     // ---- pure helpers (selftest) ----
@@ -208,6 +220,13 @@ public static partial class Program
         bool usable = found != null && FollowPosIsUsable(sim.Handle, posHandle, posAt, followPosIgnoreBefore, now, FollowPosMaxAgeS, afterTp, FollowTeleportNeighborGraceS);
         if (!usable)
         {
+            if (FollowGiveUpAfterTeleport(followWaitingFreshPos, followTpLeaderLured, (now - followTeleportAt).TotalSeconds))
+            {
+                FLog($"follow of {followName} ended: not in this region {FollowTeleportGiveUpS:0} s after a teleport he did not lure me on");
+                AutoFollowOnFollowOff("leader not here after a teleport"); followId = UUID.Zero; followDistThis = null; followWaitingFreshPos = false;
+                try { client.Self.AutoPilotCancel(); } catch { }
+                return;
+            }
             if (FollowShouldHoldForFreshPos(followWaitingFreshPos, false))
             {
                 if (fMode != FMode.Hold) { try { client.Self.AutoPilotCancel(); } catch { } fMode = FMode.Hold; fAim = null; }
@@ -366,11 +385,11 @@ public static partial class Program
         if (a.Length >= 2 && F(a[^1], out var dv)) { dist = ClampFollowDist(dv); name = string.Join(' ', a[..^1]); }
         var av = Avatars().FirstOrDefault(t => t.av.Name.Equals(name, StringComparison.OrdinalIgnoreCase) || t.av.Name.Equals(name + " Resident", StringComparison.OrdinalIgnoreCase));
         if (av.av == null) return $"'{name}' is not in view (must be in the same region and within draw distance)";
+        { var mr = MoverClaim(MoverKind.Follow, "follow " + av.av.Name, followTarget: av.av.ID); if (mr != null) return mr; }   // Movers.cs: stops roam, walk, wander sit
         if (client.Self.SittingOn != 0) StandFaceFirst();
         var prevThis = followDistThis;
         followDistThis = NextFollowSessionDist(followDistThis, dist, sameTarget: followId == av.av.ID, stopping: false);
         if (followDistThis != prevThis) FollowNoteDistChange();
-        StopRoamIfOn("follow " + av.av.Name);
         followId = av.av.ID; followName = av.av.Name;
         return $"following {followName} ({av.dist:F1} m away), keeping {FollowDist:F1} m behind{(followDistThis != null ? " (this follow; 'follow dist <m>' sets the default)" : "")}";
     }

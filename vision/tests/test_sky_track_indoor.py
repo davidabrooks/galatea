@@ -51,7 +51,7 @@ def test_empty_track_falls_back_and_override(monkeypatch=None):
 
 
 def test_env_at_uses_the_altitude_track():
-    assert 'dc["tracks"][sky_track(doc, dc)]' in open(os.path.join(HERE, "cloud-render", "llsky.py")).read()
+    assert "track_keys(dc, sky_track(doc, dc, alt), frac)" in open(os.path.join(HERE, "cloud-render", "llsky.py")).read()
 
 
 def test_indoor_ambient_and_holdout_cut_wired():

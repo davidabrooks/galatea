@@ -79,3 +79,81 @@ def test_photo_env_noenv_falls_back_to_default_sky():
     assert named["source"] == "preset:Sunset"
     # a usable shared environment is unchanged
     assert llsky.photo_env(shared())["source"] == "shared"
+
+
+def far_env(frames, sky_keys, water_frames=None, water_keys=None, region_time_s=0, day_length=14400, day_offset=0,
+            me_z=0.0, track_altitudes=None, extra_sky_tracks=None, exported_at_utc="2026-11-23T18:00:00Z"):
+    """A `look around far env` wrap: raw ExtEnvironment plus source, timestamps, and region_time_s."""
+    tracks = [water_keys or [{"key_keyframe": 0, "key_name": "w"}],
+              [{"key_keyframe": k if k is not None else 0.0, "key_name": n} for k, n in sky_keys]]
+    if extra_sky_tracks:
+        tracks.extend(extra_sky_tracks)
+    frames = dict(frames)
+    if water_frames:
+        frames.update(water_frames)
+    elif "w" not in frames:
+        frames["w"] = WATER
+    inner = {"day_length": day_length, "day_offset": day_offset, "day_cycle": {"frames": frames, "tracks": tracks},
+             "flags": 0, "version": 1}
+    wrap = {"environment": inner, "source": "region", "region": "Test", "parcel_id": -1,
+            "exported_at_utc": exported_at_utc, "region_time_s": region_time_s}
+    if track_altitudes is not None:
+        wrap["track_altitudes"] = track_altitudes
+        inner["track_altitudes"] = track_altitudes
+    return {"environment": wrap, "me": {"pos": [128.0, 128.0, me_z]}, "sun_dir": [0, 0, 1]}
+
+
+def test_region_time_blends_the_two_surrounding_keyframes():
+    """region_time_s / day_length selects the two sky keys around that instant and blends them."""
+    # keys at 0 (midnight, sun down) and 0.5 (noon, sun up); half-way at 0.25 should lift the sun
+    d = far_env({"m": MIDNIGHT, "n": NOON}, [(0.0, "m"), (0.5, "n")], region_time_s=int(0.25 * 14400))
+    e = llsky.env_at(d)
+    assert e is not None and e["source"] == "shared"
+    assert abs(e["frac"] - 0.25) < 1e-9
+    assert e["sun_dir"][2] > llsky.qrot_x(MIDNIGHT["sun_rotation"])[2]
+    assert e["sun_dir"][2] < llsky.qrot_x(NOON["sun_rotation"])[2]
+    # water also blends when the water track has two keys
+    w0 = {**WATER, "water_fog_color": [0.0, 0.0, 0.0], "water_fog_density": 0}
+    w1 = {**WATER, "water_fog_color": [1.0, 1.0, 1.0], "water_fog_density": 10}
+    d2 = far_env({"m": MIDNIGHT, "n": NOON}, [(0.0, "m"), (0.5, "n")],
+                 water_frames={"w0": w0, "w1": w1},
+                 water_keys=[{"key_keyframe": 0.0, "key_name": "w0"}, {"key_keyframe": 0.5, "key_name": "w1"}],
+                 region_time_s=int(0.25 * 14400))
+    w = llsky.env_at(d2)["water"]
+    assert all(abs(c - 0.5) < 1e-9 for c in w["fog_color"]) and abs(w["fog_density"] - 5) < 1e-9
+
+
+def test_night_frame_has_stars_and_the_moon():
+    d = far_env({"m": MIDNIGHT}, [(0.0, "m")], region_time_s=0)
+    e = llsky.env_at(d)
+    assert e["sun_dir"][2] < -0.7 and e["moon_dir"][2] > 0.7
+    assert "night_sky" in e and e["night_sky"]["stars"] > 0.99 and e["stars"] > 0.99
+    assert e["moon"] == 0.5
+
+
+def test_altitude_track_choice_ground_unless_above_threshold():
+    # ground sky vs a darker high-altitude sky on track 2 (floor 1000 m)
+    high = {**NOON, "sunlight_color": [0.05, 0.05, 0.05], "ambient": [0.02, 0.02, 0.02]}
+    extra = [[{"key_keyframe": 0.0, "key_name": "h"}], [], []]  # tracks 2, 3, 4
+    low = far_env({"n": NOON, "h": high}, [(0.0, "n")], extra_sky_tracks=extra, me_z=10.0,
+                  track_altitudes=[0.0, 1000.0, 2000.0, 3000.0], region_time_s=0)
+    high_d = far_env({"n": NOON, "h": high}, [(0.0, "n")], extra_sky_tracks=extra, me_z=1500.0,
+                     track_altitudes=[0.0, 1000.0, 2000.0, 3000.0], region_time_s=0)
+    assert llsky.sky_track(low, low["environment"]["environment"]["day_cycle"]) == 1
+    assert llsky.sky_track(high_d, high_d["environment"]["environment"]["day_cycle"]) == 2
+    assert llsky.env_at(low)["sunlight"][0] > 0.5
+    assert llsky.env_at(high_d)["sunlight"][0] < 0.1
+    # an explicit camera altitude wins over the agent z
+    assert llsky.sky_track(low, low["environment"]["environment"]["day_cycle"], alt=1500.0) == 2
+
+
+def test_photo_env_error_string_falls_back_to_default_sky():
+    """A failed env fetch (`error: ...`) is not a usable day cycle: HD uses the viewer Default sky."""
+    d = {"environment": "error: no environment", "exported_at_utc": "2026-11-23T18:00:00Z", "sun_dir": [0.9, 0, 0.44]}
+    e = llsky.photo_env(d)
+    assert e is not None and e["source"].startswith("default-fallback:")
+    assert e["sun_dir"][2] > 0.9
+    # a missing environment block is the same fallback
+    assert llsky.photo_env({})["source"].startswith("default-fallback:")
+    assert llsky.env_at({"environment": "error: no environment"}) is None
+

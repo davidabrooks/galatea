@@ -57,7 +57,7 @@ day length / offset, the day cycle's water track (track 0) and four sky tracks (
 
 - PBR-sky settings: rayleigh/mie/absorption configs, planet/sky radii, droplet radius, moisture/ice level, dome offset/radius, reflection probe ambiance.
 - The sky's textures: cloud_id (clouds are procedural noise), sun_id / moon_id / bloom_id / halo_id / rainbow_id (plain discs, no halo or rainbow), the viewer's star map.
-- Altitude sky tracks 2-4 (the ground track is always used).
+- Altitude sky tracks 2-4 are used when the camera (or subject) is above the region's track-altitude floors (defaults 1000 / 2000 / 3000 m); otherwise the ground track.
 - Water: normal_map, normal_scale, wave1/2 direction (calm plane, no waves), fresnel_offset, blur_multiplier, scale_above / scale_below, underwater fog (the camera is above water), reflections of objects in the water.
 - Haze is one grey extinction (channel mean), without in-scatter toward the sun; gamma is Blender's view gamma, close to but not exactly the viewer's soft clip.
 - Personal (non-shared) environments other than the presets listed above, and day-cycle presets.

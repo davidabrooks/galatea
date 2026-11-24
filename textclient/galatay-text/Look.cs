@@ -1,4 +1,4 @@
-// Look.cs (2026-10-04, David: let her see) - `look [self [front|back|left|right|<degrees>|all]|around|at <avatar|object>] [fast] [far]`
+// Look.cs (2026-10-04, David: let her see) - `look [self [front|back|left|right|<degrees>|all]|around|at <avatar|object>] [fast] [far] [env]`
 //   self + a side (2026-10-07, David: "you should be able to take a render at any angle"): only the full-body render, from
 //   that side of her (degrees around her vertical axis, counter-clockwise from her front: 90 = her left, 180 = her back);
 //   'all' = front, back, left and right; several as a comma list (back,left,45).
@@ -171,9 +171,29 @@ public static partial class Program
         return env;
     }
 
+
+    // pure (test): pull the look option words off the command, leaving the mode and target
+    internal static (bool fast, bool far, bool env, string[] rest) LookFlags(string[] a)
+    {
+        a ??= Array.Empty<string>();
+        bool fast = a.Contains("fast"), far = a.Contains("far"), env = a.Contains("env");
+        return (fast, far, env, a.Where(x => x is not ("fast" or "far" or "env")).ToArray());
+    }
+
+    // pure (test): photo hd, or the Photographer `env` flag, are the only looks that fetch the shared environment
+    internal static bool LookWantsSharedEnv(bool photoHd, bool envFlag) => photoHd || envFlag;
+
+    // pure (test): scene-export argv for a look. Without the opt-in, `noenv` is passed and the export does zero env work.
+    internal static string[] LookSceneExportArgs(float radius, bool wantsSharedEnv)
+    {
+        var a = new List<string> { "export", radius.ToString(CultureInfo.InvariantCulture) };
+        if (!wantsSharedEnv) a.Add("noenv");
+        return a.ToArray();
+    }
+
     static async Task<string> LookCmd(string[] a, string hd = null, string sky = null, string profile = null, string no = null, string fov = null)
     {
-        const string usage = "usage: look [self [front|back|left|right|side|<degrees>|all]|around|at <avatar or object name>] [fast] [far]  (self also: views feet = tight close-up on her lowest floor contact (feet / hips / shins), zoom=feet = every view that tight; preset=<hover-ground|hover-seat|photo-fast|outfit|photo-hd> scope=<full|nearby|seat|none> floor=<auto|on|off> avatars=off hide-attach=<points> textures=off materials=off small scale=<n> size=WxH samples=<n> jpeg=<n> exposure=<stops> cam-margin=<n> cam-lens=<mm> cam-fov=<deg> cam-height=<m>; docs/render-presets.md)";
+        const string usage = "usage: look [self [front|back|left|right|side|<degrees>|all]|around|at <avatar or object name>] [fast] [far] [env]  (self also: views feet = tight close-up on her lowest floor contact (feet / hips / shins), zoom=feet = every view that tight; preset=<hover-ground|hover-seat|photo-fast|outfit|photo-hd> scope=<full|nearby|seat|none> floor=<auto|on|off> avatars=off hide-attach=<points> textures=off materials=off small scale=<n> size=WxH samples=<n> jpeg=<n> exposure=<stops> cam-margin=<n> cam-lens=<mm> cam-fov=<deg> cam-height=<m>; docs/render-presets.md; env = include the region's shared EEP environment in the scene export, for Photographer HD renders; quick looks, including far, stay noenv)";
         // render options (look_scope.py) are only read for `look self` (or a bare preset=...): a target name can't swallow them
         var lookOpts = new List<string>();
         if (a.Length > 0 && (a[0] == "self" || a.Any(x => x.StartsWith("preset=", StringComparison.Ordinal)) && a[0] is not ("around" or "at")))
@@ -181,7 +201,7 @@ public static partial class Program
             var (aRest, oList, pre) = LookOptions(a); lookOpts = oList; a = aRest.Length == 0 ? new[] { "self" } : aRest;
             if (pre == "photo-hd") return await PhotoCmd(new[] { "hd", "self" });
         }
-        bool fast = a.Contains("fast"), far = a.Contains("far"); var w = a.Where(x => x != "fast" && x != "far").ToArray();
+        var (fast, far, envFlag, w) = LookFlags(a);
         string mode = w.Length == 0 ? "view" : w[0] is "self" or "around" or "at" ? w[0] : null;
         string views = mode == "self" && w.Length > 1 ? LookSelfViews(string.Join(",", w[1..])) : null;
         if (mode == "self" && w.Length > 1 && views == null) return usage + "  (sides: front, back, left, right, all, or degrees -360..360 counter-clockwise from her front; comma list, max 8)";
@@ -206,9 +226,10 @@ public static partial class Program
             var tWait = sw.Elapsed.TotalSeconds;
             if (mode != "self" || hd != null) await EnsureNearbyAttachments(er, hd != null);   // wait for nearby avatars' attachments (stand-ins for the rest)
             tWait = sw.Elapsed.TotalSeconds - tWait; var tEx = sw.Elapsed.TotalSeconds;
-            var exArgs = new List<string> { "export", er.ToString(CultureInfo.InvariantCulture) };
-            if (hd == null) exArgs.Add("noenv");   // her own looks: fixed neutral light, no environment fetch (David 2026-10-13)
-            var ex = await SceneExport(exArgs.ToArray());   // far: backdrop beyond 30 m (look.py --far)
+            // quick looks (including far) stay noenv and do no environment work (David 2026-10-13, 2026-11-23);
+            // `env` is the Photographer opt-in; photo hd already fetches the shared environment
+            var exArgs = LookSceneExportArgs(er, LookWantsSharedEnv(hd != null, envFlag));
+            var ex = await SceneExport(exArgs);   // far: backdrop beyond 30 m (look.py --far)
             tEx = sw.Elapsed.TotalSeconds - tEx;
             var scene = ex.Split('\n').Last();
             if (!scene.EndsWith("scene.json")) { lookGate.Release(); return "look: export failed: " + ex; }

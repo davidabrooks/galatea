@@ -1818,7 +1818,7 @@ public static partial class Program
   far [metres]               show / set the draw distance the sim streams within (AgentUpdate Far; default 128)
   throttle [task <kbps>]      show / set the UDP object-update throttle (AgentThrottle; max 1338 kbps task)
   interest [status|360|default]   SL interest list mode per region (360 = stream everything around her, not just the camera frustum)
-  look [self [front|back|left|right|<deg>|all]|around|at <name>] [fast] [far]  READ-ONLY (far: +96 m backdrop): scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
+  look [self [front|back|left|right|<deg>|all]|around|at <name>] [fast] [far] [env]  READ-ONLY (far: +96 m backdrop; env: include the shared parcel/region environment in the export, for Photographer HD renders; quick looks stay noenv): scene export + mesh + CPU render on the box -> image path(s) (Look.cs, vision/look.py)
   photo hd [self|view|<name>] [landscape|portrait]  READ-ONLY: 4K still for David (3840x2160 / 2160x3840, Cycles+denoise, ~3-5 min CPU) -> PNG+JPG in /workspace/secondlife/photos, paths logged as [look]
   texture save <uuid>         download a texture and save it as PNG under /workspace/secondlife/textures/
   faces <object name|uuid> [face=<n>] [r=<m>]   faces of a nearby object/linkset with texture UUIDs; saves the non-blank ones as PNG

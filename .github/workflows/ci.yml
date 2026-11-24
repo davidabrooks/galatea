@@ -22,21 +22,32 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # 2026-11-23: NuGet package cache (restore was downloading every package on every run).
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'scripts/ci-setup-libremetaverse.sh', 'textclient/*.patch') }}
+          restore-keys: nuget-${{ runner.os }}-
+
       - name: Setup LibreMetaverse (patched, no SL login)
         run: bash scripts/ci-setup-libremetaverse.sh
 
-      - name: Build text client + MCP
-        run: bash textclient/build-all.sh
+      # Builds everything once (text client, MCP, xUnit project); the steps below reuse it (--no-build, no LMV recompile).
+      - name: Build text client + MCP + xUnit project
+        run: bash textclient/build-all.sh --tests
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: "1"
           DOTNET_NOLOGO: "1"
 
       - name: scene-mesher — build + pure selftests (--lod-selftest attachment LOD, --skin-selftest SL skinning palette + normals)
         run: |
-          dotnet build vision/scene-mesher/SceneMesher.csproj -c Release -o "$RUNNER_TEMP/mesher" -p:LMV="$PWD/textclient/src-libremetaverse" --nologo -v q
-          dotnet "$RUNNER_TEMP/mesher/SceneMesher.dll" --lod-selftest
-          dotnet "$RUNNER_TEMP/mesher/SceneMesher.dll" --skin-selftest
-          dotnet "$RUNNER_TEMP/mesher/SceneMesher.dll" --mem-selftest
+          # no -o: an output-path override would make LibreMetaverse recompile (see build-all.sh)
+          dotnet build vision/scene-mesher/SceneMesher.csproj -c Release -p:LMV="$PWD/textclient/src-libremetaverse" --nologo -v q
+          M=vision/scene-mesher/bin/Release/net10.0/SceneMesher.dll
+          dotnet "$M" --lod-selftest
+          dotnet "$M" --skin-selftest
+          dotnet "$M" --mem-selftest
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: "1"
           DOTNET_NOLOGO: "1"
@@ -45,7 +56,7 @@ jobs:
         run: |
           export GALATAY_TEXT_EXE="$PWD/textclient/app-staging/galatay-text"
           chmod +x "$GALATAY_TEXT_EXE" || true
-          dotnet test textclient/GalatayText.Tests/GalatayText.Tests.csproj -c Release --logger "trx;LogFileName=csharp.trx"
+          dotnet test textclient/GalatayText.Tests/GalatayText.Tests.csproj -c Release --no-build --logger "trx;LogFileName=csharp.trx"
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: "1"
 
@@ -66,9 +77,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
 
       - name: Install light CI deps (no faster-whisper)
         run: pip install -r requirements-ci.txt
 
-      - name: pytest vision + voice (skip heavy / model downloads)
-        run: pytest -q
+      - name: pytest vision + voice (skip heavy / model downloads; parallel via pytest-xdist)
+        run: pytest -q -n auto

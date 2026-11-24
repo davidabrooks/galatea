@@ -1,0 +1,124 @@
+{
+ "prims": [],
+ "materials": {},
+ "gltf_overrides": {},
+ "visual_params": {},
+ "environment": {},
+ "sun_dir": [
+  0.3,
+  0.3,
+  0.9
+ ],
+ "region": "Fixture",
+ "agent_id": "00000000-0000-4000-8000-0000000000aa",
+ "me": {
+  "pos": [
+   128.0,
+   128.0,
+   40.8
+  ],
+  "rot": [
+   0,
+   0,
+   0,
+   1
+  ],
+  "anims": ""
+ },
+ "water_height": 20,
+ "terrain": {
+  "step": 128,
+  "nx": 3,
+  "ny": 3,
+  "heights": [
+   [
+    40.0,
+    40.0,
+    40.0
+   ],
+   [
+    40.0,
+    40.0,
+    40.0
+   ],
+   [
+    40.0,
+    40.0,
+    40.0
+   ]
+  ]
+ },
+ "terrain_composition": {},
+ "neighbor_regions": [],
+ "radius": 30,
+ "bakes": {},
+ "avatars": [
+  {
+   "pos": [
+    131.0,
+    128.0,
+    40.8
+   ],
+   "rot": [
+    0,
+    0,
+    0,
+    1
+   ],
+   "agent_id": "00000000-0000-4000-8000-000000000001",
+   "name": "Test Avatar1",
+   "local_id": 1000,
+   "visual_params": {},
+   "bakes": {},
+   "anims": "",
+   "dressed": "none",
+   "attach_expected": 0,
+   "attach_have": 0
+  },
+  {
+   "pos": [
+    124.0,
+    130.0,
+    40.8
+   ],
+   "rot": [
+    0,
+    0,
+    0,
+    1
+   ],
+   "agent_id": "00000000-0000-4000-8000-000000000002",
+   "name": "Test Avatar2",
+   "local_id": 1001,
+   "visual_params": {},
+   "bakes": {},
+   "anims": "",
+   "dressed": "none",
+   "attach_expected": 0,
+   "attach_have": 0
+  },
+  {
+   "pos": [
+    129.0,
+    123.0,
+    40.8
+   ],
+   "rot": [
+    0,
+    0,
+    0,
+    1
+   ],
+   "agent_id": "00000000-0000-4000-8000-000000000003",
+   "name": "Test Avatar3",
+   "local_id": 1002,
+   "visual_params": {},
+   "bakes": {},
+   "anims": "",
+   "dressed": "none",
+   "attach_expected": 0,
+   "attach_have": 0
+  }
+ ],
+ "exported_at": "2026-11-23T18:00:00-08:00"
+}

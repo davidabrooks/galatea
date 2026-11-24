@@ -5,6 +5,7 @@ using Xunit;
 namespace GalatayText.Tests;
 
 /// <summary>SlDns.cs: SL hosts the box DNS points at the 198.18.0.1 proxy are resolved via DoH and connected by real IP.</summary>
+[Collection(ProcessStateCollection.Name)]
 public class SlDnsTests
 {
     const string Google = "{\"Status\":0,\"Answer\":[{\"name\":\"h.\",\"type\":5,\"TTL\":60,\"data\":\"x.\"},{\"name\":\"x.\",\"type\":1,\"TTL\":120,\"data\":\"35.162.135.137\"},{\"name\":\"x.\",\"type\":1,\"TTL\":90,\"data\":\"35.162.135.138\"}]}";

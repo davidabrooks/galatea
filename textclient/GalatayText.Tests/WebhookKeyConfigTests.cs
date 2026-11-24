@@ -6,6 +6,7 @@ namespace GalatayText.Tests;
 
 /// <summary>2026-11-09: chat relay went silent when box-secrets.json was unreadable by the box user
 /// while GALATAY_WEBHOOK_KEY was already in the process env. Env-first key + non-silent warnings.</summary>
+[Collection(ProcessStateCollection.Name)]
 public class WebhookKeyConfigTests
 {
     const string SampleKey = "test-webhook-key-value-not-real";

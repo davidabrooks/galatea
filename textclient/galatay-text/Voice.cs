@@ -542,6 +542,7 @@ public static partial class Program
         lock (vWakeGate) vPending.Add(new VLine(at, speaker, speakerId ?? "", text, trigger));
         var gen = Interlocked.Increment(ref vWakeFlushGen);
         var parcelCap = parcel; var channelCap = channel;
+        Interlocked.Increment(ref vWakeFlushInFlight);
         _ = Task.Run(() => VoiceWakeFlushAfterDebounce(gen, parcelCap, channelCap));
     }
 
@@ -566,7 +567,10 @@ public static partial class Program
             VoiceWakeFlush(parcel, channel);
         }
         catch (Exception ex) { VLog("wake flush error: " + ex.GetBaseException().Message); }
+        finally { Interlocked.Decrement(ref vWakeFlushInFlight); }
     }
+    // debounced flushes still waiting or running (bookkeeping only; the selftest waits for 0 instead of sleeping a fixed time)
+    static int vWakeFlushInFlight;
 
     static string VoiceFmtLines(IReadOnlyList<VLine> list, string primarySpeaker)
     {
@@ -631,6 +635,9 @@ public static partial class Program
         var sb = new StringBuilder(); int fail = 0;
         void C(bool ok, string what) { sb.AppendLine((ok ? "ok   " : "FAIL ") + what); if (!ok) fail++; }
         void Sleep(double s) => Task.Delay(TimeSpan.FromSeconds(s)).GetAwaiter().GetResult();
+        // 2026-11-23: negative checks ("no POST") wait until every debounced flush has finished, then a short grace for the
+        // webhook's own Task.Run post, instead of a fixed 0.5-0.6 s sleep each (the whole selftest took ~5.5 s)
+        void Settle() { var end = DateTime.UtcNow.AddSeconds(5); while (Volatile.Read(ref vWakeFlushInFlight) > 0 && DateTime.UtcNow < end) Sleep(0.01); Sleep(0.05); }
         var keepMode = VWakeMode; var keepDeb = VoiceDebounceS; var keepMin = VoiceMinWakeS; var keepCtx = VoiceContextS; var keepNow = vNow;
         var posted = new List<string>();
         var keepPost = GalatayMcp.Webhook.PostOverride;
@@ -733,7 +740,7 @@ public static partial class Program
             clock = clock.AddSeconds(2);
             VoiceNoteLine("Visitor", "22222222-2222-2222-2222-222222222222", "interesting point about zen", "Sangha", "parcel voice");
             clock = clock.AddSeconds(2);
-            Sleep(0.6);
+            Settle();
             C(posted.Count == 0, "name mode: no wake without a mention");
             VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", "Galatea what do you think?", "Sangha", "parcel voice");
             deadline = DateTime.UtcNow.AddSeconds(6);
@@ -754,7 +761,7 @@ public static partial class Program
             clock = DateTime.Now; vNow = () => clock;
             VWakeMode = VoiceWakeMode.Name;
             VoiceNoteLine("Visitor", "22222222-2222-2222-2222-222222222222", "nice house you have", "Sangha", "parcel voice");
-            Sleep(0.5);
+            Settle();
             C(posted.Count == 0, "name mode: visitor plain line does not wake");
             VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", "you're looking good today", "Sangha", "parcel voice");
             deadline = DateTime.UtcNow.AddSeconds(6);
@@ -769,11 +776,11 @@ public static partial class Program
             VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", ".", "Sangha", "parcel voice");
             VWakeMode = VoiceWakeMode.All;
             VoiceNoteLine("Visitor", "22222222-2222-2222-2222-222222222222", "...", "Sangha", "parcel voice");
-            Sleep(0.6);
+            Settle();
             C(posted.Count == 0, "noise-only lines never wake (name or all mode)");
             VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", ".", "Sangha", "parcel voice", 0.4);
             VoiceNoteLine("Visitor", "22222222-2222-2222-2222-222222222222", "", "Sangha", "parcel voice", 2.0);
-            Sleep(0.6);
+            Settle();
             C(posted.Count == 0, "short David blip and long visitor noise never wake");
             VWakeMode = VoiceWakeMode.Name;
             VoiceNoteLine("David Nightingale", "44ce5a36-c1c7-4a68-ac9a-635ddfff6233", ".", "Sangha", "parcel voice", 1.4);
@@ -823,7 +830,7 @@ public static partial class Program
             clock = DateTime.Now; vNow = () => clock;
             VWakeMode = VoiceWakeMode.Off;
             VoiceNoteLine("A", "11111111-1111-1111-1111-111111111111", "Galatea hello", "P", "voice");
-            Sleep(0.5);
+            Settle();
             C(posted.Count == 0, "wake off never POSTs");
         }
         catch (Exception ex) { C(false, "exception: " + ex); }

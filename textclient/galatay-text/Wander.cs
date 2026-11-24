@@ -411,7 +411,7 @@ public static partial class Program
             }
             else if (id != DavidId && dist >= 0 && dist <= 40f)
                 WLog($"chat from {name}: not a come request; replying in place (no approach)");
-            if (!WanderChatShouldPause(im, dist)) return; // local chat from farther than 5 m or unknown position doesn't pause; IMs still do
+            if (!PlanChatInbound(im, dist).pauseWander) return; // local chat from farther than 5 m or unknown position doesn't pause; IMs still do
             // 2026-11-22 (WanderPoseRequest.cs): David asking for a pose change while she sits keeps the wander and the sit running
             if (PoseRequestKeepsWander(WanderOn, client.Self.SittingOn != 0, wanderPause, id == DavidId, text))
             {

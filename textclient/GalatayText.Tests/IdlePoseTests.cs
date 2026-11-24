@@ -29,10 +29,6 @@ public class IdlePoseTests
         Assert.Null(Program.IdleMustExit("collar", false, false, false, false, false, true, false));   // David walking away alone: stay
         Assert.Equal("follow", Program.IdleMustExit("collar", true, false, false, false, false, true, false));
         Assert.Equal("moving", Program.IdleMustExit("groundsit", false, false, true, false, false, false, false));
-        Assert.False(Program.LeashIdleMustRise(true, false, 3f, 1f));    // he stands still
-        Assert.False(Program.LeashIdleMustRise(true, true, 0.8f, 1f));   // he moves nearby without pulling
-        Assert.False(Program.LeashIdleMustRise(false, true, 5f, 1f));    // not leashed
-        Assert.True(Program.LeashIdleMustRise(true, true, 1.3f, 1f));    // he walks off: real pull
     }
     [Fact] public void DancingIsNeverIdle()
     {
@@ -126,10 +122,9 @@ public class IdlePoseTests
     {
         var ground = new[] { LibreMetaverse.Animations.STAND, LibreMetaverse.Animations.SIT_GROUND_staticRAINED };
         Assert.True(Program.AoForceSitOn(ground, false));
-        Assert.True(Program.AoShouldToggleOff(Program.AoForceSitOn(ground, false)));
         Assert.False(Program.AoForceSitOn(ground, true));                                   // on a seat: not the AO
         Assert.False(Program.AoForceSitOn(new[] { LibreMetaverse.Animations.STAND }, false));  // already off: don't touch (would turn it ON)
-        Assert.False(Program.AoShouldToggleOff(Program.AoForceSitOn(new LibreMetaverse.UUID[0], false)));
+        Assert.False(Program.AoForceSitOn(new LibreMetaverse.UUID[0], false));
         Assert.False(Program.AoForceSitOn(null, false));
     }
     [Fact] public void LogoutAndStandUseExplicitStandPath()
@@ -349,7 +344,7 @@ public class IdlePoseTests
         Assert.Equal(-0.003, Hover.HoverCheckGap("hover check gap -0.003 m (hover -0.110, size 1.566, floor 28.033)\n/x.jpg").Value, 3);
         Assert.Null(Hover.HoverCheckGap("look failed"));
         Assert.Equal(-0.107, Hover.PoseHoverFromGap(0.02, 0.127), 3);   // VAMOSITG27 17:20: floating 12.7 cm
-        Assert.False(Hover.PoseGapSane(3.3)); Assert.True(Hover.PoseGapConfirmed(-0.003));
+        Assert.False(Hover.PoseGapSane(3.3));
         var root = Root();
         var rm = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "vision/cloud-render/render_mesh.py"));
         Assert.Contains("z0 = agent_z + off + hov", rm);                          // Firestorm root + the hover, no per-pose bias (2026-10-31)
@@ -362,8 +357,6 @@ public class IdlePoseTests
     {
         Assert.True(Program.CollarLooksLikePoseMenu(new[] { "◂", "▸", "▴", "☐ Crawl", "cutie", "STOP", "beg" }));
         Assert.False(Program.CollarLooksLikePoseMenu(new[] { "Title", "Tracker", "Magic Leash", "Bell" }));
-        Assert.True(Program.CollarLooksLikeMainMenu(new[] { "RLV", "Extras", "About", "Leash", "Strip", "Pose" }));
-        Assert.False(Program.CollarLooksLikeMainMenu(new[] { "Title", "Tracker", "Magic Leash" }));
         Assert.Equal("Magic Leash", Program.MenuPick(new[] { "Title", "Tracker", "▴", "Little Hearts", "Magic Leash", "Sobriquet" }, "Magic"));
         var root = Root();
         var cs = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "textclient/galatay-text/CollarStealth.cs"));

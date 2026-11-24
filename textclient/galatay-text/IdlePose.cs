@@ -240,7 +240,6 @@ public static partial class Program
     internal static bool AoForceSitOn(IEnumerable<UUID> playing, bool sittingOnObject) => AoSitPlaying(playing, sittingOnObject, AoSitIdsNow());
     // pure (tested): touch the AO toggle only when its real state is on (touching it while off turns force sit ON)
     internal static bool GroundSitStandNeeded(IEnumerable<UUID> playing, bool sittingOnObject) => AoForceSitOn(playing, sittingOnObject);
-    internal static bool AoShouldToggleOff(bool forceSitOn) => forceSitOn;
     // 2026-10-23 (David): only HIS stand (stand tool, idle_pose stop) starts the 30 min cooldown; an internal stand
     // (logout, shutdown, deploy) never does. 2026-11-02 (12:39 idle_pose stop, 12:40 relog, idle sit at 12:47): the cooldown SURVIVES a relog: its end time
     // is persisted in run/idle-nosit-until.txt and honoured after login, alongside the 2x idle wait (IdleLoginHoldActive); an expired one is dropped.

@@ -7,6 +7,7 @@ namespace GalatayText.Tests;
 
 /// <summary>2026-10-08 David: chat answers took ~60 s (routine start-up). FastChat.cs answers conversational nearby chat
 /// and IMs through the xAI API in seconds; the API is mocked here (pure, no network).</summary>
+[Collection(ProcessStateCollection.Name)]
 public class FastChatTests
 {
     static Program.FastCfg Cfg()

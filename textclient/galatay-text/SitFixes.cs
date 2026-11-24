@@ -74,20 +74,6 @@ public static partial class Program
     static volatile string lastSitAlert; static DateTime lastSitAlertAt = DateTime.MinValue;
     internal static void NoteAlertForSit(string msg) { if (IsNoRoomAlert(msg)) { lastSitAlert = msg; lastSitAlertAt = DateTime.UtcNow; } }
 
-    // pure: choose among candidates (name, dist, id), skipping excluded / non-seats, nearest first
-    internal static int PickSeatIndex(IReadOnlyList<(string name, float d, UUID id)> cands, ICollection<UUID> exclude)
-    {
-        int best = -1; float bd = float.MaxValue;
-        for (int i = 0; i < cands.Count; i++)
-        {
-            var c = cands[i];
-            if (exclude != null && exclude.Contains(c.id)) continue;
-            if (!IsRealSeatName(c.name)) continue;
-            if (c.d < bd) { bd = c.d; best = i; }
-        }
-        return best;
-    }
-
     // sit and wait for the sim to seat her: true seated; false on a 'No room' alert or no response within ~5 s
     static async Task<(bool ok, string r)> TrySitOn(Primitive seat)
     {

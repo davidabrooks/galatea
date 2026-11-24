@@ -2,6 +2,7 @@ using System;
 using GalatayText;
 using Xunit;
 
+[Collection(ProcessStateCollection.Name)]
 public class LoginHealthTests
 {
     [Fact] public void AutoRelogin_HonoursDeliberateStop_AndNeverOverlapsAManualLogin()   // 2026-10-31 13:52 PT tangle

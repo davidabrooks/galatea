@@ -152,7 +152,8 @@ public class LevelDwellTests
         Assert.Equal(30, Program.ParseWanderRule("{\"Peronaut\":{\"place\":\"home\",\"seatAvatarM\":3,\"greet\":true}}", "Peronaut").LevelDwellMin);
         Assert.Equal(45, Program.ParseWanderRule("{\"Peronaut\":{\"place\":\"home\",\"levelDwellMin\":45}}", "Peronaut").LevelDwellMin);
         var repo = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "routes", "_wander-rules.json"));
-        if (File.Exists(repo)) Assert.Equal(20, Program.ParseWanderRule(File.ReadAllText(repo), "Peronaut").LevelDwellMin);  // live intent since 2026-11-04
+        // the live minutes are David's setting (30 -> 20 on 2026-11-04 broke CI): the file must parse to a sane value, not a pinned one
+        if (File.Exists(repo)) Assert.InRange(Program.ParseWanderRule(File.ReadAllText(repo), "Peronaut").LevelDwellMin, 1, 240);
     }
 
     [Fact]

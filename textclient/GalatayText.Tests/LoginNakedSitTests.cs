@@ -63,8 +63,10 @@ public class LoginNakedSitTests
         Assert.InRange(LoginVeil.CollarStealthMaxMs, 1000, 12000);
         Assert.True(LoginVeil.CollarLogoutTouches >= 2);
         var sw = System.Diagnostics.Stopwatch.StartNew(); var steps = new List<string>();
-        await LoginVeil.LogoutCore(() => new TaskCompletionSource().Task, LoginVeil.CollarStealthMaxMs, () => { steps.Add("veil"); return Task.FromResult(true); }, () => Task.CompletedTask);
-        Assert.Equal(new[] { "veil" }, steps); Assert.InRange(sw.ElapsedMilliseconds, 0, LoginVeil.CollarStealthMaxMs + 1500);
+        // the live cap is CollarStealthMaxMs (checked above); a 200 ms cap proves the same "never waits past the cap" rule fast
+        const int cap = 200;
+        await LoginVeil.LogoutCore(() => new TaskCompletionSource().Task, cap, () => { steps.Add("veil"); return Task.FromResult(true); }, () => Task.CompletedTask);
+        Assert.Equal(new[] { "veil" }, steps); Assert.InRange(sw.ElapsedMilliseconds, 0, cap + 1500);
     }
     [Fact] public void AMissedVeilOrAMissingVeilLink_HoldsTheReleaseForRealReady()
     {

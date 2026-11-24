@@ -238,7 +238,6 @@ public static partial class Program
     // Measured 2026-10-16 10:31 (inbound walk): a touched leaf first READS open 2350 ms (front pair) and 2079 ms (side-room-1)
     // after the touch. The lead, the pre-open wait and the hold before a door are built on this, not on the 0.9 s swing.
     internal const int DoorOpenLagMs = 2500;
-    internal static bool DoorTouchDue(float distAhead) => distAhead >= 0 && distAhead <= DoorTriggerM;
     // 2026-10-14 David: she still walks into doors at home. At her 3.2 m/s walk a 3 m trigger left 0.9 s, the same as
     // the leaf's swing (DoorSwingWaitMs) with nothing for the touch round trip or the 0.4 s route tick, so she either
     // bumped the leaf or held in front of it. Touch when she is the swing + touch + tick lead time away (>= 3 m).
@@ -257,7 +256,6 @@ public static partial class Program
     internal const float DoorNominalWalkMps = 3.2f, DoorMinLeadM = 10.0f, DoorTogetherM = 8.0f;
     internal static float DoorLeadSpeedMps(float measuredMps) => Math.Max(DoorNominalWalkMps, measuredMps);
     internal static float DoorLeadTriggerM(float measuredMps) => Math.Max(DoorMinLeadM, DoorTriggerFor(DoorLeadSpeedMps(measuredMps)));
-    internal static bool DoorTouchDue(float distAhead, float speedMps) => distAhead >= 0 && distAhead <= DoorTriggerFor(speedMps);
     // path distance from s to the first step [u, u+step] that crosses a door, or null within the scan window
     internal static float? FirstCrossingAhead(Func<float, Vector2> at, float s, float len, Func<Vector2, Vector2, bool> crosses, float scan = DoorScanM, float step = DoorScanStepM)
     {

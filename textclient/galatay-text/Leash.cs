@@ -90,8 +90,6 @@ public static partial class Program
         });
     }
     internal static volatile bool leashWalk;   // 'leash walk on|off' (persisted, default OFF): the collar's pull leads her, she just chats
-    // pure (tested): walk toward him only when he is past a comfortable distance (under the leash length)
-    internal static bool LeashShouldWalk(float dist, float length) => dist > LeashWalkDist(length) + 1f;
 
     // pure (tested): how close she walks to the holder: inside the leash, never so close she bumps him
     internal static float LeashWalkDist(float length) => Math.Clamp(length * 0.7f, 1f, 8f);

@@ -175,8 +175,6 @@ public class LeashTests
         Assert.Equal(2.1f, Program.LeashWalkDist(3f), 2);
         Assert.Equal(1f, Program.LeashWalkDist(0.5f));
         Assert.Equal(8f, Program.LeashWalkDist(20f));
-        Assert.False(Program.LeashShouldWalk(2.5f, 3f));   // comfortable: the collar's pull does the rest
-        Assert.True(Program.LeashShouldWalk(4f, 3f));
     }
 
     [Fact]

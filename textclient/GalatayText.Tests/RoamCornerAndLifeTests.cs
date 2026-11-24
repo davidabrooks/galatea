@@ -66,7 +66,7 @@ public class RoamCornerAndLifeTests
     {
         var start = Program.RoamToGlobal(Ahern, 128f, 128f);
         // water west of x=110, a restricted parcel north of y=150, a 2 m wall at x=140..141
-        var wall = Program.RoamPrimBox(140.5f, 128f, 1f, 200f, 41.4f);
+        var wall = RoamFixtures.PrimBox(140.5f, 128f, 1f, 200f, 41.4f);
         var r = Flat(Ahern, terrain: (x, _) => x < 110 ? 10f : 39.4f, parcel: (_, y) => y < 150, prims: new[] { wall });
         var rej = new Program.RoamRejectCounts();
         var c = Program.RoamSelectTargets(start, 40f, 40.4f, Regions(r), null, null, rej, keep: 500);
@@ -105,7 +105,7 @@ public class RoamCornerAndLifeTests
     public void A_busy_welcome_area_scan_stays_fast()
     {
         var rnd = new Random(9);
-        var floors = Enumerable.Range(0, 4000).Select(_ => Program.RoamPrimBox(rnd.Next(0, 256), rnd.Next(0, 256), 2, 2, 39.5f + (float)rnd.NextDouble() * 0.3f)).ToList();
+        var floors = Enumerable.Range(0, 4000).Select(_ => RoamFixtures.PrimBox(rnd.Next(0, 256), rnd.Next(0, 256), 2, 2, 39.5f + (float)rnd.NextDouble() * 0.3f)).ToList();
         var obs = Enumerable.Range(0, 4000).Select(_ => { float x = rnd.Next(0, 256), y = rnd.Next(0, 256); return new Program.RoamObstacle(x, y, x + 0.3f, y + 0.3f, 39.4f, 41f); }).ToList();
         var regs = Regions(Flat(Ahern, prims: floors) with { Obstacles = obs }, Flat(Dore, prims: floors) with { Obstacles = obs });
         var sw = System.Diagnostics.Stopwatch.StartNew();

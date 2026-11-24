@@ -10,6 +10,7 @@ namespace GalatayText.Tests;
 /// <summary>2026-10-16 14:00 on BENTO PHYSICS MIRAGE BED 1.0: I stood and sat alone again; AVsitter sent '[Female seat] [F waits]' 1 s after the
 /// sit response, but nothing was recorded and nothing was logged (the hook returned silently while Self.SittingOn was still 0).
 /// The decision is now one pure function with a reason for every decline; real strings from the log.</summary>
+[Collection(ProcessStateCollection.Name)]
 public class PoseSitDefaultRecordTests
 {
     // exact dialog text + root menu from textclient.log 14:00:12

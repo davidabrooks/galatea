@@ -54,13 +54,13 @@ public class RoamTests
     public void Support_z_is_the_higher_of_terrain_and_a_platform_under_the_point()
     {
         // Ahern landing is a built plaza ~z 40 while terrain may be much lower
-        var plaza = Program.RoamPrimBox(10, 10, 20, 20, 40f);
+        var plaza = RoamFixtures.PrimBox(10, 10, 20, 20, 40f);
         float z = Program.RoamSupportZ(7.7f, 10.1f, terrain: 20f, avatarZ: 40.45f, new[] { plaza });
         Assert.Equal(40f, z);
         // off the plaza: terrain
         Assert.Equal(20f, Program.RoamSupportZ(100f, 100f, 20f, 22f, new[] { plaza }));
         // a ceiling 5 m above the avatar is ignored (only surfaces <= avatar+2 m)
-        var ceiling = Program.RoamPrimBox(10, 10, 20, 20, 48f);
+        var ceiling = RoamFixtures.PrimBox(10, 10, 20, 20, 48f);
         Assert.Equal(40f, Program.RoamSupportZ(8f, 10f, 20f, 40.45f, new[] { plaza, ceiling }));
         // no prims: terrain
         Assert.Equal(22.5f, Program.RoamSupportZ(1, 1, 22.5f, 23f, null));
@@ -134,6 +134,9 @@ public class RoamTests
         Assert.True(Program.WalkCloseEnough(1.0f, 0.75f));
         Assert.True(Program.WalkCloseEnough(1.5f, 3.0f)); // z never blocks
         Assert.False(Program.WalkCloseEnough(1.51f, 0f));
+        // roam legs walk with lastTol RoamArriveTolM (Roam.cs -> WalkPath -> WalkLeg); read, not pinned, so tuning it keeps this green
+        Assert.True(Program.WalkCloseEnough(Program.RoamArriveTolM * 0.95f, 4f, Program.RoamArriveTolM));
+        Assert.False(Program.WalkCloseEnough(Program.RoamArriveTolM + 0.05f, 0f, Program.RoamArriveTolM));
         Assert.True(Program.WalkArrivedStill(1.2f, 2f, 0.1f));
         Assert.False(Program.WalkArrivedStill(1.2f, 1.9f, 0.1f));
         Assert.False(Program.WalkArrivedStill(1.6f, 2f, 0.1f));

@@ -37,7 +37,6 @@ internal sealed partial class Hover
     internal const double GroundSitGapMax = 0.45;
     internal static bool PoseGapSane(double gap, string kind, bool nearFurniture) =>
         PoseGapSane(gap) || (kind == "sit" && !nearFurniture && Math.Abs(gap) <= GroundSitGapMax);
-    internal static bool PoseGapConfirmed(double gap) => Math.Abs(gap) <= PoseHoverTol;
     // ---- the floor contact (2026-10-31 David: "don't use hardcoded adjustments"; "an average height across all possible contact points") ----
     // No pose names, part lists or aims here: the renderer's `hover check gap` is the AVERAGE of the lowest points of her contact regions, the regions
     // reaching down to the height where the points under her surround her pelvis (render_mesh.py, the contact average). The hover puts that average on the floor.

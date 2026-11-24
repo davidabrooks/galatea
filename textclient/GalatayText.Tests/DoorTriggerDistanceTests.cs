@@ -16,9 +16,6 @@ public class DoorTriggerDistanceTests
         Assert.True(Program.DoorScanM > Program.DoorTriggerM);
         Assert.InRange(Program.DoorSwingWaitMs, Program.DoorThroughDelayMs + 300, 1500);
         Assert.InRange(Program.DoorOpenLagMs, 2350, 3000);   // measured: leaves read open 2.1-2.4 s after the touch
-        Assert.True(Program.DoorTouchDue(2.9f));
-        Assert.True(Program.DoorTouchDue(0.2f));
-        Assert.False(Program.DoorTouchDue(3.6f));
     }
 
     [Fact]
@@ -29,9 +26,9 @@ public class DoorTriggerDistanceTests
         Assert.Null(far);
         Assert.Null(Program.FirstCrossingAhead(at, 0f, 20f, (p, q) => (p.X - 10f) * (q.X - 10f) <= 0 && p.X != q.X, 5f)); // 10 m away: beyond a 5 m window
         var d = Program.FirstCrossingAhead(at, 5.5f, 20f, CrossesX10);
-        Assert.NotNull(d); Assert.False(Program.DoorTouchDue(d!.Value));
+        Assert.NotNull(d); Assert.True(d!.Value > Program.DoorTriggerM);
         var near = Program.FirstCrossingAhead(at, 7.2f, 20f, CrossesX10);
-        Assert.NotNull(near); Assert.InRange(near!.Value, 2.0f, 3.0f); Assert.True(Program.DoorTouchDue(near.Value));
+        Assert.NotNull(near); Assert.InRange(near!.Value, 2.0f, 3.0f);
     }
 
     [Fact]

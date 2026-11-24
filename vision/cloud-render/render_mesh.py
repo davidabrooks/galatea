@@ -588,14 +588,43 @@ def portrait_framing(rx, ry, hd, tight=False):
     """(m, lift_frac) for photo hd self. m scales camera distance (larger = more surroundings).
     Landscape uses a longer shot and a level camera so a standing figure does not fill the
     short side of a 16:9 frame and hide the sky and ground (a 0.15*dist lift looks down).
-    When the backdrop has no useful sky or distant scenery (a wall, hill, or nearby terrain),
-    tight=True frames her closer so she fills most of a landscape frame, still level so head
-    and feet stay in shot. Portrait is already a tight frame."""
+    When the backdrop has no useful sky or distant scenery, tight=True is a closer, level
+    frame around the mid-thigh-to-head box (the output is square; feet are cut off)."""
     if not hd:
         return 0.6, 0.15
+    if tight:
+        return 0.55, 0.0  # small margin over the head; level so a 0.15*dist lift does not look down
     if rx > ry:
-        return (0.45, 0.0) if tight else (0.85, 0.0)
+        return 0.85, 0.0
     return 0.45, 0.15
+
+# Closed-backdrop tight crop: mid-thigh (just above the knee at ~0.25 of height) to the top of the
+# bbox, so her body fills a square frame and the lower legs are cut. 2048x2048 is look.HD_RES["square"]
+# (Second Life's largest texture, also the headshot frame).
+PORTRAIT_TIGHT_CROP_Z = 0.35
+PORTRAIT_TIGHT_RES = (2048, 2048)
+
+def portrait_tight_box(blo, bhi, crop_z=0.35):
+    """(mid, ext) for a closed-backdrop tight crop: mid-thigh to the top of the bbox (hair / a raised
+    hand), full width. blo/bhi are the subject's world bounding-box corners."""
+    blo = (float(blo[0]), float(blo[1]), float(blo[2]))
+    bhi = (float(bhi[0]), float(bhi[1]), float(bhi[2]))
+    h = max(0.0, bhi[2] - blo[2])
+    z_lo = blo[2] + crop_z * h
+    mid = ((blo[0] + bhi[0]) / 2, (blo[1] + bhi[1]) / 2, (z_lo + bhi[2]) / 2)
+    ext = (bhi[0] - blo[0], bhi[1] - blo[1], bhi[2] - z_lo)
+    return mid, ext
+
+def portrait_tight_res(rx, ry, square=2048):
+    """Square output for a closed-backdrop tight crop. Standard HD landscape/portrait become 2048x2048;
+    a size already square is kept; a GT_HD_RES test hook (non-standard GT_RES) uses the short side."""
+    rx, ry = int(rx), int(ry)
+    if rx == ry:
+        return rx, ry
+    if {rx, ry} == {3840, 2160}:
+        return int(square), int(square)
+    s = min(rx, ry)
+    return s, s
 
 # Backdrop samples: None = sky (ray miss), else metres past the subject. Distant scenery starts at
 # PORTRAIT_BG_FAR_M; a view is closed (frame tight) when less than PORTRAIT_BG_OPEN_FRAC of the
@@ -2213,9 +2242,14 @@ if SCENE:
             # margin: half-extent / tan(half fov); 0.6 = body fills ~83% of the frame (old 50 mm close-up). At 60 deg
             # that would put the lens ~1.5 m from her (wide-angle distortion), so at 60 deg she fills ~70% of the frame, matched to David's Firestorm boat shot 2026-10-14
             m, lift_frac = portrait_framing(rx, ry, bool(hd_fov()))
+            tight_shot = False
             def dist_for(f):
                 side = abs(ext.x * f.y) + abs(ext.y * f.x)   # width across the view
-                return max(ext.z * m / math.tan(vf / 2), side * m / math.tan(hf / 2), 0.4 if hd_fov() else 1.2) + max(ext.x, ext.y) / 2
+                # Open shots add half her xy extent so the camera starts outside her volume. A tight
+                # thigh crop already has enough distance; the extra pull-back showed shins and a large
+                # headroom instead of mid-thigh with a small margin over the head.
+                d = max(ext.z * m / math.tan(vf / 2), side * m / math.tan(hf / 2), 0.4 if hd_fov() else 1.2)
+                return d if tight_shot else d + max(ext.x, ext.y) / 2
             dg = bpy.context.evaluated_depsgraph_get()
             _camlog = []
             def try_dir(f, off=None):
@@ -2285,17 +2319,25 @@ if SCENE:
                         depths.append(depth)
                 return depths
             loc, why, used_off = place_cam()
-            if hd_fov() and rx > ry and loc is not None:
+            if hd_fov() and loc is not None:
                 depths = sample_background(loc)
                 n = len(depths); sky_n = sum(1 for d in depths if d is None)
                 far_n = sum(1 for d in depths if d is not None and d >= PORTRAIT_BG_FAR_M)
                 closed = portrait_background_closed(depths)
-                _camlog.append(f"background n={n} sky={sky_n} far={far_n} closed={closed}")
+                _camlog.append(f"background n={n} sky={sky_n} far={far_n} closed={closed} res={rx}x{ry}")
                 if closed:
+                    rx, ry = portrait_tight_res(rx, ry)
+                    os.environ["GT_RES"] = f"{rx}x{ry}"  # camera() honours GT_RES over the res argument
+                    mid, ext = portrait_tight_box(blo, bhi)
+                    mid, ext = Vector(mid), Vector(ext)
+                    lens = lens_for_vfov(hd_fov(), rx, ry)
+                    hf = 2 * math.atan(18 / lens * (rx / ry if ry >= rx else 1)); vf = 2 * math.atan(18 / lens * (1 if ry >= rx else ry / rx))
                     m, lift_frac = portrait_framing(rx, ry, True, tight=True)
+                    tight_shot = True
                     loc, why, used_off = place_cam()
                     why = why + "+tight"
-            print(f"GT: portrait camera {why} offset {used_off} deg at {[round(float(v), 2) for v in loc]}", flush=True)
+                    _camlog.append(f"tight res={rx}x{ry} mid={[round(float(v),2) for v in mid]} extz={float(ext.z):.2f} dist={dist_for(Vector((math.cos(math.radians(yaw0)), math.sin(math.radians(yaw0)), 0))):.2f}")
+            print(f"GT: portrait camera {why} offset {used_off} deg at {[round(float(v), 2) for v in loc]} {rx}x{ry}", flush=True)
             try:
                 import os as _os
                 _p = _os.environ.get("GT_PORTRAIT_CAM_LOG")

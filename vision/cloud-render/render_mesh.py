@@ -584,15 +584,32 @@ def portrait_low_obstacle(hit_z, head_z, mid_z):
     """A hit well below the head is a curb or retaining wall, not a room wall that must stop the camera."""
     return hit_z < min(head_z - 0.25, mid_z + 0.4)
 
-def portrait_framing(rx, ry, hd):
+def portrait_framing(rx, ry, hd, tight=False):
     """(m, lift_frac) for photo hd self. m scales camera distance (larger = more surroundings).
     Landscape uses a longer shot and a level camera so a standing figure does not fill the
-    short side of a 16:9 frame and hide the sky and ground (a 0.15*dist lift looks down)."""
+    short side of a 16:9 frame and hide the sky and ground (a 0.15*dist lift looks down).
+    When the backdrop has no useful sky or distant scenery (a wall, hill, or nearby terrain),
+    tight=True frames her closer so she fills most of a landscape frame, still level so head
+    and feet stay in shot. Portrait is already a tight frame."""
     if not hd:
         return 0.6, 0.15
     if rx > ry:
-        return 0.85, 0.0  # longer, level shot so a standing figure does not fill a 16:9 frame
+        return (0.45, 0.0) if tight else (0.85, 0.0)
     return 0.45, 0.15
+
+# Backdrop samples: None = sky (ray miss), else metres past the subject. Distant scenery starts at
+# PORTRAIT_BG_FAR_M; a view is closed (frame tight) when less than PORTRAIT_BG_OPEN_FRAC of the
+# samples are sky or that far — a nearby wall, hill, or terrain filling the frame, little or no sky.
+PORTRAIT_BG_FAR_M = 15.0
+PORTRAIT_BG_OPEN_FRAC = 0.25
+
+def portrait_background_closed(depths, far_m=15.0, open_frac=0.25):
+    """True when the view behind the subject has little sky or distant scenery.
+    `depths` are metres past the subject along camera rays; None means the ray missed (sky)."""
+    vals = list(depths)
+    if not vals:
+        return False
+    return sum(1 for d in vals if d is None or d >= far_m) / len(vals) < open_frac
 
 PORTRAIT_YAW_OFFSETS = (0, 20, -20, 35, -35, 50, -50, 70, -70)
 
@@ -2227,19 +2244,57 @@ if SCENE:
                     cam2 = loc2 - u2 * 0.15
                     if portrait_shot_fits(mid, cam2, dist): return cam2, "raised-stopped"
                 return None, "blocked"
-            loc = None; why = "blocked"; used_off = 0
-            for off in PORTRAIT_YAW_OFFSETS:
-                a = math.radians(yaw0 + off); f = Vector((math.cos(a), math.sin(a), 0))
-                loc, why = try_dir(f, off)
-                _camlog.append(f"off={off} -> {why} loc={None if loc is None else [round(float(v),2) for v in loc]}")
-                if loc is not None:
-                    used_off = off; break
-            if loc is None:
-                f = Vector((math.cos(math.radians(yaw0)), math.sin(math.radians(yaw0)), 0))
-                dist = dist_for(f); want = mid + f * dist + Vector((0, 0, lift_frac * dist)); e = want - h; u = e.normalized()
-                hit, hloc, *_ = sc.ray_cast(dg, h + u * 0.5, u, distance=max(0.01, e.length - 0.5))
-                loc = hloc - u * 0.15 if hit else want; why = "fallback"
-                _camlog.append(f"fallback hit={bool(hit)} loc={[round(float(v),2) for v in loc]}")
+            def place_cam():
+                loc = None; why = "blocked"; used_off = 0
+                for off in PORTRAIT_YAW_OFFSETS:
+                    a = math.radians(yaw0 + off); f = Vector((math.cos(a), math.sin(a), 0))
+                    loc, why = try_dir(f, off)
+                    _camlog.append(f"off={off} -> {why} loc={None if loc is None else [round(float(v),2) for v in loc]}")
+                    if loc is not None:
+                        used_off = off; break
+                if loc is None:
+                    f = Vector((math.cos(math.radians(yaw0)), math.sin(math.radians(yaw0)), 0))
+                    dist = dist_for(f); want = mid + f * dist + Vector((0, 0, lift_frac * dist)); e = want - h; u = e.normalized()
+                    hit, hloc, *_ = sc.ray_cast(dg, h + u * 0.5, u, distance=max(0.01, e.length - 0.5))
+                    loc = hloc - u * 0.15 if hit else want; why = "fallback"
+                    _camlog.append(f"fallback hit={bool(hit)} loc={[round(float(v),2) for v in loc]}")
+                return loc, why, used_off
+            def sample_background(cam):
+                # Rays through the chosen camera's frame, skipping her body and foreground (the path
+                # in front). A miss is sky; a hit's depth is metres past the subject.
+                depths = []; forward = mid - Vector(cam)
+                if forward.length < 1e-6: return depths
+                dist_s = forward.length; forward = forward.normalized()
+                right = forward.cross(Vector((0, 0, 1)))
+                right = Vector((1, 0, 0)) if right.length < 1e-6 else right.normalized()
+                up = right.cross(forward).normalized(); subject = set(obs)
+                for i in range(9):
+                    v = 0.5 - (i + 0.5) / 9
+                    for j in range(13):
+                        u = (j + 0.5) / 13 - 0.5
+                        d = (forward + right * (2 * u * math.tan(hf / 2)) + up * (2 * v * math.tan(vf / 2))).normalized()
+                        o = Vector(cam) + d * 0.05; leftover = 200.0; depth = None
+                        for _ in range(6):
+                            hit, hloc, *_rest, ob, _m = sc.ray_cast(dg, o, d, distance=leftover)
+                            if not hit:
+                                depth = None; break
+                            behind = (hloc - Vector(cam)).length - dist_s
+                            if ob in subject or behind < -0.4:
+                                o = hloc + d * 0.05; leftover = max(0.01, 200.0 - (o - Vector(cam)).length); continue
+                            depth = max(0.0, behind); break
+                        depths.append(depth)
+                return depths
+            loc, why, used_off = place_cam()
+            if hd_fov() and rx > ry and loc is not None:
+                depths = sample_background(loc)
+                n = len(depths); sky_n = sum(1 for d in depths if d is None)
+                far_n = sum(1 for d in depths if d is not None and d >= PORTRAIT_BG_FAR_M)
+                closed = portrait_background_closed(depths)
+                _camlog.append(f"background n={n} sky={sky_n} far={far_n} closed={closed}")
+                if closed:
+                    m, lift_frac = portrait_framing(rx, ry, True, tight=True)
+                    loc, why, used_off = place_cam()
+                    why = why + "+tight"
             print(f"GT: portrait camera {why} offset {used_off} deg at {[round(float(v), 2) for v in loc]}", flush=True)
             try:
                 import os as _os

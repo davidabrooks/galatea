@@ -289,7 +289,7 @@ public static partial class Program
             foreach (var (nsim, _) in ViewSims())
             {
                 if (nsim == null || nsim == sim || !nsim.Connected) continue;
-                if (!RoamNeighborAllowed(sim.SimOwner, nsim.SimOwner, true, SimGeo.Adjacent(sim.Handle, nsim.Handle))) continue;
+                if (!RoamNeighborAllowed(sim.SimOwner, nsim.SimOwner, true, SimGeo.Adjacent(sim.Handle, nsim.Handle), RoamIsMainland(sim.ProductName), RoamIsMainland(nsim.ProductName))) continue;
                 var dir = SimGeo.Dir(sim.Handle, nsim.Handle);
                 if (dir.Contains('W')) hasW = true;
                 if (dir.Contains('E')) hasE = true;

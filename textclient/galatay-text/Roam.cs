@@ -29,8 +29,9 @@ public static partial class Program
     internal const float RoamChatQuietS = 60f;
     internal const int RoamPauseMinS = 20;
     internal const int RoamPauseMaxS = 60;
-    // Governor Linden (mainland / welcome-area owner)
-    internal static readonly UUID RoamGovernorLinden = new("3d6181b0-6a4b-97ef-18d8-7227138161bb");
+    // Governor Linden (mainland / welcome-area owner). 2026-11-23: was ...-7227138161bb (wrong); the Ahern
+    // welcome-area parcel owner in the log, and world.secondlife.com/resident/<id>, are ...-722652995cf1.
+    internal static readonly UUID RoamGovernorLinden = new("3d6181b0-6a4b-97ef-18d8-722652995cf1");
 
     static CancellationTokenSource roamCts;
     static Task roamTask;
@@ -67,11 +68,20 @@ public static partial class Program
     // ---- region / edge / parcel / owner -------------------------------------------------------
     internal static bool RoamIsLindenOwner(UUID owner) => owner != UUID.Zero && owner == RoamGovernorLinden;
 
-    internal static bool RoamNeighborAllowed(UUID startOwner, UUID neighborOwner, bool connected, bool adjacent) =>
+    // region type from the handshake (RegionInfo3.ProductName), e.g. "Mainland / Full Region"
+    internal static bool RoamIsMainland(string productName) =>
+        !string.IsNullOrEmpty(productName) && productName.Contains("Mainland", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool RoamNeighborAllowed(UUID startOwner, UUID neighborOwner, bool connected, bool adjacent,
+        bool startMainland = false, bool neighborMainland = false) =>
         connected && adjacent && (
             (startOwner != UUID.Zero && startOwner == neighborOwner)
             || RoamIsLindenOwner(startOwner)
-            || RoamIsLindenOwner(neighborOwner));
+            || RoamIsLindenOwner(neighborOwner)
+            || startMainland || neighborMainland);
+
+    static string RoamOwnerTag(UUID owner, string product) =>
+        $"owner {(RoamIsLindenOwner(owner) ? "Governor Linden" : owner == UUID.Zero ? "unknown(zero)" : owner.ToString())}, type '{product}'";
 
     // 8 m margin applies only on an edge that is void, or a non-connected / restricted neighbor
     internal static bool RoamTooCloseToVoidEdge(float localX, float localY, uint sx, uint sy, float margin,
@@ -264,30 +274,22 @@ public static partial class Program
         var list = new List<(Simulator sim, bool allowed)>();
         if (start == null) return list;
         list.Add((start, true));
+        RoamLog($"start region {start.Name}: {RoamOwnerTag(startOwner, start.ProductName)}");
         try
         {
             foreach (var (sim, _) in ViewSims(true))
             {
                 if (sim == null || sim.Handle == start.Handle) continue;
                 bool adj = SimGeo.Adjacent(start.Handle, sim.Handle, start.SizeX == 0 ? 256u : (uint)start.SizeX, sim.SizeX == 0 ? 256u : (uint)sim.SizeX);
-                bool ok = RoamNeighborAllowed(startOwner, sim.SimOwner, sim.Connected, adj);
+                bool ok = RoamNeighborAllowed(startOwner, sim.SimOwner, sim.Connected, adj,
+                    RoamIsMainland(start.ProductName), RoamIsMainland(sim.ProductName));
+                RoamLog($"neighbor {sim.Name} ({SimGeo.Dir(start.Handle, sim.Handle)}): {RoamOwnerTag(sim.SimOwner, sim.ProductName)}, " +
+                        $"connected={sim.Connected} adjacent={adj} -> {(ok ? "in the roam area" : "left out")}");
                 if (ok) list.Add((sim, true));
             }
         }
         catch (Exception ex) { RoamLog("neighbor list: " + ex.Message); }
         return list;
-    }
-
-    static (bool w, bool e, bool s, bool n) RoamAllowedEdges(ulong handle, HashSet<ulong> allowed)
-    {
-        var o = SimGeo.Origin(handle);
-        bool has(int dx, int dy)
-        {
-            long x = (long)o.x + dx * 256L, y = (long)o.y + dy * 256L;
-            if (x < 0 || y < 0) return false;
-            return allowed.Contains(SimGeo.Handle((uint)x, (uint)y));
-        }
-        return (has(-1, 0), has(1, 0), has(0, -1), has(0, 1));
     }
 
     static List<RoamPrim> RoamPrimsFromSim(Simulator sim, float avatarZ)
@@ -336,15 +338,97 @@ public static partial class Program
         return true; // unknown = do not refuse
     }
 
-    static List<(double x, double y, float z, ulong handle, string why)> RoamPickTargets(
-        (double x, double y) start, float radius, float avatarZ,
-        Dictionary<ulong, (Simulator sim, List<RoamPrim> prims, float water, uint sx, uint sy)> regions,
-        HashSet<ulong> allowed,
-        IReadOnlyList<(double x, double y)> avatars,
-        Func<(double x, double y, ulong handle), RoamMapCell> mapAt)
+    // ---- target selection (pure, tested; 2026-11-23) ------------------------------------------
+    // 2026-11-23 17:09 Ahern: roam from <7,8> (SW corner) stopped at once with "no walkable candidates".
+    // (1) The path check sampled the start itself, which sat inside the 8 m void-edge margin, so every
+    //     path was refused as "Edge". The margin now only refuses a path that goes deeper toward a void
+    //     edge than she already stands; walking away from the edge is always fine. Targets still keep 8 m.
+    // (2) No neighbor was accepted (area "Ahern" only, though Dore / Morris / Bonifacio were connected):
+    //     the Governor Linden UUID was wrong, so mainland never counted as Linden. Fixed, and mainland
+    //     regions (ProductName "Mainland ...") also count as public, connected Linden land.
+    internal sealed record RoamRegionView(ulong Handle, uint Sx, uint Sy, float Water,
+        Func<float, float, float?> Terrain, IReadOnlyList<RoamPrim> Prims, Func<float, float, bool> ParcelOk);
+    internal readonly record struct RoamCandidate(double X, double Y, float Z, ulong Handle, float Score, string Why);
+
+    internal const string RoamRejOutside = "outside_area", RoamRejEdge = "edge_margin", RoamRejWater = "water",
+        RoamRejMap = "map", RoamRejParcel = "parcel", RoamRejPathWall = "path_wall", RoamRejPathLedge = "path_ledge",
+        RoamRejPathWater = "path_water", RoamRejPathEdge = "path_edge", RoamRejPathError = "path_error";
+
+    internal sealed class RoamRejectCounts
     {
-        var picked = new List<(double x, double y, float z, ulong handle, string why)>();
-        var scored = new List<(float score, double x, double y, float z, ulong handle, string why)>();
+        readonly SortedDictionary<string, int> n = new(StringComparer.Ordinal);
+        public int Considered;
+        public void Add(string why) => n[why] = Get(why) + 1;
+        public int Get(string why) => n.TryGetValue(why, out var c) ? c : 0;
+        public int Total => n.Values.Sum();
+        public override string ToString() => n.Count == 0 ? "none" : string.Join(" ", n.Select(kv => $"{kv.Key}={kv.Value}"));
+    }
+
+    // how far a point is inside the margin of each void (not allowed) edge; 0 = not inside that margin
+    internal static (float w, float e, float s, float n) RoamVoidEdgeDepth(float x, float y, uint sx, uint sy, float margin,
+        bool hasWest, bool hasEast, bool hasSouth, bool hasNorth) =>
+        (hasWest ? 0 : MathF.Max(0, margin - x), hasEast ? 0 : MathF.Max(0, margin - (sx - x)),
+         hasSouth ? 0 : MathF.Max(0, margin - y), hasNorth ? 0 : MathF.Max(0, margin - (sy - y)));
+
+    // a path sample is too close to a void edge only when it is deeper in that edge's margin than the start
+    internal static bool RoamPathDeeperIntoEdge((float w, float e, float s, float n) sample, (float w, float e, float s, float n) start, float slack = 0.05f) =>
+        sample.w > start.w + slack || sample.e > start.e + slack || sample.s > start.s + slack || sample.n > start.n + slack;
+
+    internal static (bool w, bool e, bool s, bool n) RoamAllowedEdges(ulong handle, ICollection<ulong> allowed)
+    {
+        var o = SimGeo.Origin(handle);
+        bool has(int dx, int dy)
+        {
+            long x = (long)o.x + dx * 256L, y = (long)o.y + dy * 256L;
+            if (x < 0 || y < 0) return false;
+            return allowed.Contains(SimGeo.Handle((uint)x, (uint)y));
+        }
+        return (has(-1, 0), has(1, 0), has(0, -1), has(0, 1));
+    }
+
+    static RoamRegionView RoamRegionAt(IReadOnlyDictionary<ulong, RoamRegionView> regions, double gx, double gy, out Vector3 local)
+    {
+        foreach (var r in regions.Values)
+        {
+            var loc = RoamFromGlobal(r.Handle, gx, gy);
+            if (SimGeo.InRegion(loc, r.Sx, r.Sy)) { local = loc; return r; }
+        }
+        local = default;
+        return null;
+    }
+
+    static float RoamSupportAt(RoamRegionView r, Vector3 local, float avatarZ)
+    {
+        float? terrain = null;
+        try { terrain = r.Terrain?.Invoke(local.X, local.Y); } catch { }
+        return RoamSupportZ(local.X, local.Y, terrain, avatarZ, r.Prims);
+    }
+
+    static bool RoamWaterAt(RoamRegionView r, Vector3 local, float avatarZ)
+    {
+        float? terrain = null;
+        try { terrain = r.Terrain?.Invoke(local.X, local.Y); } catch { }
+        float z = RoamSupportZ(local.X, local.Y, terrain, avatarZ, r.Prims);
+        return z <= r.Water + 0.15f && (terrain == null || terrain <= r.Water + 0.15f);
+    }
+
+    internal static List<RoamCandidate> RoamSelectTargets(
+        (double x, double y) start, float radius, float avatarZ,
+        IReadOnlyDictionary<ulong, RoamRegionView> regions,
+        IReadOnlyList<(double x, double y)> avatars,
+        Func<(double x, double y, ulong handle), RoamMapCell> mapAt,
+        RoamRejectCounts rejects, int keep = 16)
+    {
+        rejects ??= new RoamRejectCounts();
+        var scored = new List<RoamCandidate>();
+        var allowed = regions.Keys.ToList();
+        var startRegion = RoamRegionAt(regions, start.x, start.y, out var startLocal);
+        var startDepth = (0f, 0f, 0f, 0f);
+        if (startRegion != null)
+        {
+            var se = RoamAllowedEdges(startRegion.Handle, allowed);
+            startDepth = RoamVoidEdgeDepth(startLocal.X, startLocal.Y, startRegion.Sx, startRegion.Sy, RoamEdgeMarginM, se.w, se.e, se.s, se.n);
+        }
         const float step = 6f;
         for (float ox = -radius; ox <= radius; ox += step)
         for (float oy = -radius; oy <= radius; oy += step)
@@ -352,91 +436,75 @@ public static partial class Program
             double gx = start.x + ox, gy = start.y + oy;
             float dist = MathF.Sqrt(ox * ox + oy * oy);
             if (dist > radius || dist < 6f) continue;
-            ulong handle = 0;
-            foreach (var h in allowed)
+            rejects.Considered++;
+            var region = RoamRegionAt(regions, gx, gy, out var local);
+            if (region == null) { rejects.Add(RoamRejOutside); continue; }
+            var edges = RoamAllowedEdges(region.Handle, allowed);
+            if (RoamTooCloseToVoidEdge(local.X, local.Y, region.Sx, region.Sy, RoamEdgeMarginM, edges.w, edges.e, edges.s, edges.n))
+            { rejects.Add(RoamRejEdge); continue; }
+            float z = RoamSupportAt(region, local, avatarZ);
+            if (RoamWaterAt(region, local, avatarZ)) { rejects.Add(RoamRejWater); continue; }
+            if (mapAt != null && mapAt((gx, gy, region.Handle)) is RoamMapCell.Water or RoamMapCell.Build) { rejects.Add(RoamRejMap); continue; }
+            bool parcelOk = true;
+            try { parcelOk = region.ParcelOk?.Invoke(local.X, local.Y) ?? true; } catch { }
+            if (!parcelOk) { rejects.Add(RoamRejParcel); continue; }
+
+            float pathLen = dist;
+            (double x, double y) At(float d)
             {
-                var loc = RoamFromGlobal(h, gx, gy);
-                if (!regions.TryGetValue(h, out var info)) continue;
-                if (SimGeo.InRegion(loc, info.sx, info.sy)) { handle = h; break; }
+                float t = pathLen < 1e-3f ? 1 : d / pathLen;
+                return (start.x + (gx - start.x) * t, start.y + (gy - start.y) * t);
             }
-            if (handle == 0) continue;
-            var info2 = regions[handle];
-            var local = RoamFromGlobal(handle, gx, gy);
-            var edges = RoamAllowedEdges(handle, allowed);
-            if (RoamTooCloseToVoidEdge(local.X, local.Y, info2.sx, info2.sy, RoamEdgeMarginM, edges.w, edges.e, edges.s, edges.n))
-                continue;
-            var sim = info2.sim;
-            float? terrain = null;
-            try { if (sim != null && sim.TerrainHeightAtPoint((int)local.X, (int)local.Y, out var th)) terrain = th; } catch { }
-            float z = RoamSupportZ(local.X, local.Y, terrain, avatarZ, info2.prims);
-            bool water = z <= info2.water + 0.15f && (terrain == null || terrain <= info2.water + 0.15f);
-            if (water) continue;
-            if (mapAt != null)
-            {
-                var cell = mapAt((gx, gy, handle));
-                if (cell is RoamMapCell.Water or RoamMapCell.Build) continue;
-            }
-            if (sim != null && !RoamParcelOkAt(sim, local)) continue;
-            // path from start (in start-handle frame, but we only have z along global line)
-            var pathLen = dist;
-            RoamPathReject path = RoamPathReject.Ok;
+            RoamPathReject path;
             try
             {
-                path = RoamPathCheckAlong(pathLen, d =>
-                {
-                    float t = pathLen < 1e-3f ? 1 : d / pathLen;
-                    double px = start.x + (gx - start.x) * t, py = start.y + (gy - start.y) * t;
-                    ulong ph = handle;
-                    foreach (var h in allowed)
+                path = RoamPathCheckAlong(pathLen,
+                    d => { var p = At(d); var r = RoamRegionAt(regions, p.x, p.y, out var l); return r == null ? z : RoamSupportAt(r, l, avatarZ); },
+                    d => { var p = At(d); var r = RoamRegionAt(regions, p.x, p.y, out var l); return r != null && RoamWaterAt(r, l, avatarZ); },
+                    d =>
                     {
-                        var loc = RoamFromGlobal(h, px, py);
-                        if (regions.TryGetValue(h, out var inf) && SimGeo.InRegion(loc, inf.sx, inf.sy)) { ph = h; break; }
-                    }
-                    if (!regions.TryGetValue(ph, out var inf2)) return z;
-                    var loc2 = RoamFromGlobal(ph, px, py);
-                    float? ter = null;
-                    try { if (inf2.sim != null && inf2.sim.TerrainHeightAtPoint((int)loc2.X, (int)loc2.Y, out var th)) ter = th; } catch { }
-                    return RoamSupportZ(loc2.X, loc2.Y, ter, avatarZ, inf2.prims);
-                },
-                d =>
-                {
-                    float t = pathLen < 1e-3f ? 1 : d / pathLen;
-                    double px = start.x + (gx - start.x) * t, py = start.y + (gy - start.y) * t;
-                    foreach (var h in allowed)
-                    {
-                        if (!regions.TryGetValue(h, out var inf)) continue;
-                        var loc = RoamFromGlobal(h, px, py);
-                        if (!SimGeo.InRegion(loc, inf.sx, inf.sy)) continue;
-                        float? ter = null;
-                        try { if (inf.sim != null && inf.sim.TerrainHeightAtPoint((int)loc.X, (int)loc.Y, out var th)) ter = th; } catch { }
-                        float zz = RoamSupportZ(loc.X, loc.Y, ter, avatarZ, inf.prims);
-                        return zz <= inf.water + 0.15f && (ter == null || ter <= inf.water + 0.15f);
-                    }
-                    return false;
-                },
-                d =>
-                {
-                    float t = pathLen < 1e-3f ? 1 : d / pathLen;
-                    double px = start.x + (gx - start.x) * t, py = start.y + (gy - start.y) * t;
-                    foreach (var h in allowed)
-                    {
-                        if (!regions.TryGetValue(h, out var inf)) continue;
-                        var loc = RoamFromGlobal(h, px, py);
-                        if (!SimGeo.InRegion(loc, inf.sx, inf.sy)) continue;
-                        var e = RoamAllowedEdges(h, allowed);
-                        return RoamTooCloseToVoidEdge(loc.X, loc.Y, inf.sx, inf.sy, RoamEdgeMarginM, e.w, e.e, e.s, e.n);
-                    }
-                    return true; // off the allowed area
-                });
+                        var p = At(d);
+                        var r = RoamRegionAt(regions, p.x, p.y, out var l);
+                        if (r == null) return true; // off the allowed area
+                        var e = RoamAllowedEdges(r.Handle, allowed);
+                        var depth = RoamVoidEdgeDepth(l.X, l.Y, r.Sx, r.Sy, RoamEdgeMarginM, e.w, e.e, e.s, e.n);
+                        var from = startRegion != null && r.Handle == startRegion.Handle ? startDepth : (0f, 0f, 0f, 0f);
+                        return RoamPathDeeperIntoEdge(depth, from);
+                    });
             }
-            catch { path = RoamPathReject.Ok; }
-            if (path != RoamPathReject.Ok) continue;
+            catch { path = RoamPathReject.Restricted; rejects.Add(RoamRejPathError); continue; }
+            if (path != RoamPathReject.Ok)
+            {
+                rejects.Add(path switch
+                {
+                    RoamPathReject.Wall => RoamRejPathWall,
+                    RoamPathReject.Ledge => RoamRejPathLedge,
+                    RoamPathReject.Water => RoamRejPathWater,
+                    RoamPathReject.Edge => RoamRejPathEdge,
+                    _ => RoamRejPathError,
+                });
+                continue;
+            }
             float score = RoamTargetScore(gx, gy, start, radius, avatars);
-            scored.Add((score, gx, gy, z, handle, path.ToString()));
+            scored.Add(new RoamCandidate(gx, gy, z, region.Handle, score, $"score={score:F1} z={z:F2}"));
         }
-        foreach (var s in scored.OrderByDescending(x => x.score).ThenBy(x => x.x).Take(16))
-            picked.Add((s.x, s.y, s.z, s.handle, $"score={s.score:F1} z={s.z:F2}"));
-        return picked;
+        return scored.OrderByDescending(c => c.Score).ThenBy(c => c.X).ThenBy(c => c.Y).Take(keep).ToList();
+    }
+
+    static List<RoamCandidate> RoamPickTargets((double x, double y) start, float radius, float avatarZ,
+        Dictionary<ulong, (Simulator sim, List<RoamPrim> prims, float water, uint sx, uint sy)> regions,
+        IReadOnlyList<(double x, double y)> avatars, RoamRejectCounts rejects)
+    {
+        var views = new Dictionary<ulong, RoamRegionView>();
+        foreach (var (h, inf) in regions)
+        {
+            var sim = inf.sim;
+            views[h] = new RoamRegionView(h, inf.sx, inf.sy, inf.water,
+                (x, y) => sim != null && sim.TerrainHeightAtPoint((int)x, (int)y, out var th) ? th : null,
+                inf.prims,
+                (x, y) => sim == null || RoamParcelOkAt(sim, new Vector3(x, y, 0)));
+        }
+        return RoamSelectTargets(start, radius, avatarZ, views, avatars, null, rejects);
     }
 
     static async Task RoamLoop(float radius, CancellationToken ct)
@@ -481,20 +549,21 @@ public static partial class Program
         }
         catch { }
 
-        HashSet<ulong> allowed;
-        lock (roamLock) allowed = new HashSet<ulong>(roamHandles);
-        var cands = RoamPickTargets(roamStartGlobal, radius, me0.Z, regions, allowed, avatars, null);
+        var rejects = new RoamRejectCounts();
+        var cands = RoamPickTargets(roamStartGlobal, radius, me0.Z, regions, avatars, rejects);
         lock (roamLock)
         {
             roamCandidatesLog.Clear();
             foreach (var c in cands)
             {
-                var loc = RoamFromGlobal(c.handle, c.x, c.y, c.z);
-                var o = SimGeo.Origin(c.handle);
-                roamCandidatesLog.Add($"({loc.X:F1},{loc.Y:F1},{c.z:F2}) grid {o.x / 256},{o.y / 256} {c.why}");
+                var loc = RoamFromGlobal(c.Handle, c.X, c.Y, c.Z);
+                var o = SimGeo.Origin(c.Handle);
+                roamCandidatesLog.Add($"({loc.X:F1},{loc.Y:F1},{c.Z:F2}) grid {o.x / 256},{o.y / 256} {c.Why}");
             }
         }
-        if (cands.Count == 0) { RoamLog("no walkable candidates in radius; stopping"); return; }
+        var scan = $"scanned {rejects.Considered} grid spots, kept {cands.Count}; rejected {rejects}; area {string.Join(", ", collected.Select(c => c.sim.Name))}";
+        if (cands.Count == 0) { RoamLog($"no walkable candidates in radius; stopping ({scan})"); return; }
+        RoamLog("candidate scan: " + scan);
         RoamLog("candidates: " + string.Join(" | ", roamCandidatesLog));
 
         int idx = 0, fails = 0;
@@ -523,25 +592,25 @@ public static partial class Program
 
                 if (idx >= cands.Count) idx = 0;
                 var pick = cands[idx++];
-                var key = $"{pick.handle:X}:{pick.x:F0},{pick.y:F0}";
+                var key = $"{pick.Handle:X}:{pick.X:F0},{pick.Y:F0}";
                 if (roamBad.Contains(key))
                 {
-                    if (cands.All(c => roamBad.Contains($"{c.handle:X}:{c.x:F0},{c.y:F0}")))
+                    if (cands.All(c => roamBad.Contains($"{c.Handle:X}:{c.X:F0},{c.Y:F0}")))
                     { RoamLog("every candidate is marked bad; stopping"); return; }
                     continue;
                 }
-                float supportZ = pick.z;
-                var destLocal = RoamFromGlobal(cur.Handle, pick.x, pick.y, supportZ);
+                float supportZ = pick.Z;
+                var destLocal = RoamFromGlobal(cur.Handle, pick.X, pick.Y, supportZ);
                 float avatarZ = client.Self.SimPosition.Z;
                 var destHandle = SimGeo.HandleAt(cur.Handle, destLocal);
-                if (destHandle == 0) destHandle = pick.handle;
+                if (destHandle == 0) destHandle = pick.Handle;
                 if (regions.TryGetValue(destHandle, out var inf))
                 {
-                    var locOn = RoamFromGlobal(inf.sim?.Handle ?? destHandle, pick.x, pick.y);
+                    var locOn = RoamFromGlobal(inf.sim?.Handle ?? destHandle, pick.X, pick.Y);
                     float? ter = null;
                     try { if (inf.sim != null && inf.sim.TerrainHeightAtPoint((int)locOn.X, (int)locOn.Y, out var th)) ter = th; } catch { }
                     supportZ = RoamSupportZ(locOn.X, locOn.Y, ter, avatarZ, inf.prims);
-                    destLocal = RoamFromGlobal(cur.Handle, pick.x, pick.y, supportZ);
+                    destLocal = RoamFromGlobal(cur.Handle, pick.X, pick.Y, supportZ);
                 }
                 RoamLog($"walk to {V(destLocal)} (support z {supportZ:F2}, {HDist(client.Self.SimPosition, destLocal):F0} m)");
                 bool ok = false;

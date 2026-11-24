@@ -66,3 +66,16 @@ def test_renderer_maps_the_hd_settings():
     for s in ('use_pass_mist', '"distance_multiplier"', 'env.get("sun_scale"', 'env.get("moon_scale"',
               'cl.get("offset")', 'cl.get("detail"', 'wt["fog_color"]', 'wt.get("fresnel_scale"', 'if HD and kind == "scene" and M.get("env"): env_post'):
         assert s in RM, s
+
+
+def test_photo_env_noenv_falls_back_to_default_sky():
+    """HD photos of a noenv export (no parcel/region EEP) use the viewer Default sky, not a missing env."""
+    d = {"environment": "skipped: noenv", "exported_at": "2026-11-23T17:25:52.7634633-08:00", "sun_dir": [0.9, 0, 0.44]}
+    e = llsky.photo_env(d)
+    assert e is not None and e["source"].startswith("default-fallback:")
+    assert e["sun_dir"][2] > 0.9 and e["sky"]["horizon"][2] > e["sky"]["horizon"][0]  # day sky, sun up
+    assert llsky.photo_env(d, "shared")["source"].startswith("default-fallback:")
+    named = llsky.photo_env(d, "sunset")
+    assert named["source"] == "preset:Sunset"
+    # a usable shared environment is unchanged
+    assert llsky.photo_env(shared())["source"] == "shared"
